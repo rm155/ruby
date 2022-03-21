@@ -877,6 +877,7 @@ rb_alias_variable(ID name1, ID name2)
     }
     entry2->var->counter++;
     entry1->var = entry2->var;
+    entry1->ractor_local = entry2->ractor_local;
 }
 
 static bool
