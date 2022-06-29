@@ -11,7 +11,10 @@ override ACTIONS_GROUP = @echo "\#\#[group]$(patsubst yes-%,%,$@)"
 override ACTIONS_ENDGROUP = @echo "\#\#[endgroup]"
 endif
 
-ifneq ($(filter %darwin%,$(arch)),)
+ifneq ($(filter darwin%,$(target_os)),)
+# Remove debug option not to generate thousands of .dSYM
+MJIT_DEBUGFLAGS := $(filter-out -g%,$(MJIT_DEBUGFLAGS))
+
 INSTRUBY_ENV += SDKROOT=/
 endif
 INSTRUBY_ARGS += --gnumake
@@ -295,7 +298,8 @@ extract-gems: | $(patsubst %,.bundle/gems/%,$(bundled-gems))
 	$(ECHO) Extracting bundle gem $*...
 	$(Q) $(BASERUBY) -C "$(srcdir)" \
 	    -Itool -rgem-unpack \
-	    -e 'Gem.unpack("gems/$(@F).gem", ".bundle/gems")'
+	    -e 'Gem.unpack("gems/$(@F).gem", ".bundle/gems", ".bundle/specifications")'
+	$(RMALL) "$(srcdir)/$(@:.gem=)/".git*
 
 $(srcdir)/.bundle/gems:
 	$(MAKEDIRS) $@
@@ -355,6 +359,8 @@ ifneq ($(REVISION_IN_HEADER),$(REVISION_LATEST))
 # updated but it is not updated, while others may not.
 $(srcdir)/revision.h: $(REVISION_H)
 endif
+
+include $(top_srcdir)/yjit/yjit.mk
 
 # Query on the generated rdoc
 #

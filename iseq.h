@@ -17,6 +17,12 @@ RUBY_EXTERN const int ruby_api_version[];
 #define ISEQ_MAJOR_VERSION ((unsigned int)ruby_api_version[0])
 #define ISEQ_MINOR_VERSION ((unsigned int)ruby_api_version[1])
 
+#define ISEQ_MBITS_SIZE sizeof(iseq_bits_t)
+#define ISEQ_MBITS_BITLENGTH (ISEQ_MBITS_SIZE * CHAR_BIT)
+#define ISEQ_MBITS_SET(buf, i) (buf[(i) / ISEQ_MBITS_BITLENGTH] |= ((iseq_bits_t)1 << ((i) % ISEQ_MBITS_BITLENGTH)))
+#define ISEQ_MBITS_SET_P(buf, i) ((buf[(i) / ISEQ_MBITS_BITLENGTH] >> ((i) % ISEQ_MBITS_BITLENGTH)) & 0x1)
+#define ISEQ_MBITS_BUFLEN(size) (((size + (ISEQ_MBITS_BITLENGTH - 1)) & -ISEQ_MBITS_BITLENGTH) / ISEQ_MBITS_BITLENGTH)
+
 #ifndef USE_ISEQ_NODE_ID
 #define USE_ISEQ_NODE_ID 1
 #endif
@@ -28,35 +34,35 @@ typedef struct rb_iseq_struct rb_iseq_t;
 
 extern const ID rb_iseq_shared_exc_local_tbl[];
 
-#define ISEQ_COVERAGE(iseq)           iseq->body->variable.coverage
-#define ISEQ_COVERAGE_SET(iseq, cov)  RB_OBJ_WRITE(iseq, &iseq->body->variable.coverage, cov)
+#define ISEQ_COVERAGE(iseq)           ISEQ_BODY(iseq)->variable.coverage
+#define ISEQ_COVERAGE_SET(iseq, cov)  RB_OBJ_WRITE(iseq, &ISEQ_BODY(iseq)->variable.coverage, cov)
 #define ISEQ_LINE_COVERAGE(iseq)      RARRAY_AREF(ISEQ_COVERAGE(iseq), COVERAGE_INDEX_LINES)
 #define ISEQ_BRANCH_COVERAGE(iseq)    RARRAY_AREF(ISEQ_COVERAGE(iseq), COVERAGE_INDEX_BRANCHES)
 
-#define ISEQ_PC2BRANCHINDEX(iseq)         iseq->body->variable.pc2branchindex
-#define ISEQ_PC2BRANCHINDEX_SET(iseq, h)  RB_OBJ_WRITE(iseq, &iseq->body->variable.pc2branchindex, h)
+#define ISEQ_PC2BRANCHINDEX(iseq)         ISEQ_BODY(iseq)->variable.pc2branchindex
+#define ISEQ_PC2BRANCHINDEX_SET(iseq, h)  RB_OBJ_WRITE(iseq, &ISEQ_BODY(iseq)->variable.pc2branchindex, h)
 
-#define ISEQ_FLIP_CNT(iseq) (iseq)->body->variable.flip_count
+#define ISEQ_FLIP_CNT(iseq) ISEQ_BODY(iseq)->variable.flip_count
 
 static inline rb_snum_t
 ISEQ_FLIP_CNT_INCREMENT(const rb_iseq_t *iseq)
 {
-    rb_snum_t cnt = iseq->body->variable.flip_count;
-    iseq->body->variable.flip_count += 1;
+    rb_snum_t cnt = ISEQ_BODY(iseq)->variable.flip_count;
+    ISEQ_BODY(iseq)->variable.flip_count += 1;
     return cnt;
 }
 
 static inline VALUE *
 ISEQ_ORIGINAL_ISEQ(const rb_iseq_t *iseq)
 {
-    return iseq->body->variable.original_iseq;
+    return ISEQ_BODY(iseq)->variable.original_iseq;
 }
 
 static inline void
 ISEQ_ORIGINAL_ISEQ_CLEAR(const rb_iseq_t *iseq)
 {
-    void *ptr = iseq->body->variable.original_iseq;
-    iseq->body->variable.original_iseq = NULL;
+    void *ptr = ISEQ_BODY(iseq)->variable.original_iseq;
+    ISEQ_BODY(iseq)->variable.original_iseq = NULL;
     if (ptr) {
         ruby_xfree(ptr);
     }
@@ -65,7 +71,7 @@ ISEQ_ORIGINAL_ISEQ_CLEAR(const rb_iseq_t *iseq)
 static inline VALUE *
 ISEQ_ORIGINAL_ISEQ_ALLOC(const rb_iseq_t *iseq, long size)
 {
-    return iseq->body->variable.original_iseq =
+    return ISEQ_BODY(iseq)->variable.original_iseq =
         ALLOC_N(VALUE, size);
 }
 
@@ -182,6 +188,9 @@ void rb_iseq_build_from_ary(rb_iseq_t *iseq, VALUE misc,
 void rb_iseq_mark_insn_storage(struct iseq_compile_data_storage *arena);
 
 /* iseq.c */
+typedef bool rb_iseq_each_i(VALUE *code, VALUE insn, size_t index, void *data);
+void rb_iseq_each(const rb_iseq_t *iseq, size_t start_index, rb_iseq_each_i iterator, void *data);
+
 VALUE rb_iseq_load(VALUE data, VALUE parent, VALUE opt);
 VALUE rb_iseq_parameters(const rb_iseq_t *iseq, int is_proc);
 unsigned int rb_iseq_line_no(const rb_iseq_t *iseq, size_t pos);

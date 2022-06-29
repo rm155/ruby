@@ -124,6 +124,12 @@ int initgroups(const char *, rb_gid_t);
 #endif
 
 #if defined(HAVE_TIMES) || defined(_WIN32)
+/*********************************************************************
+ *
+ * Document-class: Process::Tms
+ *
+ * Placeholder for rusage
+ */
 static VALUE rb_cProcessTms;
 #endif
 
@@ -1076,7 +1082,7 @@ do_waitpid(rb_pid_t pid, int *st, int flags)
 #define WAITPID_LOCK_ONLY ((struct waitpid_state *)-1)
 
 struct waitpid_state {
-    struct list_node wnode;
+    struct ccan_list_node wnode;
     rb_execution_context_t *ec;
     rb_nativethread_cond_t *cond;
     rb_pid_t ret;
@@ -1091,6 +1097,15 @@ void rb_sigwait_sleep(const rb_thread_t *, int fd, const rb_hrtime_t *);
 void rb_sigwait_fd_put(const rb_thread_t *, int fd);
 void rb_thread_sleep_interruptible(void);
 
+#if USE_MJIT
+static struct waitpid_state mjit_waitpid_state;
+
+// variables shared with thread.c
+// TODO: implement the same thing with postponed_job and obviate these variables
+bool mjit_waitpid_finished = false;
+int mjit_waitpid_status = 0;
+#endif
+
 static int
 waitpid_signal(struct waitpid_state *w)
 {
@@ -1098,24 +1113,25 @@ waitpid_signal(struct waitpid_state *w)
         rb_threadptr_interrupt(rb_ec_thread_ptr(w->ec));
         return TRUE;
     }
-    else { /* ruby_waitpid_locked */
-        if (w->cond) {
-            rb_native_cond_signal(w->cond);
-            return TRUE;
-        }
+#if USE_MJIT
+    else if (w == &mjit_waitpid_state && w->ret) { /* mjit_add_waiting_pid */
+        mjit_waitpid_finished = true;
+        mjit_waitpid_status = w->status;
+        return TRUE;
     }
+#endif
     return FALSE;
 }
 
 // Used for VM memsize reporting. Returns the size of a list of waitpid_state
 // structs. Defined here because the struct definition lives here as well.
 size_t
-rb_vm_memsize_waiting_list(struct list_head *waiting_list)
+rb_vm_memsize_waiting_list(struct ccan_list_head *waiting_list)
 {
     struct waitpid_state *waitpid = 0;
     size_t size = 0;
 
-    list_for_each(waiting_list, waitpid, wnode) {
+    ccan_list_for_each(waiting_list, waitpid, wnode) {
         size += sizeof(struct waitpid_state);
     }
 
@@ -1132,10 +1148,10 @@ sigwait_fd_migrate_sleeper(rb_vm_t *vm)
 {
     struct waitpid_state *w = 0;
 
-    list_for_each(&vm->waiting_pids, w, wnode) {
+    ccan_list_for_each(&vm->waiting_pids, w, wnode) {
         if (waitpid_signal(w)) return;
     }
-    list_for_each(&vm->waiting_grps, w, wnode) {
+    ccan_list_for_each(&vm->waiting_grps, w, wnode) {
         if (waitpid_signal(w)) return;
     }
 }
@@ -1152,18 +1168,18 @@ rb_sigwait_fd_migrate(rb_vm_t *vm)
 extern volatile unsigned int ruby_nocldwait; /* signal.c */
 /* called by timer thread or thread which acquired sigwait_fd */
 static void
-waitpid_each(struct list_head *head)
+waitpid_each(struct ccan_list_head *head)
 {
     struct waitpid_state *w = 0, *next;
 
-    list_for_each_safe(head, w, next, wnode) {
+    ccan_list_for_each_safe(head, w, next, wnode) {
         rb_pid_t ret = do_waitpid(w->pid, &w->status, w->options | WNOHANG);
 
         if (!ret) continue;
         if (ret == -1) w->errnum = errno;
 
         w->ret = ret;
-        list_del_init(&w->wnode);
+        ccan_list_del_init(&w->wnode);
         waitpid_signal(w);
     }
 }
@@ -1177,11 +1193,11 @@ ruby_waitpid_all(rb_vm_t *vm)
 #if RUBY_SIGCHLD
     rb_native_mutex_lock(&vm->waitpid_lock);
     waitpid_each(&vm->waiting_pids);
-    if (list_empty(&vm->waiting_pids)) {
+    if (ccan_list_empty(&vm->waiting_pids)) {
         waitpid_each(&vm->waiting_grps);
     }
     /* emulate SA_NOCLDWAIT */
-    if (list_empty(&vm->waiting_pids) && list_empty(&vm->waiting_grps)) {
+    if (ccan_list_empty(&vm->waiting_pids) && ccan_list_empty(&vm->waiting_grps)) {
         while (ruby_nocldwait && do_waitpid(-1, 0, WNOHANG) > 0)
             ; /* keep looping */
     }
@@ -1199,68 +1215,18 @@ waitpid_state_init(struct waitpid_state *w, rb_pid_t pid, int options)
     w->status = 0;
 }
 
-static const rb_hrtime_t *
-sigwait_sleep_time(void)
-{
-    if (SIGCHLD_LOSSY) {
-        static const rb_hrtime_t busy_wait = 100 * RB_HRTIME_PER_MSEC;
-
-        return &busy_wait;
-    }
-    return 0;
-}
-
+#if USE_MJIT
 /*
  * must be called with vm->waitpid_lock held, this is not interruptible
  */
-rb_pid_t
-ruby_waitpid_locked(rb_vm_t *vm, rb_pid_t pid, int *status, int options,
-                    rb_nativethread_cond_t *cond)
+void
+mjit_add_waiting_pid(rb_vm_t *vm, rb_pid_t pid)
 {
-    struct waitpid_state w;
-
-    assert(!ruby_thread_has_gvl_p() && "must not have GVL");
-
-    waitpid_state_init(&w, pid, options);
-    if (w.pid > 0 || list_empty(&vm->waiting_pids))
-        w.ret = do_waitpid(w.pid, &w.status, w.options | WNOHANG);
-    if (w.ret) {
-        if (w.ret == -1) w.errnum = errno;
-    }
-    else {
-        int sigwait_fd = -1;
-
-        w.ec = 0;
-        list_add(w.pid > 0 ? &vm->waiting_pids : &vm->waiting_grps, &w.wnode);
-        do {
-            if (sigwait_fd < 0)
-                sigwait_fd = rb_sigwait_fd_get(0);
-
-            if (sigwait_fd >= 0) {
-                w.cond = 0;
-                rb_native_mutex_unlock(&vm->waitpid_lock);
-                rb_sigwait_sleep(0, sigwait_fd, sigwait_sleep_time());
-                rb_native_mutex_lock(&vm->waitpid_lock);
-            }
-            else {
-                w.cond = cond;
-                rb_native_cond_wait(w.cond, &vm->waitpid_lock);
-            }
-        } while (!w.ret);
-        list_del(&w.wnode);
-
-        /* we're done, maybe other waitpid callers are not: */
-        if (sigwait_fd >= 0) {
-            rb_sigwait_fd_put(0, sigwait_fd);
-            sigwait_fd_migrate_sleeper(vm);
-        }
-    }
-    if (status) {
-        *status = w.status;
-    }
-    if (w.ret == -1) errno = w.errnum;
-    return w.ret;
+    waitpid_state_init(&mjit_waitpid_state, pid, 0);
+    mjit_waitpid_state.ec = 0; // switch the behavior of waitpid_signal
+    ccan_list_add(&vm->waiting_pids, &mjit_waitpid_state.wnode);
 }
+#endif
 
 static VALUE
 waitpid_sleep(VALUE x)
@@ -1280,14 +1246,14 @@ waitpid_cleanup(VALUE x)
     struct waitpid_state *w = (struct waitpid_state *)x;
 
     /*
-     * XXX w->ret is sometimes set but list_del is still needed, here,
-     * Not sure why, so we unconditionally do list_del here:
+     * XXX w->ret is sometimes set but ccan_list_del is still needed, here,
+     * Not sure why, so we unconditionally do ccan_list_del here:
      */
     if (TRUE || w->ret == 0) {
         rb_vm_t *vm = rb_ec_vm_ptr(w->ec);
 
         rb_native_mutex_lock(&vm->waitpid_lock);
-        list_del(&w->wnode);
+        ccan_list_del(&w->wnode);
         rb_native_mutex_unlock(&vm->waitpid_lock);
     }
 
@@ -1307,7 +1273,7 @@ waitpid_wait(struct waitpid_state *w)
      */
     rb_native_mutex_lock(&vm->waitpid_lock);
 
-    if (w->pid > 0 || list_empty(&vm->waiting_pids)) {
+    if (w->pid > 0 || ccan_list_empty(&vm->waiting_pids)) {
         w->ret = do_waitpid(w->pid, &w->status, w->options | WNOHANG);
     }
 
@@ -1323,7 +1289,7 @@ waitpid_wait(struct waitpid_state *w)
     if (need_sleep) {
         w->cond = 0;
         /* order matters, favor specified PIDs rather than -1 or 0 */
-        list_add(w->pid > 0 ? &vm->waiting_pids : &vm->waiting_grps, &w->wnode);
+        ccan_list_add(w->pid > 0 ? &vm->waiting_pids : &vm->waiting_grps, &w->wnode);
     }
 
     rb_native_mutex_unlock(&vm->waitpid_lock);
@@ -2250,7 +2216,7 @@ rb_execarg_addopt_rlimit(struct rb_execarg *eargp, int rtype, VALUE val)
 }
 #endif
 
-#define TO_BOOL(val, name) NIL_P(val) ? 0 : rb_bool_expected((val), name)
+#define TO_BOOL(val, name) (NIL_P(val) ? 0 : rb_bool_expected((val), name, TRUE))
 int
 rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val)
 {
@@ -3165,7 +3131,7 @@ NORETURN(static VALUE f_exec(int c, const VALUE *a, VALUE _));
  *  [<code>exec(cmdname, arg1, ...)</code>]
  *	command name and one or more arguments (no shell)
  *  [<code>exec([cmdname, argv0], arg1, ...)</code>]
- *	command name, argv[0] and zero or more arguments (no shell)
+ *	command name, +argv[0]+ and zero or more arguments (no shell)
  *
  *  In the first form, the string is taken as a command line that is subject to
  *  shell expansion before being executed.
@@ -4229,7 +4195,7 @@ retry_fork_async_signal_safe(struct rb_process_status *status, int *ep,
         if (waitpid_lock) {
             if (pid > 0 && w != WAITPID_LOCK_ONLY) {
                 w->pid = pid;
-                list_add(&GET_VM()->waiting_pids, &w->wnode);
+                ccan_list_add(&GET_VM()->waiting_pids, &w->wnode);
             }
             rb_native_mutex_unlock(waitpid_lock);
         }
@@ -4773,7 +4739,7 @@ rb_spawn(int argc, const VALUE *argv)
  *  _command..._ is one of following forms.
  *
  *  This method has potential security vulnerabilities if called with untrusted input;
- *  see {Command Injection}[command_injection.rdoc].
+ *  see {Command Injection}[rdoc-ref:command_injection.rdoc].
  *
  *  [<code>commandline</code>]
  *    command line string which is passed to the standard shell
@@ -9164,8 +9130,17 @@ InitVM_process(void)
     rb_define_module_function(rb_mProcess, "clock_getres", rb_clock_getres, -1);
 
 #if defined(HAVE_TIMES) || defined(_WIN32)
-    /* Placeholder for rusage */
     rb_cProcessTms = rb_struct_define_under(rb_mProcess, "Tms", "utime", "stime", "cutime", "cstime", NULL);
+#if 0 /* for RDoc */
+    /* user time used in this process */
+    rb_define_attr(rb_cProcessTms, "utime", TRUE, TRUE);
+    /* system time used in this process */
+    rb_define_attr(rb_cProcessTms, "stime", TRUE, TRUE);
+    /* user time used in the child processes */
+    rb_define_attr(rb_cProcessTms, "cutime", TRUE, TRUE);
+    /* system time used in the child processes */
+    rb_define_attr(rb_cProcessTms, "cstime", TRUE, TRUE);
+#endif
 #endif
 
     SAVED_USER_ID = geteuid();

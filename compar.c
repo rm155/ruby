@@ -167,9 +167,7 @@ cmp_le(VALUE x, VALUE y)
 static VALUE
 cmp_between(VALUE x, VALUE min, VALUE max)
 {
-    if (cmpint(x, min) < 0) return Qfalse;
-    if (cmpint(x, max) > 0) return Qfalse;
-    return Qtrue;
+    return RBOOL((cmpint(x, min) >= 0 && cmpint(x, max) <= 0));
 }
 
 /*
@@ -288,16 +286,18 @@ cmp_clamp(int argc, VALUE *argv, VALUE x)
  *
  *  \Module \Comparable provides these methods, all of which use method <tt><=></tt>:
  *
- *  - #<:: Returns whether +self+ is less than the given object.
- *  - #<=:: Returns whether +self+ is less than or equal to the given object.
- *  - #==:: Returns whether +self+ is equal to the given object.
- *  - #>:: Returns whether +self+ is greater than or equal to the given object.
- *  - #>=:: Returns whether +self+ is greater than the given object.
- *  - #between? Returns +true+ if +self+ is between two given objects.
- *  - #clamp:: For given objects +min+ and +max+, or range <tt>(min..max)</tt>, returns:
+ *  - #<: Returns whether +self+ is less than the given object.
+ *  - #<=: Returns whether +self+ is less than or equal to the given object.
+ *  - #==: Returns whether +self+ is equal to the given object.
+ *  - #>: Returns whether +self+ is greater than or equal to the given object.
+ *  - #>=: Returns whether +self+ is greater than the given object.
+ *  - #between?: Returns +true+ if +self+ is between two given objects.
+ *  - #clamp: For given objects +min+ and +max+, or range <tt>(min..max)</tt>, returns:
+ *
  *    - +min+ if <tt>(self <=> min) < 0</tt>.
  *    - +max+ if <tt>(self <=> max) > 0</tt>.
  *    - +self+ otherwise.
+ *
  */
 
 void

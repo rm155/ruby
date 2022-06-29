@@ -1010,8 +1010,16 @@ enum_inject(int argc, VALUE *argv, VALUE obj)
     VALUE init, op;
     rb_block_call_func *iter = inject_i;
     ID id;
+    int num_args;
 
-    switch (rb_scan_args(argc, argv, "02", &init, &op)) {
+    if (rb_block_given_p()) {
+        num_args = rb_scan_args(argc, argv, "02", &init, &op);
+    }
+    else {
+        num_args = rb_scan_args(argc, argv, "11", &init, &op);
+    }
+
+    switch (num_args) {
       case 0:
 	init = Qundef;
 	break;
@@ -3090,8 +3098,10 @@ each_with_object_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, memo))
  *  Calls the block once for each element, passing both the element
  *  and the given object:
  *
- *    (1..4).each_with_object([]) {|i, a| a.push(i**2) } # => [1, 4, 9, 16]
- *    h.each_with_object({}) {|element, h| k, v = *element; h[v] = k }
+ *    (1..4).each_with_object([]) {|i, a| a.push(i**2) }
+ *    # => [1, 4, 9, 16]
+ *
+ *    {foo: 0, bar: 1, baz: 2}.each_with_object({}) {|(k, v), h| h[v] = k }
  *    # => {0=>:foo, 1=>:bar, 2=>:baz}
  *
  *  With no block given, returns an Enumerator.
@@ -4069,39 +4079,24 @@ sliceafter_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
 
 /*
  *  call-seq:
- *    slice_after(pattern)       -> enumerator
- *    slice_after {|array| ... } -> enumerator
+ *     enum.slice_after(pattern)       -> an_enumerator
+ *     enum.slice_after { |elt| bool } -> an_enumerator
  *
- *  With argument +pattern+, returns an enumerator that uses the pattern
- *  to partition elements into arrays ("slices").
- *  An element ends the current slice if <tt>element === pattern</tt>:
+ *  Creates an enumerator for each chunked elements.
+ *  The ends of chunks are defined by _pattern_ and the block.
  *
- *    a = %w[foo bar fop for baz fob fog bam foy]
- *    e = a.slice_after(/ba/) # => #<Enumerator: ...>
- *    e.each {|array| p array }
+ *  If <code>_pattern_ === _elt_</code> returns <code>true</code> or the block
+ *  returns <code>true</code> for the element, the element is end of a
+ *  chunk.
  *
- *  Output:
+ *  The <code>===</code> and _block_ is called from the first element to the last
+ *  element of _enum_.
  *
- *    ["foo", "bar"]
- *    ["fop", "for", "baz"]
- *    ["fob", "fog", "bam"]
- *    ["foy"]
+ *  The result enumerator yields the chunked elements as an array.
+ *  So +each+ method can be called as follows:
  *
- *  With a block, returns an enumerator that uses the block
- *  to partition elements into arrays.
- *  An element ends the current slice if its block return is a truthy value:
- *
- *    e = (1..20).slice_after {|i| i % 4 == 2 } # => #<Enumerator: ...>
- *    e.each {|array| p array }
- *
- *  Output:
- *
- *    [1, 2]
- *    [3, 4, 5, 6]
- *    [7, 8, 9, 10]
- *    [11, 12, 13, 14]
- *    [15, 16, 17, 18]
- *    [19, 20]
+ *    enum.slice_after(pattern).each { |ary| ... }
+ *    enum.slice_after { |elt| bool }.each { |ary| ... }
  *
  *  Other methods of the Enumerator class and Enumerable module,
  *  such as +map+, etc., are also usable.
@@ -4215,23 +4210,65 @@ slicewhen_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
 
 /*
  *  call-seq:
- *    slice_when {|element, next_element| ... } -> enumerator
+ *     enum.slice_when {|elt_before, elt_after| bool } -> an_enumerator
  *
- *  The returned enumerator uses the block
- *  to partition elements into arrays ("slices");
- *  it calls the block with each element and its successor;
- *  begins a new slice if and only if the block returns a truthy value:
+ *  Creates an enumerator for each chunked elements.
+ *  The beginnings of chunks are defined by the block.
  *
- *    a = [0, 1, 2, 4, 5, 6, 8, 9]
- *    e = a.slice_when {|i, j| j != i + 1 }
- *    e.each {|array| p array }
+ *  This method splits each chunk using adjacent elements,
+ *  _elt_before_ and _elt_after_,
+ *  in the receiver enumerator.
+ *  This method split chunks between _elt_before_ and _elt_after_ where
+ *  the block returns <code>true</code>.
  *
- *  Output:
+ *  The block is called the length of the receiver enumerator minus one.
  *
- *    [0, 1, 2]
- *    [4, 5, 6]
- *    [8, 9]
+ *  The result enumerator yields the chunked elements as an array.
+ *  So +each+ method can be called as follows:
  *
+ *    enum.slice_when { |elt_before, elt_after| bool }.each { |ary| ... }
+ *
+ *  Other methods of the Enumerator class and Enumerable module,
+ *  such as +to_a+, +map+, etc., are also usable.
+ *
+ *  For example, one-by-one increasing subsequence can be chunked as follows:
+ *
+ *    a = [1,2,4,9,10,11,12,15,16,19,20,21]
+ *    b = a.slice_when {|i, j| i+1 != j }
+ *    p b.to_a #=> [[1, 2], [4], [9, 10, 11, 12], [15, 16], [19, 20, 21]]
+ *    c = b.map {|a| a.length < 3 ? a : "#{a.first}-#{a.last}" }
+ *    p c #=> [[1, 2], [4], "9-12", [15, 16], "19-21"]
+ *    d = c.join(",")
+ *    p d #=> "1,2,4,9-12,15,16,19-21"
+ *
+ *  Near elements (threshold: 6) in sorted array can be chunked as follows:
+ *
+ *    a = [3, 11, 14, 25, 28, 29, 29, 41, 55, 57]
+ *    p a.slice_when {|i, j| 6 < j - i }.to_a
+ *    #=> [[3], [11, 14], [25, 28, 29, 29], [41], [55, 57]]
+ *
+ *  Increasing (non-decreasing) subsequence can be chunked as follows:
+ *
+ *    a = [0, 9, 2, 2, 3, 2, 7, 5, 9, 5]
+ *    p a.slice_when {|i, j| i > j }.to_a
+ *    #=> [[0, 9], [2, 2, 3], [2, 7], [5, 9], [5]]
+ *
+ *  Adjacent evens and odds can be chunked as follows:
+ *  (Enumerable#chunk is another way to do it.)
+ *
+ *    a = [7, 5, 9, 2, 0, 7, 9, 4, 2, 0]
+ *    p a.slice_when {|i, j| i.even? != j.even? }.to_a
+ *    #=> [[7, 5, 9], [2, 0], [7, 9], [4, 2, 0]]
+ *
+ *  Paragraphs (non-empty lines with trailing empty lines) can be chunked as follows:
+ *  (See Enumerable#chunk to ignore empty lines.)
+ *
+ *    lines = ["foo\n", "bar\n", "\n", "baz\n", "qux\n"]
+ *    p lines.slice_when {|l1, l2| /\A\s*\z/ =~ l1 && /\S/ =~ l2 }.to_a
+ *    #=> [["foo\n", "bar\n", "\n"], ["baz\n", "qux\n"]]
+ *
+ *  Enumerable#chunk_while does the same, except splitting when the block
+ *  returns <code>false</code> instead of <code>true</code>.
  */
 static VALUE
 enum_slice_when(VALUE enumerable)
@@ -4252,27 +4289,52 @@ enum_slice_when(VALUE enumerable)
 
 /*
  *  call-seq:
- *    chunk_while {|element, next_element| ... } -> enumerator
+ *     enum.chunk_while {|elt_before, elt_after| bool } -> an_enumerator
  *
- *  The returned Enumerator uses the block to partition elements
- *  into arrays ("chunks");
- *  it calls the block with each element and its successor;
- *  begins a new chunk if and only if the block returns a truthy value:
+ *  Creates an enumerator for each chunked elements.
+ *  The beginnings of chunks are defined by the block.
  *
- *  Example:
+ *  This method splits each chunk using adjacent elements,
+ *  _elt_before_ and _elt_after_,
+ *  in the receiver enumerator.
+ *  This method split chunks between _elt_before_ and _elt_after_ where
+ *  the block returns <code>false</code>.
  *
- *    a = [1, 2, 4, 9, 10, 11, 12, 15, 16, 19, 20, 21]
- *    e = a.chunk_while {|i, j| j == i + 1 }
- *    e.each {|array| p array }
+ *  The block is called the length of the receiver enumerator minus one.
  *
- *  Output:
+ *  The result enumerator yields the chunked elements as an array.
+ *  So +each+ method can be called as follows:
  *
- *    [1, 2]
- *    [4]
- *    [9, 10, 11, 12]
- *    [15, 16]
- *    [19, 20, 21]
+ *    enum.chunk_while { |elt_before, elt_after| bool }.each { |ary| ... }
  *
+ *  Other methods of the Enumerator class and Enumerable module,
+ *  such as +to_a+, +map+, etc., are also usable.
+ *
+ *  For example, one-by-one increasing subsequence can be chunked as follows:
+ *
+ *    a = [1,2,4,9,10,11,12,15,16,19,20,21]
+ *    b = a.chunk_while {|i, j| i+1 == j }
+ *    p b.to_a #=> [[1, 2], [4], [9, 10, 11, 12], [15, 16], [19, 20, 21]]
+ *    c = b.map {|a| a.length < 3 ? a : "#{a.first}-#{a.last}" }
+ *    p c #=> [[1, 2], [4], "9-12", [15, 16], "19-21"]
+ *    d = c.join(",")
+ *    p d #=> "1,2,4,9-12,15,16,19-21"
+ *
+ *  Increasing (non-decreasing) subsequence can be chunked as follows:
+ *
+ *    a = [0, 9, 2, 2, 3, 2, 7, 5, 9, 5]
+ *    p a.chunk_while {|i, j| i <= j }.to_a
+ *    #=> [[0, 9], [2, 2, 3], [2, 7], [5, 9], [5]]
+ *
+ *  Adjacent evens and odds can be chunked as follows:
+ *  (Enumerable#chunk is another way to do it.)
+ *
+ *    a = [7, 5, 9, 2, 0, 7, 9, 4, 2, 0]
+ *    p a.chunk_while {|i, j| i.even? == j.even? }.to_a
+ *    #=> [[7, 5, 9], [2, 0], [7, 9], [4, 2, 0]]
+ *
+ *  Enumerable#slice_when does the same, except splitting when the block
+ *  returns <code>true</code> instead of <code>false</code>.
  */
 static VALUE
 enum_chunk_while(VALUE enumerable)
@@ -4650,6 +4712,7 @@ enum_compact(VALUE obj)
  * == What's Here
  *
  * \Module \Enumerable provides methods that are useful to a collection class for:
+ *
  * - {Querying}[rdoc-ref:Enumerable@Methods+for+Querying]
  * - {Fetching}[rdoc-ref:Enumerable@Methods+for+Fetching]
  * - {Searching}[rdoc-ref:Enumerable@Methods+for+Searching]
@@ -4661,91 +4724,94 @@ enum_compact(VALUE obj)
  *
  * These methods return information about the \Enumerable other than the elements themselves:
  *
- * #include?, #member?:: Returns +true+ if self == object, +false+ otherwise.
- * #all?::               Returns +true+ if all elements meet a specified criterion; +false+ otherwise.
- * #any?::               Returns +true+ if any element meets a specified criterion; +false+ otherwise.
- * #none?::              Returns +true+ if no element meets a specified criterion; +false+ otherwise.
- * #one?::               Returns +true+ if exactly one element meets a specified criterion; +false+ otherwise.
- * #count::              Returns the count of elements,
- *                       based on an argument or block criterion, if given.
- * #tally::              Returns a new \Hash containing the counts of occurrences of each element.
+ * - #include?, #member?: Returns +true+ if <tt>self == object</tt>, +false+ otherwise.
+ * - #all?: Returns +true+ if all elements meet a specified criterion; +false+ otherwise.
+ * - #any?: Returns +true+ if any element meets a specified criterion; +false+ otherwise.
+ * - #none?: Returns +true+ if no element meets a specified criterion; +false+ otherwise.
+ * - #one?: Returns +true+ if exactly one element meets a specified criterion; +false+ otherwise.
+ * - #count: Returns the count of elements,
+ *   based on an argument or block criterion, if given.
+ * - #tally: Returns a new \Hash containing the counts of occurrences of each element.
  *
  * === Methods for Fetching
  *
  * These methods return entries from the \Enumerable, without modifying it:
  *
  * <i>Leading, trailing, or all elements</i>:
- * #entries, #to_a:: Returns all elements.
- * #first::          Returns the first element or leading elements.
- * #take::           Returns a specified number of leading elements.
- * #drop::           Returns a specified number of trailing elements.
- * #take_while::     Returns leading elements as specified by the given block.
- * #drop_while::     Returns trailing elements as specified by the given block.
+ *
+ * - #entries, #to_a: Returns all elements.
+ * - #first: Returns the first element or leading elements.
+ * - #take: Returns a specified number of leading elements.
+ * - #drop: Returns a specified number of trailing elements.
+ * - #take_while: Returns leading elements as specified by the given block.
+ * - #drop_while: Returns trailing elements as specified by the given block.
  *
  * <i>Minimum and maximum value elements</i>:
- * #min::            Returns the elements whose values are smallest among the elements,
- *                   as determined by <tt><=></tt> or a given block.
- * #max::            Returns the elements whose values are largest among the elements,
- *                   as determined by <tt><=></tt> or a given block.
- * #minmax::         Returns a 2-element \Array containing the smallest and largest elements.
- * #min_by::         Returns the smallest element, as determined by the given block.
- * #max_by::         Returns the largest element, as determined by the given block.
- * #minmax_by::      Returns the smallest and largest elements, as determined by the given block.
+ *
+ * - #min: Returns the elements whose values are smallest among the elements,
+ *   as determined by <tt><=></tt> or a given block.
+ * - #max: Returns the elements whose values are largest among the elements,
+ *   as determined by <tt><=></tt> or a given block.
+ * - #minmax: Returns a 2-element \Array containing the smallest and largest elements.
+ * - #min_by: Returns the smallest element, as determined by the given block.
+ * - #max_by: Returns the largest element, as determined by the given block.
+ * - #minmax_by: Returns the smallest and largest elements, as determined by the given block.
  *
  * <i>Groups, slices, and partitions</i>:
- * #group_by::       Returns a \Hash that partitions the elements into groups.
- * #partition::      Returns elements partitioned into two new Arrays, as determined by the given block.
- * #slice_after::    Returns a new \Enumerator whose entries are a partition of +self+,
-                     based either on a given +object+ or a given block.
- * #slice_before::   Returns a new \Enumerator whose entries are a partition of +self+,
-                     based either on a given +object+ or a given block.
- * #slice_when::     Returns a new \Enumerator whose entries are a partition of +self+
-                     based on the given block.
- * #chunk::          Returns elements organized into chunks as specified by the given block.
- * #chunk_while::    Returns elements organized into chunks as specified by the given block.
+ *
+ * - #group_by: Returns a \Hash that partitions the elements into groups.
+ * - #partition: Returns elements partitioned into two new Arrays, as determined by the given block.
+ * - #slice_after: Returns a new \Enumerator whose entries are a partition of +self+,
+     based either on a given +object+ or a given block.
+ * - #slice_before: Returns a new \Enumerator whose entries are a partition of +self+,
+     based either on a given +object+ or a given block.
+ * - #slice_when: Returns a new \Enumerator whose entries are a partition of +self+
+     based on the given block.
+ * - #chunk: Returns elements organized into chunks as specified by the given block.
+ * - #chunk_while: Returns elements organized into chunks as specified by the given block.
  *
  * === Methods for Searching and Filtering
  *
- * These methods return elements that meet a specified criterion.
+ * These methods return elements that meet a specified criterion:
  *
- * #find, #detect::              Returns an element selected by the block.
- * #find_all, #filter, #select:: Returns elements selected by the block.
- * #find_index::                 Returns the index of an element selected by a given object or block.
- * #reject::                     Returns elements not rejected by the block.
- * #uniq::                       Returns elements that are not duplicates.
+ * - #find, #detect: Returns an element selected by the block.
+ * - #find_all, #filter, #select: Returns elements selected by the block.
+ * - #find_index: Returns the index of an element selected by a given object or block.
+ * - #reject: Returns elements not rejected by the block.
+ * - #uniq: Returns elements that are not duplicates.
  *
  * === Methods for Sorting
  *
- * These methods return elements in sorted order.
+ * These methods return elements in sorted order:
  *
- * #sort::    Returns the elements, sorted by <tt><=></tt> or the given block.
- * #sort_by:: Returns the elements, sorted by the given block.
+ * - #sort: Returns the elements, sorted by <tt><=></tt> or the given block.
+ * - #sort_by: Returns the elements, sorted by the given block.
  *
  * === Methods for Iterating
  *
- * #each_entry::       Calls the block with each successive element
- *                     (slightly different from #each).
- * #each_with_index::  Calls the block with each successive element and its index.
- * #each_with_object:: Calls the block with each successive element and a given object.
- * #each_slice::       Calls the block with successive non-overlapping slices.
- * #each_cons::        Calls the block with successive overlapping slices.
- *                     (different from #each_slice).
- * #reverse_each::     Calls the block with each successive element, in reverse order.
+ * - #each_entry: Calls the block with each successive element
+ *   (slightly different from #each).
+ * - #each_with_index: Calls the block with each successive element and its index.
+ * - #each_with_object: Calls the block with each successive element and a given object.
+ * - #each_slice: Calls the block with successive non-overlapping slices.
+ * - #each_cons: Calls the block with successive overlapping slices.
+ *   (different from #each_slice).
+ * - #reverse_each: Calls the block with each successive element, in reverse order.
  *
  * === Other Methods
  *
- * #map, #collect::             Returns objects returned by the block.
- * #filter_map::                Returns truthy objects returned by the block.
- * #flat_map, #collect_concat:: Returns flattened objects returned by the block.
- * #grep::                      Returns elements selected by a given object
- *                              or objects returned by a given block.
- * #grep_v::                    Returns elements selected by a given object
- *                              or objects returned by a given block.
- * #reduce, #inject::           Returns the object formed by combining all elements.
- * #sum::                       Returns the sum of the elements, using method +++.
- * #zip::                       Combines each element with elements from other enumerables;
- *                              returns the n-tuples or calls the block with each.
- * #cycle::                     Calls the block with each element, cycling repeatedly.
+ * - #map, #collect: Returns objects returned by the block.
+ * - #filter_map: Returns truthy objects returned by the block.
+ * - #flat_map, #collect_concat: Returns flattened objects returned by the block.
+ * - #grep: Returns elements selected by a given object
+ *   or objects returned by a given block.
+ * - #grep_v: Returns elements selected by a given object
+ *   or objects returned by a given block.
+ * - #reduce, #inject: Returns the object formed by combining all elements.
+ * - #sum: Returns the sum of the elements, using method +++.
+ * - #zip: Combines each element with elements from other enumerables;
+ *   returns the n-tuples or calls the block with each.
+ * - #cycle: Calls the block with each element, cycling repeatedly.
  *
  * == Usage
  *

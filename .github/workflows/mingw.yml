@@ -42,7 +42,7 @@ jobs:
             base_ruby: head
             test_task: "check" # to make job names consistent
       fail-fast: false
-    if: ${{ !startsWith(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
+    if: ${{ !contains(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
     steps:
       - run: mkdir build
         working-directory:
@@ -52,10 +52,10 @@ jobs:
           git config --global core.eol lf
           git config --global advice.detachedHead 0
           git config --global init.defaultBranch garbage
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           path: src
-      - uses: actions/cache@v2
+      - uses: actions/cache@v3
         with:
           path: src/.downloaded-cache
           key: downloaded-cache

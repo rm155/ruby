@@ -108,14 +108,34 @@ describe "C-API Class function" do
 
   describe "rb_class_new_instance" do
     it "allocates and initializes a new object" do
-      o = @s.rb_class_new_instance(0, nil, CApiClassSpecs::Alloc)
+      o = @s.rb_class_new_instance([], CApiClassSpecs::Alloc)
       o.class.should == CApiClassSpecs::Alloc
       o.initialized.should be_true
     end
 
     it "passes arguments to the #initialize method" do
-      o = @s.rb_class_new_instance(2, [:one, :two], CApiClassSpecs::Alloc)
+      o = @s.rb_class_new_instance([:one, :two], CApiClassSpecs::Alloc)
       o.arguments.should == [:one, :two]
+    end
+  end
+
+  ruby_version_is "3.0" do
+    describe "rb_class_new_instance_kw" do
+      it "passes arguments and keywords to the #initialize method" do
+        obj = @s.rb_class_new_instance_kw([{pos: 1}, {kw: 2}], CApiClassSpecs::KeywordAlloc)
+        obj.args.should == [{pos: 1}]
+        obj.kwargs.should == {kw: 2}
+
+        obj = @s.rb_class_new_instance_kw([{}], CApiClassSpecs::KeywordAlloc)
+        obj.args.should == []
+        obj.kwargs.should == {}
+      end
+
+      it "raises TypeError if the last argument is not a Hash" do
+        -> {
+          @s.rb_class_new_instance_kw([42], CApiClassSpecs::KeywordAlloc)
+        }.should raise_error(TypeError, 'no implicit conversion of Integer into Hash')
+      end
     end
   end
 
@@ -173,16 +193,6 @@ describe "C-API Class function" do
       @s.define_call_super_method CApiClassSpecs::SubSub, "call_super_method"
       obj = CApiClassSpecs::SubSub.new
       obj.call_super_method.should == :super_method
-    end
-  end
-
-  describe "rb_define_method" do
-    it "defines a method taking variable arguments as a C array if the argument count is -1" do
-      @s.rb_method_varargs_1(1, 3, 7, 4).should == [1, 3, 7, 4]
-    end
-
-    it "defines a method taking variable arguments as a Ruby array if the argument count is -2" do
-      @s.rb_method_varargs_2(1, 3, 7, 4).should == [1, 3, 7, 4]
     end
   end
 

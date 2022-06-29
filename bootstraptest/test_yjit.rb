@@ -1,32 +1,21 @@
-assert_equal '2022', %q{
- def contrivance(hash, key)
-    # Expect this to compile to an `opt_aref`.
-    hash[key]
+assert_equal 'true', %q{
+  # regression test for tracking type of locals for too long
+  def local_setting_cmp(five)
+    victim = 5
+    five.define_singleton_method(:respond_to?) do |_, _|
+      victim = nil
+    end
 
-    # The [] call above tracks that the `hash` local has a VALUE that
-    # is a heap pointer and the guard for the Kernel#itself call below
-    # doesn't check that it's a heap pointer VALUE.
-    #
-    # As you can see from the crash, the call to rb_hash_aref() can set the
-    # `hash` local, making eliding the heap object guard unsound.
-    hash.itself
+    # +1 makes YJIT track that victim is a number and
+    # defined? calls respond_to? from above indirectly
+    unless (victim + 1) && defined?(five.something)
+      # Would return wrong result if we still think `five` is a number
+      victim.nil?
+    end
   end
 
-  # This is similar to ->(recv, mid) { send(recv, mid).local_variable_set(...) }.
-  # By composing we avoid creating new Ruby frames and so sending :binding
-  # captures the environment of the frame that does the missing key lookup.
-  # We use it to capture the environment inside of `contrivance`.
-  cap_then_set =
-    Kernel.instance_method(:send).method(:bind_call).to_proc >>
-      ->(binding) { binding.local_variable_set(:hash, 2022) }
-  special_missing = Hash.new(&cap_then_set)
-
-  # Make YJIT speculate that it's a hash and generate code
-  # that calls rb_hash_aref().
-  contrivance({}, :warmup)
-  contrivance({}, :warmup)
-
-  contrivance(special_missing, :binding)
+  local_setting_cmp(Object.new)
+  local_setting_cmp(Object.new)
 }
 
 assert_equal '18374962167983112447', %q{
@@ -45,7 +34,7 @@ assert_equal '18374962167983112447', %q{
 }
 
 assert_normal_exit %q{
-  # regression test for a leak caught by an asert on --yjit-call-threshold=2
+  # regression test for a leak caught by an assert on --yjit-call-threshold=2
   Foo = 1
 
   eval("def foo = [#{(['Foo,']*256).join}]")
@@ -1368,6 +1357,46 @@ assert_equal 'foo123', %q{
   make_str("foo", 123)
 }
 
+# test that invalidation of String#to_s doesn't crash
+assert_equal 'meh', %q{
+  def inval_method
+    "".to_s
+  end
+
+  inval_method
+
+  class String
+    def to_s
+      "meh"
+    end
+  end
+
+  inval_method
+}
+
+# test that overriding to_s on a String subclass works consistently
+assert_equal 'meh', %q{
+  class MyString < String
+    def to_s
+      "meh"
+    end
+  end
+
+  def test_to_s(obj)
+    obj.to_s
+  end
+
+  OBJ = MyString.new
+
+  # Should return '' both times
+  test_to_s("")
+  test_to_s("")
+
+  # Can return '' if YJIT optimises String#to_s too aggressively
+  test_to_s(OBJ)
+  test_to_s(OBJ)
+}
+
 # test string interpolation with overridden to_s
 assert_equal 'foo', %q{
   class String
@@ -1384,6 +1413,149 @@ assert_equal 'foo', %q{
   make_str("foo")
 }
 
+# Test that String unary plus returns the same object ID for an unfrozen string.
+assert_equal 'true', %q{
+  def jittable_method
+    str = "bar"
+
+    old_obj_id = str.object_id
+    uplus_str = +str
+
+    uplus_str.object_id == old_obj_id
+  end
+  jittable_method
+}
+
+# Test that String unary plus returns a different unfrozen string when given a frozen string
+assert_equal 'false', %q{
+  # Logic needs to be inside an ISEQ, such as a method, for YJIT to compile it
+  def jittable_method
+    frozen_str = "foo".freeze
+
+    old_obj_id = frozen_str.object_id
+    uplus_str = +frozen_str
+
+    uplus_str.object_id == old_obj_id || uplus_str.frozen?
+  end
+
+  jittable_method
+}
+
+# String-subclass objects should behave as expected inside string-interpolation via concatstrings
+assert_equal 'monkeys / monkeys, yo!', %q{
+  class MyString < String
+    # This is a terrible idea in production code, but we'd like YJIT to match CRuby
+    def to_s
+      super + ", yo!"
+    end
+  end
+
+  def jittable_method
+    m = MyString.new('monkeys')
+    "#{m} / #{m.to_s}"
+  end
+
+  jittable_method
+}
+
+# String-subclass objects should behave as expected for string equality
+assert_equal 'false', %q{
+  class MyString < String
+    # This is a terrible idea in production code, but we'd like YJIT to match CRuby
+    def ==(b)
+      "#{self}_" == b
+    end
+  end
+
+  def jittable_method
+    ma = MyString.new("a")
+
+    # Check equality with string-subclass receiver
+    ma == "a" || ma != "a_" ||
+      # Check equality with string receiver
+      "a_" == ma || "a" != ma ||
+      # Check equality between string subclasses
+      ma != MyString.new("a_") ||
+      # Make sure "string always equals itself" check isn't used with overridden equality
+      ma == ma
+  end
+  jittable_method
+}
+
+# Test to_s duplicates a string subclass object but not a string
+assert_equal 'false', %q{
+  class MyString < String; end
+
+  def jittable_method
+    a = "a"
+    ma = MyString.new("a")
+
+    a.object_id != a.to_s.object_id ||
+      ma.object_id == ma.to_s.object_id
+  end
+  jittable_method
+}
+
+# Test freeze on string subclass
+assert_equal 'true', %q{
+  class MyString < String; end
+
+  def jittable_method
+    fma = MyString.new("a").freeze
+
+    # Freezing a string subclass should not duplicate it
+    fma.object_id == fma.freeze.object_id
+  end
+  jittable_method
+}
+
+# Test unary minus on string subclass
+assert_equal 'true', %q{
+  class MyString < String; end
+
+  def jittable_method
+    ma = MyString.new("a")
+    fma = MyString.new("a").freeze
+
+    # Unary minus on frozen string subclass should not duplicate it
+    fma.object_id == (-fma).object_id &&
+      # Unary minus on unfrozen string subclass should duplicate it
+      ma.object_id != (-ma).object_id
+  end
+  jittable_method
+}
+
+# Test unary plus on string subclass
+assert_equal 'true', %q{
+  class MyString < String; end
+
+  def jittable_method
+    fma = MyString.new("a").freeze
+
+    # Unary plus on frozen string subclass should not duplicate it
+    fma.object_id != (+fma).object_id
+  end
+  jittable_method
+}
+
+# Test << operator on string subclass
+assert_equal 'abab', %q{
+  class MyString < String; end
+
+  def jittable_method
+    a = -"a"
+    mb = MyString.new("b")
+
+    buf = String.new
+    mbuf = MyString.new
+
+    buf << a << mb
+    mbuf << a << mb
+
+    buf + mbuf
+  end
+  jittable_method
+}
 
 # test invokebuiltin as used in struct assignment
 assert_equal '123', %q{
@@ -2087,7 +2259,6 @@ assert_equal '[:itself]', %q{
   def traced_method
     itself
   end
-
 
   tracing_ractor = Ractor.new do
     # 1: start tracing
@@ -2836,4 +3007,49 @@ assert_equal '', %q{
 
   foo
   foo
+}
+
+# Make sure we're correctly reading RStruct's as.ary union for embedded RStructs
+assert_equal '3,12', %q{
+  pt_struct = Struct.new(:x, :y)
+  p = pt_struct.new(3, 12)
+  def pt_inspect(pt)
+    "#{pt.x},#{pt.y}"
+  end
+
+  # Make sure pt_inspect is JITted
+  10.times { pt_inspect(p) }
+
+  # Make sure it's returning '3,12' instead of e.g. '3,false'
+  pt_inspect(p)
+}
+
+# Regression test for deadlock between branch_stub_hit and ractor_receive_if
+assert_equal '10', %q{
+  r = Ractor.new Ractor.current do |main|
+    main << 1
+    main << 2
+    main << 3
+    main << 4
+    main << 5
+    main << 6
+    main << 7
+    main << 8
+    main << 9
+    main << 10
+  end
+
+  a = []
+  a << Ractor.receive_if{|msg| msg == 10}
+  a << Ractor.receive_if{|msg| msg == 9}
+  a << Ractor.receive_if{|msg| msg == 8}
+  a << Ractor.receive_if{|msg| msg == 7}
+  a << Ractor.receive_if{|msg| msg == 6}
+  a << Ractor.receive_if{|msg| msg == 5}
+  a << Ractor.receive_if{|msg| msg == 4}
+  a << Ractor.receive_if{|msg| msg == 3}
+  a << Ractor.receive_if{|msg| msg == 2}
+  a << Ractor.receive_if{|msg| msg == 1}
+
+  a.length
 }

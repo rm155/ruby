@@ -16,14 +16,6 @@ describe "String#rstrip" do
   it "returns a copy of self with all trailing whitespace and NULL bytes removed" do
     "\x00 \x00hello\x00 \x00".rstrip.should == "\x00 \x00hello"
   end
-
-  ruby_version_is ''...'2.7' do
-    it "taints the result when self is tainted" do
-      "".taint.rstrip.should.tainted?
-      "ok".taint.rstrip.should.tainted?
-      "ok    ".taint.rstrip.should.tainted?
-    end
-  end
 end
 
 describe "String#rstrip!" do
@@ -53,5 +45,11 @@ describe "String#rstrip!" do
   it "raises a FrozenError on a frozen instance that would not be modified" do
     -> { "hello".freeze.rstrip! }.should raise_error(FrozenError)
     -> { "".freeze.rstrip!      }.should raise_error(FrozenError)
+  end
+
+  it "raises an ArgumentError if the last codepoint is invalid" do
+    s = "abc\xDF".force_encoding(Encoding::UTF_8)
+    s.valid_encoding?.should be_false
+    -> { s.rstrip! }.should raise_error(ArgumentError)
   end
 end

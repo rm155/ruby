@@ -48,7 +48,7 @@ require_relative 'rubygems/errors'
 # special location and loaded on boot.
 #
 # For an example plugin, see the {Graph gem}[https://github.com/seattlerb/graph]
-# which adds a `gem graph` command.
+# which adds a <tt>gem graph</tt> command.
 #
 # == RubyGems Defaults, Packaging
 #
@@ -112,12 +112,12 @@ require_relative 'rubygems/errors'
 # -The RubyGems Team
 
 module Gem
-  RUBYGEMS_DIR = File.dirname File.expand_path(__FILE__)
+  RUBYGEMS_DIR = __dir__
 
   # Taint support is deprecated in Ruby 2.7.
   # This allows switching ".untaint" to ".tap(&Gem::UNTAINT)",
   # to avoid deprecation warnings in Ruby 2.7.
-  UNTAINT = RUBY_VERSION < '2.7' ? :untaint.to_sym : proc{}
+  UNTAINT = RUBY_VERSION < '2.7' ? :untaint.to_sym : proc {}
 
   # When https://bugs.ruby-lang.org/issues/17259 is available, there is no need to override Kernel#warn
   KERNEL_WARN_IGNORES_INTERNAL_ENTRIES = RUBY_ENGINE == "truffleruby" ||
@@ -581,8 +581,8 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
   end
 
   ##
-  # The number of paths in the `$LOAD_PATH` from activated gems. Used to
-  # prioritize `-I` and `ENV['RUBYLIB']` entries during `require`.
+  # The number of paths in the +$LOAD_PATH+ from activated gems. Used to
+  # prioritize +-I+ and +ENV['RUBYLIB']+ entries during +require+.
 
   def self.activated_gem_paths
     @activated_gem_paths ||= 0
@@ -607,7 +607,6 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
     return if @yaml_loaded
 
     require 'psych'
-    require_relative 'rubygems/psych_additions'
     require_relative 'rubygems/psych_tree'
 
     require_relative 'rubygems/safe_yaml'
@@ -864,9 +863,7 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
     return @ruby_version if defined? @ruby_version
     version = RUBY_VERSION.dup
 
-    if defined?(RUBY_PATCHLEVEL) && RUBY_PATCHLEVEL != -1
-      version << ".#{RUBY_PATCHLEVEL}"
-    elsif defined?(RUBY_DESCRIPTION)
+    unless defined?(RUBY_PATCHLEVEL) && RUBY_PATCHLEVEL != -1
       if RUBY_ENGINE == "ruby"
         desc = RUBY_DESCRIPTION[/\Aruby #{Regexp.quote(RUBY_VERSION)}([^ ]+) /, 1]
       else
@@ -1020,7 +1017,6 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
 
   def self.load_plugin_files(plugins) # :nodoc:
     plugins.each do |plugin|
-
       # Skip older versions of the GemCutter plugin: Its commands are in
       # RubyGems proper now.
 
@@ -1120,7 +1116,7 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
 
   ##
   # If the SOURCE_DATE_EPOCH environment variable is set, returns it's value.
-  # Otherwise, returns the time that `Gem.source_date_epoch_string` was
+  # Otherwise, returns the time that +Gem.source_date_epoch_string+ was
   # first called in the same format as SOURCE_DATE_EPOCH.
   #
   # NOTE(@duckinator): The implementation is a tad weird because we want to:
@@ -1305,6 +1301,7 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
   autoload :NameTuple,          File.expand_path('rubygems/name_tuple', __dir__)
   autoload :PathSupport,        File.expand_path('rubygems/path_support', __dir__)
   autoload :RequestSet,         File.expand_path('rubygems/request_set', __dir__)
+  autoload :Requirement,        File.expand_path('rubygems/requirement', __dir__)
   autoload :Resolver,           File.expand_path('rubygems/resolver', __dir__)
   autoload :Source,             File.expand_path('rubygems/source', __dir__)
   autoload :SourceList,         File.expand_path('rubygems/source_list', __dir__)
@@ -1326,8 +1323,9 @@ begin
 rescue LoadError
   # Ignored
 rescue StandardError => e
+  path = e.backtrace_locations.reverse.find {|l| l.path.end_with?("rubygems/defaults/operating_system.rb") }.path
   msg = "#{e.message}\n" \
-    "Loading the rubygems/defaults/operating_system.rb file caused an error. " \
+    "Loading the #{path} file caused an error. " \
     "This file is owned by your OS, not by rubygems upstream. " \
     "Please find out which OS package this file belongs to and follow the guidelines from your OS to report " \
     "the problem and ask for help."

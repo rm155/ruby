@@ -570,7 +570,6 @@ describe "Predefined global $/" do
     ($/ = "xyz").should == "xyz"
   end
 
-
   it "changes $-0" do
     $/ = "xyz"
     $-0.should equal($/)
@@ -641,6 +640,45 @@ describe "Predefined global $-0" do
   end
 end
 
+describe "Predefined global $\\" do
+  before :each do
+    @verbose, $VERBOSE = $VERBOSE, nil
+    @dollar_backslash = $\
+  end
+
+  after :each do
+    $\ = @dollar_backslash
+    $VERBOSE = @verbose
+  end
+
+  it "can be assigned a String" do
+    str = "abc"
+    $\ = str
+    $\.should equal(str)
+  end
+
+  it "can be assigned nil" do
+    $\ = nil
+    $\.should be_nil
+  end
+
+  it "returns the value assigned" do
+    ($\ = "xyz").should == "xyz"
+  end
+
+  it "does not call #to_str to convert the object to a String" do
+    obj = mock("$\\ value")
+    obj.should_not_receive(:to_str)
+
+    -> { $\ = obj }.should raise_error(TypeError)
+  end
+
+  it "raises a TypeError if assigned not String" do
+    -> { $\ = 1 }.should raise_error(TypeError)
+    -> { $\ = true }.should raise_error(TypeError)
+  end
+end
+
 describe "Predefined global $," do
   after :each do
     $, = nil
@@ -654,10 +692,8 @@ describe "Predefined global $," do
     -> { $, = Object.new }.should raise_error(TypeError)
   end
 
-  ruby_version_is "2.7" do
-    it "warns if assigned non-nil" do
-      -> { $, = "_" }.should complain(/warning: `\$,' is deprecated/)
-    end
+  it "warns if assigned non-nil" do
+    -> { $, = "_" }.should complain(/warning: `\$,' is deprecated/)
   end
 end
 
@@ -693,10 +729,8 @@ describe "Predefined global $;" do
     $; = nil
   end
 
-  ruby_version_is "2.7" do
-    it "warns if assigned non-nil" do
-      -> { $; = "_" }.should complain(/warning: `\$;' is deprecated/)
-    end
+  it "warns if assigned non-nil" do
+    -> { $; = "_" }.should complain(/warning: `\$;' is deprecated/)
   end
 end
 
@@ -1316,33 +1350,57 @@ describe "The predefined global constant" do
   end
 end
 
-ruby_version_is "2.7" do
-  describe "$LOAD_PATH.resolve_feature_path" do
-    it "returns what will be loaded without actual loading, .rb file" do
-      extension, path = $LOAD_PATH.resolve_feature_path('set')
-      extension.should == :rb
-      path.should.end_with?('/set.rb')
-    end
+describe "$LOAD_PATH.resolve_feature_path" do
+  it "returns what will be loaded without actual loading, .rb file" do
+    extension, path = $LOAD_PATH.resolve_feature_path('set')
+    extension.should == :rb
+    path.should.end_with?('/set.rb')
+  end
 
-    it "returns what will be loaded without actual loading, .so file" do
-      require 'rbconfig'
-      skip "no dynamically loadable standard extension" if RbConfig::CONFIG["EXTSTATIC"] == "static"
+  it "returns what will be loaded without actual loading, .so file" do
+    require 'rbconfig'
+    skip "no dynamically loadable standard extension" if RbConfig::CONFIG["EXTSTATIC"] == "static"
 
-      extension, path = $LOAD_PATH.resolve_feature_path('etc')
-      extension.should == :so
-      path.should.end_with?("/etc.#{RbConfig::CONFIG['DLEXT']}")
-    end
+    extension, path = $LOAD_PATH.resolve_feature_path('etc')
+    extension.should == :so
+    path.should.end_with?("/etc.#{RbConfig::CONFIG['DLEXT']}")
+  end
 
-    ruby_version_is "2.7"..."3.1" do
-      it "raises LoadError if feature cannot be found" do
-        -> { $LOAD_PATH.resolve_feature_path('noop') }.should raise_error(LoadError)
-      end
+  ruby_version_is ""..."3.1" do
+    it "raises LoadError if feature cannot be found" do
+      -> { $LOAD_PATH.resolve_feature_path('noop') }.should raise_error(LoadError)
     end
+  end
 
-    ruby_version_is "3.1" do
-      it "return nil if feature cannot be found" do
-        $LOAD_PATH.resolve_feature_path('noop').should be_nil
-      end
+  ruby_version_is "3.1" do
+    it "return nil if feature cannot be found" do
+      $LOAD_PATH.resolve_feature_path('noop').should be_nil
     end
+  end
+end
+
+# Some other pre-defined global variables
+
+describe "Predefined global $=" do
+  before :each do
+    @verbose, $VERBOSE = $VERBOSE, nil
+    @dollar_assign = $=
+  end
+
+  after :each do
+    $= = @dollar_assign
+    $VERBOSE = @verbose
+  end
+
+  it "warns when accessed" do
+    -> { a = $= }.should complain(/is no longer effective/)
+  end
+
+  it "warns when assigned" do
+    -> { $= = "_" }.should complain(/is no longer effective/)
+  end
+
+  it "returns the value assigned" do
+    ($= = "xyz").should == "xyz"
   end
 end
