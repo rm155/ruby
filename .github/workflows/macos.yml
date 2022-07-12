@@ -1,4 +1,4 @@
-name: Ubuntu
+name: macOS
 on:
   push:
     paths-ignore:
@@ -19,49 +19,19 @@ jobs:
   make:
     strategy:
       matrix:
-        test_task: ["check", "test-bundler-parallel", "test-bundled-gems"]
+        test_task: ["check"] # "test-bundler-parallel", "test-bundled-gems"
         os:
-          - ubuntu-20.04
-#         - ubuntu-18.04
-        configure: ["", "cppflags=-DRUBY_DEBUG"]
-        include:
-          - test_task: "check"
-            configure: ""
-            arch: i686
-          - test_task: "check"
-            configure: "--enable-shared --enable-load-relative"
-            skipped_tests: "TestGem#test_.*_from_binstubs.*"
-            continue-on-skipped_tests: true
-          - test_task: "test-all TESTS=--repeat-count=2"
+          - macos-10.15
+          - macos-11
+          - macos-12
       fail-fast: false
     env:
       GITPULLOPTIONS: --no-tags origin ${{github.ref}}
-      RUBY_DEBUG: ci
-      SETARCH: ${{ matrix.arch && format('setarch {0}', matrix.arch) }}
-    runs-on: ${{ matrix.os || 'ubuntu-20.04' }}
+    runs-on: ${{ matrix.os }}
     if: ${{ !contains(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
     steps:
       - run: mkdir build
         working-directory:
-      - name: Set ENV
-        env:
-          configure: ${{matrix.configure}}
-        run: |
-          echo "GNUMAKEFLAGS=-j$((1 + $(nproc --all)))" >> $GITHUB_ENV
-      - name: Install libraries
-        env:
-          arch: ${{matrix.arch}}
-        run: |
-          set -x
-          arch=${arch:+:${arch/i[3-6]86/i386}}
-          ${arch:+sudo dpkg --add-architecture ${arch#:}}
-          sudo apt-get update -q || :
-          sudo apt-get install --no-install-recommends -q -y \
-          ${arch:+cross}build-essential${arch/:/-} \
-          libssl-dev${arch} libyaml-dev${arch} libreadline6-dev${arch} \
-          zlib1g-dev${arch} libncurses5-dev${arch} libffi-dev${arch} \
-          bison autoconf ruby
-          sudo apt-get install -q -y pkg-config${arch} || :
       - name: git config
         run: |
           git config --global advice.detachedHead 0
@@ -73,32 +43,27 @@ jobs:
         with:
           path: src/.downloaded-cache
           key: downloaded-cache
-      - name: Fixed world writable dirs
+      - name: Install libraries
         run: |
-          chmod -v go-w $HOME $HOME/.config
-          sudo chmod -R go-w /usr/share
-          sudo bash -c 'IFS=:; for d in '"$PATH"'; do chmod -v go-w $d; done' || :
+          brew upgrade
+          brew install gmp libffi openssl@1.1 zlib autoconf automake libtool readline
+        working-directory: src
+      - name: Set ENV
+        run: |
+          echo "MAKEFLAGS=-j$((1 + $(sysctl -n hw.activecpu)))" >> $GITHUB_ENV
       - run: ./autogen.sh
         working-directory: src
       - name: Run configure
-        env:
-          arch: ${{matrix.arch}}
-        run: >-
-          $SETARCH ../src/configure -C --disable-install-doc ${{ matrix.configure }}
-          ${arch:+--target=$arch-$OSTYPE --host=$arch-$OSTYPE}
-      - run: $SETARCH make incs
-      - run: $SETARCH make
-      - run: $SETARCH make leaked-globals
+        run: ../src/configure -C --disable-install-doc --with-openssl-dir=$(brew --prefix openssl@1.1) --with-readline-dir=$(brew --prefix readline)
+      - run: make incs
+      - run: make
+      - run: make leaked-globals
         if: ${{ matrix.test_task == 'check' }}
-      - run: $SETARCH make prepare-gems
-        if: ${{ matrix.test_task == 'check' }}
-      - name: Create dummy files in build dir
-        run: |
-          $SETARCH ./miniruby -e '(("a".."z").to_a+("A".."Z").to_a+("0".."9").to_a+%w[foo bar test zzz]).each{|basename|File.write("#{basename}.rb", "raise %(do not load #{basename}.rb)")}'
+      - run: make prepare-gems
         if: ${{ matrix.test_task == 'check' }}
       - name: make ${{ matrix.test_task }}
         run: |
-          $SETARCH make -s ${{ matrix.test_task }} ${TESTS:+TESTS=`echo "$TESTS" | sed 's| |$$/ -n!/|g;s|^|-n!/|;s|$|$$/|'`}
+          make -s ${{ matrix.test_task }} ${TESTS:+TESTS=`echo "$TESTS" | sed 's| |$$/ -n!/|g;s|^|-n!/|;s|$|$$/|'`}
         timeout-minutes: 40
         env:
           RUBY_TESTOPTS: "-q --tty=no"
@@ -107,11 +72,12 @@ jobs:
           PRECHECK_BUNDLED_GEMS: "no"
       - name: make skipped tests
         run: |
-          $SETARCH make -s test-all TESTS=`echo "$TESTS" | sed 's| |$$/ -n/|g;s|^|-n/|;s|$|$$/|'`
+          make -s test-all TESTS=`echo "$TESTS" | sed 's| |$$/ -n/|g;s|^|-n/|;s|$|$$/|'`
         env:
           GNUMAKEFLAGS: ""
           RUBY_TESTOPTS: "-v --tty=no"
           TESTS: ${{ matrix.skipped_tests }}
+          PRECHECK_BUNDLED_GEMS: "no"
         if: ${{ matrix.test_task == 'check' && matrix.skipped_tests != '' }}
         continue-on-error: ${{ matrix.continue-on-skipped_tests || false }}
       - uses: k0kubun/action-slack@v2.0.0

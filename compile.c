@@ -2226,13 +2226,10 @@ static int
 add_adjust_info(struct iseq_insn_info_entry *insns_info, unsigned int *positions,
                 int insns_info_index, int code_index, const ADJUST *adjust)
 {
-    if (insns_info[insns_info_index-1].line_no != adjust->line_no) {
-        insns_info[insns_info_index].line_no    = adjust->line_no;
-        insns_info[insns_info_index].events     = 0;
-        positions[insns_info_index]             = code_index;
-        return TRUE;
-    }
-    return FALSE;
+    insns_info[insns_info_index].line_no    = adjust->line_no;
+    insns_info[insns_info_index].events     = 0;
+    positions[insns_info_index]             = code_index;
+    return TRUE;
 }
 
 /**
@@ -2241,7 +2238,6 @@ add_adjust_info(struct iseq_insn_info_entry *insns_info, unsigned int *positions
 static int
 iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 {
-    VALUE iseqv = (VALUE)iseq;
     struct iseq_insn_info_entry *insns_info;
     struct rb_iseq_constant_body *const body = ISEQ_BODY(iseq);
     unsigned int *positions;
@@ -2371,7 +2367,6 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 		len = insn_len(insn);
 
 		for (j = 0; types[j]; j++) {
-                    unsigned int ic_index = 0;
 		    char type = types[j];
 
 		    /* printf("--> [%c - (%d-%d)]\n", type, k, j); */
@@ -2397,7 +2392,6 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 			    generated_iseq[code_index + 1 + j] = map;
                             ISEQ_MBITS_SET(mark_offset_bits, code_index + 1 + j);
 			    RB_OBJ_WRITTEN(iseq, Qundef, map);
-                            FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
                             needs_bitmap = true;
 			    break;
 			}
@@ -2414,21 +2408,18 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 			    if (!SPECIAL_CONST_P(v)) {
 				RB_OBJ_WRITTEN(iseq, Qundef, v);
                                 ISEQ_MBITS_SET(mark_offset_bits, code_index + 1 + j);
-                                FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
                                 needs_bitmap = true;
 			    }
 			    break;
 			}
                       /* [ TS_(ICVARC|IVC) ... | TS_ISE | TS_IC ] */
                       case TS_IC: /* inline cache: constants */
-                        ic_index += body->ise_size;
                       case TS_ISE: /* inline storage entry: `once` insn */
-                        ic_index += body->ivc_size;
                       case TS_ICVARC: /* inline cvar cache */
 		      case TS_IVC: /* inline ivar cache */
 			{
-			    ic_index += FIX2UINT(operands[j]);
-			    IC ic = (IC)&body->is_entries[ic_index];
+			    unsigned int ic_index = FIX2UINT(operands[j]);
+                            IC ic = &ISEQ_IS_ENTRY_START(body, type)[ic_index].ic_cache;
 			    if (UNLIKELY(ic_index >= ISEQ_IS_SIZE(body))) {
                                 BADINSN_DUMP(anchor, &iobj->link, 0);
                                 COMPILE_ERROR(iseq, iobj->insn_info.line_no,
@@ -2436,7 +2427,6 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
                                               ic_index, ISEQ_IS_SIZE(body));
 			    }
 			    generated_iseq[code_index + 1 + j] = (VALUE)ic;
-                            FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
 
                             if (insn == BIN(opt_getinlinecache) && type == TS_IC) {
                                 // Store the instruction index for opt_getinlinecache on the IC for
@@ -10341,14 +10331,12 @@ iseq_build_from_ary_body(rb_iseq_t *iseq, LINK_ANCHOR *const anchor,
                         if (NUM2UINT(op) >= ISEQ_BODY(iseq)->ise_size) {
                             ISEQ_BODY(iseq)->ise_size = NUM2INT(op) + 1;
                         }
-                        FL_SET((VALUE)iseq, ISEQ_MARKABLE_ISEQ);
                         break;
 		      case TS_IC:
 			argv[j] = op;
                         if (NUM2UINT(op) >= ISEQ_BODY(iseq)->ic_size) {
                             ISEQ_BODY(iseq)->ic_size = NUM2INT(op) + 1;
                         }
-                        FL_SET((VALUE)iseq, ISEQ_MARKABLE_ISEQ);
                         break;
                       case TS_IVC:  /* inline ivar cache */
                       case TS_ICVARC:  /* inline cvar cache */
@@ -10356,7 +10344,6 @@ iseq_build_from_ary_body(rb_iseq_t *iseq, LINK_ANCHOR *const anchor,
                         if (NUM2UINT(op) >= ISEQ_BODY(iseq)->ivc_size) {
                             ISEQ_BODY(iseq)->ivc_size = NUM2INT(op) + 1;
                         }
-                        FL_SET((VALUE)iseq, ISEQ_MARKABLE_ISEQ);
 			break;
                       case TS_CALLDATA:
 			argv[j] = iseq_build_callinfo_from_hash(iseq, op);
@@ -10726,7 +10713,7 @@ typedef unsigned int ibf_offset_t;
 #define IBF_OFFSET(ptr) ((ibf_offset_t)(VALUE)(ptr))
 
 #define IBF_MAJOR_VERSION ISEQ_MAJOR_VERSION
-#if RUBY_DEVEL
+#ifdef RUBY_DEVEL
 #define IBF_DEVEL_VERSION 4
 #define IBF_MINOR_VERSION (ISEQ_MINOR_VERSION * 10000 + IBF_DEVEL_VERSION)
 #else
@@ -11169,13 +11156,8 @@ ibf_dump_code(struct ibf_dump *dump, const rb_iseq_t *iseq)
               case TS_IVC:
               case TS_ICVARC:
                 {
-                    unsigned int i;
-                    for (i=0; i<ISEQ_IS_SIZE(body); i++) {
-                        if (op == (VALUE)&body->is_entries[i]) {
-                            break;
-                        }
-                    }
-                    wv = (VALUE)i;
+		    union iseq_inline_storage_entry *is = (union iseq_inline_storage_entry *)op;
+                    wv = is - ISEQ_IS_ENTRY_START(body, types[op_index]);
                 }
                 break;
               case TS_CALLDATA:
@@ -11214,7 +11196,6 @@ ibf_load_code(const struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t bytecod
 
     struct rb_iseq_constant_body *load_body = ISEQ_BODY(iseq);
     struct rb_call_data *cd_entries = load_body->call_data;
-    union iseq_inline_storage_entry *is_entries = load_body->is_entries;
 
     iseq_bits_t * mark_offset_bits;
 
@@ -11249,7 +11230,6 @@ ibf_load_code(const struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t bytecod
                     if (!SPECIAL_CONST_P(v)) {
                         RB_OBJ_WRITTEN(iseqv, Qundef, v);
                         ISEQ_MBITS_SET(mark_offset_bits, code_index);
-                        FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
                         needs_bitmap = true;
                     }
                     break;
@@ -11271,7 +11251,6 @@ ibf_load_code(const struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t bytecod
                     code[code_index] = v;
                     ISEQ_MBITS_SET(mark_offset_bits, code_index);
                     RB_OBJ_WRITTEN(iseqv, Qundef, v);
-                    FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
                     needs_bitmap = true;
                     break;
                 }
@@ -11283,7 +11262,6 @@ ibf_load_code(const struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t bytecod
                     if (!SPECIAL_CONST_P(v)) {
                         RB_OBJ_WRITTEN(iseqv, Qundef, v);
                         ISEQ_MBITS_SET(mark_offset_bits, code_index);
-                        FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
                         needs_bitmap = true;
                     }
                     break;
@@ -11295,15 +11273,15 @@ ibf_load_code(const struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t bytecod
                 {
                     unsigned int op = (unsigned int)ibf_load_small_value(load, &reading_pos);
 
-                    code[code_index] = (VALUE)&is_entries[op];
+                    ISE ic = ISEQ_IS_ENTRY_START(load_body, operand_type) + op;
+                    code[code_index] = (VALUE)ic;
 
                     if (insn == BIN(opt_getinlinecache) && operand_type == TS_IC) {
                         // Store the instruction index for opt_getinlinecache on the IC for
                         // YJIT to invalidate code when opt_setinlinecache runs.
-                        is_entries[op].ic_cache.get_insn_idx = insn_index;
+                        ic->ic_cache.get_insn_idx = insn_index;
                     }
                 }
-                FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
                 break;
               case TS_CALLDATA:
                 {

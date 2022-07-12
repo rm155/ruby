@@ -121,6 +121,8 @@ impl JITState {
     pub fn add_gc_object_offset(self: &mut JITState, ptr_offset: u32) {
         let mut gc_obj_vec: RefMut<_> = self.block.borrow_mut();
         gc_obj_vec.add_gc_object_offset(ptr_offset);
+
+        incr_counter!(num_gc_obj_refs);
     }
 
     pub fn get_pc(self: &JITState) -> *mut VALUE {
@@ -2951,30 +2953,50 @@ fn gen_opt_mod(
     cb: &mut CodeBlock,
     ocb: &mut OutlinedCb,
 ) -> CodegenStatus {
-    // Save the PC and SP because the callee may allocate bignums
-    // Note that this modifies REG_SP, which is why we do it first
-    jit_prepare_routine_call(jit, ctx, cb, REG0);
+    // Defer compilation so we can specialize on a runtime `self`
+    if !jit_at_current_insn(jit) {
+        defer_compilation(jit, ctx, cb, ocb);
+        return EndBlock;
+    }
 
-    let side_exit = get_side_exit(jit, ocb, ctx);
+    let comptime_a = jit_peek_at_stack(jit, ctx, 1);
+    let comptime_b = jit_peek_at_stack(jit, ctx, 0);
 
-    // Get the operands from the stack
-    let arg1 = ctx.stack_pop(1);
-    let arg0 = ctx.stack_pop(1);
+    if comptime_a.fixnum_p() && comptime_b.fixnum_p() {
+        // Create a side-exit to fall back to the interpreter
+        // Note: we generate the side-exit before popping operands from the stack
+        let side_exit = get_side_exit(jit, ocb, ctx);
 
-    // Call rb_vm_opt_mod(VALUE recv, VALUE obj)
-    mov(cb, C_ARG_REGS[0], arg0);
-    mov(cb, C_ARG_REGS[1], arg1);
-    call_ptr(cb, REG0, rb_vm_opt_mod as *const u8);
+        if !assume_bop_not_redefined(jit, ocb, INTEGER_REDEFINED_OP_FLAG, BOP_MOD) {
+            return CantCompile;
+        }
 
-    // If val == Qundef, bail to do a method call
-    cmp(cb, RAX, imm_opnd(Qundef.as_i64()));
-    je_ptr(cb, side_exit);
+        // Check that both operands are fixnums
+        guard_two_fixnums(ctx, cb, side_exit);
 
-    // Push the return value onto the stack
-    let stack_ret = ctx.stack_push(Type::Unknown);
-    mov(cb, stack_ret, RAX);
+        // Get the operands and destination from the stack
+        let arg1 = ctx.stack_pop(1);
+        let arg0 = ctx.stack_pop(1);
 
-    KeepCompiling
+        mov(cb, C_ARG_REGS[0], arg0);
+        mov(cb, C_ARG_REGS[1], arg1);
+
+        // Check for arg0 % 0
+        cmp(cb, C_ARG_REGS[1], imm_opnd(VALUE::fixnum_from_usize(0).as_i64()));
+        je_ptr(cb, side_exit);
+
+        // Call rb_fix_mod_fix(VALUE recv, VALUE obj)
+        call_ptr(cb, REG0, rb_fix_mod_fix as *const u8);
+
+        // Push the return value onto the stack
+        let stack_ret = ctx.stack_push(Type::Unknown);
+        mov(cb, stack_ret, RAX);
+
+        KeepCompiling
+    } else {
+        // Delegate to send, call the method on the recv
+        gen_opt_send_without_block(jit, ctx, cb, ocb)
+    }
 }
 
 fn gen_opt_ltlt(
@@ -3770,7 +3792,7 @@ fn jit_rb_str_concat(
 
     // If encodings are different, use a slower encoding-aware concatenate
     cb.write_label(enc_mismatch);
-    call_ptr(cb, REG0, rb_str_append as *const u8);
+    call_ptr(cb, REG0, rb_str_buf_append as *const u8);
     // Drop through to return
 
     cb.write_label(ret_label);
