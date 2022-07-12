@@ -1844,14 +1844,12 @@ rb_ractor_living_threads_remove(rb_ractor_t *cr, rb_thread_t *th)
     if (cr->threads.cnt == 1) {
         vm_remove_ractor(th->vm, cr);
     }
-    else {
-        RACTOR_LOCK(cr);
-        {
-            ccan_list_del(&th->lt_node);
-            cr->threads.cnt--;
-        }
-        RACTOR_UNLOCK(cr);
+    RACTOR_LOCK(cr);
+    {
+	ccan_list_del(&th->lt_node);
+	cr->threads.cnt--;
     }
+    RACTOR_UNLOCK(cr);
 }
 
 void
