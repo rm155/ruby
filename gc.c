@@ -769,6 +769,8 @@ typedef struct rb_objspace {
 
     st_table *finalizer_table;
 
+    st_table *shareable_tbl;
+
     struct {
 	int run;
 	unsigned int latest_gc_info;
@@ -1869,6 +1871,7 @@ rb_objspace_free(rb_objspace_t *objspace)
     }
     st_free_table(objspace->id_to_obj_tbl);
     st_free_table(objspace->obj_to_id_tbl);
+    st_free_table(objspace->shareable_tbl);
 
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
@@ -3351,6 +3354,10 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         break;
     }
 
+    if (FL_TEST(obj, FL_SHAREABLE)) {
+	st_delete(objspace->shareable_tbl, &obj, NULL);
+    }
+
     if (FL_TEST(obj, FL_EXIVAR)) {
 	rb_free_generic_ivar((VALUE)obj);
 	FL_UNSET(obj, FL_EXIVAR);
@@ -3752,6 +3759,7 @@ Init_heap(void)
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
+    objspace->shareable_tbl = st_init_numtable();
 }
 
 void
@@ -4496,6 +4504,13 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
     st_free_table(finalizer_table);
     finalizer_table = 0;
     ATOMIC_SET(finalizing, 0);
+}
+
+void
+add_to_shareable_tbl(VALUE obj)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
 }
 
 static inline int
@@ -6487,15 +6502,30 @@ static int
 mark_key(st_data_t key, st_data_t value, st_data_t data)
 {
     rb_objspace_t *objspace = (rb_objspace_t *)data;
+    gc_mark(objspace, (VALUE)key);
+    return ST_CONTINUE;
+}
+
+static int
+mark_key_pin(st_data_t key, st_data_t value, st_data_t data)
+{
+    rb_objspace_t *objspace = (rb_objspace_t *)data;
     gc_mark_and_pin(objspace, (VALUE)key);
     return ST_CONTINUE;
+}
+
+static void
+mark_set_no_pin(rb_objspace_t *objspace, st_table *tbl)
+{
+    if (!tbl) return;
+    st_foreach(tbl, mark_key_pin, (st_data_t)objspace);
 }
 
 static void
 mark_set(rb_objspace_t *objspace, st_table *tbl)
 {
     if (!tbl) return;
-    st_foreach(tbl, mark_key, (st_data_t)objspace);
+    st_foreach(tbl, mark_key_pin, (st_data_t)objspace);
 }
 
 static int
@@ -7438,6 +7468,9 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 
     MARK_CHECKPOINT("global_tbl");
     rb_gc_mark_global_tbl();
+
+    MARK_CHECKPOINT("shareable_tbl");
+    mark_set_no_pin(objspace, objspace->shareable_tbl);
 
     MARK_CHECKPOINT("object_id");
     rb_gc_mark(objspace->next_object_id);
@@ -10579,6 +10612,7 @@ gc_update_references(rb_objspace_t *objspace)
     gc_update_table_refs(objspace, objspace->id_to_obj_tbl);
     gc_update_table_refs(objspace, global_symbols.str_sym);
     gc_update_table_refs(objspace, finalizer_table);
+    gc_update_table_refs(objspace, objspace->shareable_tbl);
 }
 
 #if GC_CAN_COMPILE_COMPACTION

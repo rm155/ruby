@@ -625,6 +625,7 @@ rbimpl_fl_set_raw_raw(struct RBasic *obj, VALUE flags)
     obj->flags |= flags;
 }
 
+void add_to_shareable_tbl(VALUE obj);
 RBIMPL_ATTR_ARTIFICIAL()
 /**
  * This is an  implenentation detail of RB_FL_SET().  3rd parties  need not use
@@ -639,6 +640,10 @@ RB_FL_SET_RAW(VALUE obj, VALUE flags)
 {
     RBIMPL_ASSERT_OR_ASSUME(RB_FL_ABLE(obj));
     rbimpl_fl_set_raw_raw(RBASIC(obj), flags);
+    if(flags & FL_SHAREABLE)
+    {
+	add_to_shareable_tbl(obj);
+    }
 }
 
 RBIMPL_ATTR_ARTIFICIAL()
