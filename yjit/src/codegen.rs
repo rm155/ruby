@@ -214,6 +214,15 @@ fn jit_peek_at_local(jit: &JITState, n: i32) -> VALUE {
     }
 }
 
+fn jit_peek_at_block_handler(jit: &JITState, level: u32) -> VALUE {
+    assert!(jit_at_current_insn(jit));
+
+    unsafe {
+        let ep = get_cfp_ep_level(get_ec_cfp(jit.ec.unwrap()), level);
+        *ep.offset(VM_ENV_DATA_INDEX_SPECVAL as isize)
+    }
+}
+
 // Add a comment at the current position in the code block
 fn add_comment(cb: &mut CodeBlock, comment_str: &str) {
     if cfg!(feature = "asm_comments") {
@@ -1565,27 +1574,32 @@ fn gen_setlocal_wc0(
 
     let slot_idx = jit_get_arg(jit, 0).as_i32();
     let local_idx = slot_to_local_idx(jit.get_iseq(), slot_idx).as_usize();
+    let value_type = ctx.get_opnd_type(StackOpnd(0));
 
     // Load environment pointer EP (level 0) from CFP
     gen_get_ep(cb, REG0, 0);
 
-    // flags & VM_ENV_FLAG_WB_REQUIRED
-    let flags_opnd = mem_opnd(
-        64,
-        REG0,
-        SIZEOF_VALUE as i32 * VM_ENV_DATA_INDEX_FLAGS as i32,
-    );
-    test(cb, flags_opnd, imm_opnd(VM_ENV_FLAG_WB_REQUIRED as i64));
+    // Write barriers may be required when VM_ENV_FLAG_WB_REQUIRED is set, however write barriers
+    // only affect heap objects being written. If we know an immediate value is being written we
+    // can skip this check.
+    if !value_type.is_imm() {
+        // flags & VM_ENV_FLAG_WB_REQUIRED
+        let flags_opnd = mem_opnd(
+            64,
+            REG0,
+            SIZEOF_VALUE as i32 * VM_ENV_DATA_INDEX_FLAGS as i32,
+        );
+        test(cb, flags_opnd, imm_opnd(VM_ENV_FLAG_WB_REQUIRED as i64));
 
-    // Create a side-exit to fall back to the interpreter
-    let side_exit = get_side_exit(jit, ocb, ctx);
+        // Create a side-exit to fall back to the interpreter
+        let side_exit = get_side_exit(jit, ocb, ctx);
 
-    // if (flags & VM_ENV_FLAG_WB_REQUIRED) != 0
-    jnz_ptr(cb, side_exit);
+        // if (flags & VM_ENV_FLAG_WB_REQUIRED) != 0
+        jnz_ptr(cb, side_exit);
+    }
 
     // Set the type of the local variable in the context
-    let temp_type = ctx.get_opnd_type(StackOpnd(0));
-    ctx.set_local_type(local_idx, temp_type);
+    ctx.set_local_type(local_idx, value_type);
 
     // Pop the value to write from the stack
     let stack_top = ctx.stack_pop(1);
@@ -1606,22 +1620,29 @@ fn gen_setlocal_generic(
     local_idx: i32,
     level: u32,
 ) -> CodegenStatus {
+    let value_type = ctx.get_opnd_type(StackOpnd(0));
+
     // Load environment pointer EP at level
     gen_get_ep(cb, REG0, level);
 
-    // flags & VM_ENV_FLAG_WB_REQUIRED
-    let flags_opnd = mem_opnd(
-        64,
-        REG0,
-        SIZEOF_VALUE as i32 * VM_ENV_DATA_INDEX_FLAGS as i32,
-    );
-    test(cb, flags_opnd, uimm_opnd(VM_ENV_FLAG_WB_REQUIRED.into()));
+    // Write barriers may be required when VM_ENV_FLAG_WB_REQUIRED is set, however write barriers
+    // only affect heap objects being written. If we know an immediate value is being written we
+    // can skip this check.
+    if !value_type.is_imm() {
+        // flags & VM_ENV_FLAG_WB_REQUIRED
+        let flags_opnd = mem_opnd(
+            64,
+            REG0,
+            SIZEOF_VALUE as i32 * VM_ENV_DATA_INDEX_FLAGS as i32,
+        );
+        test(cb, flags_opnd, uimm_opnd(VM_ENV_FLAG_WB_REQUIRED.into()));
 
-    // Create a side-exit to fall back to the interpreter
-    let side_exit = get_side_exit(jit, ocb, ctx);
+        // Create a side-exit to fall back to the interpreter
+        let side_exit = get_side_exit(jit, ocb, ctx);
 
-    // if (flags & VM_ENV_FLAG_WB_REQUIRED) != 0
-    jnz_ptr(cb, side_exit);
+        // if (flags & VM_ENV_FLAG_WB_REQUIRED) != 0
+        jnz_ptr(cb, side_exit);
+    }
 
     // Pop the value to write from the stack
     let stack_top = ctx.stack_pop(1);
@@ -1966,9 +1987,17 @@ fn gen_get_ivar(
         ctx.stack_pop(1);
     }
 
+    if USE_RVARGC != 0 {
+        // Check that the ivar table is big enough
+        // Check that the slot is inside the ivar table (num_slots > index)
+        let num_slots = mem_opnd(32, REG0, ROBJECT_OFFSET_NUMIV);
+        cmp(cb, num_slots, uimm_opnd(ivar_index as u64));
+        jle_ptr(cb, counted_exit!(ocb, side_exit, getivar_idx_out_of_range));
+    }
+
     // Compile time self is embedded and the ivar index lands within the object
     let test_result = unsafe { FL_TEST_RAW(comptime_receiver, VALUE(ROBJECT_EMBED.as_usize())) != VALUE(0) };
-    if test_result && ivar_index < (ROBJECT_EMBED_LEN_MAX.as_usize()) {
+    if test_result {
         // See ROBJECT_IVPTR() from include/ruby/internal/core/robject.h
 
         // Guard that self is embedded
@@ -1988,7 +2017,7 @@ fn gen_get_ivar(
         );
 
         // Load the variable
-        let offs = RUBY_OFFSET_ROBJECT_AS_ARY + (ivar_index * SIZEOF_VALUE) as i32;
+        let offs = ROBJECT_OFFSET_AS_ARY + (ivar_index * SIZEOF_VALUE) as i32;
         let ivar_opnd = mem_opnd(64, REG0, offs);
         mov(cb, REG1, ivar_opnd);
 
@@ -2019,17 +2048,16 @@ fn gen_get_ivar(
             side_exit,
         );
 
-        // Check that the extended table is big enough
-        if ivar_index > (ROBJECT_EMBED_LEN_MAX.as_usize()) {
+        if USE_RVARGC == 0 {
+            // Check that the extended table is big enough
             // Check that the slot is inside the extended table (num_slots > index)
-            let num_slots = mem_opnd(32, REG0, RUBY_OFFSET_ROBJECT_AS_HEAP_NUMIV);
-
+            let num_slots = mem_opnd(32, REG0, ROBJECT_OFFSET_NUMIV);
             cmp(cb, num_slots, uimm_opnd(ivar_index as u64));
             jle_ptr(cb, counted_exit!(ocb, side_exit, getivar_idx_out_of_range));
         }
 
         // Get a pointer to the extended table
-        let tbl_opnd = mem_opnd(64, REG0, RUBY_OFFSET_ROBJECT_AS_HEAP_IVPTR);
+        let tbl_opnd = mem_opnd(64, REG0, ROBJECT_OFFSET_AS_HEAP_IVPTR);
         mov(cb, REG0, tbl_opnd);
 
         // Read the ivar from the extended table
@@ -5615,12 +5643,28 @@ fn gen_getblockparamproxy(
     cb: &mut CodeBlock,
     ocb: &mut OutlinedCb,
 ) -> CodegenStatus {
+    if !jit_at_current_insn(jit) {
+        defer_compilation(jit, ctx, cb, ocb);
+        return EndBlock;
+    }
+
+    let starting_context = *ctx; // make a copy for use with jit_chain_guard
+
     // A mirror of the interpreter code. Checking for the case
     // where it's pushing rb_block_param_proxy.
     let side_exit = get_side_exit(jit, ocb, ctx);
 
     // EP level
     let level = jit_get_arg(jit, 1).as_u32();
+
+    // Peek at the block handler so we can check whether it's nil
+    let comptime_handler = jit_peek_at_block_handler(jit, level);
+
+    // When a block handler is present, it should always be a GC-guarded
+    // pointer (VM_BH_ISEQ_BLOCK_P)
+    if comptime_handler.as_u64() != 0 && comptime_handler.as_u64() & 0x3 != 0x1 {
+        return CantCompile;
+    }
 
     // Load environment pointer EP from CFP
     gen_get_ep(cb, REG0, level);
@@ -5650,27 +5694,54 @@ fn gen_getblockparamproxy(
         ),
     );
 
-    // Block handler is a tagged pointer. Look at the tag. 0x03 is from VM_BH_ISEQ_BLOCK_P().
-    and(cb, REG0_8, imm_opnd(0x3));
+    // Specialize compilation for the case where no block handler is present
+    if comptime_handler.as_u64() == 0 {
+        // Bail if there is a block handler
+        cmp(cb, REG0, uimm_opnd(0));
 
-    // Bail unless VM_BH_ISEQ_BLOCK_P(bh). This also checks for null.
-    cmp(cb, REG0_8, imm_opnd(0x1));
-    jnz_ptr(
-        cb,
-        counted_exit!(ocb, side_exit, gbpp_block_handler_not_iseq),
-    );
+        jit_chain_guard(
+            JCC_JNZ,
+            jit,
+            &starting_context,
+            cb,
+            ocb,
+            SEND_MAX_DEPTH,
+            side_exit,
+        );
 
-    // Push rb_block_param_proxy. It's a root, so no need to use jit_mov_gc_ptr.
-    mov(
-        cb,
-        REG0,
-        const_ptr_opnd(unsafe { rb_block_param_proxy }.as_ptr()),
-    );
-    assert!(!unsafe { rb_block_param_proxy }.special_const_p());
-    let top = ctx.stack_push(Type::UnknownHeap);
-    mov(cb, top, REG0);
+        jit_putobject(jit, ctx, cb, Qnil);
+    } else {
+        // Block handler is a tagged pointer. Look at the tag. 0x03 is from VM_BH_ISEQ_BLOCK_P().
+        and(cb, REG0_8, imm_opnd(0x3));
 
-    KeepCompiling
+        // Bail unless VM_BH_ISEQ_BLOCK_P(bh). This also checks for null.
+        cmp(cb, REG0_8, imm_opnd(0x1));
+
+        jit_chain_guard(
+            JCC_JNZ,
+            jit,
+            &starting_context,
+            cb,
+            ocb,
+            SEND_MAX_DEPTH,
+            side_exit,
+        );
+
+        // Push rb_block_param_proxy. It's a root, so no need to use jit_mov_gc_ptr.
+        mov(
+            cb,
+            REG0,
+            const_ptr_opnd(unsafe { rb_block_param_proxy }.as_ptr()),
+        );
+        assert!(!unsafe { rb_block_param_proxy }.special_const_p());
+
+        let top = ctx.stack_push(Type::Unknown);
+        mov(cb, top, REG0);
+    }
+
+    jump_to_next_insn(jit, ctx, cb, ocb);
+
+    EndBlock
 }
 
 fn gen_getblockparam(
