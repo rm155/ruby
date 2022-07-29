@@ -2934,7 +2934,7 @@ rb_shareable_imemo_type(enum imemo_type type)
 
 #undef rb_imemo_new
 
-void add_to_shareable_tbl(VALUE obj);
+void rb_add_to_shareable_tbl(VALUE obj);
 
 VALUE
 rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
@@ -2944,7 +2944,7 @@ rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
     VALUE obj = newobj_of(v0, flags, v1, v2, v3, TRUE, size);
     if (rb_shareable_imemo_type(type)) {
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
-	add_to_shareable_tbl(obj);
+	rb_add_to_shareable_tbl(obj);
     }
     return obj;
 }
@@ -4531,7 +4531,7 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 }
 
 void
-add_to_shareable_tbl(VALUE obj)
+rb_add_to_shareable_tbl(VALUE obj)
 {
     rb_objspace_t *objspace = &rb_objspace;
     st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
