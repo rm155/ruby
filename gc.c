@@ -2915,14 +2915,38 @@ rb_imemo_name(enum imemo_type type)
     return "unknown";
 }
 
+static int
+rb_shareable_imemo_type(enum imemo_type type)
+{
+    switch (type) {
+      case imemo_cref:
+      case imemo_ifunc:
+      case imemo_ment:
+      case imemo_iseq:
+      case imemo_callinfo:
+      case imemo_callcache:
+      case imemo_constcache:
+	return 1;
+      default:
+	return 0;
+    }
+}
+
 #undef rb_imemo_new
+
+void add_to_shareable_tbl(VALUE obj);
 
 VALUE
 rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
 {
     size_t size = sizeof(RVALUE);
     VALUE flags = T_IMEMO | (type << FL_USHIFT);
-    return newobj_of(v0, flags, v1, v2, v3, TRUE, size);
+    VALUE obj = newobj_of(v0, flags, v1, v2, v3, TRUE, size);
+    if (rb_shareable_imemo_type(type)) {
+	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	add_to_shareable_tbl(obj);
+    }
+    return obj;
 }
 
 static VALUE
@@ -6496,14 +6520,6 @@ mark_tbl(rb_objspace_t *objspace, st_table *tbl)
 {
     if (!tbl || tbl->num_entries == 0) return;
     st_foreach(tbl, mark_value_pin, (st_data_t)objspace);
-}
-
-static int
-mark_key(st_data_t key, st_data_t value, st_data_t data)
-{
-    rb_objspace_t *objspace = (rb_objspace_t *)data;
-    gc_mark(objspace, (VALUE)key);
-    return ST_CONTINUE;
 }
 
 static int
