@@ -135,6 +135,9 @@ extern "C" {
     #[link_name = "rb_get_cfp_ep"]
     pub fn get_cfp_ep(cfp: CfpPtr) -> *mut VALUE;
 
+    #[link_name = "rb_get_cfp_ep_level"]
+    pub fn get_cfp_ep_level(cfp: CfpPtr, lv: u32) -> *const VALUE;
+
     #[link_name = "rb_get_cme_def_type"]
     pub fn get_cme_def_type(cme: *const rb_callable_method_entry_t) -> rb_method_type_t;
 
@@ -738,10 +741,6 @@ mod manual_defs {
 
     pub const RUBY_OFFSET_RSTRUCT_AS_HEAP_PTR: i32 = 24; // struct RStruct, subfield "as.heap.ptr"
     pub const RUBY_OFFSET_RSTRUCT_AS_ARY: i32 = 16; // struct RStruct, subfield "as.ary"
-
-    pub const RUBY_OFFSET_ROBJECT_AS_ARY: i32 = 16; // struct RObject, subfield "as.ary"
-    pub const RUBY_OFFSET_ROBJECT_AS_HEAP_NUMIV: i32 = 16; // struct RObject, subfield "as.heap.numiv"
-    pub const RUBY_OFFSET_ROBJECT_AS_HEAP_IVPTR: i32 = 24; // struct RObject, subfield "as.heap.ivptr"
 
     // Constants from rb_control_frame_t vm_core.h
     pub const RUBY_OFFSET_CFP_PC: i32 = 0;
