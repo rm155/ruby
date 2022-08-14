@@ -88,7 +88,9 @@ AC_SUBST(GIT)
 AC_SUBST(HAVE_GIT)
 
 eval `sed -n -e ['s/^@%:@define RUBY_[A-Z_]*VERSION_\([A-Z][A-Z][A-Z_0-9]*\) \([0-9][0-9]*\)$/\1=\2/p'] \
+      -e ['s/^@%:@define \(RUBY_ABI_VERSION\) \([0-9][0-9]*\).*/\1=\2/p'] \
       -e ['s/^@%:@define \(RUBY_PATCHLEVEL\) \(.*\)/\1=\2/p'] \
+     $srcdir/include/ruby/internal/abi.h \
      $srcdir/include/ruby/version.h $srcdir/version.h`
 for v in MAJOR MINOR TEENY; do
     AS_IF([eval "test \"\$$v\" = ''"], [
@@ -100,6 +102,9 @@ AC_SUBST(MINOR)
 AC_SUBST(TEENY)
 AC_SUBST(RUBY_API_VERSION, '$(MAJOR).$(MINOR)')
 AC_SUBST(RUBY_PROGRAM_VERSION, '$(MAJOR).$(MINOR).$(TEENY)')
+AS_CASE([$RUBY_PATCHLEVEL], [-*], [
+    AC_DEFINE_UNQUOTED(RUBY_ABI_VERSION, [${RUBY_ABI_VERSION}])
+], [RUBY_ABI_VERSION=])
 
 AS_IF([test "$program_prefix" = NONE], [
   program_prefix=
@@ -622,9 +627,13 @@ AS_IF([test "$fdeclspec" = yes], [
     RUBY_APPEND_OPTIONS(CXXFLAGS, -fdeclspec)
 ])
 
-AS_CASE([$RUBY_PATCHLEVEL], [-*],
-	[RUBY_DEVEL=yes], [RUBY_DEVEL=no])
-particular_werror_flags=$RUBY_DEVEL
+AC_ARG_ENABLE(devel,
+    AS_HELP_STRING([--enable-devel], [enable development build]),
+    [RUBY_DEVEL=$enableval],
+    [AS_IF([test "x${RUBY_DEVEL-no}" != xyes], [RUBY_DEVEL=])]
+)dnl
+AC_SUBST(RUBY_DEVEL)
+particular_werror_flags=${RUBY_DEVEL:-no}
 AC_ARG_ENABLE(werror,
 	AS_HELP_STRING([--disable-werror],
 		       [don't make warnings into errors
@@ -868,7 +877,6 @@ AS_IF([test "$GCC" = yes], [
     test "${debugflags+set}" || {RUBY_TRY_CFLAGS(-g3, [debugflags=-g3])}
 ])
 test $ac_cv_prog_cc_g = yes && : ${debugflags=-g}
-AS_IF([test "x$RUBY_DEVEL" = xyes], [RUBY_APPEND_OPTION(XCFLAGS, -DRUBY_DEVEL=1)])
 
 AS_IF([test "$GCC" = ""], [
     AS_CASE(["$target_os"],[aix*],[warnflags="$warnflags -qinfo=por" rb_cv_warnflags="$rb_cv_warnflags -qinfo=por"])
@@ -3011,6 +3019,14 @@ STATIC=
 			: ${LDFLAGS=""}
 			: ${LIBPATHENV=DYLD_FALLBACK_LIBRARY_PATH}
 			: ${PRELOADENV=DYLD_INSERT_LIBRARIES}
+                        AS_IF([test x"$enable_shared" = xyes], [
+                            # Resolve symbols from libruby.dylib when --enable-shared
+                            EXTDLDFLAGS='$(LIBRUBYARG_SHARED)'
+                        ], [test "x$EXTSTATIC" = x], [
+                            # When building exts as bundles, a mach-o bundle needs to know its loader
+                            # program to bind symbols from the ruby executable
+                            EXTDLDFLAGS="-bundle_loader '\$(BUILTRUBY)'"
+			])
 			rb_cv_dlopen=yes],
         [aix*], [	: ${LDSHARED='$(CC)'}
 			AS_IF([test "$GCC" = yes], [
@@ -3736,7 +3752,7 @@ CARGO=
 CARGO_BUILD_ARGS=
 YJIT_LIBS=
 AS_CASE(["${YJIT_SUPPORT}"],
-[yes|dev], [
+[yes|dev|stats|dev_nodebug], [
     AS_IF([test x"$enable_jit_support" = "xno"],
         AC_MSG_ERROR([--disable-jit-support but --enable-yjit. YJIT requires JIT support])
     )
@@ -3744,16 +3760,31 @@ AS_CASE(["${YJIT_SUPPORT}"],
     AS_IF([test x"$RUSTC" = "xno"],
         AC_MSG_ERROR([rustc is required. Installation instructions available at https://www.rust-lang.org/tools/install])
     )
-    AS_IF([test x"$YJIT_SUPPORT" = "xyes"],
-            [rb_rust_target_subdir=release
-             CARGO_BUILD_ARGS='--release'],
-            [rb_rust_target_subdir=debug
-             CARGO_BUILD_ARGS='--features stats,disasm,asm_comments'
+
+    AS_CASE(["${YJIT_SUPPORT}"],
+    [yes], [
+	rb_rust_target_subdir=release
+    ],
+    [dev], [
+	rb_rust_target_subdir=debug
+	CARGO_BUILD_ARGS='--features stats,disasm,asm_comments'
+	AC_DEFINE(RUBY_DEBUG, 1)
+    ],
+    [dev_nodebug], [
+	rb_rust_target_subdir=dev_nodebug
+	CARGO_BUILD_ARGS='--profile dev_nodebug --features stats,disasm,asm_comments'
+    ],
+    [stats], [
+	rb_rust_target_subdir=stats
+	CARGO_BUILD_ARGS='--profile stats --features stats'
+    ])
+
+    AS_IF([test -n "${CARGO_BUILD_ARGS}"], [
              AC_CHECK_TOOL(CARGO, [cargo], [no])
              AS_IF([test x"$CARGO" = "xno"],
                 AC_MSG_ERROR([cargo is required. Installation instructions available at https://www.rust-lang.org/tools/install])
-             )
-             AC_DEFINE(RUBY_DEBUG, 1)])
+             ]))
+
     YJIT_LIBS="yjit/target/${rb_rust_target_subdir}/libyjit.a"
     YJIT_OBJ='yjit.$(OBJEXT)'
     AC_DEFINE(USE_YJIT, 1)
@@ -4092,6 +4123,7 @@ AS_CASE(["$ruby_version"],
 AS_IF([test ${RUBY_LIB_VERSION_STYLE+set}], [
     {
     echo "#define RUBY_LIB_VERSION_STYLE $RUBY_LIB_VERSION_STYLE"
+    echo '@%:@include "confdefs.h"'
     echo '#define STRINGIZE(x) x'
     test -f revision.h -o -f "${srcdir}/revision.h" || echo '#define RUBY_REVISION 0'
     echo '#include "version.h"'
