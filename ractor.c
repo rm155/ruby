@@ -181,11 +181,9 @@ ractor_queue_mark(struct rb_ractor_queue *rq)
 static void ractor_local_storage_mark(rb_ractor_t *r);
 static void ractor_local_storage_free(rb_ractor_t *r);
 
-static void
-ractor_mark(void *ptr)
+void
+rb_ractor_related_objects_mark(rb_ractor_t *r)
 {
-    rb_ractor_t *r = (rb_ractor_t *)ptr;
-
     ractor_queue_mark(&r->sync.incoming_queue);
     rb_gc_mark(r->sync.wait.taken_basket.v);
     rb_gc_mark(r->sync.wait.taken_basket.sender);
@@ -209,6 +207,13 @@ ractor_mark(void *ptr)
     }
 
     ractor_local_storage_mark(r);
+}
+
+static void
+ractor_mark(void *ptr)
+{
+    rb_ractor_t *r = (rb_ractor_t *)ptr;
+    rb_ractor_related_objects_mark(r);
 }
 
 static void

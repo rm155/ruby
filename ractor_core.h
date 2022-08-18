@@ -182,6 +182,7 @@ void rb_ractor_vm_barrier_interrupt_running_thread(rb_ractor_t *r);
 void rb_ractor_terminate_interrupt_main_thread(rb_ractor_t *r);
 void rb_ractor_terminate_all(void);
 bool rb_ractor_main_p_(void);
+void rb_ractor_related_objects_mark(rb_ractor_t *ractor);
 void rb_ractor_finish_marking(void);
 void rb_ractor_atfork(rb_vm_t *vm, rb_thread_t *th);
 

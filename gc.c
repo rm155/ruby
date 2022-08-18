@@ -7535,6 +7535,9 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     rb_vm_mark(vm);
     if (vm->self) gc_mark(objspace, vm->self);
 
+    MARK_CHECKPOINT("ractor");
+    if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(GET_RACTOR());
+
     MARK_CHECKPOINT("finalizers");
     mark_finalizer_tbl(objspace, finalizer_table);
 
