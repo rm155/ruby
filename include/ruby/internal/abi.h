@@ -1,6 +1,8 @@
 #ifndef RUBY_ABI_H
 #define RUBY_ABI_H
 
+#ifdef RUBY_ABI_VERSION /* should match the definition in config.h */
+
 /* This number represents Ruby's ABI version.
  *
  * In development Ruby, it should be bumped every time an ABI incompatible
@@ -19,10 +21,10 @@
  * - Backwards compatible refactors.
  * - Editing comments.
  *
- * In released versions of Ruby, this number should not be changed since teeny
+ * In released versions of Ruby, this number is not defined since teeny
  * versions of Ruby should guarantee ABI compatibility.
  */
-#define RUBY_ABI_VERSION 1
+#define RUBY_ABI_VERSION 2
 
 /* Windows does not support weak symbols so ruby_abi_version will not exist
  * in the shared library. */
@@ -45,6 +47,8 @@ ruby_abi_version(void)
 # ifdef __cplusplus
 }
 # endif
+
+#endif
 
 #endif
 

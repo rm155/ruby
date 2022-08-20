@@ -147,6 +147,7 @@ jobs:
           - { name: disable-dln,          env: { append_configure: '--disable-dln' } }
           - { name: enable-mkmf-verbose,  env: { append_configure: '--enable-mkmf-verbose' } }
           - { name: disable-rubygems,     env: { append_configure: '--disable-rubygems' } }
+          - { name: RUBY_DEVEL,           env: { append_configure: '--enable-devel' } }
 
           - { name: OPT_THREADED_CODE=1,            env: { cppflags: '-DOPT_THREADED_CODE=1' } }
           - { name: OPT_THREADED_CODE=2,            env: { cppflags: '-DOPT_THREADED_CODE=2' } }
@@ -248,8 +249,6 @@ jobs:
       - run: make leaked-globals
       - run: make test
       - run: make install
-        if: ${{ matrix.entry.check }}
-      - run: make prepare-gems
         if: ${{ matrix.entry.check }}
       - run: make test-tool
         if: ${{ matrix.entry.check }}

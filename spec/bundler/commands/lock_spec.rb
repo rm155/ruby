@@ -217,7 +217,7 @@ RSpec.describe "bundle lock" do
 
     allow(Bundler::SharedHelpers).to receive(:find_gemfile).and_return(bundled_app_gemfile)
     lockfile = Bundler::LockfileParser.new(read_lockfile)
-    expect(lockfile.platforms).to match_array(local_platforms.unshift(java, mingw).uniq)
+    expect(lockfile.platforms).to match_array([java, mingw, specific_local_platform].uniq)
   end
 
   it "supports adding new platforms with force_ruby_platform = true" do
@@ -249,7 +249,7 @@ RSpec.describe "bundle lock" do
 
     allow(Bundler::SharedHelpers).to receive(:find_gemfile).and_return(bundled_app_gemfile)
     lockfile = Bundler::LockfileParser.new(read_lockfile)
-    expect(lockfile.platforms).to match_array(local_platforms.unshift("ruby").uniq)
+    expect(lockfile.platforms).to match_array(["ruby", specific_local_platform].uniq)
   end
 
   it "warns when adding an unknown platform" do
@@ -262,16 +262,16 @@ RSpec.describe "bundle lock" do
 
     allow(Bundler::SharedHelpers).to receive(:find_gemfile).and_return(bundled_app_gemfile)
     lockfile = Bundler::LockfileParser.new(read_lockfile)
-    expect(lockfile.platforms).to match_array(local_platforms.unshift(java, mingw).uniq)
+    expect(lockfile.platforms).to match_array([java, mingw, specific_local_platform].uniq)
 
     bundle "lock --remove-platform java"
 
     lockfile = Bundler::LockfileParser.new(read_lockfile)
-    expect(lockfile.platforms).to match_array(local_platforms.unshift(mingw).uniq)
+    expect(lockfile.platforms).to match_array([mingw, specific_local_platform].uniq)
   end
 
   it "errors when removing all platforms" do
-    bundle "lock --remove-platform #{local_platforms.join(" ")}", :raise_on_error => false
+    bundle "lock --remove-platform #{specific_local_platform}", :raise_on_error => false
     expect(err).to include("Removing all platforms from the bundle is not allowed")
   end
 
@@ -541,11 +541,9 @@ RSpec.describe "bundle lock" do
   end
 
   it "respects lower bound ruby requirements" do
-    skip "this spec does not work with prereleases because their version is actually lower than their reported `RUBY_VERSION`" if RUBY_PATCHLEVEL == -1
-
     build_repo4 do
       build_gem "our_private_gem", "0.1.0" do |s|
-        s.required_ruby_version = ">= #{RUBY_VERSION}"
+        s.required_ruby_version = ">= #{Gem.ruby_version}"
       end
     end
 

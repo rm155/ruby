@@ -17,6 +17,15 @@ require "rubygems/source"
 
 require_relative "match_platform"
 
+# Cherry-pick fixes to `Gem.ruby_version` to be useful for modern Bundler
+# versions and ignore patchlevels
+# (https://github.com/rubygems/rubygems/pull/5472,
+# https://github.com/rubygems/rubygems/pull/5486). May be removed once RubyGems
+# 3.3.12 support is dropped.
+unless Gem.ruby_version.to_s == RUBY_VERSION || RUBY_PATCHLEVEL == -1
+  Gem.instance_variable_set(:@ruby_version, Gem::Version.new(RUBY_VERSION))
+end
+
 module Gem
   class Specification
     include ::Bundler::MatchPlatform
@@ -146,6 +155,10 @@ module Gem
 
     alias_method :eql?, :==
 
+    def force_ruby_platform
+      false
+    end
+
     def encode_with(coder)
       to_yaml_properties.each do |ivar|
         coder[ivar.to_s.sub(/^@/, "")] = instance_variable_get(ivar)
@@ -216,11 +229,12 @@ module Gem
   require "rubygems/platform"
 
   class Platform
-    JAVA  = Gem::Platform.new("java") unless defined?(JAVA)
-    MSWIN = Gem::Platform.new("mswin32") unless defined?(MSWIN)
-    MSWIN64 = Gem::Platform.new("mswin64") unless defined?(MSWIN64)
-    MINGW = Gem::Platform.new("x86-mingw32") unless defined?(MINGW)
-    X64_MINGW = Gem::Platform.new("x64-mingw32") unless defined?(X64_MINGW)
+    JAVA  = Gem::Platform.new("java")
+    MSWIN = Gem::Platform.new("mswin32")
+    MSWIN64 = Gem::Platform.new("mswin64")
+    MINGW = Gem::Platform.new("x86-mingw32")
+    X64_MINGW = [Gem::Platform.new("x64-mingw32"),
+                 Gem::Platform.new("x64-mingw-ucrt")].freeze
   end
 
   Platform.singleton_class.module_eval do

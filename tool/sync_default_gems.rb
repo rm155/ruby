@@ -73,6 +73,7 @@ REPOSITORIES = {
   pathname: "ruby/pathname",
   digest: "ruby/digest",
   error_highlight: "ruby/error_highlight",
+  syntax_suggest: "ruby/syntax_suggest",
   un: "ruby/un",
   win32ole: "ruby/win32ole",
 }
@@ -128,6 +129,7 @@ def sync_default_gems(gem)
   when "rdoc"
     rm_rf(%w[lib/rdoc lib/rdoc.rb test/rdoc libexec/rdoc libexec/ri])
     cp_r(Dir.glob("#{upstream}/lib/rdoc*"), "lib")
+    cp_r("#{upstream}/doc/rdoc", "doc")
     cp_r("#{upstream}/test/rdoc", "test")
     cp_r("#{upstream}/rdoc.gemspec", "lib/rdoc")
     cp_r("#{upstream}/Gemfile", "lib/rdoc")
@@ -183,7 +185,7 @@ def sync_default_gems(gem)
     rm_rf(%w[ext/psych/lib/psych.{bundle,so} ext/psych/lib/2.*])
     rm_rf(["ext/psych/yaml/LICENSE"])
     cp_r("#{upstream}/psych.gemspec", "ext/psych")
-    `git checkout ext/psych/depend`
+    `git checkout ext/psych/depend ext/psych/.gitignore`
   when "fiddle"
     rm_rf(%w[ext/fiddle test/fiddle])
     cp_r("#{upstream}/ext/fiddle", "ext")
@@ -227,6 +229,7 @@ def sync_default_gems(gem)
     `git checkout ext/etc/depend`
   when "date"
     rm_rf(%w[ext/date test/date])
+    cp_r("#{upstream}/doc/date", "doc")
     cp_r("#{upstream}/ext/date", "ext")
     cp_r("#{upstream}/lib", "ext/date")
     cp_r("#{upstream}/test/date", "test")

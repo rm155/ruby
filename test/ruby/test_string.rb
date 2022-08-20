@@ -1121,14 +1121,19 @@ CODE
     assert_equal(S("world"), res[1])
 
     res = []
-    S("hello\n\n\nworld").each_line(S(''), chomp: true) {|x| res << x}
-    assert_equal(S("hello\n"), res[0])
-    assert_equal(S("world"),   res[1])
+    S("hello\n\n\nworld\n").each_line(S(''), chomp: true) {|x| res << x}
+    assert_equal(S("hello"), res[0])
+    assert_equal(S("world\n"), res[1])
 
     res = []
-    S("hello\r\n\r\nworld").each_line(S(''), chomp: true) {|x| res << x}
-    assert_equal(S("hello\r\n"), res[0])
-    assert_equal(S("world"),     res[1])
+    S("hello\r\n\r\nworld\r\n").each_line(S(''), chomp: true) {|x| res << x}
+    assert_equal(S("hello"), res[0])
+    assert_equal(S("world\r\n"), res[1])
+
+    res = []
+    S("hello\r\n\n\nworld").each_line(S(''), chomp: true) {|x| res << x}
+    assert_equal(S("hello"), res[0])
+    assert_equal(S("world"), res[1])
 
     res = []
     S("hello!world").each_line(S('!'), chomp: true) {|x| res << x}
@@ -2607,6 +2612,11 @@ CODE
     assert_equal '"\u000012"', s.inspect, bug8290
     s = S("\0".b) + "12"
     assert_equal '"\x0012"', s.inspect, bug8290
+  end
+
+  def test_inspect_next_line
+    bug16842 = '[ruby-core:98231]'
+    assert_equal '"\\u0085"', 0x85.chr(Encoding::UTF_8).inspect, bug16842
   end
 
   def test_partition

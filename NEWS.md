@@ -96,10 +96,16 @@ Note that each entry is kept to a minimum, see links for details.
 
 Note: We're only listing outstanding class updates.
 
+* Enumerator
+    * Enumerator.product has been added.  Enumerator::Product is the implementation. [[Feature #18685]]
+
 * Hash
     * Hash#shift now always returns nil if the hash is
       empty, instead of returning the default value or
       calling the default proc. [[Bug #16908]]
+
+* Integer
+    * Integer#ceildiv has been added. [[Feature #18809]]
 
 * Kernel
     * Kernel#binding raises RuntimeError if called from a non-Ruby frame
@@ -155,6 +161,8 @@ Note: We're only listing outstanding class updates.
     * bigdecimal 3.1.2
     * bundler 2.4.0.dev
     * cgi 0.3.2
+    * date 3.2.3
+    * error_highlight 0.4.0
     * etc 1.4.0
     * io-console 0.5.11
     * io-nonblock 0.1.1
@@ -169,13 +177,14 @@ Note: We're only listing outstanding class updates.
     * reline 0.3.1
     * securerandom 0.2.0
     * stringio 3.0.3
+    * syntax_suggest 0.0.1
     * timeout 0.3.0
 *   The following bundled gems are updated.
-    * minitest 5.16.2
+    * minitest 5.16.3
     * net-imap 0.2.3
     * rbs 2.6.0
     * typeprof 0.21.3
-    * debug 1.6.0
+    * debug 1.6.2
 *   The following default gems are now bundled gems.
 
 ## Compatibility issues
@@ -268,5 +277,7 @@ The following deprecated APIs are removed.
 [Feature #18598]: https://bugs.ruby-lang.org/issues/18598
 [Bug #18625]:     https://bugs.ruby-lang.org/issues/18625
 [Bug #18633]:     https://bugs.ruby-lang.org/issues/18633
+[Feature #18685]: https://bugs.ruby-lang.org/issues/18685
 [Bug #18782]:     https://bugs.ruby-lang.org/issues/18782
 [Feature #18788]: https://bugs.ruby-lang.org/issues/18788
+[Feature #18809]: https://bugs.ruby-lang.org/issues/18809
