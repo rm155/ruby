@@ -203,6 +203,7 @@ rb_ractor_related_objects_mark(rb_ractor_t *r)
         ccan_list_for_each(&r->threads.set, th, lt_node) {
             VM_ASSERT(th != NULL);
             rb_gc_mark(th->self);
+	    rb_thread_fiber_mark(th);
         }
     }
 
