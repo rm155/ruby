@@ -3096,6 +3096,12 @@ void rb_fiber_update_self(rb_fiber_t *fib);
 void rb_threadptr_root_fiber_setup(rb_thread_t *th);
 void rb_threadptr_root_fiber_release(rb_thread_t *th);
 
+void
+rb_thread_fiber_mark(rb_thread_t *th)
+{
+    rb_fiber_mark_self(th->ec->fiber_ptr);
+}
+
 static void
 thread_compact(void *ptr)
 {
@@ -3113,7 +3119,7 @@ thread_mark(void *ptr)
 {
     rb_thread_t *th = ptr;
     RUBY_MARK_ENTER("thread");
-    rb_fiber_mark_self(th->ec->fiber_ptr);
+    rb_thread_fiber_mark(th);
 
     /* mark ruby objects */
     switch (th->invoke_type) {
