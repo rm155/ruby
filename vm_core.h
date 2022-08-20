@@ -1776,8 +1776,6 @@ rb_vm_living_threads_init(rb_vm_t *vm)
     ccan_list_head_init(&vm->ractor.set);
 }
 
-void rb_thread_fiber_mark(rb_thread_t *th);
-
 typedef int rb_backtrace_iter_func(void *, VALUE, int, VALUE);
 rb_control_frame_t *rb_vm_get_ruby_level_next_cfp(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);
 rb_control_frame_t *rb_vm_get_binding_creatable_next_cfp(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);
