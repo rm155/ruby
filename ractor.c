@@ -931,6 +931,11 @@ ractor_basket_setup(rb_execution_context_t *ec, struct rb_ractor_basket *basket,
     basket->sender = rb_ec_ractor_ptr(ec)->pub.self;
     basket->exception = exc;
 
+    void rb_add_to_exemption_tbl(VALUE obj);
+    if (!RTEST(move)) {
+	rb_add_to_exemption_tbl(obj);
+    }
+
     if (is_will) {
         basket->type = basket_type_will;
         basket->v = obj;
@@ -1501,6 +1506,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 
         ractor_status_set(cr, ractor_terminated);
     }
+    ccan_list_add_tail(&vm->ractor.ended_set, &cr->vmlr_node);
     RB_VM_UNLOCK();
 }
 
@@ -1592,6 +1598,7 @@ void
 rb_ractor_main_setup(rb_vm_t *vm, rb_ractor_t *r, rb_thread_t *th)
 {
     r->pub.self = TypedData_Wrap_Struct(rb_cRactor, &ractor_data_type, r);
+    rb_assign_main_ractor_objspace(r);
     FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
     ractor_init(r, Qnil, Qnil);
     r->threads.main = th;
@@ -1603,6 +1610,7 @@ ractor_create(rb_execution_context_t *ec, VALUE self, VALUE loc, VALUE name, VAL
 {
     VALUE rv = ractor_alloc(self);
     rb_ractor_t *r = RACTOR_PTR(rv);
+    rb_create_ractor_local_objspace(r);
     ractor_init(r, name, loc);
 
     // can block here

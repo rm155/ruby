@@ -20,7 +20,9 @@ void Init_ext(void);
 void Init_File(void);
 
 /* gc.c */
-void Init_heap(void);
+struct rb_objspace;
+void Init_heap(struct rb_objspace *objspace);
+void Init_main_heap(void);
 
 /* localeinit.c */
 int Init_enc_set_filesystem_encoding(void);

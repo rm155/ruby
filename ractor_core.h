@@ -102,6 +102,8 @@ enum ractor_status {
     ractor_terminated,
 };
 
+struct rb_objspace;
+
 struct rb_ractor_struct {
     struct rb_ractor_pub pub;
 
@@ -149,6 +151,8 @@ struct rb_ractor_struct {
         void *data;
         void (*mark_func)(VALUE v, void *data);
     } *mfd;
+
+    struct rb_objspace *local_objspace;
 }; // rb_ractor_t is defined in vm_core.h
 
 
@@ -165,6 +169,9 @@ void rb_ractor_atexit_exception(rb_execution_context_t *ec);
 void rb_ractor_teardown(rb_execution_context_t *ec);
 void rb_ractor_receive_parameters(rb_execution_context_t *ec, rb_ractor_t *g, int len, VALUE *ptr);
 void rb_ractor_send_parameters(rb_execution_context_t *ec, rb_ractor_t *g, VALUE args);
+
+void rb_assign_main_ractor_objspace(rb_ractor_t *ractor);
+void rb_create_ractor_local_objspace(rb_ractor_t *ractor);
 
 VALUE rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc); // defined in thread.c
 

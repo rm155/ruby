@@ -79,7 +79,7 @@ ruby_setup(void)
     prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 #endif
     Init_BareVM();
-    Init_heap();
+    Init_main_heap();
     rb_vm_encoded_insn_data_table_init();
     Init_vm_objects();
 
@@ -161,7 +161,7 @@ rb_ec_finalize(rb_execution_context_t *ec)
 {
     ruby_sig_finalize();
     ec->errinfo = Qnil;
-    rb_objspace_call_finalizer(rb_ec_vm_ptr(ec)->objspace);
+    rb_objspace_call_finalizer_for_each_ractor(rb_ec_vm_ptr(ec));
 }
 
 void

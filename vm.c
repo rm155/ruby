@@ -2799,6 +2799,18 @@ ruby_vm_destruct(rb_vm_t *vm)
             vm->frozen_strings = 0;
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
+	rb_global_space_free(vm->global_space);
+	rb_ractor_t *r = NULL;
+	ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
+	    if (r->local_objspace && r != vm->ractor.main_ractor) {
+		rb_objspace_free(r->local_objspace);
+	    }
+	}
+	ccan_list_for_each(&vm->ractor.ended_set, r, vmlr_node) {
+	    if (r->local_objspace && r != vm->ractor.main_ractor) {
+		rb_objspace_free(r->local_objspace);
+	    }
+	}
         if (objspace) {
             rb_objspace_free(objspace);
         }
@@ -3908,6 +3920,7 @@ Init_BareVM(void)
     MEMZERO(th, rb_thread_t, 1);
     vm_init2(vm);
 
+    vm->global_space = rb_global_space_init();
     vm->objspace = rb_objspace_alloc();
     ruby_current_vm_ptr = vm;
     vm->negative_cme_table = rb_id_table_create(16);

@@ -612,6 +612,11 @@ struct rb_objspace;
 struct rb_objspace *rb_objspace_alloc(void);
 void rb_objspace_free(struct rb_objspace *);
 void rb_objspace_call_finalizer(struct rb_objspace *);
+void rb_objspace_call_finalizer_for_each_ractor(struct rb_vm_struct *);
+
+struct rb_global_space;
+struct rb_global_space * rb_global_space_init(void);
+void rb_global_space_free(struct rb_global_space *);
 
 typedef struct rb_hook_list_struct {
     struct rb_event_hook_struct *hooks;
@@ -630,6 +635,7 @@ typedef struct rb_vm_struct {
 
     struct {
         struct ccan_list_head set;
+        struct ccan_list_head ended_set; //TODO: Remove once Ractors handle their own objspace upon ending
         unsigned int cnt;
         unsigned int blocking_cnt;
 
@@ -712,6 +718,7 @@ typedef struct rb_vm_struct {
     st_table * defined_module_hash;
 
     struct rb_objspace *objspace;
+    struct rb_global_space *global_space;
 
     rb_at_exit_list *at_exit;
 
@@ -1774,6 +1781,7 @@ rb_vm_living_threads_init(rb_vm_t *vm)
     ccan_list_head_init(&vm->workqueue);
     ccan_list_head_init(&vm->waiting_grps);
     ccan_list_head_init(&vm->ractor.set);
+    ccan_list_head_init(&vm->ractor.ended_set);
 }
 
 void rb_thread_fiber_mark(rb_thread_t *th);

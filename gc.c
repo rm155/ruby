@@ -714,6 +714,13 @@ enum gc_mode {
     gc_mode_compacting,
 };
 
+typedef struct rb_global_space {
+    VALUE next_object_id;
+    rb_nativethread_lock_t next_object_id_lock;
+    st_table *local_gc_exemption_tbl; //TODO: Remove once all the cases are handled individually
+    rb_nativethread_lock_t exemption_tbl_lock;
+} rb_global_space_t;
+
 typedef struct rb_objspace {
     struct {
         size_t limit;
@@ -743,7 +750,6 @@ typedef struct rb_objspace {
 
     rb_event_flag_t hook_events;
     size_t total_allocated_objects;
-    VALUE next_object_id;
 
     rb_size_pool_t size_pools[SIZE_POOL_COUNT];
 
@@ -858,11 +864,23 @@ typedef struct rb_objspace {
 
     st_table *id_to_obj_tbl;
     st_table *obj_to_id_tbl;
+    rb_nativethread_lock_t obj_id_lock;
 
 #if GC_DEBUG_STRESS_TO_CLASS
     VALUE stress_to_class;
 #endif
+
+    rb_ractor_t *ractor;
 } rb_objspace_t;
+
+rb_objspace_t *
+current_ractor_objspace(rb_vm_t *vm)
+{
+    if (vm->ractor.cnt <= 1) {
+	return vm->objspace;
+    }
+    return GET_RACTOR()->local_objspace;
+}
 
 
 #ifndef HEAP_PAGE_ALIGN_LOG
@@ -945,6 +963,9 @@ struct heap_page {
 
     rb_size_pool_t *size_pool;
 
+    rb_ractor_t *ractor;
+    rb_objspace_t *objspace;
+
     struct heap_page *free_next;
     uintptr_t start;
     RVALUE *freelist;
@@ -981,6 +1002,8 @@ asan_unlock_freelist(struct heap_page *page)
 #define GET_PAGE_BODY(x)   ((struct heap_page_body *)((bits_t)(x) & ~(HEAP_PAGE_ALIGN_MASK)))
 #define GET_PAGE_HEADER(x) (&GET_PAGE_BODY(x)->header)
 #define GET_HEAP_PAGE(x)   (GET_PAGE_HEADER(x)->page)
+#define GET_RACTOR_OF_VALUE(x)   (GET_HEAP_PAGE(x)->ractor)
+#define GET_OBJSPACE_OF_VALUE(x)   (GET_HEAP_PAGE(x)->objspace)
 
 #define NUM_IN_PAGE(p)   (((bits_t)(p) & HEAP_PAGE_ALIGN_MASK) / BASE_SLOT_SIZE)
 #define BITMAP_INDEX(p)  (NUM_IN_PAGE(p) / BITS_BITLENGTH )
@@ -1003,7 +1026,9 @@ asan_unlock_freelist(struct heap_page *page)
 
 /* Aliases */
 #define rb_objspace (*rb_objspace_of(GET_VM()))
-#define rb_objspace_of(vm) ((vm)->objspace)
+#define rb_objspace_of(vm) (current_ractor_objspace(vm))
+#define rb_global_space (*rb_global_space_of(GET_VM()))
+#define rb_global_space_of(vm) ((vm)->global_space)
 
 #define ruby_initial_gc_stress	gc_params.gc_stress
 
@@ -1889,6 +1914,8 @@ rb_objspace_free(rb_objspace_t *objspace)
     }
     st_free_table(objspace->id_to_obj_tbl);
     st_free_table(objspace->obj_to_id_tbl);
+    rb_nativethread_lock_destroy(&objspace->obj_id_lock);
+
     st_free_table(objspace->shareable_tbl);
 
     free_stack_chunks(&objspace->mark_stack);
@@ -2223,6 +2250,9 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
     page->slot_size = size_pool->slot_size;
     page->size_pool = size_pool;
     page_body->header.page = page;
+
+    page->ractor = objspace->ractor;
+    page->objspace = objspace;
 
     for (p = start; p != end; p += stride) {
         gc_report(3, objspace, "assign_heap_page: %p is added to freelist\n", (void *)p);
@@ -2847,6 +2877,18 @@ static inline VALUE
 newobj_of(VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, int wb_protected, size_t alloc_size)
 {
     VALUE obj = newobj_of0(klass, flags, wb_protected, GET_RACTOR(), alloc_size);
+
+    void rb_add_to_exemption_tbl(VALUE obj);
+    switch (BUILTIN_TYPE(obj)) {
+	case T_ICLASS:
+	case T_CLASS:
+	case T_MODULE:
+	    rb_add_to_exemption_tbl(obj);
+	    break;
+	default:
+	    break;
+    }
+
     return newobj_fill(obj, v1, v2, v3);
 }
 
@@ -3396,6 +3438,20 @@ make_io_zombie(rb_objspace_t *objspace, VALUE obj)
     make_zombie(objspace, obj, rb_io_fptr_finalize_internal, fptr);
 }
 
+static int
+delete_from_obj_id_tables(VALUE obj, st_data_t *o, st_data_t *id)
+{
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
+    rb_native_mutex_lock(&objspace->obj_id_lock);
+    int deletion_success = st_delete(objspace->obj_to_id_tbl, o, id);
+    if (deletion_success) {
+        GC_ASSERT(*id);
+        st_delete(objspace->id_to_obj_tbl, id, NULL);
+    }
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
+    return deletion_success;
+}
+
 static void
 obj_free_object_id(rb_objspace_t *objspace, VALUE obj)
 {
@@ -3404,12 +3460,7 @@ obj_free_object_id(rb_objspace_t *objspace, VALUE obj)
 
     GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
     FL_UNSET(obj, FL_SEEN_OBJ_ID);
-
-    if (st_delete(objspace->obj_to_id_tbl, &o, &id)) {
-        GC_ASSERT(id);
-        st_delete(objspace->id_to_obj_tbl, &id, NULL);
-    }
-    else {
+    if (!delete_from_obj_id_tables(obj, &o, &id)) {
         rb_bug("Object ID seen, but not in mapping table: %s\n", obj_info(obj));
     }
 }
@@ -3807,18 +3858,16 @@ static const struct st_hash_type object_id_hash_type = {
 };
 
 void
-Init_heap(void)
+Init_heap(rb_objspace_t *objspace)
 {
-    rb_objspace_t *objspace = &rb_objspace;
-
 #if defined(INIT_HEAP_PAGE_ALLOC_USE_MMAP)
     /* Need to determine if we can use mmap at runtime. */
     heap_page_alloc_use_mmap = INIT_HEAP_PAGE_ALLOC_USE_MMAP;
 #endif
 
-    objspace->next_object_id = INT2FIX(OBJ_ID_INITIAL);
     objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
     objspace->obj_to_id_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->obj_id_lock);
 
 #if RGENGC_ESTIMATE_OLDMALLOC
     objspace->rgengc.oldmalloc_increase_limit = gc_params.oldmalloc_limit_min;
@@ -3839,6 +3888,49 @@ Init_heap(void)
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
+}
+
+void
+Init_main_heap(void)
+{
+    Init_heap(GET_VM()->objspace);
+}
+
+void
+rb_assign_main_ractor_objspace(rb_ractor_t *ractor)
+{
+    rb_vm_t *vm = GET_VM();
+    ractor->local_objspace = vm->objspace;
+    vm->objspace->ractor = ractor;
+}
+
+void
+rb_create_ractor_local_objspace(rb_ractor_t *ractor)
+{
+    ractor->local_objspace = rb_objspace_alloc();
+    ractor->local_objspace->ractor = ractor;
+    Init_heap(ractor->local_objspace);
+    rb_objspace_gc_enable(ractor->local_objspace);
+}
+
+rb_global_space_t *
+rb_global_space_init(void)
+{
+    rb_global_space_t *global_space = calloc1(sizeof(rb_global_space_t));
+    global_space->next_object_id = INT2FIX(OBJ_ID_INITIAL);
+    rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
+    rb_nativethread_lock_initialize(&global_space->exemption_tbl_lock);
+    return global_space;
+}
+
+void
+rb_global_space_free(rb_global_space_t *global_space)
+{
+    rb_nativethread_lock_destroy(&global_space->next_object_id_lock);
+    if (global_space->local_gc_exemption_tbl) {
+	st_free_table(global_space->local_gc_exemption_tbl);
+    }
+    rb_nativethread_lock_destroy(&global_space->exemption_tbl_lock);
 }
 
 void
@@ -4587,10 +4679,36 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 }
 
 void
+rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm)
+{
+    rb_ractor_t *r = NULL;
+    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
+	if (r != vm->ractor.main_ractor) {
+	    rb_objspace_call_finalizer(r->local_objspace);
+	}
+    }
+    rb_objspace_call_finalizer(vm->objspace);
+}
+
+void
 rb_add_to_shareable_tbl(VALUE obj)
 {
     rb_objspace_t *objspace = &rb_objspace;
     st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+}
+
+void
+rb_add_to_exemption_tbl(VALUE obj)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->exemption_tbl_lock);
+    if (!global_space->local_gc_exemption_tbl) {
+	global_space->local_gc_exemption_tbl = st_init_numtable();
+    }
+    VALUE already_disabled = gc_disable_no_rest(&rb_objspace);
+    st_insert(global_space->local_gc_exemption_tbl, (st_data_t)obj, INT2FIX(0));
+    if (already_disabled == Qfalse) rb_objspace_gc_enable(&rb_objspace);
+    rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
 }
 
 static inline int
@@ -4658,15 +4776,48 @@ rb_objspace_garbage_object_p(VALUE obj)
 }
 
 static VALUE
-id2ref_obj_tbl(rb_objspace_t *objspace, VALUE objid)
+lookup_id_in_objspace(rb_objspace_t *objspace, VALUE objid)
 {
     VALUE orig;
-    if (st_lookup(objspace->id_to_obj_tbl, objid, &orig)) {
-        return orig;
+    rb_native_mutex_lock(&objspace->obj_id_lock);
+    int id_found = st_lookup(objspace->id_to_obj_tbl, objid, &orig);
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
+    if (id_found) {
+	return orig;
     }
     else {
-        return Qundef;
+	return Qundef;
     }
+    return orig;
+}
+
+static VALUE
+id2ref_obj_tbl(rb_objspace_t *objspace, VALUE objid)
+{
+    VALUE result = lookup_id_in_objspace(objspace, objid);
+    if (result != Qundef) {
+	return result;
+    }
+
+    rb_ractor_t *r = NULL;
+    rb_vm_t *vm = GET_VM();
+    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
+	if (r->local_objspace != objspace) {
+	    result = lookup_id_in_objspace(r->local_objspace, objid);
+	    if (result != Qundef) {
+		return result;
+	    }
+	}
+    }
+
+    r = NULL;
+    ccan_list_for_each(&vm->ractor.ended_set, r, vmlr_node) {
+	result = lookup_id_in_objspace(r->local_objspace, objid);
+	if (result != Qundef) {
+	    return result;
+	}
+    }
+    return Qundef;
 }
 
 /*
@@ -4727,7 +4878,12 @@ id2ref(VALUE objid)
         }
     }
 
-    if (rb_int_ge(objid, objspace->next_object_id)) {
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->next_object_id_lock);
+    VALUE not_id_value = rb_int_ge(objid, global_space->next_object_id);
+    rb_native_mutex_unlock(&global_space->next_object_id_lock);
+
+    if (not_id_value) {
         rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not id value", rb_int2str(objid, 10));
     }
     else {
@@ -4765,24 +4921,29 @@ static VALUE
 cached_object_id(VALUE obj)
 {
     VALUE id;
-    rb_objspace_t *objspace = &rb_objspace;
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
 
     RB_VM_LOCK_ENTER();
+    rb_native_mutex_lock(&objspace->obj_id_lock);
     if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
         GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
     }
     else {
         GC_ASSERT(!FL_TEST(obj, FL_SEEN_OBJ_ID));
 
-        id = objspace->next_object_id;
-        objspace->next_object_id = rb_int_plus(id, INT2FIX(OBJ_ID_INCREMENT));
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->next_object_id_lock);
+        id = global_space->next_object_id;
+        global_space->next_object_id = rb_int_plus(id, INT2FIX(OBJ_ID_INCREMENT));
+	rb_native_mutex_unlock(&global_space->next_object_id_lock);
 
-        VALUE already_disabled = rb_gc_disable_no_rest();
+        VALUE already_disabled = gc_disable_no_rest(objspace);
         st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
         st_insert(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
         if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
         FL_SET(obj, FL_SEEN_OBJ_ID);
     }
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
     RB_VM_LOCK_LEAVE();
 
     return id;
@@ -7040,12 +7201,28 @@ gc_aging(rb_objspace_t *objspace, VALUE obj)
     objspace->marked_slots++;
 }
 
+static bool
+in_marking_range(rb_objspace_t *objspace, VALUE obj)
+{
+    switch (BUILTIN_TYPE(obj)) {
+	case T_CLASS:
+	case T_MODULE:
+	case T_ICLASS:
+	    return objspace == GET_VM()->objspace; //TODO: Remove once constants referenced by classes become safe
+	default:
+	    return GET_OBJSPACE_OF_VALUE(obj) == objspace; //TODO: Apply this only to shareable objects once the roots have been sorted
+    }
+}
+
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
 static void reachable_objects_from_callback(VALUE obj);
 
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
+    if (!in_marking_range(objspace, obj)) { 
+	return;
+    }
     if (LIKELY(during_gc)) {
         rgengc_check_relation(objspace, obj);
         if (!gc_mark_set(objspace, obj)) return; /* already marked */
@@ -7560,8 +7737,19 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     mark_set_no_pin(objspace, objspace->shareable_tbl);
 
     MARK_CHECKPOINT("object_id");
-    rb_gc_mark(objspace->next_object_id);
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->next_object_id_lock);
+    rb_gc_mark(global_space->next_object_id);
+    rb_native_mutex_unlock(&global_space->next_object_id_lock);
+    rb_native_mutex_lock(&objspace->obj_id_lock);
     mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
+
+    MARK_CHECKPOINT("local_gc_exemption_tbl");
+
+    rb_native_mutex_lock(&global_space->exemption_tbl_lock);
+    mark_set_no_pin(objspace, global_space->local_gc_exemption_tbl);
+    rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
 
@@ -9868,6 +10056,25 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
     return FALSE;
 }
 
+static int
+update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src, st_data_t *srcid, st_data_t *id)
+{
+    rb_native_mutex_lock(&objspace->obj_id_lock);
+    int id_found = st_lookup(objspace->obj_to_id_tbl, *srcid, id);
+    if (id_found) {
+        gc_report(4, objspace, "Moving object with seen id: %p -> %p\n", (void *)src, (void *)dest);
+        /* inserting in the st table can cause the GC to run. We need to
+         * prevent re-entry in to the GC since `gc_move` is running in the GC,
+         * so temporarily disable the GC around the st table mutation */
+        VALUE already_disabled = rb_gc_disable_no_rest();
+        st_delete(objspace->obj_to_id_tbl, srcid, 0);
+        st_insert(objspace->obj_to_id_tbl, (st_data_t)dest, *id);
+        if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+    }
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
+    return id_found;
+}
+
 static VALUE
 gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, size_t slot_size)
 {
@@ -9907,16 +10114,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
 
     /* If the source object's object_id has been seen, we need to update
      * the object to object id mapping. */
-    if (st_lookup(objspace->obj_to_id_tbl, srcid, &id)) {
-        gc_report(4, objspace, "Moving object with seen id: %p -> %p\n", (void *)src, (void *)dest);
-        /* inserting in the st table can cause the GC to run. We need to
-         * prevent re-entry in to the GC since `gc_move` is running in the GC,
-         * so temporarily disable the GC around the st table mutation */
-        VALUE already_disabled = rb_gc_disable_no_rest();
-        st_delete(objspace->obj_to_id_tbl, &srcid, 0);
-        st_insert(objspace->obj_to_id_tbl, (st_data_t)dest, id);
-        if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
-    }
+    update_obj_id_mapping(GET_OBJSPACE_OF_VALUE(scan), dest, src, &srcid, &id);
 
     /* Move the object */
     memcpy(dest, src, MIN(src_slot_size, slot_size));
@@ -10744,8 +10942,12 @@ gc_update_references(rb_objspace_t *objspace)
     rb_gc_update_global_tbl();
     global_symbols.ids = rb_gc_location(global_symbols.ids);
     global_symbols.dsymbol_fstr_hash = rb_gc_location(global_symbols.dsymbol_fstr_hash);
+
+    rb_native_mutex_lock(&objspace->obj_id_lock);
     gc_update_tbl_refs(objspace, objspace->obj_to_id_tbl);
     gc_update_table_refs(objspace, objspace->id_to_obj_tbl);
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
+
     gc_update_table_refs(objspace, global_symbols.str_sym);
     gc_update_table_refs(objspace, finalizer_table);
     gc_update_table_refs(objspace, objspace->shareable_tbl);
@@ -13112,6 +13314,10 @@ wmap_aset_update(st_data_t *key, st_data_t *val, st_data_t arg, int existing)
 static VALUE
 wmap_aset(VALUE self, VALUE key, VALUE value)
 {
+    //TODO: Remove once WeakRef is able to handle objects from other Ractors
+    if(!STATIC_SYM_P(value) && !FLONUM_P(value) && !SPECIAL_CONST_P(value) && (&rb_objspace != GET_OBJSPACE_OF_VALUE(value)))
+	rb_raise(rb_eArgError, "Cannot have a weak reference for an object in another Ractor");
+
     struct weakmap *w;
 
     TypedData_Get_Struct(self, struct weakmap, &weakmap_type, w);
