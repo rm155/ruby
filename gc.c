@@ -873,7 +873,7 @@ typedef struct rb_objspace {
     rb_ractor_t *ractor;
 } rb_objspace_t;
 
-rb_objspace_t *
+static rb_objspace_t *
 current_ractor_objspace(rb_vm_t *vm)
 {
     if (vm->ractor.cnt <= 1) {
@@ -7220,7 +7220,7 @@ static void reachable_objects_from_callback(VALUE obj);
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-    if (!in_marking_range(objspace, obj)) { 
+    if (!in_marking_range(objspace, obj)) {
 	return;
     }
     if (LIKELY(during_gc)) {
