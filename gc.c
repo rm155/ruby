@@ -4811,7 +4811,7 @@ id2ref_obj_tbl(rb_objspace_t *objspace, VALUE objid)
     }
 
     r = NULL;
-    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
+    ccan_list_for_each(&vm->ractor.ended_set, r, ended_vmlr_node) {
 	result = lookup_id_in_objspace(r->local_objspace, objid);
 	if (result != Qundef) {
 	    return result;
@@ -4869,12 +4869,11 @@ id2ref(VALUE objid)
 
     if ((orig = id2ref_obj_tbl(objspace, objid)) != Qundef &&
         is_live_object(objspace, orig)) {
-
-        if (!rb_multi_ractor_p() || rb_ractor_shareable_p(orig)) {
-            return orig;
-        }
+	if (GET_OBJSPACE_OF_VALUE(orig) == objspace || rb_ractor_shareable_p(orig)) {
+	    return orig;
+	}
         else {
-            rb_raise(rb_eRangeError, "%+"PRIsVALUE" is id of the unshareable object on multi-ractor", rb_int2str(objid, 10));
+            rb_raise(rb_eRangeError, "%+"PRIsVALUE" is the id of an unshareable object belonging to another Ractor", rb_int2str(objid, 10));
         }
     }
 
