@@ -4811,7 +4811,7 @@ id2ref_obj_tbl(rb_objspace_t *objspace, VALUE objid)
     }
 
     r = NULL;
-    ccan_list_for_each(&vm->ractor.ended_set, r, vmlr_node) {
+    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
 	result = lookup_id_in_objspace(r->local_objspace, objid);
 	if (result != Qundef) {
 	    return result;

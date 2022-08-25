@@ -132,6 +132,7 @@ struct rb_ractor_struct {
     enum ractor_status status_;
 
     struct ccan_list_node vmlr_node;
+    struct ccan_list_node ended_vmlr_node;
 
     // ractor local data
 
