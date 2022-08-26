@@ -239,7 +239,6 @@ ractor_free(void *ptr)
     ractor_waiting_list_free(&r->sync.taking_ractors);
     ractor_local_storage_free(r);
     rb_hook_list_free(&r->pub.hooks);
-    ccan_list_del(&r->ended_vmlr_node);
     ruby_xfree(r);
 }
 
@@ -1507,7 +1506,6 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 
         ractor_status_set(cr, ractor_terminated);
     }
-    ccan_list_add_tail(&vm->ractor.ended_set, &cr->ended_vmlr_node);
     RB_VM_UNLOCK();
 }
 

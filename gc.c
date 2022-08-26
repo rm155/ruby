@@ -871,6 +871,7 @@ typedef struct rb_objspace {
 #endif
 
     rb_ractor_t *ractor;
+    struct ccan_list_node objspace_node;
 } rb_objspace_t;
 
 static rb_objspace_t *
@@ -1921,7 +1922,19 @@ rb_objspace_free(rb_objspace_t *objspace)
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
 
+    ccan_list_del(&objspace->objspace_node);
+
     free(objspace);
+}
+
+void
+rb_objspace_free_all_non_main(rb_vm_t *vm) {
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	if (os != vm->objspace) {
+	    rb_objspace_free(os);
+	}
+    }
 }
 
 static void
@@ -3888,6 +3901,7 @@ Init_heap(rb_objspace_t *objspace)
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
+    ccan_list_add_tail(&GET_VM()->objspace_set, &objspace->objspace_node);
 }
 
 void
@@ -4810,9 +4824,9 @@ id2ref_obj_tbl(rb_objspace_t *objspace, VALUE objid)
 	}
     }
 
-    r = NULL;
-    ccan_list_for_each(&vm->ractor.ended_set, r, ended_vmlr_node) {
-	result = lookup_id_in_objspace(r->local_objspace, objid);
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+	result = lookup_id_in_objspace(os, objid);
 	if (result != Qundef) {
 	    return result;
 	}

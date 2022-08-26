@@ -2806,11 +2806,7 @@ ruby_vm_destruct(rb_vm_t *vm)
 		rb_objspace_free(r->local_objspace);
 	    }
 	}
-	ccan_list_for_each(&vm->ractor.ended_set, r, ended_vmlr_node) {
-	    if (r->local_objspace && r != vm->ractor.main_ractor) {
-		rb_objspace_free(r->local_objspace);
-	    }
-	}
+	rb_objspace_free_all_non_main(vm);
         if (objspace) {
             rb_objspace_free(objspace);
         }
