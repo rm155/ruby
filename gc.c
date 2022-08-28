@@ -13327,10 +13327,6 @@ wmap_aset_update(st_data_t *key, st_data_t *val, st_data_t arg, int existing)
 static VALUE
 wmap_aset(VALUE self, VALUE key, VALUE value)
 {
-    //TODO: Remove once WeakRef is able to handle objects from other Ractors
-    if(!STATIC_SYM_P(value) && !FLONUM_P(value) && !SPECIAL_CONST_P(value) && (&rb_objspace != GET_OBJSPACE_OF_VALUE(value)))
-	rb_raise(rb_eArgError, "Cannot have a weak reference for an object in another Ractor");
-
     struct weakmap *w;
 
     TypedData_Get_Struct(self, struct weakmap, &weakmap_type, w);
@@ -13359,7 +13355,7 @@ wmap_lookup(VALUE self, VALUE key)
     TypedData_Get_Struct(self, struct weakmap, &weakmap_type, w);
     if (!st_lookup(w->wmap2obj, (st_data_t)key, &data)) return Qundef;
     obj = (VALUE)data;
-    if (!wmap_live_p(objspace, obj)) return Qundef;
+    if (!wmap_live_p(GET_OBJSPACE_OF_VALUE(obj), obj)) return Qundef;
     return obj;
 }
 
