@@ -4251,6 +4251,14 @@ os_each_obj(int argc, VALUE *argv, VALUE os)
     return os_obj_of(of);
 }
 
+static void
+should_belong_to_current_objspace(VALUE obj)
+{
+    if (GET_OBJSPACE_OF_VALUE(obj) != &rb_objspace) {
+	rb_raise(rb_eRactorIsolationError, "cannot define or undefine finalizers for objects belonging to another Ractor");
+    }
+}
+
 /*
  *  call-seq:
  *     ObjectSpace.undefine_finalizer(obj)
@@ -4268,6 +4276,7 @@ undefine_final(VALUE os, VALUE obj)
 VALUE
 rb_undefine_finalizer(VALUE obj)
 {
+    should_belong_to_current_objspace(obj);
     rb_objspace_t *objspace = &rb_objspace;
     st_data_t data = obj;
     rb_check_frozen(obj);
@@ -4364,6 +4373,7 @@ define_final(int argc, VALUE *argv, VALUE os)
 
     rb_scan_args(argc, argv, "11", &obj, &block);
     should_be_finalizable(obj);
+    should_belong_to_current_objspace(obj);
     if (argc == 1) {
         block = rb_block_proc();
     }
@@ -4422,6 +4432,7 @@ rb_define_finalizer(VALUE obj, VALUE block)
 {
     should_be_finalizable(obj);
     should_be_callable(block);
+    should_belong_to_current_objspace(obj);
     return define_final0(obj, block);
 }
 
