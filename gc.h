@@ -114,6 +114,8 @@ int ruby_get_stack_grow_direction(volatile VALUE *addr);
 const char *rb_obj_info(VALUE obj);
 const char *rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj);
 
+VALUE rb_gc_ractor_teardown_cleanup();
+
 VALUE rb_gc_disable_no_rest(void);
 
 struct rb_thread_struct;

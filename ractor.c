@@ -203,7 +203,9 @@ rb_ractor_related_objects_mark(rb_ractor_t *r)
         ccan_list_for_each(&r->threads.set, th, lt_node) {
             VM_ASSERT(th != NULL);
             rb_gc_mark(th->self);
-	    rb_thread_fiber_mark(th);
+	    if (!r->during_teardown_cleanup) {
+		rb_thread_fiber_mark(th);
+	    }
         }
     }
 
@@ -931,11 +933,6 @@ ractor_basket_setup(rb_execution_context_t *ec, struct rb_ractor_basket *basket,
     basket->sender = rb_ec_ractor_ptr(ec)->pub.self;
     basket->exception = exc;
 
-    void rb_add_to_exemption_tbl(VALUE obj);
-    if (!RTEST(move)) {
-	rb_add_to_exemption_tbl(obj);
-    }
-
     if (is_will) {
         basket->type = basket_type_will;
         basket->v = obj;
@@ -958,6 +955,8 @@ ractor_basket_setup(rb_execution_context_t *ec, struct rb_ractor_basket *basket,
             basket->v = ractor_move(obj);
         }
     }
+    void rb_add_to_exemption_tbl(VALUE obj);
+    rb_add_to_exemption_tbl(basket->v);
 }
 
 static VALUE
@@ -1591,6 +1590,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     }
     r->name = name;
     r->loc = loc;
+    r->during_teardown_cleanup = false;
 }
 
 void
@@ -1681,6 +1681,7 @@ rb_ractor_teardown(rb_execution_context_t *ec)
         cr->threads.main = NULL;
     }
     RB_VM_LOCK_LEAVE();
+    rb_gc_ractor_teardown_cleanup();
 }
 
 void

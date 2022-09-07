@@ -11166,6 +11166,17 @@ rb_gc_start(void)
     return Qnil;
 }
 
+VALUE
+rb_gc_ractor_teardown_cleanup()
+{
+    rb_ractor_t *cr = GET_RACTOR();
+    cr->during_teardown_cleanup = true;
+    rb_gc();
+    cr->during_teardown_cleanup = false;
+    gc_finalize_deferred(cr->local_objspace);
+    return Qnil;
+}
+
 void
 rb_gc(void)
 {
