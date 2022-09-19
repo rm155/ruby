@@ -1622,6 +1622,7 @@ ractor_create(rb_execution_context_t *ec, VALUE self, VALUE loc, VALUE name, VAL
 
     rb_yjit_before_ractor_spawn();
     rb_thread_create_ractor(r, args, block);
+    r->threads.main->top_self = Qnil;
 
     RB_GC_GUARD(rv);
     return rv;
