@@ -106,6 +106,7 @@
 #define RUBY_THREAD_PRIORITY_MIN -3
 #endif
 
+static VALUE cThGroup;
 static VALUE rb_cThreadShield;
 
 static VALUE sym_immediate;
@@ -841,7 +842,12 @@ thread_create_core(VALUE thval, struct thread_create_params *params)
     }
 
     th->priority = current_th->priority;
-    th->thgroup = current_th->thgroup;
+    if (current_th->ractor == th->ractor) {
+	th->thgroup = current_th->thgroup;
+    }
+    else {
+	th->thgroup = current_th->ractor->thgroup_default = rb_obj_alloc(cThGroup);
+    }
 
     th->pending_interrupt_queue = rb_ary_hidden_new(0);
     th->pending_interrupt_queue_checked = 0;
@@ -5290,7 +5296,6 @@ Init_Thread_Mutex(void)
 void
 Init_Thread(void)
 {
-    VALUE cThGroup;
     rb_thread_t *th = GET_THREAD();
 
     sym_never = ID2SYM(rb_intern_const("never"));
