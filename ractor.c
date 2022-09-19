@@ -198,14 +198,12 @@ rb_ractor_related_objects_mark(rb_ractor_t *r)
     rb_gc_mark(r->r_stderr);
     rb_hook_list_mark(&r->pub.hooks);
 
-    if (r->threads.cnt > 0) {
+    if (r->threads.cnt > 0 && !r->during_teardown_cleanup) {
         rb_thread_t *th = 0;
         ccan_list_for_each(&r->threads.set, th, lt_node) {
             VM_ASSERT(th != NULL);
-            rb_gc_mark(th->self);
-	    if (!r->during_teardown_cleanup) {
-		rb_thread_fiber_mark(th);
-	    }
+	    if (th != r->threads.main) rb_gc_mark(th->self);
+	    rb_thread_fiber_mark(th);
         }
     }
 
@@ -216,7 +214,10 @@ static void
 ractor_mark(void *ptr)
 {
     rb_ractor_t *r = (rb_ractor_t *)ptr;
-    rb_ractor_related_objects_mark(r);
+    if (r->threads.main) {
+	rb_gc_mark(r->threads.main->self);
+	if (r->threads.main->thgroup) rb_gc_mark(r->threads.main->thgroup);
+    }
 }
 
 static void
