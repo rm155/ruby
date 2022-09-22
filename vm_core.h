@@ -1710,6 +1710,7 @@ VM_BH_FROM_PROC(VALUE procval)
 }
 
 /* VM related object allocate functions */
+VALUE rb_thread_alloc_for_ractor(VALUE klass, rb_ractor_t *r);
 VALUE rb_thread_alloc(VALUE klass);
 VALUE rb_binding_alloc(VALUE klass);
 VALUE rb_proc_alloc(VALUE klass);

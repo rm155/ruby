@@ -3285,7 +3285,12 @@ th_init(rb_thread_t *th, VALUE self, rb_vm_t *vm)
     th->status = THREAD_RUNNABLE;
     th->last_status = Qnil;
     th->top_wrapper = 0;
-    th->top_self = vm->top_self; // 0 while self == 0
+    if (th->ractor == vm->ractor.main_ractor) {
+	th->top_self = vm->top_self; // 0 while self == 0
+    }
+    else {
+	th->top_self = Qnil;
+    }
     th->value = Qundef;
 
     th->ec->errinfo = Qnil;
@@ -3307,13 +3312,19 @@ th_init(rb_thread_t *th, VALUE self, rb_vm_t *vm)
 }
 
 VALUE
-rb_thread_alloc(VALUE klass)
+rb_thread_alloc_for_ractor(VALUE klass, rb_ractor_t *r)
 {
     VALUE self = thread_alloc(klass);
     rb_thread_t *target_th = rb_thread_ptr(self);
-    target_th->ractor = GET_RACTOR();
+    target_th->ractor = r;
     th_init(target_th, self, target_th->vm = GET_VM());
     return self;
+}
+
+VALUE
+rb_thread_alloc(VALUE klass)
+{
+    return rb_thread_alloc_for_ractor(klass, GET_RACTOR());
 }
 
 #define REWIND_CFP(expr) do { \
