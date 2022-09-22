@@ -218,6 +218,11 @@ ractor_mark(void *ptr)
 	rb_gc_mark(r->threads.main->self);
 	if (r->threads.main->thgroup) rb_gc_mark(r->threads.main->thgroup);
     }
+    else if (r->threads.cnt == 1) {
+	rb_thread_t *th = ccan_list_top(&r->threads.set, rb_thread_t, lt_node);
+	rb_gc_mark(th->self);
+	if (th->thgroup) rb_gc_mark(th->thgroup);
+    }
 }
 
 static void
