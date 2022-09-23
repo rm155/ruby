@@ -111,6 +111,7 @@ struct rb_ractor_struct {
     VALUE receiving_mutex;
     bool yield_atexit;
     bool during_teardown_cleanup;
+    rb_ractor_t *receiver_before_exit;
 
     // vm wide barrier synchronization
     rb_nativethread_cond_t barrier_wait_cond;

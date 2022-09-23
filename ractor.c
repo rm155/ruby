@@ -975,7 +975,7 @@ ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
 }
 
 static VALUE
-ractor_try_take(rb_execution_context_t *ec, rb_ractor_t *r)
+ractor_try_take(rb_execution_context_t *ec, rb_ractor_t *cr, rb_ractor_t *r)
 {
     struct rb_ractor_basket basket = {
         .type = basket_type_none,
@@ -998,6 +998,9 @@ ractor_try_take(rb_execution_context_t *ec, rb_ractor_t *r)
             }
             VM_ASSERT(wakeup_result);
         }
+	else if (r->receiver_before_exit == cr) {
+	    basket = cr->sync.wait.taken_basket;
+	}
         else if (r->sync.outgoing_port_closed) {
             closed = true;
         }
@@ -1023,7 +1026,7 @@ ractor_yield_move_body(VALUE v)
     return ractor_move(v);
 }
 
-static bool
+static rb_ractor_t *
 ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_basket *basket)
 {
     ASSERT_ractor_unlocking(cr);
@@ -1089,11 +1092,11 @@ ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_b
             goto retry_shift;
         }
         else {
-            return true;
+            return r;
         }
     }
     else {
-        return false;
+        return NULL;
     }
 }
 
@@ -1163,7 +1166,7 @@ ractor_select(rb_execution_context_t *ec, const VALUE *rs, const int rs_len, VAL
             switch (actions[i].type) {
               case ractor_select_action_take:
                 rv = actions[i].v;
-                v = ractor_try_take(ec, RACTOR_PTR(rv));
+                v = ractor_try_take(ec, cr, RACTOR_PTR(rv));
                 if (v != Qundef) {
                     *ret_r = rv;
                     ret = v;
@@ -1644,10 +1647,13 @@ ractor_yield_atexit(rb_execution_context_t *ec, rb_ractor_t *cr, VALUE v, bool e
 
     struct rb_ractor_basket basket;
     ractor_basket_setup(ec, &basket, v, Qfalse, exc, true, true /* this flag is ignored because move is Qfalse */);
+    rb_ractor_t *receiver;
 
   retry:
-    if (ractor_try_yield(ec, cr, &basket)) {
+    receiver = ractor_try_yield(ec, cr, &basket);
+    if (receiver) {
         // OK.
+	cr->receiver_before_exit = receiver;
     }
     else {
         bool retry = false;
