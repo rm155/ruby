@@ -933,6 +933,8 @@ ractor_send_basket(rb_execution_context_t *ec, rb_ractor_t *r, struct rb_ractor_
 static VALUE ractor_move(VALUE obj); // in this file
 static VALUE ractor_copy(VALUE obj); // in this file
 
+static void traverse_and_add_to_exemption_tbl(VALUE obj);
+
 static void
 ractor_basket_setup(rb_execution_context_t *ec, struct rb_ractor_basket *basket, VALUE obj, VALUE move, bool exc, bool is_will, bool is_yield)
 {
@@ -961,8 +963,7 @@ ractor_basket_setup(rb_execution_context_t *ec, struct rb_ractor_basket *basket,
             basket->v = ractor_move(obj);
         }
     }
-    void rb_add_to_exemption_tbl(VALUE obj);
-    rb_add_to_exemption_tbl(basket->v);
+    traverse_and_add_to_exemption_tbl(basket->v);
 }
 
 static VALUE
@@ -1068,6 +1069,7 @@ ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_b
                         else {
                             basket->v = moved_value;
                         }
+			traverse_and_add_to_exemption_tbl(moved_value);
                     }
                     RACTOR_LOCK(r);
 
@@ -2938,6 +2940,32 @@ static const VALUE fl_users = FL_USER1  | FL_USER2  | FL_USER3  |
                               FL_USER12 | FL_USER13 | FL_USER14 | FL_USER15 |
                               FL_USER16 | FL_USER17 | FL_USER18 | FL_USER19;
 
+void rb_add_to_exemption_tbl(VALUE obj);
+
+static enum obj_traverse_iterator_result
+exemption_add_enter(VALUE obj, struct obj_traverse_replace_data *data)
+{
+    if (rb_ractor_shareable_p(obj)) {
+	data->replacement = obj;
+	return traverse_skip;
+    }
+    else {
+	data->replacement = obj;
+	rb_add_to_exemption_tbl(data->replacement);
+	return traverse_cont;
+    }
+}
+
+static enum obj_traverse_iterator_result
+exemption_add_leave(VALUE obj, struct obj_traverse_replace_data *data)
+{
+    return traverse_cont;
+}
+
+static void traverse_and_add_to_exemption_tbl(VALUE obj) {
+    rb_obj_traverse_replace(obj, exemption_add_enter, exemption_add_leave, false);
+}
+
 static void
 ractor_moved_bang(VALUE obj)
 {
@@ -2956,6 +2984,7 @@ ractor_moved_bang(VALUE obj)
 static enum obj_traverse_iterator_result
 move_enter(VALUE obj, struct obj_traverse_replace_data *data)
 {
+    rb_add_to_exemption_tbl(obj);
     if (rb_ractor_shareable_p(obj)) {
         data->replacement = obj;
         return traverse_skip;
@@ -3012,6 +3041,7 @@ copy_enter(VALUE obj, struct obj_traverse_replace_data *data)
     }
     else {
         data->replacement = rb_obj_clone(obj);
+	rb_add_to_exemption_tbl(data->replacement);
         return traverse_cont;
     }
 }
