@@ -846,7 +846,7 @@ thread_create_core(VALUE thval, struct thread_create_params *params)
 	th->thgroup = current_th->thgroup;
     }
     else {
-	th->thgroup = current_th->ractor->thgroup_default = rb_obj_alloc(cThGroup);
+	th->thgroup = th->ractor->thgroup_default = rb_obj_alloc(cThGroup);
     }
 
     th->pending_interrupt_queue = rb_ary_hidden_new(0);
