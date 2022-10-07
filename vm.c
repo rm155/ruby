@@ -17,6 +17,7 @@
 #include "internal/cont.h"
 #include "internal/error.h"
 #include "internal/eval.h"
+#include "internal/gc.h"
 #include "internal/inits.h"
 #include "internal/object.h"
 #include "internal/parse.h"
@@ -1167,6 +1168,7 @@ rb_proc_isolate_bang(VALUE self)
     }
 
     FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(self);
     return self;
 }
 
@@ -1205,6 +1207,7 @@ rb_proc_ractor_make_shareable(VALUE self)
     }
 
     FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(self);
     return self;
 }
 
