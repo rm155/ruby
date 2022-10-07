@@ -5583,12 +5583,18 @@ make_name_for_block(const rb_iseq_t *orig_iseq)
         }
     }
 
+    VALUE block_name;
+
     if (level == 1) {
-        return rb_sprintf("block in %"PRIsVALUE, ISEQ_BODY(iseq)->location.label);
+        block_name = rb_sprintf("block in %"PRIsVALUE, ISEQ_BODY(iseq)->location.label);
     }
     else {
-        return rb_sprintf("block (%d levels) in %"PRIsVALUE, level, ISEQ_BODY(iseq)->location.label);
+        block_name = rb_sprintf("block (%d levels) in %"PRIsVALUE, level, ISEQ_BODY(iseq)->location.label);
     }
+
+    FL_SET_RAW(block_name, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(block_name);
+    return block_name;
 }
 
 static void
