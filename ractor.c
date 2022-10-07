@@ -1688,6 +1688,8 @@ rb_ractor_teardown(rb_execution_context_t *ec)
     ractor_close_incoming(ec, cr);
     ractor_close_outgoing(ec, cr);
 
+    rb_gc_ractor_teardown_cleanup();
+
     // sync with rb_ractor_terminate_interrupt_main_thread()
     RB_VM_LOCK_ENTER();
     {
@@ -1695,7 +1697,6 @@ rb_ractor_teardown(rb_execution_context_t *ec)
         cr->threads.main = NULL;
     }
     RB_VM_LOCK_LEAVE();
-    rb_gc_ractor_teardown_cleanup();
 }
 
 void
