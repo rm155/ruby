@@ -874,6 +874,8 @@ typedef struct rb_objspace {
 
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
+
+    rb_ractor_t *alloc_target_ractor;
 } rb_objspace_t;
 
 static rb_objspace_t *
@@ -2747,12 +2749,32 @@ size_pool_idx_for_size(size_t size)
 #endif
 }
 
+void
+set_current_alloc_target_ractor(rb_ractor_t *target)
+{
+    GET_RACTOR()->local_objspace->alloc_target_ractor = target;
+}
+
+rb_ractor_t *
+get_current_alloc_target_ractor(void)
+{
+    return GET_RACTOR()->local_objspace->alloc_target_ractor;
+}
+
 static VALUE
 newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked)
 {
+    rb_ractor_t *alloc_target_ractor;
+    if (objspace->alloc_target_ractor) {
+	alloc_target_ractor = objspace->alloc_target_ractor;
+	objspace = alloc_target_ractor->local_objspace;
+    }
+    else {
+	alloc_target_ractor = cr;
+    }
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
-    rb_ractor_newobj_cache_t *cache = &cr->newobj_cache;
+    rb_ractor_newobj_cache_t *cache = &alloc_target_ractor->newobj_cache;
 
     VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
 
@@ -2888,12 +2910,13 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
     return obj;
 }
 
+void rb_add_to_exemption_tbl(VALUE obj);
+
 static inline VALUE
 newobj_of(VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, int wb_protected, size_t alloc_size)
 {
     VALUE obj = newobj_of0(klass, flags, wb_protected, GET_RACTOR(), alloc_size);
 
-    void rb_add_to_exemption_tbl(VALUE obj);
     switch (BUILTIN_TYPE(obj)) {
 	case T_ICLASS:
 	case T_CLASS:
@@ -3067,6 +3090,9 @@ rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
     if (rb_shareable_imemo_type(type)) {
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
 	rb_add_to_shareable_tbl(obj);
+    }
+    if (type == imemo_env) {
+	rb_add_to_exemption_tbl(obj);
     }
     return obj;
 }

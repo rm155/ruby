@@ -993,7 +993,15 @@ rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc)
         .args = args,
         .proc = proc,
     };
-    return thread_create_core(rb_thread_alloc_for_ractor(rb_cThread, g), &params);
+
+    set_current_alloc_target_ractor(g);
+
+    VALUE allocated_thread = rb_thread_alloc_for_ractor(rb_cThread, g);
+    VALUE th = thread_create_core(allocated_thread, &params);
+
+    set_current_alloc_target_ractor(NULL);
+
+    return th;
 }
 
 
