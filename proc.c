@@ -37,7 +37,11 @@ const rb_cref_t *rb_vm_cref_in_context(VALUE self, VALUE cbase);
 struct METHOD {
     const VALUE recv;
     const VALUE klass;
+    /* needed for #super_method */
     const VALUE iclass;
+    /* Different than me->owner only for ZSUPER methods.
+       This is error-prone but unavoidable unless ZSUPER methods are removed. */
+    const VALUE owner;
     const rb_method_entry_t * const me;
     /* for bound methods, `me' should be rb_callable_method_entry_t * */
 };
@@ -1363,7 +1367,7 @@ iseq_location(const rb_iseq_t *iseq)
     if (!iseq) return Qnil;
     rb_iseq_check(iseq);
     loc[0] = rb_iseq_path(iseq);
-    loc[1] = ISEQ_BODY(iseq)->location.first_lineno;
+    loc[1] = RB_INT2NUM(ISEQ_BODY(iseq)->location.first_lineno);
 
     return rb_ary_new4(2, loc);
 }
@@ -1544,7 +1548,7 @@ rb_block_to_s(VALUE self, const struct rb_block *block, const char *additional_i
             const rb_iseq_t *iseq = rb_iseq_check(block->as.captured.code.iseq);
             rb_str_catf(str, "%p %"PRIsVALUE":%d", (void *)self,
                         rb_iseq_path(iseq),
-                        FIX2INT(ISEQ_BODY(iseq)->location.first_lineno));
+                        ISEQ_BODY(iseq)->location.first_lineno);
         }
         break;
       case block_type_symbol:
@@ -1597,6 +1601,7 @@ bm_mark(void *ptr)
     rb_gc_mark_movable(data->recv);
     rb_gc_mark_movable(data->klass);
     rb_gc_mark_movable(data->iclass);
+    rb_gc_mark_movable(data->owner);
     rb_gc_mark_movable((VALUE)data->me);
 }
 
@@ -1607,6 +1612,7 @@ bm_compact(void *ptr)
     UPDATE_REFERENCE(data->recv);
     UPDATE_REFERENCE(data->klass);
     UPDATE_REFERENCE(data->iclass);
+    UPDATE_REFERENCE(data->owner);
     UPDATE_TYPED_REFERENCE(rb_method_entry_t *, data->me);
 }
 
@@ -1655,6 +1661,7 @@ mnew_missing(VALUE klass, VALUE obj, ID id, VALUE mclass)
 
     RB_OBJ_WRITE(method, &data->recv, obj);
     RB_OBJ_WRITE(method, &data->klass, klass);
+    RB_OBJ_WRITE(method, &data->owner, klass);
 
     def = ZALLOC(rb_method_definition_t);
     def->type = VM_METHOD_TYPE_MISSING;
@@ -1682,6 +1689,7 @@ mnew_internal(const rb_method_entry_t *me, VALUE klass, VALUE iclass,
 {
     struct METHOD *data;
     VALUE method;
+    const rb_method_entry_t *original_me = me;
     rb_method_visibility_t visi = METHOD_VISI_UNDEF;
 
   again:
@@ -1719,6 +1727,7 @@ mnew_internal(const rb_method_entry_t *me, VALUE klass, VALUE iclass,
     RB_OBJ_WRITE(method, &data->recv, obj);
     RB_OBJ_WRITE(method, &data->klass, klass);
     RB_OBJ_WRITE(method, &data->iclass, iclass);
+    RB_OBJ_WRITE(method, &data->owner, original_me->owner);
     RB_OBJ_WRITE(method, &data->me, me);
 
     return method;
@@ -1869,6 +1878,7 @@ method_unbind(VALUE obj)
     RB_OBJ_WRITE(method, &data->recv, Qundef);
     RB_OBJ_WRITE(method, &data->klass, orig->klass);
     RB_OBJ_WRITE(method, &data->iclass, orig->iclass);
+    RB_OBJ_WRITE(method, &data->owner, orig->owner);
     RB_OBJ_WRITE(method, &data->me, rb_method_entry_clone(orig->me));
 
     return method;
@@ -1934,7 +1944,15 @@ method_original_name(VALUE obj)
  *  call-seq:
  *     meth.owner    -> class_or_module
  *
- *  Returns the class or module that defines the method.
+ *  Returns the class or module on which this method is defined.
+ *  In other words,
+ *
+ *    meth.owner.instance_methods(false).include?(meth.name) # => true
+ *
+ *  holds as long as the method is not removed/undefined/replaced,
+ *  (with private_instance_methods instead of instance_methods if the method
+ *  is private).
+ *
  *  See also Method#receiver.
  *
  *    (1..3).method(:map).owner #=> Enumerable
@@ -1945,7 +1963,7 @@ method_owner(VALUE obj)
 {
     struct METHOD *data;
     TypedData_Get_Struct(obj, struct METHOD, &method_data_type, data);
-    return data->me->owner;
+    return data->owner;
 }
 
 void
@@ -2384,6 +2402,7 @@ method_clone(VALUE self)
     RB_OBJ_WRITE(clone, &data->recv, orig->recv);
     RB_OBJ_WRITE(clone, &data->klass, orig->klass);
     RB_OBJ_WRITE(clone, &data->iclass, orig->iclass);
+    RB_OBJ_WRITE(clone, &data->owner, orig->owner);
     RB_OBJ_WRITE(clone, &data->me, rb_method_entry_clone(orig->me));
     return clone;
 }
@@ -2434,8 +2453,7 @@ method_clone(VALUE self)
 static VALUE
 rb_method_call_pass_called_kw(int argc, const VALUE *argv, VALUE method)
 {
-    VALUE procval = rb_block_given_p() ? rb_block_proc() : Qnil;
-    return rb_method_call_with_block_kw(argc, argv, method, procval, RB_PASS_CALLED_KEYWORDS);
+    return rb_method_call_kw(argc, argv, method, RB_PASS_CALLED_KEYWORDS);
 }
 
 VALUE
@@ -2543,9 +2561,9 @@ rb_method_call_with_block(int argc, const VALUE *argv, VALUE method, VALUE passe
  */
 
 static void
-convert_umethod_to_method_components(const struct METHOD *data, VALUE recv, VALUE *methclass_out, VALUE *klass_out, VALUE *iclass_out, const rb_method_entry_t **me_out)
+convert_umethod_to_method_components(const struct METHOD *data, VALUE recv, VALUE *methclass_out, VALUE *klass_out, VALUE *iclass_out, const rb_method_entry_t **me_out, const bool clone)
 {
-    VALUE methclass = data->me->owner;
+    VALUE methclass = data->owner;
     VALUE iclass = data->me->defined_class;
     VALUE klass = CLASS_OF(recv);
 
@@ -2565,9 +2583,20 @@ convert_umethod_to_method_components(const struct METHOD *data, VALUE recv, VALU
         }
     }
 
-    const rb_method_entry_t *me = rb_method_entry_clone(data->me);
+    const rb_method_entry_t *me;
+    if (clone) {
+        me = rb_method_entry_clone(data->me);
+    }
+    else {
+        me = data->me;
+    }
 
     if (RB_TYPE_P(me->owner, T_MODULE)) {
+        if (!clone) {
+            // if we didn't previously clone the method entry, then we need to clone it now
+            // because this branch manipulates it in rb_method_entry_complement_defined_class
+            me = rb_method_entry_clone(me);
+        }
         VALUE ic = rb_class_search_ancestor(klass, me->owner);
         if (ic) {
             klass = ic;
@@ -2627,13 +2656,14 @@ umethod_bind(VALUE method, VALUE recv)
     const rb_method_entry_t *me;
     const struct METHOD *data;
     TypedData_Get_Struct(method, struct METHOD, &method_data_type, data);
-    convert_umethod_to_method_components(data, recv, &methclass, &klass, &iclass, &me);
+    convert_umethod_to_method_components(data, recv, &methclass, &klass, &iclass, &me, true);
 
     struct METHOD *bound;
     method = TypedData_Make_Struct(rb_cMethod, struct METHOD, &method_data_type, bound);
     RB_OBJ_WRITE(method, &bound->recv, recv);
     RB_OBJ_WRITE(method, &bound->klass, klass);
     RB_OBJ_WRITE(method, &bound->iclass, iclass);
+    RB_OBJ_WRITE(method, &bound->owner, methclass);
     RB_OBJ_WRITE(method, &bound->me, me);
 
     return method;
@@ -2669,8 +2699,8 @@ umethod_bind_call(int argc, VALUE *argv, VALUE method)
     else {
         VALUE methclass, klass, iclass;
         const rb_method_entry_t *me;
-        convert_umethod_to_method_components(data, recv, &methclass, &klass, &iclass, &me);
-        struct METHOD bound = { recv, klass, 0, me };
+        convert_umethod_to_method_components(data, recv, &methclass, &klass, &iclass, &me, false);
+        struct METHOD bound = { recv, klass, 0, methclass, me };
 
         return call_method_data(ec, &bound, argc, argv, passed_procval, RB_PASS_CALLED_KEYWORDS);
     }
@@ -3470,7 +3500,7 @@ proc_binding(VALUE self)
     if (iseq) {
         rb_iseq_check(iseq);
         RB_OBJ_WRITE(bindval, &bind->pathobj, ISEQ_BODY(iseq)->location.pathobj);
-        bind->first_lineno = FIX2INT(rb_iseq_first_lineno(iseq));
+        bind->first_lineno = ISEQ_BODY(iseq)->location.first_lineno;
     }
     else {
         RB_OBJ_WRITE(bindval, &bind->pathobj,

@@ -99,6 +99,7 @@ extern int ruby_assert_critical_section_entered;
 #include "ruby/st.h"
 #include "ruby_atomic.h"
 #include "vm_opts.h"
+#include "shape.h"
 
 #include "ruby/thread_native.h"
 
@@ -256,13 +257,23 @@ STATIC_ASSERT(sizeof_iseq_inline_constant_cache_entry,
 
 struct iseq_inline_constant_cache {
     struct iseq_inline_constant_cache_entry *entry;
-    // For YJIT: the index to the opt_getinlinecache instruction in the same iseq.
-    // It's set during compile time and constant once set.
-    unsigned get_insn_idx;
+
+    /**
+     * A null-terminated list of ids, used to represent a constant's path
+     * idNULL is used to represent the :: prefix, and 0 is used to donate the end
+     * of the list.
+     *
+     * For example
+     *   FOO        {rb_intern("FOO"), 0}
+     *   FOO::BAR   {rb_intern("FOO"), rb_intern("BAR"), 0}
+     *   ::FOO      {idNULL, rb_intern("FOO"), 0}
+     *   ::FOO::BAR {idNULL, rb_intern("FOO"), rb_intern("BAR"), 0}
+     */
+    const ID *segments;
 };
 
 struct iseq_inline_iv_cache_entry {
-    struct rb_iv_index_tbl_entry *entry;
+    uintptr_t value; // attr_index in lower bits, dest_shape_id in upper bits
 };
 
 struct iseq_inline_cvar_cache_entry {
@@ -300,7 +311,7 @@ typedef struct rb_iseq_location_struct {
     VALUE pathobj;      /* String (path) or Array [path, realpath]. Frozen. */
     VALUE base_label;   /* String */
     VALUE label;        /* String */
-    VALUE first_lineno; /* TODO: may be unsigned short */
+    int first_lineno;
     int node_id;
     rb_code_location_t code_location;
 } rb_iseq_location_t;
@@ -338,6 +349,9 @@ struct rb_mjit_unit;
 typedef uintptr_t iseq_bits_t;
 
 #define ISEQ_IS_SIZE(body) (body->ic_size + body->ivc_size + body->ise_size + body->icvarc_size)
+
+/* [ TS_IVC | TS_ICVARC | TS_ISE | TS_IC ] */
+#define ISEQ_IS_IC_ENTRY(body, idx) (body->is_entries[(idx) + body->ise_size + body->icvarc_size + body->ivc_size].ic_cache);
 
 /* instruction sequence type */
 enum rb_iseq_type {
@@ -474,7 +488,7 @@ struct rb_iseq_constant_body {
         iseq_bits_t single;
     } mark_bits;
 
-    char catch_except_p; /* If a frame of this ISeq may catch exception, set TRUE */
+    bool catch_except_p; // If a frame of this ISeq may catch exception, set true.
     // If true, this ISeq is leaf *and* backtraces are not used, for example,
     // by rb_profile_frames. We verify only leafness on VM_CHECK_MODE though.
     // Note that GC allocations might use backtraces due to
@@ -489,13 +503,12 @@ struct rb_iseq_constant_body {
     /* The following fields are MJIT related info.  */
     VALUE (*jit_func)(struct rb_execution_context_struct *,
                       struct rb_control_frame_struct *); /* function pointer for loaded native code */
-    long unsigned total_calls; /* number of total calls with `mjit_exec()` */
+    long unsigned total_calls; /* number of total calls with `jit_exec()` */
     struct rb_mjit_unit *jit_unit;
 #endif
 
 #if USE_YJIT
     // YJIT stores some data on each iseq.
-    // Note: Cannot use YJIT_BUILD here since yjit.h includes this header.
     void *yjit_payload;
 #endif
 };
@@ -680,6 +693,12 @@ typedef struct rb_vm_struct {
     /* object management */
     VALUE mark_object_ary;
     const VALUE special_exceptions[ruby_special_error_count];
+
+    /* object shapes */
+    rb_shape_t *shape_list;
+    rb_shape_t *root_shape;
+    rb_shape_t *frozen_root_shape;
+    shape_id_t next_shape_id;
 
     /* load */
     VALUE top_self;
@@ -1088,7 +1107,7 @@ typedef struct rb_thread_struct {
     rb_fiber_t *root_fiber;
 
     VALUE scheduler;
-    unsigned blocking;
+    unsigned int blocking;
 
     /* misc */
     VALUE name;
@@ -1124,8 +1143,8 @@ RUBY_SYMBOL_EXPORT_BEGIN
 rb_iseq_t *rb_iseq_new         (const rb_ast_body_t *ast, VALUE name, VALUE path, VALUE realpath,                     const rb_iseq_t *parent, enum rb_iseq_type);
 rb_iseq_t *rb_iseq_new_top     (const rb_ast_body_t *ast, VALUE name, VALUE path, VALUE realpath,                     const rb_iseq_t *parent);
 rb_iseq_t *rb_iseq_new_main    (const rb_ast_body_t *ast,             VALUE path, VALUE realpath,                     const rb_iseq_t *parent, int opt);
-rb_iseq_t *rb_iseq_new_eval    (const rb_ast_body_t *ast, VALUE name, VALUE path, VALUE realpath, VALUE first_lineno, const rb_iseq_t *parent, int isolated_depth);
-rb_iseq_t *rb_iseq_new_with_opt(const rb_ast_body_t *ast, VALUE name, VALUE path, VALUE realpath, VALUE first_lineno, const rb_iseq_t *parent, int isolated_depth,
+rb_iseq_t *rb_iseq_new_eval    (const rb_ast_body_t *ast, VALUE name, VALUE path, VALUE realpath, int first_lineno, const rb_iseq_t *parent, int isolated_depth);
+rb_iseq_t *rb_iseq_new_with_opt(const rb_ast_body_t *ast, VALUE name, VALUE path, VALUE realpath, int first_lineno, const rb_iseq_t *parent, int isolated_depth,
                                 enum rb_iseq_type, const rb_compile_option_t*);
 
 struct iseq_link_anchor;
@@ -1143,7 +1162,7 @@ rb_iseq_new_with_callback_new_callback(
     return (struct rb_iseq_new_with_callback_callback_func *)memo;
 }
 rb_iseq_t *rb_iseq_new_with_callback(const struct rb_iseq_new_with_callback_callback_func * ifunc,
-    VALUE name, VALUE path, VALUE realpath, VALUE first_lineno,
+    VALUE name, VALUE path, VALUE realpath, int first_lineno,
     const rb_iseq_t *parent, enum rb_iseq_type, const rb_compile_option_t*);
 
 VALUE rb_iseq_disasm(const rb_iseq_t *iseq);
@@ -1189,7 +1208,7 @@ extern const rb_data_type_t ruby_binding_data_type;
 typedef struct {
     const struct rb_block block;
     const VALUE pathobj;
-    unsigned short first_lineno;
+    int first_lineno;
 } rb_binding_t;
 
 /* used by compile time and send insn */

@@ -74,7 +74,9 @@ static void
 ractor_lock_self(rb_ractor_t *cr, const char *file, int line)
 {
     VM_ASSERT(cr == GET_RACTOR());
+#if RACTOR_CHECK_MODE > 0
     VM_ASSERT(cr->sync.locked_by != cr->pub.self);
+#endif
     ractor_lock(cr, file, line);
 }
 
@@ -94,7 +96,9 @@ static void
 ractor_unlock_self(rb_ractor_t *cr, const char *file, int line)
 {
     VM_ASSERT(cr == GET_RACTOR());
+#if RACTOR_CHECK_MODE > 0
     VM_ASSERT(cr->sync.locked_by == cr->pub.self);
+#endif
     ractor_unlock(cr, file, line);
 }
 
@@ -2703,7 +2707,7 @@ obj_refer_only_shareables_p_i(VALUE obj, void *ptr)
     int *pcnt = (int *)ptr;
 
     if (!rb_ractor_shareable_p(obj)) {
-        pcnt++;
+        *pcnt++;
     }
 }
 

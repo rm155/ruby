@@ -7,8 +7,11 @@ module Bundler
     include Enumerable
     include TSort
 
-    def initialize(specs)
+    attr_reader :incomplete_specs
+
+    def initialize(specs, incomplete_specs = [])
       @specs = specs
+      @incomplete_specs = incomplete_specs
     end
 
     def for(dependencies, check = false, platforms = [nil])
@@ -19,7 +22,10 @@ module Bundler
       loop do
         break unless dep = deps.shift
 
-        key = [dep[0].name, dep[1]]
+        name = dep[0].name
+        platform = dep[1]
+
+        key = [name, platform]
         next if handled.key?(key)
 
         handled[key] = true
@@ -33,7 +39,7 @@ module Bundler
             deps << [d, dep[1]]
           end
         elsif check
-          specs << IncompleteSpecification.new(*key)
+          @incomplete_specs += lookup[name]
         end
       end
 
@@ -47,6 +53,12 @@ module Bundler
 
     def []=(key, value)
       @specs << value
+      @lookup = nil
+      @sorted = nil
+    end
+
+    def delete(spec)
+      @specs.delete(spec)
       @lookup = nil
       @sorted = nil
     end
@@ -66,7 +78,7 @@ module Bundler
     def materialize(deps)
       materialized = self.for(deps, true)
 
-      SpecSet.new(materialized)
+      SpecSet.new(materialized, incomplete_specs)
     end
 
     # Materialize for all the specs in the spec set, regardless of what platform they're for
@@ -83,15 +95,13 @@ module Bundler
     end
 
     def incomplete_ruby_specs?(deps)
-      self.class.new(self.for(deps, true, [Gem::Platform::RUBY])).incomplete_specs.any?
+      self.for(deps, true, [Gem::Platform::RUBY])
+
+      @incomplete_specs.any?
     end
 
     def missing_specs
       @specs.select {|s| s.is_a?(LazySpecification) }
-    end
-
-    def incomplete_specs
-      @specs.select {|s| s.is_a?(IncompleteSpecification) }
     end
 
     def merge(set)
@@ -104,8 +114,18 @@ module Bundler
       SpecSet.new(arr)
     end
 
+    def -(other)
+      SpecSet.new(to_a - other.to_a)
+    end
+
     def find_by_name_and_platform(name, platform)
       @specs.detect {|spec| spec.name == name && spec.match_platform(platform) }
+    end
+
+    def delete_by_name_and_version(name, version)
+      @specs.reject! {|spec| spec.name == name && spec.version == version }
+      @lookup = nil
+      @sorted = nil
     end
 
     def what_required(spec)
@@ -156,7 +176,7 @@ module Bundler
     def lookup
       @lookup ||= begin
         lookup = Hash.new {|h, k| h[k] = [] }
-        Index.sort_specs(@specs).reverse_each do |s|
+        @specs.each do |s|
           lookup[s.name] << s
         end
         lookup

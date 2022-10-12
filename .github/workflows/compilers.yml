@@ -6,11 +6,13 @@ on:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
   pull_request:
     paths-ignore:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
 
 concurrency:
   group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
@@ -20,7 +22,7 @@ concurrency:
 # environment variables (plus the "echo $GITHUB_ENV" hack) is to reroute that
 # restriction.
 env:
-  default_cc: clang-14
+  default_cc: clang-15
   append_cc: ''
 
   # -O1 is faster than -O3 in our tests... Majority of time are consumed trying
@@ -89,6 +91,7 @@ jobs:
               # https://sourceware.org/annobin/annobin.html/Test-pie.html
               TEST_ANNOCHECK_OPTS: "--skip-pie"
             check: true
+          - { name: clang-16,  env: { default_cc: clang-16 } }
           - { name: clang-15,  env: { default_cc: clang-15 } }
           - { name: clang-14,  env: { default_cc: clang-14 } }
           - { name: clang-13,  env: { default_cc: clang-13 } }
@@ -212,7 +215,7 @@ jobs:
     name: ${{ matrix.entry.name }}
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/ruby/ruby-ci-image:${{ matrix.entry.container || matrix.entry.env.default_cc || 'clang-14' }}
+      image: ghcr.io/ruby/ruby-ci-image:${{ matrix.entry.container || matrix.entry.env.default_cc || 'clang-15' }}
       options: --user root
     if: ${{ !contains(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
     env: ${{ matrix.entry.env || matrix.env }}
@@ -255,6 +258,8 @@ jobs:
       - run: make test-all TESTS='-- ruby -ext-'
         if: ${{ matrix.entry.check }}
       - run: make test-spec
+        env:
+          CHECK_LEAKS: true
         if: ${{ matrix.entry.check }}
       - run: make test-annocheck
         if: ${{ matrix.entry.check && endsWith(matrix.entry.name, 'annocheck') }}

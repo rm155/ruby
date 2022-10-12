@@ -355,6 +355,20 @@ RSpec.describe "bundler/inline#gemfile" do
     expect(err).to be_empty
   end
 
+  it "still installs if the application has `bundle package` no_install config set" do
+    bundle "config set --local no_install true"
+
+    script <<-RUBY
+      gemfile do
+        source "#{file_uri_for(gem_repo1)}"
+        gem "rack"
+      end
+    RUBY
+
+    expect(last_command).to be_success
+    expect(system_gem_path("gems/rack-1.0.0")).to exist
+  end
+
   it "preserves previous BUNDLE_GEMFILE value" do
     ENV["BUNDLE_GEMFILE"] = ""
     script <<-RUBY
@@ -435,9 +449,10 @@ RSpec.describe "bundler/inline#gemfile" do
 
     realworld_system_gems "pathname --version 0.2.0"
 
-    realworld_system_gems "fiddle" # not sure why, but this is needed on Windows to boot rubygems successfully
-
     realworld_system_gems "timeout uri" # this spec uses net/http which requires these default gems
+
+    # on prerelease rubies, a required_rubygems_version constraint is added by RubyGems to the resolution, causing Molinillo to load the `set` gem
+    realworld_system_gems "set --version 1.0.3" if Gem.ruby_version.prerelease?
 
     script <<-RUBY, :dir => tmp("path_without_gemfile"), :env => { "BUNDLER_GEM_DEFAULT_DIR" => system_gem_path.to_s }
       require "bundler/inline"

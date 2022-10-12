@@ -164,17 +164,16 @@ make_counters! {
 
     send_keywords,
     send_kw_splat,
-    send_args_splat,
+    send_args_splat_super,
+    send_iseq_zsuper,
     send_block_arg,
     send_ivar_set_method,
     send_zsuper_method,
     send_undef_method,
     send_optimized_method,
-    send_optimized_method_send,
     send_optimized_method_call,
     send_optimized_method_block_call,
     send_missing_method,
-    send_bmethod,
     send_refined_method,
     send_cfunc_ruby_array_varg,
     send_cfunc_argc_mismatch,
@@ -192,6 +191,26 @@ make_counters! {
     send_getter_arity,
     send_se_cf_overflow,
     send_se_protected_check_failed,
+    send_splatarray_length_not_equal,
+    send_splat_not_array,
+    send_args_splat_non_iseq,
+    send_args_splat_cfunc,
+    send_iseq_ruby2_keywords,
+    send_send_not_imm,
+    send_send_wrong_args,
+    send_send_null_mid,
+    send_send_null_cme,
+    send_send_nested,
+    send_send_chain,
+    send_send_chain_string,
+    send_send_chain_not_string,
+    send_send_chain_not_sym,
+    send_send_chain_not_string_or_sym,
+    send_send_getter,
+    send_send_builtin,
+
+    send_bmethod_ractor,
+    send_bmethod_block_arg,
 
     traced_cfunc_return,
 
@@ -422,7 +441,7 @@ pub extern "C" fn rb_yjit_record_exit_stack(exit_pc: *const VALUE)
         const BUFF_LEN: usize = 2048;
 
         // Create 2 array buffers to be used to collect frames and lines.
-        let mut frames_buffer = [VALUE(0 as usize); BUFF_LEN];
+        let mut frames_buffer = [VALUE(0_usize); BUFF_LEN];
         let mut lines_buffer = [0; BUFF_LEN];
 
         // Records call frame and line information for each method entry into two
@@ -505,7 +524,7 @@ pub extern "C" fn rb_yjit_record_exit_stack(exit_pc: *const VALUE)
 
         // Push number of times seen onto the stack, which is 1
         // because it's the first time we've seen it.
-        yjit_raw_samples.push(VALUE(1 as usize));
+        yjit_raw_samples.push(VALUE(1_usize));
         yjit_line_samples.push(1);
     }
 }

@@ -402,6 +402,40 @@ class TestGc < Test::Unit::TestCase
     eom
   end
 
+  def test_thrashing_for_young_objects
+    # This test prevents bugs like [Bug #18929]
+
+    assert_separately %w[--disable-gem], __FILE__, __LINE__, <<-'RUBY'
+      # Grow the heap
+      @ary = 100_000.times.map { Object.new }
+
+      # Warmup to make sure heap stabilizes
+      1_000_000.times { Object.new }
+
+      before_stats = GC.stat
+      before_stat_heap = GC.stat_heap
+
+      1_000_000.times { Object.new }
+
+      # Previous loop may have caused GC to be in an intermediate state,
+      # running a minor GC here will guarantee that GC will be complete
+      GC.start(full_mark: false)
+
+      after_stats = GC.stat
+      after_stat_heap = GC.stat_heap
+
+      # Debugging output to for failures in trunk-repeat50@phosphorus-docker
+      debug_msg = "before_stats: #{before_stats}\nbefore_stat_heap: #{before_stat_heap}\nafter_stats: #{after_stats}\nafter_stat_heap: #{after_stat_heap}"
+
+      # Should not be thrashing in page creation
+      assert_equal before_stats[:heap_allocated_pages], after_stats[:heap_allocated_pages], debug_msg
+      assert_equal 0, after_stats[:heap_tomb_pages], debug_msg
+      assert_equal 0, after_stats[:total_freed_pages], debug_msg
+      # Only young objects, so should not trigger major GC
+      assert_equal before_stats[:major_gc_count], after_stats[:major_gc_count], debug_msg
+    RUBY
+  end
+
   def test_gc_internals
     assert_not_nil GC::INTERNAL_CONSTANTS[:HEAP_PAGE_OBJ_LIMIT]
     assert_not_nil GC::INTERNAL_CONSTANTS[:RVALUE_SIZE]

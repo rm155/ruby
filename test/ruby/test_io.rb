@@ -1597,6 +1597,22 @@ class TestIO < Test::Unit::TestCase
     end
   end
 
+  def test_read_nonblock_file
+    make_tempfile do |path|
+      File.open(path, 'r') do |file|
+        file.read_nonblock(4)
+      end
+    end
+  end
+
+  def test_write_nonblock_file
+    make_tempfile do |path|
+      File.open(path, 'w') do |file|
+        file.write_nonblock("Ruby")
+      end
+    end
+  end
+
   def test_write_nonblock_simple_no_exceptions
     pipe(proc do |w|
       w.write_nonblock('1', exception: false)
@@ -2213,6 +2229,14 @@ class TestIO < Test::Unit::TestCase
     end)
   end
 
+  def test_sysread_with_negative_length
+    make_tempfile {|t|
+      open(t.path) do |f|
+        assert_raise(ArgumentError) { f.sysread(-1) }
+      end
+    }
+  end
+
   def test_flag
     make_tempfile {|t|
       assert_raise(ArgumentError) do
@@ -2601,6 +2625,8 @@ class TestIO < Test::Unit::TestCase
 
       bug = '[ruby-dev:31525]'
       assert_raise(ArgumentError, bug) {IO.foreach}
+
+      assert_raise(ArgumentError, "[Bug #18767] [ruby-core:108499]") {IO.foreach(__FILE__, 0){}}
 
       a = nil
       assert_nothing_raised(ArgumentError, bug) {a = IO.foreach(t.path).to_a}
@@ -3950,6 +3976,9 @@ __END__
       noex = Thread.new do # everything right and never see exceptions :)
         until sig_rd.wait_readable(0)
           IO.pipe do |r, w|
+            assert_nil r.timeout
+            assert_nil w.timeout
+
             th = Thread.new { r.read(1) }
             w.write(dot)
 

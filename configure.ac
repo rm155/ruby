@@ -65,12 +65,19 @@ AC_ARG_WITH(baseruby,
 		AC_PATH_PROG([BASERUBY], [ruby], [false])
 	])
 AS_IF([test "$HAVE_BASERUBY" != no -a "`RUBYOPT=- $BASERUBY --disable=gems -e 'print 42 if RUBY_VERSION > "2.2"' 2>/dev/null`" = 42], [
+    AS_CASE(["$build_os"], [mingw*], [
+        # Can MSys shell run a command with a drive letter?
+        RUBYOPT=- `cygpath -ma "$BASERUBY"` --disable=gems -e exit 2>/dev/null || HAVE_BASERUBY=no
+    ])
     BASERUBY="$BASERUBY --disable=gems"
     BASERUBY_VERSION=`$BASERUBY -v`
     $BASERUBY -C "$srcdir" tool/downloader.rb -d tool -e gnu config.guess config.sub >&AS_MESSAGE_FD
 ], [
-    BASERUBY="echo executable host ruby is required.  use --with-baseruby option.; false"
     HAVE_BASERUBY=no
+])
+AS_IF([test "$HAVE_BASERUBY" = no], [
+    AS_IF([test "$cross_compiling" = yes], [AC_MSG_ERROR([executable host ruby is required for cross-compiling])])
+    BASERUBY="echo executable host ruby is required.  use --with-baseruby option.; false"
 ])
 AC_SUBST(BASERUBY)
 AC_SUBST(HAVE_BASERUBY)
@@ -490,6 +497,7 @@ AS_CASE(["$target_os"],
 	AC_DEFINE_UNQUOTED(RUBY_MSVCRT_VERSION, $RT_VER)
 	sysconfdir=
     ])
+    rb_cv_binary_elf=no
     : ${enable_shared=yes}
     ],
 [hiuxmpp*], [AC_DEFINE(__HIUX_MPP__)])    # by TOYODA Eizi <toyoda@npd.kishou.go.jp>
@@ -512,11 +520,14 @@ AS_IF([test "$cross_compiling:$ac_cv_prog_DTRACE" = no: -a -n "$ac_tool_prefix"]
 AC_CHECK_PROGS(DOT, dot)
 AC_CHECK_PROGS(DOXYGEN, doxygen)
 
-for prog in ${ac_tool_prefix:+${ac_tool_prefix}pkg-config} pkg-config; do
-    AC_CHECK_PROG(PKG_CONFIG, $prog, [$prog], [], [],
-        [`"$as_dir/$ac_word$ac_exec_ext" --print-errors --version > /dev/null 2>&1 || echo "$as_dir/$ac_word$ac_exec_ext"`])
-    test -z "${PKG_CONFIG}" || break
-done
+AC_CHECK_TOOL(PKG_CONFIG, pkg-config)
+AS_IF([test -z "$PKG_CONFIG"], [],
+["$PKG_CONFIG" --print-errors --version > /dev/null 2>&1], [],
+[
+    unset ac_cv_prog_PKG_CONFIG
+    PKG_CONFIG=
+    AC_MSG_WARN([$PKG_CONFIG does not work; ignore])
+])
 
 AC_MSG_CHECKING([whether it is Android])
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
@@ -599,22 +610,39 @@ RUBY_WERROR_FLAG([
     cd .. && rm -fr tmp.$$.try_link
 ])
 
-: ${RPATHFLAG=''}
-rpathflag=''
-AS_IF([test x"${RPATHFLAG}" = x], [
-    AS_CASE(["$target_os"],
+: "rpath" && {
+    AC_CACHE_CHECK(whether ELF binaries are produced, rb_cv_binary_elf,
+        [AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[
+            AS_CASE(["`head -1 conftest$EXEEXT | tr -dc '\177ELF' | tr '\177' .`"],
+            [.ELF*], [rb_cv_binary_elf=yes], [rb_cv_binary_elf=no])],
+            [rb_cv_binary_elf=no])])
+
+    rpathflag=''
+    AS_IF([test x"${RPATHFLAG=}" = x], [
+	AS_CASE(["$target_os"],
 	[aix*], [rpathflag='-blibpath:'],
-	[for rpathflag in -R "-rpath "; do
+	[for rpathflag in "-rpath " -R; do
 	    AS_CASE("$rpathflag",
 		    [*" "], [AS_CASE(["${linker_flag}"],
 				     [*,], [rpathflag=`echo "$rpathflag" | tr ' ' ,`])])
 	    rpathflag="${linker_flag}${rpathflag}"
 	    RUBY_TRY_LDFLAGS([${rpathflag}.], [], [rpathflag=])
-	    AS_IF([test "x${rpathflag}" != x], [])
+	    AS_IF([test "x${rpathflag}" != x], [break])
         done])
-], [
-    rpathflag=`echo "$RPATHFLAG" | sed 's/%.*//'`
-])
+    ], [
+        rpathflag=`echo "$RPATHFLAG" | sed 's/%.*//'`
+    ])
+
+    AC_ARG_ENABLE(rpath,
+        AS_HELP_STRING([--enable-rpath], [embed run path into extension libraries.
+        enabled by default on ELF platforms]),
+        [enable_rpath=$enableval], [enable_rpath="$rb_cv_binary_elf"])
+
+    AS_IF([test "$enable_rpath:${RPATHFLAG}" = yes:], [
+        RPATHFLAG="${rpathflag:+ ${rpathflag}%1\$-s}"
+    ])
+    AS_CASE([${RPATHFLAG}],[*'%1$'*],[: ${LIBPATHFLAG=' -L%1$-s'}],[: ${LIBPATHFLAG=' -L%s'}])
+}
 
 RUBY_TRY_LDFLAGS(-fdeclspec, [fdeclspec=yes], [fdeclspec=no])
 AS_IF([test "$fdeclspec" = yes], [
@@ -842,33 +870,6 @@ AS_IF([test "$GCC" = yes], [
       # need lgamma_r()
     ])
 
-    # ANSI (no XCFLAGS because this is C only)
-    AS_CASE(["$target_os"],
-    [solaris*], [
-      # Because "-std=gnu99" affects existence of functions on Solaris,
-      # "-std=gnu99" will be appended to CPPFLAGS.
-	for ansi_options in -std=gnu99; do
-	    RUBY_TRY_CFLAGS(${ansi_options}, [
-		RUBY_APPEND_OPTIONS(CPPFLAGS, ${ansi_options})
-	    ], [ansi_options=])
-	    test "x${ansi_options}" = x || break
-	done
-    ],
-    [
-      # ANSI (no XCFLAGS because this is C only)
-      rb_tmp_std_check=`echo $CC $CFLAGS $optflags $warnflags $debugflags | fgrep std= | tr -d  '\015'`
-      AS_IF([test "x$rb_tmp_std_check" = "x"],
-      [
-	for ansi_options in -std=gnu99; do
-	    RUBY_TRY_CFLAGS(${ansi_options}, [
-		RUBY_APPEND_OPTIONS(warnflags, ${ansi_options})
-		RUBY_APPEND_OPTIONS(strict_warnflags, ${ansi_options})
-	    ], [ansi_options=])
-	    test "x${ansi_options}" = x || break
-	done
-      ])
-    ])
-
     # suppress annoying -Wstrict-overflow warnings
     RUBY_TRY_CFLAGS(-fno-strict-overflow, [RUBY_APPEND_OPTION(XCFLAGS, -fno-strict-overflow)])
 
@@ -931,17 +932,34 @@ AS_CASE(["$target_cpu"], [[i[3-6]86*]], [
     AS_IF([test "$rb_cv_gcc_compiler_cas" = i486], [ARCH_FLAG="-march=i486"])
 ])
 
+OPT_DIR=
+AC_ARG_WITH([gmp-dir],
+  AS_HELP_STRING([--with-gmp-dir=DIR],
+                 [specify the prefix directory where gmp is installed]),
+  [OPT_DIR="${OPT_DIR:+$OPT_DIR$PATH_SEPARATOR}$withval"], [])
+AC_ARG_WITH([gmp],
+  [AS_HELP_STRING([--without-gmp],
+                  [disable GNU GMP to accelerate Bignum operations])],
+  [], [with_gmp=yes])
+
 AC_ARG_WITH(opt-dir,
 	AS_HELP_STRING([--with-opt-dir=DIR-LIST],
 		       [add optional headers and libraries directories separated by $PATH_SEPARATOR]),
-	[
-		val=`echo "$PATH_SEPARATOR$withval" | sed "s|$PATH_SEPARATOR\([[^$PATH_SEPARATOR]*]\)| -I\1/include|g;s/^ //"`
-		CPPFLAGS="$CPPFLAGS $val"
-		val=`echo "$PATH_SEPARATOR$withval" | sed "s|$PATH_SEPARATOR\([[^$PATH_SEPARATOR]*]\)| -L\1/lib${rpathflag:+ $rpathflag\\\\1/lib}|g;s/^ //"`
-		LDFLAGS="$LDFLAGS $val"
-		LDFLAGS_OPTDIR="$val"
-		OPT_DIR="$withval"
-	], [OPT_DIR=])
+	[OPT_DIR="${OPT_DIR:+$OPT_DIR$PATH_SEPARATOR}$withval"], [])
+
+AS_IF([test "x$OPT_DIR" != x], [
+    val=`IFS="$PATH_SEPARATOR"
+        for dir in $OPT_DIR; do
+            test -z "$dir" && continue
+            echo x ${LIBPATHFLAG} ${RPATHFLAG} |
+            sed "s/^x *//;s${IFS}"'%1\\$-s'"${IFS}${dir}/lib${IFS}g;s${IFS}%s${IFS}${dir}/lib${IFS}g"
+        done | tr '\012' ' ' | sed 's/ *$//'`
+    LDFLAGS="${LDFLAGS:+$LDFLAGS }$val"
+    DLDFLAGS="${DLDFLAGS:+$DLDFLAGS }$val"
+    LDFLAGS_OPTDIR="$val"
+    CPPFLAGS="${CPPFLAGS:+$CPPFLAGS }"`echo "$OPT_DIR" | tr "${PATH_SEPARATOR}" '\012' |
+        sed '/^$/d;s|^|-I|;s|$|/include|' | tr '\012' ' ' | sed 's/ *$//'`
+])
 
 test -z "${ac_env_CFLAGS_set}" -a -n "${cflags+set}" && eval CFLAGS="\"$cflags $ARCH_FLAG\""
 test -z "${ac_env_CXXFLAGS_set}" -a -n "${cxxflags+set}" && eval CXXFLAGS="\"$cxxflags $ARCH_FLAG\""
@@ -1160,7 +1178,6 @@ main()
 		ac_cv_func_getpgrp_void=no
 		ac_cv_func_memcmp_working=yes
 		ac_cv_lib_dl_dlopen=no
-		rb_cv_binary_elf=no
 		rb_cv_negative_time_t=yes
 		ac_cv_func_fcntl=yes
 		ac_cv_func_flock=yes
@@ -1314,11 +1331,6 @@ AS_CASE("$target_cpu", [x64|x86_64|i[3-6]86*], [
 ])
 RUBY_UNIVERSAL_CHECK_HEADER([x86_64, i386], x86intrin.h)
 
-AC_ARG_WITH([gmp],
-  [AS_HELP_STRING([--without-gmp],
-    [disable GNU GMP to accelerate Bignum operations])],
-  [],
-  [with_gmp=yes])
 AS_IF([test "x$with_gmp" != xno],
   [AC_CHECK_HEADERS(gmp.h)
    AS_IF([test "x$ac_cv_header_gmp_h" != xno],
@@ -2870,12 +2882,6 @@ AC_ARG_WITH(dln-a-out,
 	])
 ])
 
-AC_CACHE_CHECK(whether ELF binaries are produced, rb_cv_binary_elf,
-[AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[
-AS_CASE(["`head -1 conftest$EXEEXT | tr -dc '\177ELF' | tr '\177' .`"],
-[.ELF*], [rb_cv_binary_elf=yes], [rb_cv_binary_elf=no])],
-rb_cv_binary_elf=no)])
-
 AS_IF([test "$rb_cv_binary_elf" = yes], [
   AC_DEFINE(USE_ELF)
   AC_CHECK_HEADERS([elf.h elf_abi.h])
@@ -2953,12 +2959,7 @@ STATIC=
 }
 
 : "rpath" && {
-  AC_ARG_ENABLE(rpath,
-       AS_HELP_STRING([--enable-rpath], [embed run path into extension libraries.
-       enabled by default on ELF platforms]),
-       [enable_rpath=$enableval], [enable_rpath="$rb_cv_binary_elf"])
-
-  AS_CASE(["$target_os"],
+    AS_CASE(["$target_os"],
 	[solaris*], [	AS_IF([test "$GCC" = yes], [
 			    : ${LDSHARED='$(CC) -shared'}
 			    AS_IF([test "$rb_cv_prog_gnu_ld" = yes], [
@@ -2998,7 +2999,6 @@ STATIC=
 			rb_cv_dlopen=yes],
 	[interix*], [	: ${LDSHARED='$(CC) -shared'}
 			XLDFLAGS="$XLDFLAGS -Wl,-E"
-			LIBPATHFLAG=" -L%1\$-s"
 			rb_cv_dlopen=yes],
 	[freebsd*|dragonfly*], [
 			: ${LDSHARED='$(CC) -shared'}
@@ -3058,30 +3058,35 @@ STATIC=
 	[atheos*], [	: ${LDSHARED='$(CC) -shared'}
 			rb_cv_dlopen=yes],
 	[	: ${LDSHARED='$(LD)'}])
-  AC_MSG_RESULT($rb_cv_dlopen)
-
-  AS_IF([test "$rb_cv_dlopen" = yes], [
-    AS_CASE(["$target_os"],
-      [darwin*], [
-	for flag in \
-	  "-undefined dynamic_lookup" \
-	  "-multiply_defined suppress" \
-	  ; do
-	  test "x${linker_flag}" = x || flag="${linker_flag}`echo ${flag} | tr ' ' ,`"
-	  RUBY_TRY_LDFLAGS([$flag], [], [flag=])
-	  AS_IF([test "x$flag" != x], [
-	    RUBY_APPEND_OPTIONS(DLDFLAGS, [$flag])
-	  ])
-	done
-      ])
-  ])
-
-  AS_IF([test "$enable_rpath:${RPATHFLAG}" = yes:], [
-      AS_IF([test "x$rpathflag" != x], [
-	  RPATHFLAG=" ${rpathflag}%1\$-s"
-      ])
-  ])
+    AC_MSG_RESULT($rb_cv_dlopen)
 }
+
+AS_IF([test "$rb_cv_dlopen" = yes], [
+    AS_CASE(["$target_os"],
+    [darwin*], [
+        AC_SUBST(ADDITIONAL_DLDFLAGS, "")
+	for flag in \
+	  "-multiply_defined suppress" \
+	  "-undefined dynamic_lookup" \
+	  ; do
+            test "x${linker_flag}" = x || flag="${linker_flag}`echo ${flag} | tr ' ' ,`"
+            RUBY_TRY_LDFLAGS([$flag], [], [$flag=])
+            AS_IF([test x"$flag" = x], [continue])
+
+            AC_MSG_CHECKING([whether $flag is accepted for bundle])
+            : > conftest.c
+            AS_IF([${LDSHARED/'$(CC)'/$CC} -o conftest.bundle $flag conftest.c >/dev/null 2>conftest.err &&
+                test ! -s conftest.err], [
+                AC_MSG_RESULT([yes])
+                RUBY_APPEND_OPTIONS(DLDFLAGS, [$flag])
+            ], [
+                AC_MSG_RESULT([no])
+                RUBY_APPEND_OPTIONS(ADDITIONAL_DLDFLAGS, [$flag])
+            ])
+            rm -fr conftest.*
+	done
+    ])
+])
 
 AS_IF([test "${LDSHAREDXX}" = ""], [
     AS_CASE(["${LDSHARED}"],
@@ -3097,7 +3102,6 @@ AS_IF([test "${LDSHAREDXX}" = ""], [
 	[ld" "*], [
 	    ])
 ])
-AS_CASE([${RPATHFLAG}],[*'%1$'*],[: ${LIBPATHFLAG=' -L%1$-s'}],[: ${LIBPATHFLAG=' -L%s'}])
 
 AC_SUBST(LINK_SO)
 AC_SUBST(LIBPATHFLAG)
@@ -3105,23 +3109,6 @@ AC_SUBST(RPATHFLAG)
 AC_SUBST(LIBPATHENV, "${LIBPATHENV-LD_LIBRARY_PATH}")
 AC_SUBST(PRELOADENV, "${PRELOADENV-LD_PRELOAD}")
 AC_SUBST(TRY_LINK)
-
-AS_IF([test "x$OPT_DIR" != x], [
-    pat=`echo "${LDFLAGS_OPTDIR}" | sed ['s/[][\\.*|]/\\\\&/']`
-    LDFLAGS=`echo "${LDFLAGS}" | sed "s| ${pat}||"`
-    val=`IFS="$PATH_SEPARATOR"
-        for dir in $OPT_DIR; do
-            echo x ${LIBPATHFLAG} ${RPATHFLAG} |
-            sed "s/^x *//;s${IFS}"'%1\\$-s'"${IFS}${dir}/lib${IFS}g;s${IFS}%s${IFS}${dir}/lib${IFS}g"
-        done | tr '\012' ' ' | sed 's/ *$//'`
-    AS_IF([test x"$val" != x], [
-	test x"${LDFLAGS}" = x || LDFLAGS="$LDFLAGS "
-	LDFLAGS="$LDFLAGS$val"
-	test x"${DLDFLAGS}" = x || DLDFLAGS="$DLDFLAGS "
-	DLDFLAGS="$DLDFLAGS$val"
-    ])
-    LDFLAGS_OPTDIR="$val"
-])
 
 AS_CASE(["$target_os"],
 [freebsd*], [
@@ -3341,7 +3328,6 @@ for var in bindir includedir libdir rubylibprefix; do
 done
 
 BTESTRUBY='$(MINIRUBY)'
-BOOTSTRAPRUBY='$(BASERUBY)'
 AS_IF([test x"$cross_compiling" = xyes], [
   test x"$MINIRUBY" = x && MINIRUBY="${RUBY-$BASERUBY} -I`$CHDIR .; pwd` "-r'$(arch)-fake'
   XRUBY_LIBDIR=`${RUBY-$BASERUBY} -rrbconfig -e ['puts RbConfig::CONFIG["libdir"]']`
@@ -3364,7 +3350,6 @@ AS_IF([test x"$cross_compiling" = xyes], [
   RUNRUBY_COMMAND='$(MINIRUBY) $(tooldir)/runruby.rb --extout=$(EXTOUT) $(RUNRUBYOPT)'
   RUNRUBY='$(RUNRUBY_COMMAND) --'
   XRUBY='$(RUNRUBY)'
-  AS_CASE(["$HAVE_BASERUBY:$build_os"], [no:*|*:mingw*], [BOOTSTRAPRUBY='$(MINIRUBY)'])
   TEST_RUNNABLE=yes
   CROSS_COMPILING=no
 ])
@@ -3376,7 +3361,6 @@ AC_SUBST(PREP)
 AC_SUBST(RUNRUBY_COMMAND)
 AC_SUBST(RUNRUBY)
 AC_SUBST(XRUBY)
-AC_SUBST(BOOTSTRAPRUBY)
 AC_SUBST(EXTOUT, [${EXTOUT=.ext}])
 
 FIRSTMAKEFILE=""
@@ -3615,7 +3599,7 @@ AS_CASE("$cross_compiling:${LIBPATHENV}", [yes:* | no:], [], [
     AC_MSG_CHECKING(whether wrapper for $LIBPATHENV is needed)
     AS_IF([env ${LIBPATHENV}=/lib /bin/sh -c ': ${'${LIBPATHENV}'?}' 2>/dev/null],
 	[AC_MSG_RESULT(no)],
-	[PREP="$PREP"' exe/$(PROGRAM)'
+	[AC_SUBST(XRUBY_LIBPATHENV_WRAPPER, 'exe/$(PROGRAM)')
 	AC_MSG_RESULT(yes)]
     )
 ])
@@ -3733,7 +3717,7 @@ AC_ARG_ENABLE(jit-support,
     AS_HELP_STRING([--disable-jit-support], [disable JIT features]),
     [MJIT_SUPPORT=$enableval],
     [AS_CASE(["$target_os"],
-        [wasi | mingw*], [MJIT_SUPPORT=no],
+        [wasi | mingw* | solaris*], [MJIT_SUPPORT=no],
         [MJIT_SUPPORT=yes]
     )])
 
@@ -3786,6 +3770,10 @@ AS_CASE(["${YJIT_SUPPORT}"],
              ]))
 
     YJIT_LIBS="yjit/target/${rb_rust_target_subdir}/libyjit.a"
+    AS_CASE(["$target_os"],[openbsd*],[
+        # Link libc++abi (which requires libpthread) for _Unwind_* functions needed by yjit
+        LDFLAGS="$LDFLAGS -lpthread -lc++abi"
+    ])
     YJIT_OBJ='yjit.$(OBJEXT)'
     AC_DEFINE(USE_YJIT, 1)
 ], [AC_DEFINE(USE_YJIT, 0)])
@@ -4362,6 +4350,14 @@ AC_SUBST(XCC_WRAPPER)
 
 AS_CASE([" $CPP "], [*" $CC "*], [CPP=`echo " $CPP " | sed "s| $CC |"' $(CC) |;s/^ *//;s/  *$//'`])
 
+AS_IF([test ! -f "$srcdir/revision.h"], [
+    AS_IF([test "x$HAVE_BASERUBY" = xyes], [
+	${BASERUBY} -C "$srcdir" tool/file2lastrev.rb -q --revision.h > "$srcdir/revision.h"
+    ], [
+	touch "$srcdir/revision.h"
+    ])
+])
+
 AS_IF([test x"$firstmf" != x], [
     AC_CONFIG_FILES($firstmf:$firsttmpl, [], [firstmf="$firstmf" firsttmpl="$firsttmpl"])
 ])
@@ -4378,17 +4374,24 @@ AC_CONFIG_FILES(Makefile:template/Makefile.in, [
 	AS_CASE("$VCS",
 		['$(GIT)'|git], [VCSUP='$(VCS) pull --rebase $(GITPULLOPTIONS)'],
 		[VCSUP='$(VCS)'])
-	sed -n \
-	    -e '[/^@%:@define \(RUBY_RELEASE_[A-Z]*\) \([0-9][0-9]*\)/]{' \
-	    -e   's//\1 = \2/' \
-	    -e   '[s/ \([0-9]\)$/ 0\1/]' \
-	    -e   p \
-	    -e '}' "$srcdir/version.h"
+	for f in "$srcdir/version.h" "$srcdir/revision.h"; do
+            test -f "$f" || continue
+	    sed -n \
+	        -e '[/^@%:@define \(RUBY_RELEASE_[A-Z]*\) \([0-9][0-9]*\)/]{' \
+	        -e   's//\1 = \2/' \
+	        -e   '[s/ \([0-9]\)$/ 0\1/]' \
+	        -e   p \
+	        -e '}' "$f"
+        done
 	sed '/^MISSING/s/\$U\././g;/^VCS *=/s#@VCS@#'"$VCS"'#;/^VCSUP *=/s#@VCSUP@#'"$VCSUP"'#' Makefile
 	echo; test x"$EXEEXT" = x || echo 'miniruby: miniruby$(EXEEXT)'
 	AS_IF([test "$gnumake" != yes], [
 	    echo ['$(MKFILES): $(srcdir)/common.mk']
 	    sed ['s/{\$([^(){}]*)[^{}]*}//g'] ${srcdir}/common.mk
+            AS_IF([test "$YJIT_SUPPORT" = yes], [
+                cat ${srcdir}/yjit/not_gmake.mk
+                echo ['$(MKFILES): ${srcdir}/yjit/not_gmake.mk']
+            ])
 	], [
 	    echo 'distclean-local::; @$(RM) GNUmakefile uncommon.mk'
 	])
@@ -4406,7 +4409,7 @@ AC_CONFIG_FILES(Makefile:template/Makefile.in, [
 	echo 'ruby: $(PROGRAM);' >> $tmpmk
 	test "$tmpmk" = "$tmpgmk" || rm -f "$tmpgmk"
     ]) && mv -f $tmpmk Makefile],
-[EXEEXT='$EXEEXT' MAKE='${MAKE-make}' gnumake='$gnumake' GIT='$GIT'])
+[EXEEXT='$EXEEXT' MAKE='${MAKE-make}' gnumake='$gnumake' GIT='$GIT' YJIT_SUPPORT='$YJIT_SUPPORT'])
 
 AC_ARG_WITH([ruby-pc],
 	    AS_HELP_STRING([--with-ruby-pc=FILENAME], [pc file basename]),

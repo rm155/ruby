@@ -68,7 +68,7 @@ MJIT_SUPPORT = $(MJIT_SUPPORT)
 !if defined(BASERUBY)
 	@echo BASERUBY = $(BASERUBY:/=\)>> $(MAKEFILE)
 !else
-	@for %I in (ruby.exe) do @echo BASERUBY = %~s$$PATH:I>> $(MAKEFILE)
+	@for %I in (ruby.exe) do @echo BASERUBY = %~s$$PATH:I --disable=gems>> $(MAKEFILE)
 !endif
 	@type << >> $(MAKEFILE)
 $(BANG)if "$$(BASERUBY)" == ""
@@ -88,6 +88,10 @@ $(BANG)endif
 !endif
 !if "$(HAVE_GIT)" != ""
 	@echo HAVE_GIT = $(HAVE_GIT)>> $(MAKEFILE)
+!endif
+
+!if "$(WITH_GMP)" == "yes"
+	@echo>>$(MAKEFILE) USE_GMP = 1
 !endif
 
 -osname-section-:
@@ -295,7 +299,6 @@ AS = $(AS) -nologo
 	(echo AS = $(AS:64=) -nologo) || \
 	(echo AS = $(AS) -nologo) ) >>$(MAKEFILE)
 !endif
-	@(for %I in (cl.exe) do @set MJIT_CC=%~$$PATH:I) && (call echo MJIT_CC = "%MJIT_CC:\=/%" -nologo>>$(MAKEFILE))
 	@type << >>$(MAKEFILE)
 
 $(BANG)include $$(srcdir)/win32/Makefile.sub

@@ -1641,11 +1641,15 @@ no_exception_p(VALUE opts)
     return 0;
 }
 
+#ifndef RB_IO_TIMEOUT_DEFAULT
+#define RB_IO_TIMEOUT_DEFAULT Qnil
+#endif
+
 static void
 io_wait_writable(rb_io_t *fptr)
 {
 #ifdef HAVE_RB_IO_MAYBE_WAIT
-    rb_io_maybe_wait_writable(errno, fptr->self, Qnil);
+    rb_io_maybe_wait_writable(errno, fptr->self, RB_IO_TIMEOUT_DEFAULT);
 #else
     rb_io_wait_writable(fptr->fd);
 #endif
@@ -1655,14 +1659,14 @@ static void
 io_wait_readable(rb_io_t *fptr)
 {
 #ifdef HAVE_RB_IO_MAYBE_WAIT
-    rb_io_maybe_wait_readable(errno, fptr->self, Qnil);
+    rb_io_maybe_wait_readable(errno, fptr->self, RB_IO_TIMEOUT_DEFAULT);
 #else
     rb_io_wait_readable(fptr->fd);
 #endif
 }
 
 static VALUE
-ossl_start_ssl(VALUE self, int (*func)(), const char *funcname, VALUE opts)
+ossl_start_ssl(VALUE self, int (*func)(SSL *), const char *funcname, VALUE opts)
 {
     SSL *ssl;
     rb_io_t *fptr;

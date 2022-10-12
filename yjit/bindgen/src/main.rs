@@ -40,6 +40,7 @@ fn main() {
         .header("internal.h")
         .header("internal/re.h")
         .header("include/ruby/ruby.h")
+        .header("shape.h")
         .header("vm_core.h")
         .header("vm_callinfo.h")
 
@@ -70,6 +71,9 @@ fn main() {
         .allowlist_function("rb_str_buf_append")
         .allowlist_function("rb_str_dup")
 
+        // From encindex.h
+        .allowlist_type("ruby_preserved_encindex")
+
         // This struct is public to Ruby C extensions
         // From include/ruby/internal/core/rbasic.h
         .allowlist_type("RBasic")
@@ -77,6 +81,12 @@ fn main() {
         // From internal.h
         // This function prints info about a value and is useful for debugging
         .allowlist_function("rb_obj_info_dump")
+
+        // From shape.h
+        .allowlist_function("rb_shape_get_shape_id")
+        .allowlist_function("rb_shape_get_shape_by_id")
+        .allowlist_function("rb_shape_flags_mask")
+        .allowlist_function("rb_shape_get_iv_index")
 
         // From ruby/internal/intern/object.h
         .allowlist_function("rb_obj_is_kind_of")
@@ -222,6 +232,7 @@ fn main() {
         .allowlist_var(".*_REDEFINED_OP_FLAG")
         .allowlist_type("rb_num_t")
         .allowlist_function("rb_callable_method_entry")
+        .allowlist_function("rb_callable_method_entry_or_negative")
         .allowlist_function("rb_vm_frame_method_entry")
         .allowlist_type("IVC") // pointer to iseq_inline_iv_cache_entry
         .allowlist_type("IC")  // pointer to iseq_inline_constant_cache
@@ -240,6 +251,7 @@ fn main() {
         .allowlist_var("VM_ENV_DATA_INDEX_SPECVAL")
         .allowlist_var("VM_ENV_DATA_INDEX_FLAGS")
         .allowlist_var("VM_ENV_DATA_SIZE")
+        .allowlist_function("rb_iseq_path")
 
         // From yjit.c
         .allowlist_function("rb_iseq_(get|set)_yjit_payload")
@@ -265,8 +277,12 @@ fn main() {
         .allowlist_function("rb_yjit_for_each_iseq")
         .allowlist_function("rb_yjit_obj_written")
         .allowlist_function("rb_yjit_str_simple_append")
+        .allowlist_function("rb_RSTRING_PTR")
+        .allowlist_function("rb_RSTRING_LEN")
         .allowlist_function("rb_ENCODING_GET")
+        .allowlist_function("rb_yjit_get_proc_ptr")
         .allowlist_function("rb_yjit_exit_locations_dict")
+        .allowlist_function("rb_yjit_icache_invalidate")
 
         // from vm_sync.h
         .allowlist_function("rb_vm_barrier")
@@ -281,7 +297,7 @@ fn main() {
         // From iseq.h
         .allowlist_function("rb_vm_insn_addr2opcode")
         .allowlist_function("rb_iseqw_to_iseq")
-        .allowlist_function("rb_iseq_each")
+        .allowlist_function("rb_iseq_method_name")
 
         // From builtin.h
         .allowlist_type("rb_builtin_function.*")
@@ -303,6 +319,66 @@ fn main() {
 
         // From include/ruby/debug.h
         .allowlist_function("rb_profile_frames")
+
+        // Functions used for code generation
+        .allowlist_function("rb_insn_name")
+        .allowlist_function("rb_insn_len")
+        .allowlist_function("rb_yarv_class_of")
+        .allowlist_function("rb_get_ec_cfp")
+        .allowlist_function("rb_get_cfp_pc")
+        .allowlist_function("rb_get_cfp_sp")
+        .allowlist_function("rb_get_cfp_self")
+        .allowlist_function("rb_get_cfp_ep")
+        .allowlist_function("rb_get_cfp_ep_level")
+        .allowlist_function("rb_get_cme_def_type")
+        .allowlist_function("rb_get_cme_def_body_attr_id")
+        .allowlist_function("rb_get_symbol_id")
+        .allowlist_function("rb_get_cme_def_body_optimized_type")
+        .allowlist_function("rb_get_cme_def_body_optimized_index")
+        .allowlist_function("rb_get_cme_def_body_cfunc")
+        .allowlist_function("rb_get_def_method_serial")
+        .allowlist_function("rb_get_def_original_id")
+        .allowlist_function("rb_get_mct_argc")
+        .allowlist_function("rb_get_mct_func")
+        .allowlist_function("rb_get_def_iseq_ptr")
+        .allowlist_function("rb_get_def_bmethod_proc")
+        .allowlist_function("rb_iseq_encoded_size")
+        .allowlist_function("rb_get_iseq_body_local_iseq")
+        .allowlist_function("rb_get_iseq_body_iseq_encoded")
+        .allowlist_function("rb_get_iseq_body_stack_max")
+        .allowlist_function("rb_get_iseq_flags_has_opt")
+        .allowlist_function("rb_get_iseq_flags_has_kw")
+        .allowlist_function("rb_get_iseq_flags_has_rest")
+        .allowlist_function("rb_get_iseq_flags_has_post")
+        .allowlist_function("rb_get_iseq_flags_has_kwrest")
+        .allowlist_function("rb_get_iseq_flags_has_block")
+        .allowlist_function("rb_get_iseq_flags_has_accepts_no_kwarg")
+        .allowlist_function("rb_get_iseq_flags_ruby2_keywords")
+        .allowlist_function("rb_get_iseq_body_local_table_size")
+        .allowlist_function("rb_get_iseq_body_param_keyword")
+        .allowlist_function("rb_get_iseq_body_param_size")
+        .allowlist_function("rb_get_iseq_body_param_lead_num")
+        .allowlist_function("rb_get_iseq_body_param_opt_num")
+        .allowlist_function("rb_get_iseq_body_param_opt_table")
+        .allowlist_function("rb_get_cikw_keyword_len")
+        .allowlist_function("rb_get_cikw_keywords_idx")
+        .allowlist_function("rb_get_call_data_ci")
+        .allowlist_function("rb_yarv_str_eql_internal")
+        .allowlist_function("rb_yarv_ary_entry_internal")
+        .allowlist_function("rb_yarv_fix_mod_fix")
+        .allowlist_function("rb_FL_TEST")
+        .allowlist_function("rb_FL_TEST_RAW")
+        .allowlist_function("rb_RB_TYPE_P")
+        .allowlist_function("rb_BASIC_OP_UNREDEFINED_P")
+        .allowlist_function("rb_RSTRUCT_LEN")
+        .allowlist_function("rb_RSTRUCT_SET")
+        .allowlist_function("rb_vm_ci_argc")
+        .allowlist_function("rb_vm_ci_mid")
+        .allowlist_function("rb_vm_ci_flag")
+        .allowlist_function("rb_vm_ci_kwarg")
+        .allowlist_function("rb_METHOD_ENTRY_VISI")
+        .allowlist_function("rb_RCLASS_ORIGIN")
+        .allowlist_function("rb_method_basic_definition_p")
 
         // We define VALUE manually, don't import it
         .blocklist_type("VALUE")

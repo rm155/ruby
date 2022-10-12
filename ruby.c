@@ -94,6 +94,8 @@ void rb_warning_category_update(unsigned int mask, unsigned int bits);
     SEP \
     X(did_you_mean) \
     SEP \
+    X(syntax_suggest) \
+    SEP \
     X(rubyopt) \
     SEP \
     X(frozen_string_literal) \
@@ -111,7 +113,7 @@ void rb_warning_category_update(unsigned int mask, unsigned int bits);
 enum feature_flag_bits {
     EACH_FEATURES(DEFINE_FEATURE, COMMA),
     feature_debug_flag_first,
-#if defined(MJIT_FORCE_ENABLE) || !YJIT_BUILD
+#if defined(MJIT_FORCE_ENABLE) || !USE_YJIT
     DEFINE_FEATURE(jit) = feature_mjit,
 #else
     DEFINE_FEATURE(jit) = feature_yjit,
@@ -152,7 +154,11 @@ enum feature_flag_bits {
     /* END OF DUMPS */
 enum dump_flag_bits {
     dump_version_v,
+    dump_error_tolerant,
     EACH_DUMPS(DEFINE_DUMP, COMMA),
+    dump_error_tolerant_bits = (DUMP_BIT(yydebug) |
+                                DUMP_BIT(parsetree) |
+                                DUMP_BIT(parsetree_with_comment)),
     dump_exit_bits = (DUMP_BIT(yydebug) | DUMP_BIT(syntax) |
                       DUMP_BIT(parsetree) | DUMP_BIT(parsetree_with_comment) |
                       DUMP_BIT(insns) | DUMP_BIT(insns_without_opt))
@@ -248,7 +254,7 @@ usage(const char *name, int help, int highlight, int columns)
 
 #define M(shortopt, longopt, desc) RUBY_OPT_MESSAGE(shortopt, longopt, desc)
 
-#if YJIT_BUILD
+#if USE_YJIT
 # define PLATFORM_JIT_OPTION "--yjit"
 #else
 # define PLATFORM_JIT_OPTION "--mjit"
@@ -278,7 +284,7 @@ usage(const char *name, int help, int highlight, int columns)
 #if USE_MJIT
         M("--mjit",        "",                     "enable C compiler-based JIT compiler (experimental)"),
 #endif
-#if YJIT_BUILD
+#if USE_YJIT
         M("--yjit",        "",                     "enable in-process JIT compiler (experimental)"),
 #endif
         M("-h",		   "",			   "show this message, --help for more info"),
@@ -299,20 +305,21 @@ usage(const char *name, int help, int highlight, int columns)
     static const struct ruby_opt_message dumps[] = {
         M("insns",                  "", "instruction sequences"),
         M("insns_without_opt",      "", "instruction sequences compiled with no optimization"),
-        M("yydebug",                "", "yydebug of yacc parser generator"),
-        M("parsetree",              "", "AST"),
-        M("parsetree_with_comment", "", "AST with comments"),
+        M("yydebug(+error-tolerant)", "", "yydebug of yacc parser generator"),
+        M("parsetree(+error-tolerant)","", "AST"),
+        M("parsetree_with_comment(+error-tolerant)", "", "AST with comments"),
     };
     static const struct ruby_opt_message features[] = {
         M("gems",    "",        "rubygems (only for debugging, default: "DEFAULT_RUBYGEMS_ENABLED")"),
         M("error_highlight", "", "error_highlight (default: "DEFAULT_RUBYGEMS_ENABLED")"),
         M("did_you_mean", "",   "did_you_mean (default: "DEFAULT_RUBYGEMS_ENABLED")"),
+        M("syntax_suggest", "", "syntax_suggest (default: "DEFAULT_RUBYGEMS_ENABLED")"),
         M("rubyopt", "",        "RUBYOPT environment variable (default: enabled)"),
         M("frozen-string-literal", "", "freeze all string literals (default: disabled)"),
 #if USE_MJIT
         M("mjit", "",           "C compiler-based JIT compiler (default: disabled)"),
 #endif
-#if YJIT_BUILD
+#if USE_YJIT
         M("yjit", "",           "in-process JIT compiler (default: disabled)"),
 #endif
     };
@@ -323,7 +330,7 @@ usage(const char *name, int help, int highlight, int columns)
 #if USE_MJIT
     extern const struct ruby_opt_message mjit_option_messages[];
 #endif
-#if YJIT_BUILD
+#if USE_YJIT
     static const struct ruby_opt_message yjit_options[] = {
 #if YJIT_STATS
         M("--yjit-stats",              "", "Enable collecting YJIT statistics"),
@@ -365,7 +372,7 @@ usage(const char *name, int help, int highlight, int columns)
     for (i = 0; mjit_option_messages[i].str; ++i)
         SHOW(mjit_option_messages[i]);
 #endif
-#if YJIT_BUILD
+#if USE_YJIT
     printf("%s""YJIT options (experimental):%s\n", sb, se);
     for (i = 0; i < numberof(yjit_options); ++i)
         SHOW(yjit_options[i]);
@@ -896,14 +903,16 @@ name_match_p(const char *name, const char *str, size_t len)
     if (len == 0) return 0;
     while (1) {
         while (TOLOWER(*str) == *name) {
-            if (!--len || !*++str) return 1;
+            if (!--len) return 1;
             ++name;
+            ++str;
         }
         if (*str != '-' && *str != '_') return 0;
         while (ISALNUM(*name)) name++;
         if (*name != '-' && *name != '_') return 0;
         ++name;
         ++str;
+        if (--len == 0) return 1;
     }
 }
 
@@ -1009,11 +1018,49 @@ debug_option(const char *str, int len, void *arg)
     rb_warn("debug features are [%.*s].", (int)strlen(list), list);
 }
 
+static int
+memtermspn(const char *str, char term, int len)
+{
+    RUBY_ASSERT(len >= 0);
+    if (len <= 0) return 0;
+    const char *next = memchr(str, term, len);
+    return next ? (int)(next - str) : len;
+}
+
+static const char additional_opt_sep = '+';
+
+static unsigned int
+dump_additional_option(const char *str, int len, unsigned int bits, const char *name)
+{
+    int w;
+    for (; len-- > 0 && *str++ == additional_opt_sep; len -= w, str += w) {
+        w = memtermspn(str, additional_opt_sep, len);
+#define SET_ADDITIONAL(bit) if (NAME_MATCH_P(#bit, str, w)) { \
+            if (bits & DUMP_BIT(bit)) \
+                rb_warn("duplicate option to dump %s: `%.*s'", name, w, str); \
+            bits |= DUMP_BIT(bit); \
+            continue; \
+        }
+        if (dump_error_tolerant_bits & bits) {
+            SET_ADDITIONAL(error_tolerant);
+        }
+        rb_warn("don't know how to dump %s with `%.*s'", name, w, str);
+    }
+    return bits;
+}
+
 static void
 dump_option(const char *str, int len, void *arg)
 {
     static const char list[] = EACH_DUMPS(LITERAL_NAME_ELEMENT, ", ");
-#define SET_WHEN_DUMP(bit) SET_WHEN(#bit, DUMP_BIT(bit), str, len)
+    int w = memtermspn(str, additional_opt_sep, len);
+
+#define SET_WHEN_DUMP(bit) \
+    if (NAME_MATCH_P(#bit, (str), (w))) { \
+        *(unsigned int *)arg |= \
+            dump_additional_option(str + w, len - w, DUMP_BIT(bit), #bit); \
+        return; \
+    }
     EACH_DUMPS(SET_WHEN_DUMP, ;);
     rb_warn("don't know how to dump `%.*s',", len, str);
     rb_warn("but only [%.*s].", (int)strlen(list), list);
@@ -1047,7 +1094,7 @@ set_option_encoding_once(const char *type, VALUE *name, const char *e, long elen
 #define yjit_opt_match_arg(s, l, name) \
     opt_match(s, l, name) && (*(s) && *(s+1) ? 1 : (rb_raise(rb_eRuntimeError, "--yjit-" name " needs an argument"), 0))
 
-#if YJIT_BUILD
+#if USE_YJIT
 static bool
 setup_yjit_options(const char *s)
 {
@@ -1452,7 +1499,7 @@ proc_options(long argc, char **argv, ruby_cmdline_options_t *opt, int envopt)
 #endif
             }
             else if (is_option_with_optarg("yjit", '-', true, false, false)) {
-#if YJIT_BUILD
+#if USE_YJIT
                 FEATURE_SET(opt->features, FEATURE_BIT(yjit));
                 setup_yjit_options(s);
 #else
@@ -1553,14 +1600,29 @@ ruby_opt_init(ruby_cmdline_options_t *opt)
         if (opt->features.set & FEATURE_BIT(did_you_mean)) {
             rb_define_module("DidYouMean");
         }
+        if (opt->features.set & FEATURE_BIT(syntax_suggest)) {
+            rb_define_module("SyntaxSuggest");
+        }
     }
 
     rb_warning_category_update(opt->warn.mask, opt->warn.set);
+
+#if USE_MJIT
+    // rb_call_builtin_inits depends on RubyVM::MJIT.enabled?
+    if (opt->mjit.on)
+        mjit_enabled = true;
+#endif
 
     Init_ext(); /* load statically linked extensions before rubygems */
     Init_extra_exts();
     rb_call_builtin_inits();
     ruby_init_prelude();
+
+#if USE_MJIT
+    // mjit_init is safe only after rb_call_builtin_inits defines RubyVM::MJIT::Compiler
+    if (opt->mjit.on)
+        mjit_init(&opt->mjit);
+#endif
 
     ruby_set_script_name(opt->script_name);
     require_libraries(&opt->req_list);
@@ -1831,7 +1893,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
         rb_warning("-K is specified; it is for 1.8 compatibility and may cause odd behavior");
 
     if (!(FEATURE_SET_BITS(opt->features) & feature_jit_mask)) {
-#if YJIT_BUILD
+#if USE_YJIT
         if (!FEATURE_USED_P(opt->features, yjit) && getenv("RUBY_YJIT_ENABLE")) {
             FEATURE_SET(opt->features, FEATURE_BIT(yjit));
         }
@@ -1844,10 +1906,10 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 
 #if USE_MJIT
     if (FEATURE_SET_P(opt->features, mjit)) {
-        opt->mjit.on = TRUE; /* set mjit.on for ruby_show_version() API and check to call mjit_init() */
+        opt->mjit.on = true; // set mjit.on for ruby_show_version() API and check to call mjit_init()
     }
 #endif
-#if YJIT_BUILD
+#if USE_YJIT
     if (FEATURE_SET_P(opt->features, yjit)) {
         rb_yjit_init();
     }
@@ -1909,12 +1971,6 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
     ruby_gc_set_params();
     ruby_init_loadpath();
 
-#if USE_MJIT
-    if (opt->mjit.on)
-        /* Using TMP_RUBY_PREFIX created by ruby_init_loadpath(). */
-        mjit_init(&opt->mjit);
-#endif
-
     Init_enc();
     lenc = rb_locale_encoding();
     rb_enc_associate(rb_progname, lenc);
@@ -1922,6 +1978,9 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
     parser = rb_parser_new();
     if (opt->dump & DUMP_BIT(yydebug)) {
         rb_parser_set_yydebug(parser, Qtrue);
+    }
+    if (opt->dump & DUMP_BIT(error_tolerant)) {
+        rb_parser_error_tolerant(parser);
     }
     if (opt->ext.enc.name != 0) {
         opt->ext.enc.index = opt_enc_index(opt->ext.enc.name);

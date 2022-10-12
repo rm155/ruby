@@ -169,16 +169,26 @@ class TestIOBuffer < Test::Unit::TestCase
     assert_equal("Hello World", buffer.get_string(8, 11))
   end
 
-  def test_slice_bounds
+  def test_slice_arguments
+    buffer = IO::Buffer.for("Hello World")
+
+    slice = buffer.slice
+    assert_equal "Hello World", slice.get_string
+
+    slice = buffer.slice(2)
+    assert_equal("llo World", slice.get_string)
+  end
+
+  def test_slice_bounds_error
     buffer = IO::Buffer.new(128)
 
     assert_raise ArgumentError do
       buffer.slice(128, 10)
     end
 
-    # assert_raise RuntimeError do
-    #   pp buffer.slice(-10, 10)
-    # end
+    assert_raise ArgumentError do
+      buffer.slice(-10, 10)
+    end
   end
 
   def test_locked
@@ -235,15 +245,57 @@ class TestIOBuffer < Test::Unit::TestCase
     :F64 => [-1.0, 0.0, 0.5, 1.0, 128.0],
   }
 
-  def test_get_set_primitives
+  def test_get_set_value
     buffer = IO::Buffer.new(128)
 
-    RANGES.each do |type, values|
+    RANGES.each do |data_type, values|
       values.each do |value|
-        buffer.set_value(type, 0, value)
-        assert_equal value, buffer.get_value(type, 0), "Converting #{value} as #{type}."
+        buffer.set_value(data_type, 0, value)
+        assert_equal value, buffer.get_value(data_type, 0), "Converting #{value} as #{data_type}."
       end
     end
+  end
+
+  def test_get_set_values
+    buffer = IO::Buffer.new(128)
+
+    RANGES.each do |data_type, values|
+      format = [data_type] * values.size
+
+      buffer.set_values(format, 0, values)
+      assert_equal values, buffer.get_values(format, 0), "Converting #{values} as #{format}."
+    end
+  end
+
+  def test_values
+    buffer = IO::Buffer.new(128)
+
+    RANGES.each do |data_type, values|
+      format = [data_type] * values.size
+
+      buffer.set_values(format, 0, values)
+      assert_equal values, buffer.values(data_type, 0, values.size), "Reading #{values} as #{format}."
+    end
+  end
+
+  def test_each
+    buffer = IO::Buffer.new(128)
+
+    RANGES.each do |data_type, values|
+      format = [data_type] * values.size
+      data_type_size = IO::Buffer.size_of(data_type)
+      values_with_offsets = values.map.with_index{|value, index| [index * data_type_size, value]}
+
+      buffer.set_values(format, 0, values)
+      assert_equal values_with_offsets, buffer.each(data_type, 0, values.size).to_a, "Reading #{values} as #{data_type}."
+    end
+  end
+
+  def test_each_byte
+    string = "The quick brown fox jumped over the lazy dog."
+    buffer = IO::Buffer.for(string)
+
+    assert_equal string.bytes, buffer.each_byte.to_a
   end
 
   def test_clear
@@ -309,7 +361,7 @@ class TestIOBuffer < Test::Unit::TestCase
     io.seek(0)
 
     buffer = IO::Buffer.new(128)
-    buffer.pread(io, 5, 6)
+    buffer.pread(io, 6, 5)
 
     assert_equal "World", buffer.get_string(0, 5)
     assert_equal 0, io.tell
@@ -322,7 +374,7 @@ class TestIOBuffer < Test::Unit::TestCase
 
     buffer = IO::Buffer.new(128)
     buffer.set_string("World")
-    buffer.pwrite(io, 5, 6)
+    buffer.pwrite(io, 6, 5)
 
     assert_equal 0, io.tell
 

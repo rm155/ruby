@@ -34,6 +34,7 @@
 #include "internal/io.h"
 #include "internal/load.h"
 #include "internal/object.h"
+#include "internal/string.h"
 #include "internal/symbol.h"
 #include "internal/thread.h"
 #include "internal/variable.h"
@@ -405,8 +406,10 @@ warning_string(rb_encoding *enc, const char *fmt, va_list args)
 }
 
 #define with_warning_string(mesg, enc, fmt) \
+    with_warning_string_from(mesg, enc, fmt, fmt)
+#define with_warning_string_from(mesg, enc, fmt, last_arg) \
     VALUE mesg; \
-    va_list args; va_start(args, fmt); \
+    va_list args; va_start(args, last_arg); \
     mesg = warning_string(enc, fmt, args); \
     va_end(args);
 
@@ -508,12 +511,9 @@ rb_warn_deprecated(const char *fmt, const char *suggest, ...)
 {
     if (!deprecation_warning_enabled()) return;
 
-    va_list args;
-    va_start(args, suggest);
-    VALUE mesg = warning_string(0, fmt, args);
-    va_end(args);
-
-    warn_deprecated(mesg, NULL, suggest);
+    with_warning_string_from(mesg, 0, fmt, suggest) {
+        warn_deprecated(mesg, NULL, suggest);
+    }
 }
 
 void
@@ -521,12 +521,9 @@ rb_warn_deprecated_to_remove(const char *removal, const char *fmt, const char *s
 {
     if (!deprecation_warning_enabled()) return;
 
-    va_list args;
-    va_start(args, suggest);
-    VALUE mesg = warning_string(0, fmt, args);
-    va_end(args);
-
-    warn_deprecated(mesg, removal, suggest);
+    with_warning_string_from(mesg, 0, fmt, suggest) {
+        warn_deprecated(mesg, removal, suggest);
+    }
 }
 
 static inline int
@@ -1439,8 +1436,15 @@ exc_inspect(VALUE exc)
     str = rb_str_buf_new2("#<");
     klass = rb_class_name(klass);
     rb_str_buf_append(str, klass);
-    rb_str_buf_cat(str, ": ", 2);
-    rb_str_buf_append(str, exc);
+
+    if (RTEST(rb_str_include(exc, rb_str_new2("\n")))) {
+        rb_str_catf(str, ":%+"PRIsVALUE, exc);
+    }
+    else {
+        rb_str_buf_cat(str, ": ", 2);
+        rb_str_buf_append(str, exc);
+    }
+
     rb_str_buf_cat(str, ">", 1);
 
     return str;
@@ -2437,9 +2441,6 @@ get_syserr(int n)
 static VALUE
 syserr_initialize(int argc, VALUE *argv, VALUE self)
 {
-#if !defined(_WIN32)
-    char *strerror();
-#endif
     const char *err;
     VALUE mesg, error, func, errmsg;
     VALUE klass = rb_obj_class(self);

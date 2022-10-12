@@ -5,11 +5,13 @@ on:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
   pull_request:
     paths-ignore:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
 
 concurrency:
   group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
@@ -105,6 +107,8 @@ jobs:
           set | C:\msys64\usr\bin\sort > new.env
           C:\msys64\usr\bin\comm -13 old.env new.env >> %GITHUB_ENV%
           del *.env
+      - name: compiler version
+        run: cl
       - name: link libraries
         run: |
           for %%I in (C:\vcpkg\installed\x64-windows\bin\*.dll) do (
@@ -124,14 +128,12 @@ jobs:
           YACC: win_bison
       - run: nmake test
         timeout-minutes: 5
+      - run: nmake test-spec
+        timeout-minutes: 10
       - run: nmake test-all
         env:
           RUBY_TESTOPTS: -j${{env.TEST_JOBS}} --job-status=normal
         timeout-minutes: 60
-        continue-on-error: ${{ matrix.continue-on-error || false }}
-      - run: nmake test-spec
-        timeout-minutes: 10
-        continue-on-error: ${{ matrix.continue-on-error || false }}
       - uses: k0kubun/action-slack@v2.0.0
         with:
           payload: |

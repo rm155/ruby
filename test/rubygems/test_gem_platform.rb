@@ -85,65 +85,72 @@ class TestGemPlatform < Gem::TestCase
 
   def test_initialize
     test_cases = {
-      "amd64-freebsd6"         => ["amd64",     "freebsd",   "6"],
-      "hppa2.0w-hpux11.31"     => ["hppa2.0w",  "hpux",      "11"],
-      "java"                   => [nil,         "java",      nil],
-      "jruby"                  => [nil,         "java",      nil],
-      "universal-dotnet"       => ["universal", "dotnet",    nil],
-      "universal-dotnet2.0"    => ["universal", "dotnet",  "2.0"],
-      "universal-dotnet4.0"    => ["universal", "dotnet",  "4.0"],
-      "powerpc-aix5.3.0.0"     => ["powerpc",   "aix",       "5"],
-      "powerpc-darwin7"        => ["powerpc",   "darwin",    "7"],
-      "powerpc-darwin8"        => ["powerpc",   "darwin",    "8"],
-      "powerpc-linux"          => ["powerpc",   "linux",     nil],
-      "powerpc64-linux"        => ["powerpc64", "linux",     nil],
-      "sparc-solaris2.10"      => ["sparc",     "solaris",   "2.10"],
-      "sparc-solaris2.8"       => ["sparc",     "solaris",   "2.8"],
-      "sparc-solaris2.9"       => ["sparc",     "solaris",   "2.9"],
-      "universal-darwin8"      => ["universal", "darwin",    "8"],
-      "universal-darwin9"      => ["universal", "darwin",    "9"],
-      "universal-macruby"      => ["universal", "macruby",   nil],
-      "i386-cygwin"            => ["x86",       "cygwin",    nil],
-      "i686-darwin"            => ["x86",       "darwin",    nil],
-      "i686-darwin8.4.1"       => ["x86",       "darwin",    "8"],
-      "i386-freebsd4.11"       => ["x86",       "freebsd",   "4"],
-      "i386-freebsd5"          => ["x86",       "freebsd",   "5"],
-      "i386-freebsd6"          => ["x86",       "freebsd",   "6"],
-      "i386-freebsd7"          => ["x86",       "freebsd",   "7"],
-      "i386-freebsd"           => ["x86",       "freebsd",   nil],
-      "universal-freebsd"      => ["universal", "freebsd",   nil],
-      "i386-java1.5"           => ["x86",       "java",      "1.5"],
-      "x86-java1.6"            => ["x86",       "java",      "1.6"],
-      "i386-java1.6"           => ["x86",       "java",      "1.6"],
-      "i686-linux"             => ["x86",       "linux",     nil],
-      "i586-linux"             => ["x86",       "linux",     nil],
-      "i486-linux"             => ["x86",       "linux",     nil],
-      "i386-linux"             => ["x86",       "linux",     nil],
-      "i586-linux-gnu"         => ["x86",       "linux",     nil],
-      "i386-linux-gnu"         => ["x86",       "linux",     nil],
-      "i386-mingw32"           => ["x86",       "mingw32",   nil],
-      "x64-mingw-ucrt"         => ["x64",       "mingw",     "ucrt"],
-      "i386-mswin32"           => ["x86",       "mswin32",   nil],
-      "i386-mswin32_80"        => ["x86",       "mswin32",   "80"],
-      "i386-mswin32-80"        => ["x86",       "mswin32",   "80"],
-      "x86-mswin32"            => ["x86",       "mswin32",   nil],
-      "x86-mswin32_60"         => ["x86",       "mswin32",   "60"],
-      "x86-mswin32-60"         => ["x86",       "mswin32",   "60"],
-      "i386-netbsdelf"         => ["x86",       "netbsdelf", nil],
-      "i386-openbsd4.0"        => ["x86",       "openbsd",   "4.0"],
-      "i386-solaris2.10"       => ["x86",       "solaris",   "2.10"],
-      "i386-solaris2.8"        => ["x86",       "solaris",   "2.8"],
-      "mswin32"                => ["x86",       "mswin32",   nil],
-      "x86_64-linux"           => ["x86_64",    "linux",     nil],
-      "x86_64-linux-musl"      => ["x86_64",    "linux",     "musl"],
-      "x86_64-openbsd3.9"      => ["x86_64",    "openbsd",   "3.9"],
-      "x86_64-openbsd4.0"      => ["x86_64",    "openbsd",   "4.0"],
-      "x86_64-openbsd"         => ["x86_64",    "openbsd",   nil],
+      "amd64-freebsd6" => ["amd64",     "freebsd", "6"],
+      "hppa2.0w-hpux11.31" => ["hppa2.0w", "hpux", "11"],
+      "java" => [nil,         "java", nil],
+      "jruby" => [nil, "java", nil],
+      "universal-dotnet" => ["universal", "dotnet", nil],
+      "universal-dotnet2.0" => ["universal", "dotnet",  "2.0"],
+      "universal-dotnet4.0" => ["universal", "dotnet",  "4.0"],
+      "powerpc-aix5.3.0.0" => ["powerpc", "aix", "5"],
+      "powerpc-darwin7" => ["powerpc",   "darwin",    "7"],
+      "powerpc-darwin8" => ["powerpc",   "darwin",    "8"],
+      "powerpc-linux" => ["powerpc", "linux", nil],
+      "powerpc64-linux" => ["powerpc64", "linux", nil],
+      "sparc-solaris2.10" => ["sparc", "solaris", "2.10"],
+      "sparc-solaris2.8" => ["sparc",     "solaris",   "2.8"],
+      "sparc-solaris2.9" => ["sparc",     "solaris",   "2.9"],
+      "universal-darwin8" => ["universal", "darwin",    "8"],
+      "universal-darwin9" => ["universal", "darwin",    "9"],
+      "universal-macruby" => ["universal", "macruby",   nil],
+      "i386-cygwin" => ["x86",       "cygwin",    nil],
+      "i686-darwin" => ["x86",       "darwin",    nil],
+      "i686-darwin8.4.1" => ["x86",       "darwin",    "8"],
+      "i386-freebsd4.11" => ["x86",       "freebsd",   "4"],
+      "i386-freebsd5" => ["x86",       "freebsd",   "5"],
+      "i386-freebsd6" => ["x86",       "freebsd",   "6"],
+      "i386-freebsd7" => ["x86",       "freebsd",   "7"],
+      "i386-freebsd" => ["x86", "freebsd", nil],
+      "universal-freebsd" => ["universal", "freebsd", nil],
+      "i386-java1.5" => ["x86", "java", "1.5"],
+      "x86-java1.6" => ["x86", "java", "1.6"],
+      "i386-java1.6" => ["x86", "java", "1.6"],
+      "i686-linux" => ["x86",       "linux",     nil],
+      "i586-linux" => ["x86",       "linux",     nil],
+      "i486-linux" => ["x86",       "linux",     nil],
+      "i386-linux" => ["x86",       "linux",     nil],
+      "i586-linux-gnu" => ["x86",       "linux",     "gnu"],
+      "i386-linux-gnu" => ["x86",       "linux",     "gnu"],
+      "i386-mingw32" => ["x86", "mingw32", nil],
+      "x64-mingw-ucrt" => ["x64", "mingw", "ucrt"],
+      "i386-mswin32" => ["x86", "mswin32", nil],
+      "i386-mswin32_80" => ["x86",       "mswin32",   "80"],
+      "i386-mswin32-80" => ["x86",       "mswin32",   "80"],
+      "x86-mswin32" => ["x86", "mswin32", nil],
+      "x86-mswin32_60" => ["x86",       "mswin32",   "60"],
+      "x86-mswin32-60" => ["x86",       "mswin32",   "60"],
+      "i386-netbsdelf" => ["x86",       "netbsdelf", nil],
+      "i386-openbsd4.0" => ["x86", "openbsd", "4.0"],
+      "i386-solaris2.10" => ["x86", "solaris", "2.10"],
+      "i386-solaris2.8" => ["x86", "solaris", "2.8"],
+      "mswin32" => ["x86", "mswin32", nil],
+      "x86_64-linux" => ["x86_64", "linux", nil],
+      "x86_64-linux-gnu" => ["x86_64", "linux", "gnu"],
+      "x86_64-linux-musl" => ["x86_64", "linux", "musl"],
+      "x86_64-linux-uclibc" => ["x86_64", "linux", "uclibc"],
+      "arm-linux-eabi" => ["arm", "linux", "eabi"],
+      "arm-linux-gnueabi" => ["arm", "linux", "gnueabi"],
+      "arm-linux-musleabi" => ["arm", "linux", "musleabi"],
+      "arm-linux-uclibceabi" => ["arm", "linux", "uclibceabi"],
+      "x86_64-openbsd3.9" => ["x86_64",    "openbsd",   "3.9"],
+      "x86_64-openbsd4.0" => ["x86_64",    "openbsd",   "4.0"],
+      "x86_64-openbsd" => ["x86_64", "openbsd", nil],
     }
 
     test_cases.each do |arch, expected|
       platform = Gem::Platform.new arch
       assert_equal expected, platform.to_a, arch.inspect
+      assert_equal expected, Gem::Platform.new(platform.to_s).to_a, arch.inspect
     end
   end
 
@@ -260,6 +267,98 @@ class TestGemPlatform < Gem::TestCase
     assert((with_uni_arch === with_nil_arch), "universal =~ nil")
     assert((with_nil_arch === with_x86_arch), "nil =~ x86")
     assert((with_x86_arch === with_nil_arch), "x86 =~ nil")
+  end
+
+  def test_nil_version_is_treated_as_any_version
+    x86_darwin_8 = Gem::Platform.new "i686-darwin8.0"
+    x86_darwin_nil = Gem::Platform.new "i686-darwin"
+
+    assert((x86_darwin_8 === x86_darwin_nil), "8.0 =~ nil")
+    assert((x86_darwin_nil === x86_darwin_8), "nil =~ 8.0")
+  end
+
+  def test_nil_version_is_stricter_for_linux_os
+    x86_linux = Gem::Platform.new "i686-linux"
+    x86_linux_gnu = Gem::Platform.new "i686-linux-gnu"
+    x86_linux_musl = Gem::Platform.new "i686-linux-musl"
+    x86_linux_uclibc = Gem::Platform.new "i686-linux-uclibc"
+
+    # a naked linux runtime is implicit gnu, as it represents the common glibc-linked runtime
+    assert(x86_linux === x86_linux_gnu, "linux =~ linux-gnu")
+    assert(x86_linux_gnu === x86_linux, "linux-gnu =~ linux")
+
+    # musl and explicit gnu should differ
+    refute(x86_linux_gnu === x86_linux_musl, "linux-gnu =~ linux-musl")
+    refute(x86_linux_musl === x86_linux_gnu, "linux-musl =~ linux-gnu")
+
+    # explicit libc differ
+    refute(x86_linux_uclibc === x86_linux_musl, "linux-uclibc =~ linux-musl")
+    refute(x86_linux_musl === x86_linux_uclibc, "linux-musl =~ linux-uclibc")
+
+    # musl host runtime accepts libc-generic or statically linked gems...
+    assert(x86_linux === x86_linux_musl, "linux =~ linux-musl")
+    # ...but implicit gnu runtime generally does not accept musl-specific gems
+    refute(x86_linux_musl === x86_linux, "linux-musl =~ linux")
+
+    # other libc are not glibc compatible
+    refute(x86_linux === x86_linux_uclibc, "linux =~ linux-uclibc")
+    refute(x86_linux_uclibc === x86_linux, "linux-uclibc =~ linux")
+  end
+
+  def test_eabi_version_is_stricter_for_linux_os
+    arm_linux_eabi = Gem::Platform.new "arm-linux-eabi"
+    arm_linux_gnueabi = Gem::Platform.new "arm-linux-gnueabi"
+    arm_linux_musleabi = Gem::Platform.new "arm-linux-musleabi"
+    arm_linux_uclibceabi = Gem::Platform.new "arm-linux-uclibceabi"
+
+    # a naked linux runtime is implicit gnu, as it represents the common glibc-linked runtime
+    assert(arm_linux_eabi === arm_linux_gnueabi, "linux-eabi =~ linux-gnueabi")
+    assert(arm_linux_gnueabi === arm_linux_eabi, "linux-gnueabi =~ linux-eabi")
+
+    # musl and explicit gnu should differ
+    refute(arm_linux_gnueabi === arm_linux_musleabi, "linux-gnueabi =~ linux-musleabi")
+    refute(arm_linux_musleabi === arm_linux_gnueabi, "linux-musleabi =~ linux-gnueabi")
+
+    # explicit libc differ
+    refute(arm_linux_uclibceabi === arm_linux_musleabi, "linux-uclibceabi =~ linux-musleabi")
+    refute(arm_linux_musleabi === arm_linux_uclibceabi, "linux-musleabi =~ linux-uclibceabi")
+
+    # musl host runtime accepts libc-generic or statically linked gems...
+    assert(arm_linux_eabi === arm_linux_musleabi, "linux-eabi =~ linux-musleabi")
+    # ...but implicit gnu runtime generally does not accept musl-specific gems
+    refute(arm_linux_musleabi === arm_linux_eabi, "linux-musleabi =~ linux-eabi")
+
+    # other libc are not glibc compatible
+    refute(arm_linux_eabi === arm_linux_uclibceabi, "linux-eabi =~ linux-uclibceabi")
+    refute(arm_linux_uclibceabi === arm_linux_eabi, "linux-uclibceabi =~ linux-eabi")
+  end
+
+  def test_eabi_and_nil_version_combination_strictness
+    arm_linux = Gem::Platform.new "arm-linux"
+    arm_linux_eabi = Gem::Platform.new "arm-linux-eabi"
+    arm_linux_eabihf = Gem::Platform.new "arm-linux-eabihf"
+    arm_linux_gnueabi = Gem::Platform.new "arm-linux-gnueabi"
+    arm_linux_gnueabihf = Gem::Platform.new "arm-linux-gnueabihf"
+    arm_linux_musleabi = Gem::Platform.new "arm-linux-musleabi"
+    arm_linux_musleabihf = Gem::Platform.new "arm-linux-musleabihf"
+    arm_linux_uclibceabi = Gem::Platform.new "arm-linux-uclibceabi"
+    arm_linux_uclibceabihf = Gem::Platform.new "arm-linux-uclibceabihf"
+
+    # generic arm host runtime with eabi modifier accepts generic arm gems
+    assert(arm_linux === arm_linux_eabi, "arm-linux =~ arm-linux-eabi")
+    assert(arm_linux === arm_linux_eabihf, "arm-linux =~ arm-linux-eabihf")
+
+    # explicit gnu arm host runtime with eabi modifier accepts generic arm gems
+    assert(arm_linux === arm_linux_gnueabi, "arm-linux =~ arm-linux-gnueabi")
+    assert(arm_linux === arm_linux_gnueabihf, "arm-linux =~ arm-linux-gnueabihf")
+
+    # musl arm host runtime accepts libc-generic or statically linked gems...
+    assert(arm_linux === arm_linux_musleabi, "arm-linux =~ arm-linux-musleabi")
+    assert(arm_linux === arm_linux_musleabihf, "arm-linux =~ arm-linux-musleabihf")
+
+    # other libc arm hosts are not glibc compatible
+    refute(arm_linux === arm_linux_uclibceabi, "arm-linux =~ arm-linux-uclibceabi")
+    refute(arm_linux === arm_linux_uclibceabihf, "arm-linux =~ arm-linux-uclibceabihf")
   end
 
   def test_equals3_cpu_arm
@@ -379,6 +478,13 @@ class TestGemPlatform < Gem::TestCase
     assert_equal 1, result.scan(/@cpu=/).size
     assert_equal 1, result.scan(/@os=/).size
     assert_equal 1, result.scan(/@version=/).size
+  end
+
+  def test_gem_platform_match_with_string_argument
+    util_set_arch "x86_64-linux-musl"
+
+    assert(Gem::Platform.match(Gem::Platform.new("x86_64-linux")), "should match Gem::Platform")
+    assert(Gem::Platform.match("x86_64-linux"), "should match String platform")
   end
 
   def assert_local_match(name)

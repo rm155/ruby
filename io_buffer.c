@@ -11,9 +11,12 @@
 #include "ruby/fiber/scheduler.h"
 
 #include "internal.h"
-#include "internal/string.h"
+#include "internal/array.h"
 #include "internal/bits.h"
 #include "internal/error.h"
+#include "internal/numeric.h"
+#include "internal/string.h"
+#include "internal/thread.h"
 
 VALUE rb_cIOBuffer;
 VALUE rb_eIOBufferLockedError;
@@ -64,7 +67,7 @@ io_buffer_map_memory(size_t size)
 }
 
 static void
-io_buffer_map_file(struct rb_io_buffer *data, int descriptor, size_t size, off_t offset, enum rb_io_buffer_flags flags)
+io_buffer_map_file(struct rb_io_buffer *data, int descriptor, size_t size, rb_off_t offset, enum rb_io_buffer_flags flags)
 {
 #if defined(_WIN32)
     HANDLE file = (HANDLE)_get_osfhandle(descriptor);
@@ -409,7 +412,7 @@ rb_io_buffer_new(void *base, size_t size, enum rb_io_buffer_flags flags)
 }
 
 VALUE
-rb_io_buffer_map(VALUE io, size_t size, off_t offset, enum rb_io_buffer_flags flags)
+rb_io_buffer_map(VALUE io, size_t size, rb_off_t offset, enum rb_io_buffer_flags flags)
 {
     io_buffer_experimental();
 
@@ -437,38 +440,37 @@ rb_io_buffer_map(VALUE io, size_t size, off_t offset, enum rb_io_buffer_flags fl
  *  mapping, you need to open a file in read-write mode, and explicitly pass
  *  +flags+ argument without IO::Buffer::IMMUTABLE.
  *
- *     File.write('test.txt', 'test')
+ *  Example:
  *
- *     buffer = IO::Buffer.map(File.open('test.txt'), nil, 0, IO::Buffer::READONLY)
- *     # => #<IO::Buffer 0x00000001014a0000+4 MAPPED READONLY>
+ *    File.write('test.txt', 'test')
  *
- *     buffer.readonly?   # => true
+ *    buffer = IO::Buffer.map(File.open('test.txt'), nil, 0, IO::Buffer::READONLY)
+ *    # => #<IO::Buffer 0x00000001014a0000+4 MAPPED READONLY>
  *
- *     buffer.get_string
- *     # => "test"
+ *    buffer.readonly?   # => true
  *
- *     buffer.set_string('b', 0)
- *     # `set_string': Buffer is not writable! (IO::Buffer::AccessError)
+ *    buffer.get_string
+ *    # => "test"
  *
- *     # create read/write mapping: length 4 bytes, offset 0, flags 0
- *     buffer = IO::Buffer.map(File.open('test.txt', 'r+'), 4, 0)
- *     buffer.set_string('b', 0)
- *     # => 1
+ *    buffer.set_string('b', 0)
+ *    # `set_string': Buffer is not writable! (IO::Buffer::AccessError)
  *
- *     # Check it
- *     File.read('test.txt')
- *     # => "best"
+ *    # create read/write mapping: length 4 bytes, offset 0, flags 0
+ *    buffer = IO::Buffer.map(File.open('test.txt', 'r+'), 4, 0)
+ *    buffer.set_string('b', 0)
+ *    # => 1
+ *
+ *    # Check it
+ *    File.read('test.txt')
+ *    # => "best"
  *
  *  Note that some operating systems may not have cache coherency between mapped
  *  buffers and file reads.
- *
  */
 static VALUE
 io_buffer_map(int argc, VALUE *argv, VALUE klass)
 {
-    if (argc < 1 || argc > 4) {
-        rb_error_arity(argc, 2, 4);
-    }
+    rb_check_arity(argc, 1, 4);
 
     // We might like to handle a string path?
     VALUE io = argv[0];
@@ -478,7 +480,7 @@ io_buffer_map(int argc, VALUE *argv, VALUE klass)
         size = RB_NUM2SIZE(argv[1]);
     }
     else {
-        off_t file_size = rb_file_size(io);
+        rb_off_t file_size = rb_file_size(io);
 
         // Compiler can confirm that we handled file_size < 0 case:
         if (file_size < 0) {
@@ -494,7 +496,7 @@ io_buffer_map(int argc, VALUE *argv, VALUE klass)
         }
     }
 
-    off_t offset = 0;
+    rb_off_t offset = 0;
     if (argc >= 3) {
         offset = NUM2OFFT(argv[2]);
     }
@@ -533,26 +535,23 @@ io_flags_for_size(size_t size)
  *
  *    buffer = IO::Buffer.new(4)
  *    # =>
- *    #  #<IO::Buffer 0x000055b34497ea10+4 INTERNAL>
- *    #  0x00000000  00 00 00 00                                     ....
+ *    # #<IO::Buffer 0x000055b34497ea10+4 INTERNAL>
+ *    # 0x00000000  00 00 00 00                                     ....
  *
  *    buffer.get_string(0, 1) # => "\x00"
  *
  *    buffer.set_string("test")
  *    buffer
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x000055b34497ea10+4 INTERNAL>
  *    # 0x00000000  74 65 73 74                                     test
- *
  */
 VALUE
 rb_io_buffer_initialize(int argc, VALUE *argv, VALUE self)
 {
     io_buffer_experimental();
 
-    if (argc < 0 || argc > 2) {
-        rb_error_arity(argc, 0, 2);
-    }
+    rb_check_arity(argc, 0, 2);
 
     struct rb_io_buffer *data = NULL;
     TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
@@ -628,7 +627,6 @@ io_buffer_validate(struct rb_io_buffer *data)
  *
  *    puts IO::Buffer.new(4) # uses to_s internally
  *    # #<IO::Buffer 0x000055769f41b1a0+4 INTERNAL>
- *
  */
 VALUE
 rb_io_buffer_to_s(VALUE self)
@@ -756,7 +754,6 @@ rb_io_buffer_inspect(VALUE self)
  *
  *  Returns the size of the buffer that was explicitly set (on creation with ::new
  *  or on #resize), or deduced on buffer's creation from string or file.
- *
  */
 VALUE
 rb_io_buffer_size(VALUE self)
@@ -774,7 +771,6 @@ rb_io_buffer_size(VALUE self)
  *
  *  A buffer becomes invalid if it is a slice of another buffer which has been
  *  freed.
- *
  */
 static VALUE
 rb_io_buffer_valid_p(VALUE self)
@@ -790,7 +786,6 @@ rb_io_buffer_valid_p(VALUE self)
  *
  *  If the buffer was freed with #free or was never allocated in the first
  *  place.
- *
  */
 static VALUE
 rb_io_buffer_null_p(VALUE self)
@@ -807,7 +802,6 @@ rb_io_buffer_null_p(VALUE self)
  *  If the buffer has 0 size: it is created by ::new with size 0, or with ::for
  *  from an empty string. (Note that empty files can't be mapped, so the buffer
  *  created with ::map will never be empty.)
- *
  */
 static VALUE
 rb_io_buffer_empty_p(VALUE self)
@@ -828,7 +822,6 @@ rb_io_buffer_empty_p(VALUE self)
  *  memory.
  *
  *  External buffer can't be resized.
- *
  */
 static VALUE
 rb_io_buffer_external_p(VALUE self)
@@ -854,7 +847,6 @@ rb_io_buffer_external_p(VALUE self)
  *
  *  Internal buffers can be resized, and such an operation will typically
  *  invalidate all slices, but not always.
- *
  */
 static VALUE
 rb_io_buffer_internal_p(VALUE self)
@@ -877,7 +869,6 @@ rb_io_buffer_internal_p(VALUE self)
  *
  *  Mapped buffers can usually be resized, and such an operation will typically
  *  invalidate all slices, but not always.
- *
  */
 static VALUE
 rb_io_buffer_mapped_p(VALUE self)
@@ -898,10 +889,11 @@ rb_io_buffer_mapped_p(VALUE self)
  *  Locking is not thread safe, but is a semantic used to ensure buffers don't
  *  move while being used by a system call.
  *
+ *  Example:
+ *
  *    buffer.locked do
  *      buffer.write(io) # theoretical system call interface
  *    end
- *
  */
 static VALUE
 rb_io_buffer_locked_p(VALUE self)
@@ -928,7 +920,6 @@ rb_io_buffer_readonly_p(VALUE self)
  *  #set_value, #set_string or #copy and similar.
  *
  *  Frozen strings and read-only files create read-only buffers.
- *
  */
 static VALUE
 io_buffer_readonly_p(VALUE self)
@@ -988,6 +979,14 @@ rb_io_buffer_try_unlock(VALUE self)
  *  can enter the lock. Also, locked buffer can't be changed with #resize or
  *  #free.
  *
+ *  The following operations acquire a lock: #resize, #free.
+ *
+ *  Locking is not thread safe. It is designed as a safety net around
+ *  non-blocking system calls. You can only share a buffer between threads with
+ *  appropriate synchronisation techniques.
+ *
+ *  Example:
+ *
  *    buffer = IO::Buffer.new(4)
  *    buffer.locked? #=> false
  *
@@ -1003,12 +1002,6 @@ rb_io_buffer_try_unlock(VALUE self)
  *        buffer.set_string("test", 0)
  *      end
  *    end
- *
- *  The following operations acquire a lock: #resize, #free.
- *
- *  Locking is not thread safe. It is designed as a safety net around
- *  non-blocking system calls. You can only share a buffer between threads with
- *  appropriate synchronisation techniques.
  */
 VALUE
 rb_io_buffer_locked(VALUE self)
@@ -1039,21 +1032,22 @@ rb_io_buffer_locked(VALUE self)
  *
  *  After the buffer is freed, no further operations can't be performed on it.
  *
- *     buffer = IO::Buffer.for('test')
- *     buffer.free
- *     # => #<IO::Buffer 0x0000000000000000+0 NULL>
- *
- *     buffer.get_value(:U8, 0)
- *     # in `get_value': The buffer is not allocated! (IO::Buffer::AllocationError)
- *
- *     buffer.get_string
- *     # in `get_string': The buffer is not allocated! (IO::Buffer::AllocationError)
- *
- *     buffer.null?
- *     # => true
- *
  *  You can resize a freed buffer to re-allocate it.
  *
+ *  Example:
+ *
+ *    buffer = IO::Buffer.for('test')
+ *    buffer.free
+ *    # => #<IO::Buffer 0x0000000000000000+0 NULL>
+ *
+ *    buffer.get_value(:U8, 0)
+ *    # in `get_value': The buffer is not allocated! (IO::Buffer::AllocationError)
+ *
+ *    buffer.get_string
+ *    # in `get_string': The buffer is not allocated! (IO::Buffer::AllocationError)
+ *
+ *    buffer.null?
+ *    # => true
  */
 VALUE
 rb_io_buffer_free(VALUE self)
@@ -1079,7 +1073,7 @@ io_buffer_validate_range(struct rb_io_buffer *data, size_t offset, size_t length
 }
 
 /*
- *  call-seq: slice(offset, length) -> io_buffer
+ *  call-seq: slice([offset = 0, [length]]) -> io_buffer
  *
  *  Produce another IO::Buffer which is a slice (or view into) the current one
  *  starting at +offset+ bytes and going for +length+ bytes.
@@ -1087,46 +1081,56 @@ io_buffer_validate_range(struct rb_io_buffer *data, size_t offset, size_t length
  *  The slicing happens without copying of memory, and the slice keeps being
  *  associated with the original buffer's source (string, or file), if any.
  *
- *  Raises RuntimeError if the <tt>offset+length<tt> is out of the current
+ *  If the offset is not given, it will be zero. If the offset is negative, it
+ *  will raise an ArgumentError.
+ *
+ *  If the length is not given, the slice will be as long as the original
+ *  buffer minus the specified offset. If the length is negative, it will raise
+ *  an ArgumentError.
+ *
+ *  Raises RuntimeError if the <tt>offset+length</tt> is out of the current
  *  buffer's bounds.
  *
- *     string = 'test'
- *     buffer = IO::Buffer.for(string)
+ *  Example:
  *
- *     slice = buffer.slice(1, 2)
- *     # =>
- *     #  #<IO::Buffer 0x00007fc3d34ebc49+2 SLICE>
- *     #  0x00000000  65 73                                           es
+ *    string = 'test'
+ *    buffer = IO::Buffer.for(string)
  *
- *     # Put "o" into 0s position of the slice
- *     slice.set_string('o', 0)
- *     slice
- *     # =>
- *     #  #<IO::Buffer 0x00007fc3d34ebc49+2 SLICE>
- *     #  0x00000000  6f 73                                           os
+ *    slice = buffer.slice
+ *    # =>
+ *    # #<IO::Buffer 0x0000000108338e68+4 SLICE>
+ *    # 0x00000000  74 65 73 74                                     test
  *
+ *    buffer.slice(2)
+ *    # =>
+ *    # #<IO::Buffer 0x0000000108338e6a+2 SLICE>
+ *    # 0x00000000  73 74                                           st
  *
- *     # it is also visible at position 1 of the original buffer
- *     buffer
- *     # =>
- *     #  #<IO::Buffer 0x00007fc3d31e2d80+4 SLICE>
- *     #  0x00000000  74 6f 73 74                                     tost
+ *    slice = buffer.slice(1, 2)
+ *    # =>
+ *    # #<IO::Buffer 0x00007fc3d34ebc49+2 SLICE>
+ *    # 0x00000000  65 73                                           es
  *
- *     # ...and original string
- *     string
- *     # => tost
+ *    # Put "o" into 0s position of the slice
+ *    slice.set_string('o', 0)
+ *    slice
+ *    # =>
+ *    # #<IO::Buffer 0x00007fc3d34ebc49+2 SLICE>
+ *    # 0x00000000  6f 73                                           os
  *
+ *    # it is also visible at position 1 of the original buffer
+ *    buffer
+ *    # =>
+ *    # #<IO::Buffer 0x00007fc3d31e2d80+4 SLICE>
+ *    # 0x00000000  74 6f 73 74                                     tost
+ *
+ *    # ...and original string
+ *    string
+ *    # => tost
  */
-VALUE
-rb_io_buffer_slice(VALUE self, VALUE _offset, VALUE _length)
+static VALUE
+rb_io_buffer_slice(struct rb_io_buffer *data, VALUE self, size_t offset, size_t length)
 {
-    // TODO fail on negative offets/lengths.
-    size_t offset = NUM2SIZET(_offset);
-    size_t length = NUM2SIZET(_length);
-
-    struct rb_io_buffer *data = NULL;
-    TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
-
     io_buffer_validate_range(data, offset, length);
 
     VALUE instance = rb_io_buffer_type_allocate(rb_class_of(self));
@@ -1143,6 +1147,37 @@ rb_io_buffer_slice(VALUE self, VALUE _offset, VALUE _length)
         slice->source = self;
 
     return instance;
+}
+
+static VALUE
+io_buffer_slice(int argc, VALUE *argv, VALUE self)
+{
+    rb_check_arity(argc, 0, 2);
+
+    struct rb_io_buffer *data = NULL;
+    TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
+
+    size_t offset = 0, length = 0;
+
+    if (argc > 0) {
+        if (rb_int_negative_p(argv[0])) {
+            rb_raise(rb_eArgError, "Offset can't be negative!");
+        }
+
+        offset = NUM2SIZET(argv[0]);
+    }
+
+    if (argc > 1) {
+        if (rb_int_negative_p(argv[1])) {
+            rb_raise(rb_eArgError, "Length can't be negative!");
+        }
+
+        length = NUM2SIZET(argv[1]);
+    } else {
+        length = data->size - offset;
+    }
+
+    return rb_io_buffer_slice(data, self, offset, length);
 }
 
 int
@@ -1166,7 +1201,7 @@ rb_io_buffer_get_bytes(VALUE self, void **base, size_t *size)
     return 0;
 }
 
-static void
+static inline void
 io_buffer_get_bytes_for_writing(struct rb_io_buffer *data, void **base, size_t *size)
 {
     if (data->flags & RB_IO_BUFFER_READONLY) {
@@ -1227,18 +1262,19 @@ rb_io_buffer_get_bytes_for_reading(VALUE self, const void **base, size_t *size)
  *
  *  Transfers ownership to a new buffer, deallocating the current one.
  *
- *     buffer = IO::Buffer.new('test')
- *     other = buffer.transfer
- *     other
- *     #  =>
- *     # #<IO::Buffer 0x00007f136a15f7b0+4 SLICE>
- *     # 0x00000000  74 65 73 74                                     test
- *     buffer
- *     #  =>
- *     # #<IO::Buffer 0x0000000000000000+0 NULL>
- *     buffer.null?
- *     # => true
+ *  Example:
  *
+ *    buffer = IO::Buffer.new('test')
+ *    other = buffer.transfer
+ *    other
+ *    # =>
+ *    # #<IO::Buffer 0x00007f136a15f7b0+4 SLICE>
+ *    # 0x00000000  74 65 73 74                                     test
+ *    buffer
+ *    # =>
+ *    # #<IO::Buffer 0x0000000000000000+0 NULL>
+ *    buffer.null?
+ *    # => true
  */
 VALUE
 rb_io_buffer_transfer(VALUE self)
@@ -1352,13 +1388,12 @@ rb_io_buffer_resize(VALUE self, size_t size)
  *    buffer = IO::Buffer.new(4)
  *    buffer.set_string("test", 0)
  *    buffer.resize(8) # resize to 8 bytes
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x0000555f5d1a1630+8 INTERNAL>
  *    # 0x00000000  74 65 73 74 00 00 00 00                         test....
  *
  *  External buffer (created with ::for), and locked buffer
  *  can not be resized.
- *
  */
 static VALUE
 io_buffer_resize(VALUE self, VALUE size)
@@ -1373,7 +1408,6 @@ io_buffer_resize(VALUE self, VALUE size)
  *
  * Buffers are compared by size and exact contents of the memory they are
  * referencing using +memcmp+.
- *
  */
 static VALUE
 rb_io_buffer_compare(VALUE self, VALUE other)
@@ -1399,7 +1433,7 @@ static void
 io_buffer_validate_type(size_t size, size_t offset)
 {
     if (offset > size) {
-        rb_raise(rb_eArgError, "Type extends beyond end of buffer!");
+        rb_raise(rb_eArgError, "Type extends beyond end of buffer! (offset=%ld > size=%ld)", offset, size);
     }
 }
 
@@ -1449,8 +1483,8 @@ ruby_swapf64(double value)
     return swap.value;
 }
 
-#define DECLARE_TYPE(name, type, endian, wrap, unwrap, swap) \
-static ID RB_IO_BUFFER_TYPE_##name; \
+#define IO_BUFFER_DECLARE_TYPE(name, type, endian, wrap, unwrap, swap) \
+static ID RB_IO_BUFFER_DATA_TYPE_##name; \
 \
 static VALUE \
 io_buffer_read_##name(const void* base, size_t size, size_t *offset) \
@@ -1471,67 +1505,123 @@ io_buffer_write_##name(const void* base, size_t size, size_t *offset, VALUE _val
     if (endian != RB_IO_BUFFER_HOST_ENDIAN) value = swap(value); \
     memcpy((char*)base + *offset, &value, sizeof(type)); \
     *offset += sizeof(type); \
-}
+} \
+\
+enum { \
+    RB_IO_BUFFER_DATA_TYPE_##name##_SIZE = sizeof(type) \
+};
 
-DECLARE_TYPE(U8, uint8_t, RB_IO_BUFFER_BIG_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap8)
-DECLARE_TYPE(S8, int8_t, RB_IO_BUFFER_BIG_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap8)
+IO_BUFFER_DECLARE_TYPE(U8, uint8_t, RB_IO_BUFFER_BIG_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap8)
+IO_BUFFER_DECLARE_TYPE(S8, int8_t, RB_IO_BUFFER_BIG_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap8)
 
-DECLARE_TYPE(u16, uint16_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap16)
-DECLARE_TYPE(U16, uint16_t, RB_IO_BUFFER_BIG_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap16)
-DECLARE_TYPE(s16, int16_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap16)
-DECLARE_TYPE(S16, int16_t, RB_IO_BUFFER_BIG_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap16)
+IO_BUFFER_DECLARE_TYPE(u16, uint16_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap16)
+IO_BUFFER_DECLARE_TYPE(U16, uint16_t, RB_IO_BUFFER_BIG_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap16)
+IO_BUFFER_DECLARE_TYPE(s16, int16_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap16)
+IO_BUFFER_DECLARE_TYPE(S16, int16_t, RB_IO_BUFFER_BIG_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap16)
 
-DECLARE_TYPE(u32, uint32_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap32)
-DECLARE_TYPE(U32, uint32_t, RB_IO_BUFFER_BIG_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap32)
-DECLARE_TYPE(s32, int32_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap32)
-DECLARE_TYPE(S32, int32_t, RB_IO_BUFFER_BIG_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap32)
+IO_BUFFER_DECLARE_TYPE(u32, uint32_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap32)
+IO_BUFFER_DECLARE_TYPE(U32, uint32_t, RB_IO_BUFFER_BIG_ENDIAN, RB_UINT2NUM, RB_NUM2UINT, ruby_swap32)
+IO_BUFFER_DECLARE_TYPE(s32, int32_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap32)
+IO_BUFFER_DECLARE_TYPE(S32, int32_t, RB_IO_BUFFER_BIG_ENDIAN, RB_INT2NUM, RB_NUM2INT, ruby_swap32)
 
-DECLARE_TYPE(u64, uint64_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_ULL2NUM, RB_NUM2ULL, ruby_swap64)
-DECLARE_TYPE(U64, uint64_t, RB_IO_BUFFER_BIG_ENDIAN, RB_ULL2NUM, RB_NUM2ULL, ruby_swap64)
-DECLARE_TYPE(s64, int64_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_LL2NUM, RB_NUM2LL, ruby_swap64)
-DECLARE_TYPE(S64, int64_t, RB_IO_BUFFER_BIG_ENDIAN, RB_LL2NUM, RB_NUM2LL, ruby_swap64)
+IO_BUFFER_DECLARE_TYPE(u64, uint64_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_ULL2NUM, RB_NUM2ULL, ruby_swap64)
+IO_BUFFER_DECLARE_TYPE(U64, uint64_t, RB_IO_BUFFER_BIG_ENDIAN, RB_ULL2NUM, RB_NUM2ULL, ruby_swap64)
+IO_BUFFER_DECLARE_TYPE(s64, int64_t, RB_IO_BUFFER_LITTLE_ENDIAN, RB_LL2NUM, RB_NUM2LL, ruby_swap64)
+IO_BUFFER_DECLARE_TYPE(S64, int64_t, RB_IO_BUFFER_BIG_ENDIAN, RB_LL2NUM, RB_NUM2LL, ruby_swap64)
 
-DECLARE_TYPE(f32, float, RB_IO_BUFFER_LITTLE_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf32)
-DECLARE_TYPE(F32, float, RB_IO_BUFFER_BIG_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf32)
-DECLARE_TYPE(f64, double, RB_IO_BUFFER_LITTLE_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf64)
-DECLARE_TYPE(F64, double, RB_IO_BUFFER_BIG_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf64)
-#undef DECLARE_TYPE
+IO_BUFFER_DECLARE_TYPE(f32, float, RB_IO_BUFFER_LITTLE_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf32)
+IO_BUFFER_DECLARE_TYPE(F32, float, RB_IO_BUFFER_BIG_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf32)
+IO_BUFFER_DECLARE_TYPE(f64, double, RB_IO_BUFFER_LITTLE_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf64)
+IO_BUFFER_DECLARE_TYPE(F64, double, RB_IO_BUFFER_BIG_ENDIAN, DBL2NUM, NUM2DBL, ruby_swapf64)
+#undef IO_BUFFER_DECLARE_TYPE
 
-VALUE
-rb_io_buffer_get_value(const void* base, size_t size, ID type, size_t offset)
-{
-#define READ_TYPE(name) if (type == RB_IO_BUFFER_TYPE_##name) return io_buffer_read_##name(base, size, &offset);
-    READ_TYPE(U8);
-    READ_TYPE(S8);
-
-    READ_TYPE(u16);
-    READ_TYPE(U16);
-    READ_TYPE(s16);
-    READ_TYPE(S16);
-
-    READ_TYPE(u32);
-    READ_TYPE(U32);
-    READ_TYPE(s32);
-    READ_TYPE(S32);
-
-    READ_TYPE(u64);
-    READ_TYPE(U64);
-    READ_TYPE(s64);
-    READ_TYPE(S64);
-
-    READ_TYPE(f32);
-    READ_TYPE(F32);
-    READ_TYPE(f64);
-    READ_TYPE(F64);
-#undef READ_TYPE
+static inline size_t
+io_buffer_data_type_size(ID data_type) {
+#define IO_BUFFER_DATA_TYPE_SIZE(name) if (data_type == RB_IO_BUFFER_DATA_TYPE_##name) return RB_IO_BUFFER_DATA_TYPE_##name##_SIZE;
+    IO_BUFFER_DATA_TYPE_SIZE(U8)
+    IO_BUFFER_DATA_TYPE_SIZE(S8)
+    IO_BUFFER_DATA_TYPE_SIZE(u16)
+    IO_BUFFER_DATA_TYPE_SIZE(U16)
+    IO_BUFFER_DATA_TYPE_SIZE(s16)
+    IO_BUFFER_DATA_TYPE_SIZE(S16)
+    IO_BUFFER_DATA_TYPE_SIZE(u32)
+    IO_BUFFER_DATA_TYPE_SIZE(U32)
+    IO_BUFFER_DATA_TYPE_SIZE(s32)
+    IO_BUFFER_DATA_TYPE_SIZE(S32)
+    IO_BUFFER_DATA_TYPE_SIZE(u64)
+    IO_BUFFER_DATA_TYPE_SIZE(U64)
+    IO_BUFFER_DATA_TYPE_SIZE(s64)
+    IO_BUFFER_DATA_TYPE_SIZE(S64)
+    IO_BUFFER_DATA_TYPE_SIZE(f32)
+    IO_BUFFER_DATA_TYPE_SIZE(F32)
+    IO_BUFFER_DATA_TYPE_SIZE(f64)
+    IO_BUFFER_DATA_TYPE_SIZE(F64)
+#undef IO_BUFFER_DATA_TYPE_SIZE
 
     rb_raise(rb_eArgError, "Invalid type name!");
 }
 
 /*
- *  call-seq: get_value(type, offset) -> numeric
+ *  call-seq:
+ *    size_of(data_type) -> byte size
+ *    size_of(array of data_type) -> byte size
  *
- *  Read from buffer a value of +type+ at +offset+. +type+ should be one
+ *  Returns the size of the given data type(s) in bytes.
+ *
+ *  Example:
+ *
+ *    IO::Buffer.size_of(:u32) # => 4
+ *    IO::Buffer.size_of([:u32, :u32]) # => 8
+ */
+static VALUE
+io_buffer_size_of(VALUE klass, VALUE data_type)
+{
+    if (RB_TYPE_P(data_type, T_ARRAY)) {
+        size_t total = 0;
+        for (long i = 0; i < RARRAY_LEN(data_type); i++) {
+            total += io_buffer_data_type_size(RB_SYM2ID(RARRAY_AREF(data_type, i)));
+        }
+        return SIZET2NUM(total);
+    } else {
+        return SIZET2NUM(io_buffer_data_type_size(RB_SYM2ID(data_type)));
+    }
+}
+
+static inline VALUE
+rb_io_buffer_get_value(const void* base, size_t size, ID data_type, size_t *offset)
+{
+#define IO_BUFFER_GET_VALUE(name) if (data_type == RB_IO_BUFFER_DATA_TYPE_##name) return io_buffer_read_##name(base, size, offset);
+    IO_BUFFER_GET_VALUE(U8)
+    IO_BUFFER_GET_VALUE(S8)
+
+    IO_BUFFER_GET_VALUE(u16)
+    IO_BUFFER_GET_VALUE(U16)
+    IO_BUFFER_GET_VALUE(s16)
+    IO_BUFFER_GET_VALUE(S16)
+
+    IO_BUFFER_GET_VALUE(u32)
+    IO_BUFFER_GET_VALUE(U32)
+    IO_BUFFER_GET_VALUE(s32)
+    IO_BUFFER_GET_VALUE(S32)
+
+    IO_BUFFER_GET_VALUE(u64)
+    IO_BUFFER_GET_VALUE(U64)
+    IO_BUFFER_GET_VALUE(s64)
+    IO_BUFFER_GET_VALUE(S64)
+
+    IO_BUFFER_GET_VALUE(f32)
+    IO_BUFFER_GET_VALUE(F32)
+    IO_BUFFER_GET_VALUE(f64)
+    IO_BUFFER_GET_VALUE(F64)
+#undef IO_BUFFER_GET_VALUE
+
+    rb_raise(rb_eArgError, "Invalid type name!");
+}
+
+/*
+ *  call-seq: get_value(data_type, offset) -> numeric
+ *
+ *  Read from buffer a value of +type+ at +offset+. +data_type+ should be one
  *  of symbols:
  *
  *  * +:U8+: unsigned integer, 1 byte
@@ -1553,13 +1643,16 @@ rb_io_buffer_get_value(const void* base, size_t size, ID type, size_t offset)
  *  * +:f64+: double, 8 bytes, little-endian
  *  * +:F64+: double, 8 bytes, big-endian
  *
+ *  A data type refers specifically to the type of binary data that is stored
+ *  in the buffer. For example, a +:u32+ data type is a 32-bit unsigned
+ *  integer in little-endian format.
+ *
  *  Example:
  *
  *    string = [1.5].pack('f')
  *    # => "\x00\x00\xC0?"
  *    IO::Buffer.for(string).get_value(:f32, 0)
  *    # => 1.5
- *
  */
 static VALUE
 io_buffer_get_value(VALUE self, VALUE type, VALUE _offset)
@@ -1570,36 +1663,230 @@ io_buffer_get_value(VALUE self, VALUE type, VALUE _offset)
 
     rb_io_buffer_get_bytes_for_reading(self, &base, &size);
 
-    return rb_io_buffer_get_value(base, size, RB_SYM2ID(type), offset);
+    return rb_io_buffer_get_value(base, size, RB_SYM2ID(type), &offset);
 }
 
-void
-rb_io_buffer_set_value(const void* base, size_t size, ID type, size_t offset, VALUE value)
+/*
+ *  call-seq: get_values(data_types, offset) -> array
+ *
+ *  Similar to #get_value, except that it can handle multiple data types and
+ *  returns an array of values.
+ *
+ *  Example:
+ *
+ *    string = [1.5, 2.5].pack('ff')
+ *    IO::Buffer.for(string).get_values([:f32, :f32], 0)
+ *    # => [1.5, 2.5]
+ */
+static VALUE
+io_buffer_get_values(VALUE self, VALUE data_types, VALUE _offset)
 {
-#define WRITE_TYPE(name) if (type == RB_IO_BUFFER_TYPE_##name) {io_buffer_write_##name(base, size, &offset, value); return;}
-    WRITE_TYPE(U8);
-    WRITE_TYPE(S8);
+    size_t offset = NUM2SIZET(_offset);
 
-    WRITE_TYPE(u16);
-    WRITE_TYPE(U16);
-    WRITE_TYPE(s16);
-    WRITE_TYPE(S16);
+    const void *base;
+    size_t size;
+    rb_io_buffer_get_bytes_for_reading(self, &base, &size);
 
-    WRITE_TYPE(u32);
-    WRITE_TYPE(U32);
-    WRITE_TYPE(s32);
-    WRITE_TYPE(S32);
+    if (!RB_TYPE_P(data_types, T_ARRAY)) {
+        rb_raise(rb_eArgError, "Argument data_types should be an array!");
+    }
 
-    WRITE_TYPE(u64);
-    WRITE_TYPE(U64);
-    WRITE_TYPE(s64);
-    WRITE_TYPE(S64);
+    VALUE array = rb_ary_new_capa(RARRAY_LEN(data_types));
 
-    WRITE_TYPE(f32);
-    WRITE_TYPE(F32);
-    WRITE_TYPE(f64);
-    WRITE_TYPE(F64);
-#undef WRITE_TYPE
+    for (long i = 0; i < RARRAY_LEN(data_types); i++) {
+        VALUE type = rb_ary_entry(data_types, i);
+        VALUE value = rb_io_buffer_get_value(base, size, RB_SYM2ID(type), &offset);
+        rb_ary_push(array, value);
+    }
+
+    return array;
+}
+
+/*
+ *  call-seq:
+ *    each(data_type, [offset, [count]]) {|offset, value| ...} -> self
+ *    each(data_type, [offset, [count]]) -> enumerator
+ *
+ *  Iterates over the buffer, yielding each +value+ of +data_type+ starting
+ *  from +offset+.
+ *
+ *  If +count+ is given, only +count+ values will be yielded.
+ *
+ *  Example:
+ *
+ *    IO::Buffer.for("Hello World").each(:U8, 2, 2) do |offset, value|
+ *      puts "#{offset}: #{value}"
+ *    end
+ *    # 2: 108
+ *    # 3: 108
+ */
+static VALUE
+io_buffer_each(int argc, VALUE *argv, VALUE self)
+{
+    RETURN_ENUMERATOR_KW(self, argc, argv, RB_NO_KEYWORDS);
+
+    const void *base;
+    size_t size;
+
+    rb_io_buffer_get_bytes_for_reading(self, &base, &size);
+
+    ID data_type;
+    if (argc >= 1) {
+        data_type = RB_SYM2ID(argv[0]);
+    } else {
+        data_type = RB_IO_BUFFER_DATA_TYPE_U8;
+    }
+
+    size_t offset;
+    if (argc >= 2) {
+        offset = NUM2SIZET(argv[1]);
+    } else {
+        offset = 0;
+    }
+
+    size_t count;
+    if (argc >= 3) {
+        count = NUM2SIZET(argv[2]);
+    } else {
+        count = (size - offset) / io_buffer_data_type_size(data_type);
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        size_t current_offset = offset;
+        VALUE value = rb_io_buffer_get_value(base, size, data_type, &offset);
+        rb_yield_values(2, SIZET2NUM(current_offset), value);
+    }
+
+    return self;
+}
+
+/*
+ *  call-seq: values(data_type, [offset, [count]]) -> array
+ *
+ *  Returns an array of values of +data_type+ starting from +offset+.
+ *
+ *  If +count+ is given, only +count+ values will be returned.
+ *
+ *  Example:
+ *
+ *    IO::Buffer.for("Hello World").values(:U8, 2, 2)
+ *    # => [108, 108]
+ */
+static VALUE
+io_buffer_values(int argc, VALUE *argv, VALUE self)
+{
+    const void *base;
+    size_t size;
+
+    rb_io_buffer_get_bytes_for_reading(self, &base, &size);
+
+    ID data_type;
+    if (argc >= 1) {
+        data_type = RB_SYM2ID(argv[0]);
+    } else {
+        data_type = RB_IO_BUFFER_DATA_TYPE_U8;
+    }
+
+    size_t offset;
+    if (argc >= 2) {
+        offset = NUM2SIZET(argv[1]);
+    } else {
+        offset = 0;
+    }
+
+    size_t count;
+    if (argc >= 3) {
+        count = NUM2SIZET(argv[2]);
+    } else {
+        count = (size - offset) / io_buffer_data_type_size(data_type);
+    }
+
+    VALUE array = rb_ary_new_capa(count);
+
+    for (size_t i = 0; i < count; i++) {
+        VALUE value = rb_io_buffer_get_value(base, size, data_type, &offset);
+        rb_ary_push(array, value);
+    }
+
+    return array;
+}
+
+/*
+ *  call-seq:
+ *    each_byte([offset, [count]]) {|offset, byte| ...} -> self
+ *    each_byte([offset, [count]]) -> enumerator
+ *
+ *  Iterates over the buffer, yielding each byte starting from +offset+.
+ *
+ *  If +count+ is given, only +count+ bytes will be yielded.
+ *
+ *  Example:
+ *
+ *    IO::Buffer.for("Hello World").each_byte(2, 2) do |offset, byte|
+ *      puts "#{offset}: #{byte}"
+ *    end
+ *    # 2: 108
+ *    # 3: 108
+ */
+static VALUE
+io_buffer_each_byte(int argc, VALUE *argv, VALUE self)
+{
+    RETURN_ENUMERATOR_KW(self, argc, argv, RB_NO_KEYWORDS);
+
+    const void *base;
+    size_t size;
+
+    rb_io_buffer_get_bytes_for_reading(self, &base, &size);
+
+    size_t offset;
+    if (argc >= 2) {
+        offset = NUM2SIZET(argv[1]);
+    } else {
+        offset = 0;
+    }
+
+    size_t count;
+    if (argc >= 3) {
+        count = NUM2SIZET(argv[2]);
+    } else {
+        count = (size - offset);
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        unsigned char *value = (unsigned char *)base + i + offset;
+        rb_yield(RB_INT2FIX(*value));
+    }
+
+    return self;
+}
+
+static inline void
+rb_io_buffer_set_value(const void* base, size_t size, ID data_type, size_t *offset, VALUE value)
+{
+#define IO_BUFFER_SET_VALUE(name) if (data_type == RB_IO_BUFFER_DATA_TYPE_##name) {io_buffer_write_##name(base, size, offset, value); return;}
+    IO_BUFFER_SET_VALUE(U8);
+    IO_BUFFER_SET_VALUE(S8);
+
+    IO_BUFFER_SET_VALUE(u16);
+    IO_BUFFER_SET_VALUE(U16);
+    IO_BUFFER_SET_VALUE(s16);
+    IO_BUFFER_SET_VALUE(S16);
+
+    IO_BUFFER_SET_VALUE(u32);
+    IO_BUFFER_SET_VALUE(U32);
+    IO_BUFFER_SET_VALUE(s32);
+    IO_BUFFER_SET_VALUE(S32);
+
+    IO_BUFFER_SET_VALUE(u64);
+    IO_BUFFER_SET_VALUE(U64);
+    IO_BUFFER_SET_VALUE(s64);
+    IO_BUFFER_SET_VALUE(S64);
+
+    IO_BUFFER_SET_VALUE(f32);
+    IO_BUFFER_SET_VALUE(F32);
+    IO_BUFFER_SET_VALUE(f64);
+    IO_BUFFER_SET_VALUE(F64);
+#undef IO_BUFFER_SET_VALUE
 
     rb_raise(rb_eArgError, "Invalid type name!");
 }
@@ -1611,13 +1898,15 @@ rb_io_buffer_set_value(const void* base, size_t size, ID type, size_t offset, VA
  *  symbols described in #get_value.
  *
  *    buffer = IO::Buffer.new(8)
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x0000555f5c9a2d50+8 INTERNAL>
  *    # 0x00000000  00 00 00 00 00 00 00 00
+ *
  *    buffer.set_value(:U8, 1, 111)
  *    # => 1
+ *
  *    buffer
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x0000555f5c9a2d50+8 INTERNAL>
  *    # 0x00000000  00 6f 00 00 00 00 00 00                         .o......
  *
@@ -1625,11 +1914,12 @@ rb_io_buffer_set_value(const void* base, size_t size, ID type, size_t offset, VA
  *
  *    buffer = IO::Buffer.new(8)
  *    buffer.set_value(:U32, 0, 2.5)
+ *
  *    buffer
- *    #   =>
- *    #  #<IO::Buffer 0x0000555f5c9a2d50+8 INTERNAL>
- *    #  0x00000000  00 00 00 02 00 00 00 00
- *    #                       ^^ the same as if we'd pass just integer 2
+ *    # =>
+ *    # #<IO::Buffer 0x0000555f5c9a2d50+8 INTERNAL>
+ *    # 0x00000000  00 00 00 02 00 00 00 00
+ *    #                      ^^ the same as if we'd pass just integer 2
  */
 static VALUE
 io_buffer_set_value(VALUE self, VALUE type, VALUE _offset, VALUE value)
@@ -1640,7 +1930,53 @@ io_buffer_set_value(VALUE self, VALUE type, VALUE _offset, VALUE value)
 
     rb_io_buffer_get_bytes_for_writing(self, &base, &size);
 
-    rb_io_buffer_set_value(base, size, RB_SYM2ID(type), offset, value);
+    rb_io_buffer_set_value(base, size, RB_SYM2ID(type), &offset, value);
+
+    return SIZET2NUM(offset);
+}
+
+/*
+ *  call-seq: set_values(data_types, offset, values) -> offset
+ *
+ *  Write +values+ of +data_types+ at +offset+ to the buffer. +data_types+
+ *  should be an array of symbols as described in #get_value. +values+ should
+ *  be an array of values to write.
+ *
+ *  Example:
+ *
+ *    buffer = IO::Buffer.new(8)
+ *    buffer.set_values([:U8, :U16], 0, [1, 2])
+ *    buffer
+ *    # =>
+ *    # #<IO::Buffer 0x696f717561746978+8 INTERNAL>
+ *    # 0x00000000  01 00 02 00 00 00 00 00                         ........
+ */
+static VALUE
+io_buffer_set_values(VALUE self, VALUE data_types, VALUE _offset, VALUE values)
+{
+    if (!RB_TYPE_P(data_types, T_ARRAY)) {
+        rb_raise(rb_eArgError, "Argument data_types should be an array!");
+    }
+
+    if (!RB_TYPE_P(values, T_ARRAY)) {
+        rb_raise(rb_eArgError, "Argument values should be an array!");
+    }
+
+    if (RARRAY_LEN(data_types) != RARRAY_LEN(values)) {
+        rb_raise(rb_eArgError, "Argument data_types and values should have the same length!");
+    }
+
+    size_t offset = NUM2SIZET(_offset);
+
+    void *base;
+    size_t size;
+    rb_io_buffer_get_bytes_for_writing(self, &base, &size);
+
+    for (long i = 0; i < RARRAY_LEN(data_types); i++) {
+        VALUE type = rb_ary_entry(data_types, i);
+        VALUE value = rb_ary_entry(values, i);
+        rb_io_buffer_set_value(base, size, RB_SYM2ID(type), &offset, value);
+    }
 
     return SIZET2NUM(offset);
 }
@@ -1719,7 +2055,6 @@ io_buffer_copy_from(struct rb_io_buffer *data, const void *source_base, size_t s
  *    # =>
  *    # #<IO::Buffer 0x0000558cbec03320+11 INTERNAL>
  *    # 0x00000000  48 65 6c 6c 6f 20 57 6f 72 6c 64                Hello World
- *
  */
 static VALUE
 rb_io_buffer_initialize_copy(VALUE self, VALUE source)
@@ -1745,7 +2080,7 @@ rb_io_buffer_initialize_copy(VALUE self, VALUE source)
  *  at +offset+ using +memcpy+. For copying String instances, see #set_string.
  *
  *    buffer = IO::Buffer.new(32)
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x0000555f5ca22520+32 INTERNAL>
  *    # 0x00000000  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................
  *    # 0x00000010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................  *
@@ -1753,7 +2088,7 @@ rb_io_buffer_initialize_copy(VALUE self, VALUE source)
  *    buffer.copy(IO::Buffer.for("test"), 8)
  *    # => 4 -- size of data copied
  *    buffer
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x0000555f5cf8fe40+32 INTERNAL>
  *    # 0x00000000  00 00 00 00 00 00 00 00 74 65 73 74 00 00 00 00 ........test....
  *    # 0x00000010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................ *
@@ -1790,12 +2125,11 @@ rb_io_buffer_initialize_copy(VALUE self, VALUE source)
  *    buffer = IO::Buffer.new(2)
  *    buffer.copy(IO::Buffer.for('test'), 0)
  *    # in `copy': Specified offset+length exceeds source size! (ArgumentError)
- *
  */
 static VALUE
 io_buffer_copy(int argc, VALUE *argv, VALUE self)
 {
-    if (argc < 1 || argc > 4) rb_error_arity(argc, 1, 4);
+    rb_check_arity(argc, 1, 4);
 
     struct rb_io_buffer *data = NULL;
     TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
@@ -1815,19 +2149,18 @@ io_buffer_copy(int argc, VALUE *argv, VALUE self)
  *  Read a chunk or all of the buffer into a string, in the specified
  *  +encoding+. If no encoding is provided +Encoding::BINARY+ is used.
  *
- *     buffer = IO::Buffer.for('test')
- *     buffer.get_string
- *     # => "test"
- *     buffer.get_string(2)
- *     # => "st"
- *     buffer.get_string(2, 1)
- *     # => "s"
- *
+ *    buffer = IO::Buffer.for('test')
+ *    buffer.get_string
+ *    # => "test"
+ *    buffer.get_string(2)
+ *    # => "st"
+ *    buffer.get_string(2, 1)
+ *    # => "s"
  */
 static VALUE
 io_buffer_get_string(int argc, VALUE *argv, VALUE self)
 {
-    if (argc > 3) rb_error_arity(argc, 0, 3);
+    rb_check_arity(argc, 0, 3);
 
     struct rb_io_buffer *data = NULL;
     TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
@@ -1886,7 +2219,7 @@ io_buffer_get_string(int argc, VALUE *argv, VALUE self)
 static VALUE
 io_buffer_set_string(int argc, VALUE *argv, VALUE self)
 {
-    if (argc < 1 || argc > 4) rb_error_arity(argc, 1, 4);
+    rb_check_arity(argc, 1, 4);
 
     struct rb_io_buffer *data = NULL;
     TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
@@ -1944,12 +2277,11 @@ rb_io_buffer_clear(VALUE self, uint8_t value, size_t offset, size_t length)
  *    # =>
  *    #   <IO::Buffer 0x00007fca40087c38+4 SLICE>
  *    #   0x00000000  01 02 02 02         ....
- *
  */
 static VALUE
 io_buffer_clear(int argc, VALUE *argv, VALUE self)
 {
-    if (argc > 3) rb_error_arity(argc, 0, 3);
+    rb_check_arity(argc, 0, 3);
 
     struct rb_io_buffer *data = NULL;
     TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
@@ -2002,46 +2334,26 @@ io_buffer_default_size(size_t page_size)
     return platform_agnostic_default_size;
 }
 
-VALUE
-rb_io_buffer_read(VALUE self, VALUE io, size_t length)
-{
-    VALUE scheduler = rb_fiber_scheduler_current();
-    if (scheduler != Qnil) {
-        VALUE result = rb_fiber_scheduler_io_read(scheduler, io, self, length);
-
-        if (result != Qundef) {
-            return result;
-        }
-    }
-
-    struct rb_io_buffer *data = NULL;
-    TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
-
-    io_buffer_validate_range(data, 0, length);
-
-    int descriptor = rb_io_descriptor(io);
-
-    void * base;
+struct io_buffer_read_internal_argument {
+    int descriptor;
+    void *base;
     size_t size;
-    io_buffer_get_bytes_for_writing(data, &base, &size);
+};
 
-    ssize_t result = read(descriptor, base, size);
-
+static VALUE
+io_buffer_read_internal(void *_argument)
+{
+    struct io_buffer_read_internal_argument *argument = _argument;
+    ssize_t result = read(argument->descriptor, argument->base, argument->size);
     return rb_fiber_scheduler_io_result(result, errno);
 }
 
-static VALUE
-io_buffer_read(VALUE self, VALUE io, VALUE length)
-{
-    return rb_io_buffer_read(self, io, RB_NUM2SIZE(length));
-}
-
 VALUE
-rb_io_buffer_pread(VALUE self, VALUE io, size_t length, off_t offset)
+rb_io_buffer_read(VALUE self, VALUE io, size_t length, size_t offset)
 {
     VALUE scheduler = rb_fiber_scheduler_current();
     if (scheduler != Qnil) {
-        VALUE result = rb_fiber_scheduler_io_pread(scheduler, io, self, length, offset);
+        VALUE result = rb_fiber_scheduler_io_read(scheduler, io, self, SIZET2NUM(length), SIZET2NUM(offset));
 
         if (result != Qundef) {
             return result;
@@ -2051,46 +2363,114 @@ rb_io_buffer_pread(VALUE self, VALUE io, size_t length, off_t offset)
     struct rb_io_buffer *data = NULL;
     TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
 
-    io_buffer_validate_range(data, 0, length);
+    io_buffer_validate_range(data, offset, length);
 
     int descriptor = rb_io_descriptor(io);
 
     void * base;
     size_t size;
     io_buffer_get_bytes_for_writing(data, &base, &size);
+
+    base = (unsigned char*)base + offset;
+
+    struct io_buffer_read_internal_argument argument = {
+        .descriptor = descriptor,
+        .base = base,
+        .size = length,
+    };
+
+    return rb_thread_io_blocking_region(io_buffer_read_internal, &argument, descriptor);
+}
+
+/*
+ *  call-seq: read(io, [length, [offset]]) -> self
+ *
+ *  Read at most +length+ bytes from +io+ into the buffer, starting at
+ *  +offset+.
+ *
+ *  If +length+ is not given, read until the end of the buffer.
+ *
+ *  If +offset+ is not given, read from the beginning of the buffer.
+ *
+ *  If +length+ is 0, read nothing.
+ *
+ *  Example:
+ *
+ *    buffer = IO::Buffer.for('test')
+ *    # =>
+ *    # <IO::Buffer 0x00007fca40087c38+4 SLICE>
+ *    # 0x00000000  74 65 73 74         test
+ *    buffer.read(File.open('/dev/urandom', 'rb'), 4)
+ *    # =>
+ *    # <IO::Buffer 0x00007fca40087c38+4 SLICE>
+ *    # 0x00000000  2a 0e 0e 0e         *...
+ */
+static VALUE
+io_buffer_read(int argc, VALUE *argv, VALUE self)
+{
+    rb_check_arity(argc, 2, 3);
+
+    VALUE io = argv[0];
+
+    size_t length;
+    if (argc >= 2) {
+        if (rb_int_negative_p(argv[1])) {
+            rb_raise(rb_eArgError, "Length can't be negative!");
+        }
+
+        length = NUM2SIZET(argv[1]);
+    }
+
+    size_t offset = 0;
+    if (argc >= 3) {
+        if (rb_int_negative_p(argv[2])) {
+            rb_raise(rb_eArgError, "Offset can't be negative!");
+        }
+
+        offset = NUM2SIZET(argv[2]);
+    }
+
+    return rb_io_buffer_read(self, io, length, offset);
+}
+
+struct io_buffer_pread_internal_argument {
+    int descriptor;
+    void *base;
+    size_t size;
+    off_t offset;
+};
+
+static VALUE
+io_buffer_pread_internal(void *_argument)
+{
+    struct io_buffer_pread_internal_argument *argument = _argument;
 
 #if defined(HAVE_PREAD)
-    ssize_t result = pread(descriptor, base, size, offset);
+    ssize_t result = pread(argument->descriptor, argument->base, argument->size, argument->offset);
 #else
-    // This emulation is not thread safe, but the GVL means it's unlikely to be a problem.
-    off_t current_offset = lseek(descriptor, 0, SEEK_CUR);
-    if (current_offset == (off_t)-1)
+    // This emulation is not thread safe.
+    rb_off_t offset = lseek(argument->descriptor, 0, SEEK_CUR);
+    if (offset == (rb_off_t)-1)
         return rb_fiber_scheduler_io_result(-1, errno);
 
-    if (lseek(descriptor, offset, SEEK_SET) == (off_t)-1)
+    if (lseek(argument->descriptor, argument->offset, SEEK_SET) == (rb_off_t)-1)
         return rb_fiber_scheduler_io_result(-1, errno);
 
-    ssize_t result = read(descriptor, base, size);
+    ssize_t result = read(argument->descriptor, argument->base, argument->size);
 
-    if (lseek(descriptor, current_offset, SEEK_SET) == (off_t)-1)
+    if (lseek(argument->descriptor, offset, SEEK_SET) == (rb_off_t)-1)
         return rb_fiber_scheduler_io_result(-1, errno);
 #endif
 
     return rb_fiber_scheduler_io_result(result, errno);
 }
 
-static VALUE
-io_buffer_pread(VALUE self, VALUE io, VALUE length, VALUE offset)
-{
-    return rb_io_buffer_pread(self, io, RB_NUM2SIZE(length), NUM2OFFT(offset));
-}
-
 VALUE
-rb_io_buffer_write(VALUE self, VALUE io, size_t length)
+rb_io_buffer_pread(VALUE self, VALUE io, rb_off_t from, size_t length, size_t offset)
 {
     VALUE scheduler = rb_fiber_scheduler_current();
     if (scheduler != Qnil) {
-        VALUE result = rb_fiber_scheduler_io_write(scheduler, io, self, length);
+        VALUE result = rb_fiber_scheduler_io_pread(scheduler, io, OFFT2NUM(from), self, SIZET2NUM(length), SIZET2NUM(offset));
 
         if (result != Qundef) {
             return result;
@@ -2104,27 +2484,66 @@ rb_io_buffer_write(VALUE self, VALUE io, size_t length)
 
     int descriptor = rb_io_descriptor(io);
 
-    const void * base;
+    void * base;
     size_t size;
-    io_buffer_get_bytes_for_reading(data, &base, &size);
+    io_buffer_get_bytes_for_writing(data, &base, &size);
 
-    ssize_t result = write(descriptor, base, length);
+    struct io_buffer_pread_internal_argument argument = {
+        .descriptor = descriptor,
+        .base = base,
+        .size = length,
+        .offset = from,
+    };
 
+    return rb_thread_io_blocking_region(io_buffer_pread_internal, &argument, descriptor);
+}
+
+static VALUE
+io_buffer_pread(int argc, VALUE *argv, VALUE self)
+{
+    rb_check_arity(argc, 3, 4);
+
+    VALUE io = argv[0];
+    rb_off_t from = NUM2OFFT(argv[1]);
+
+    size_t length;
+    if (rb_int_negative_p(argv[2])) {
+        rb_raise(rb_eArgError, "Length can't be negative!");
+    }
+    length = NUM2SIZET(argv[2]);
+
+    size_t offset = 0;
+    if (argc >= 4) {
+        if (rb_int_negative_p(argv[3])) {
+            rb_raise(rb_eArgError, "Offset can't be negative!");
+        }
+
+        offset = NUM2SIZET(argv[3]);
+    }
+
+    return rb_io_buffer_pread(self, io, from, length, offset);
+}
+
+struct io_buffer_write_internal_argument {
+    int descriptor;
+    const void *base;
+    size_t size;
+};
+
+static VALUE
+io_buffer_write_internal(void *_argument)
+{
+    struct io_buffer_write_internal_argument *argument = _argument;
+    ssize_t result = write(argument->descriptor, argument->base, argument->size);
     return rb_fiber_scheduler_io_result(result, errno);
 }
 
-static VALUE
-io_buffer_write(VALUE self, VALUE io, VALUE length)
-{
-    return rb_io_buffer_write(self, io, RB_NUM2SIZE(length));
-}
-
 VALUE
-rb_io_buffer_pwrite(VALUE self, VALUE io, size_t length, off_t offset)
+rb_io_buffer_write(VALUE self, VALUE io, size_t length, size_t offset)
 {
     VALUE scheduler = rb_fiber_scheduler_current();
     if (scheduler != Qnil) {
-        VALUE result = rb_fiber_scheduler_io_pwrite(scheduler, io, self, length, OFFT2NUM(offset));
+        VALUE result = rb_fiber_scheduler_io_write(scheduler, io, self, SIZET2NUM(length), SIZET2NUM(offset));
 
         if (result != Qundef) {
             return result;
@@ -2134,38 +2553,142 @@ rb_io_buffer_pwrite(VALUE self, VALUE io, size_t length, off_t offset)
     struct rb_io_buffer *data = NULL;
     TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
 
-    io_buffer_validate_range(data, 0, length);
+    io_buffer_validate_range(data, offset, length);
 
     int descriptor = rb_io_descriptor(io);
 
     const void * base;
     size_t size;
     io_buffer_get_bytes_for_reading(data, &base, &size);
+
+    base = (unsigned char *)base + offset;
+
+    struct io_buffer_write_internal_argument argument = {
+        .descriptor = descriptor,
+        .base = base,
+        .size = length,
+    };
+
+    return rb_thread_io_blocking_region(io_buffer_write_internal, &argument, descriptor);
+}
+
+static VALUE
+io_buffer_write(int argc, VALUE *argv, VALUE self)
+{
+    rb_check_arity(argc, 2, 3);
+
+    VALUE io = argv[0];
+
+    size_t length;
+    if (argc >= 2) {
+        if (rb_int_negative_p(argv[1])) {
+            rb_raise(rb_eArgError, "Length can't be negative!");
+        }
+
+        length = NUM2SIZET(argv[1]);
+    }
+
+    size_t offset = 0;
+    if (argc >= 3) {
+        if (rb_int_negative_p(argv[2])) {
+            rb_raise(rb_eArgError, "Offset can't be negative!");
+        }
+
+        offset = NUM2SIZET(argv[2]);
+    }
+
+    return rb_io_buffer_write(self, io, length, offset);
+}
+
+struct io_buffer_pwrite_internal_argument {
+    int descriptor;
+    const void *base;
+    size_t size;
+    off_t offset;
+};
+
+static VALUE
+io_buffer_pwrite_internal(void *_argument)
+{
+    struct io_buffer_pwrite_internal_argument *argument = _argument;
 
 #if defined(HAVE_PWRITE)
-    ssize_t result = pwrite(descriptor, base, length, offset);
+    ssize_t result = pwrite(argument->descriptor, argument->base, argument->size, argument->offset);
 #else
-    // This emulation is not thread safe, but the GVL means it's unlikely to be a problem.
-    off_t current_offset = lseek(descriptor, 0, SEEK_CUR);
-    if (current_offset == (off_t)-1)
+    // This emulation is not thread safe.
+    rb_off_t offset = lseek(argument->descriptor, 0, SEEK_CUR);
+    if (offset == (rb_off_t)-1)
         return rb_fiber_scheduler_io_result(-1, errno);
 
-    if (lseek(descriptor, offset, SEEK_SET) == (off_t)-1)
+    if (lseek(argument->descriptor, argument->offset, SEEK_SET) == (rb_off_t)-1)
         return rb_fiber_scheduler_io_result(-1, errno);
 
-    ssize_t result = write(descriptor, base, length);
+    ssize_t result = write(argument->descriptor, argument->base, argument->size);
 
-    if (lseek(descriptor, current_offset, SEEK_SET) == (off_t)-1)
+    if (lseek(argument->descriptor, offset, SEEK_SET) == (rb_off_t)-1)
         return rb_fiber_scheduler_io_result(-1, errno);
 #endif
 
     return rb_fiber_scheduler_io_result(result, errno);
 }
 
-static VALUE
-io_buffer_pwrite(VALUE self, VALUE io, VALUE length, VALUE offset)
+VALUE
+rb_io_buffer_pwrite(VALUE self, VALUE io, rb_off_t from, size_t length, size_t offset)
 {
-    return rb_io_buffer_pwrite(self, io, RB_NUM2SIZE(length), NUM2OFFT(offset));
+    VALUE scheduler = rb_fiber_scheduler_current();
+    if (scheduler != Qnil) {
+        VALUE result = rb_fiber_scheduler_io_pwrite(scheduler, io, OFFT2NUM(from), self, SIZET2NUM(length), SIZET2NUM(offset));
+
+        if (result != Qundef) {
+            return result;
+        }
+    }
+
+    struct rb_io_buffer *data = NULL;
+    TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
+
+    io_buffer_validate_range(data, 0, length);
+
+    int descriptor = rb_io_descriptor(io);
+
+    const void * base;
+    size_t size;
+    io_buffer_get_bytes_for_reading(data, &base, &size);
+
+    struct io_buffer_pwrite_internal_argument argument = {
+        .descriptor = descriptor,
+        .base = base,
+        .size = length,
+        .offset = from,
+    };
+
+    return rb_thread_io_blocking_region(io_buffer_pwrite_internal, &argument, descriptor);
+}
+
+static VALUE
+io_buffer_pwrite(int argc, VALUE *argv, VALUE self)
+{
+    rb_check_arity(argc, 3, 4);
+
+    VALUE io = argv[0];
+    rb_off_t from = NUM2OFFT(argv[1]);
+
+    size_t length;
+    if (rb_int_negative_p(argv[2])) {
+        rb_raise(rb_eArgError, "Length can't be negative!");
+    }
+    length = NUM2SIZET(argv[2]);
+
+    size_t offset = 0;
+    if (argc >= 4) {
+        if (rb_int_negative_p(argv[3])) {
+            rb_raise(rb_eArgError, "Offset can't be negative!");
+        }
+
+        offset = NUM2SIZET(argv[3]);
+    }
+
+    return rb_io_buffer_pwrite(self, io, from, length, offset);
 }
 
 static inline void
@@ -2550,11 +3073,11 @@ io_buffer_not_inplace(VALUE self)
  *  Empty buffer:
  *
  *    buffer = IO::Buffer.new(8)  # create empty 8-byte buffer
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x0000555f5d1a5c50+8 INTERNAL>
  *    # ...
  *    buffer
- *    #  =>
+ *    # =>
  *    # <IO::Buffer 0x0000555f5d156ab0+8 INTERNAL>
  *    # 0x00000000  00 00 00 00 00 00 00 00
  *    buffer.set_string('test', 2) # put there bytes of the "test" string, starting from offset 2
@@ -2566,11 +3089,11 @@ io_buffer_not_inplace(VALUE self)
  *
  *    string = 'data'
  *    buffer = IO::Buffer.for(string)
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x00007f3f02be9b18+4 SLICE>
  *    # ...
  *    buffer
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x00007f3f02be9b18+4 SLICE>
  *    # 0x00000000  64 61 74 61                                     data
  *
@@ -2579,7 +3102,7 @@ io_buffer_not_inplace(VALUE self)
  *    buffer.set_string('---', 1) # write content, starting from offset 1
  *    # => 3
  *    buffer
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x00007f3f02be9b18+4 SLICE>
  *    # 0x00000000  64 2d 2d 2d                                     d---
  *    string  # original string changed, too
@@ -2590,7 +3113,7 @@ io_buffer_not_inplace(VALUE self)
  *    File.write('test.txt', 'test data')
  *    # => 9
  *    buffer = IO::Buffer.map(File.open('test.txt'))
- *    #  =>
+ *    # =>
  *    # #<IO::Buffer 0x00007f3f0768c000+9 MAPPED IMMUTABLE>
  *    # ...
  *    buffer.get_string(5, 2) # read 2 bytes, starting from offset 5
@@ -2677,7 +3200,7 @@ Init_IO_Buffer(void)
     rb_define_method(rb_cIOBuffer, "locked", rb_io_buffer_locked, 0);
 
     // Manipulation:
-    rb_define_method(rb_cIOBuffer, "slice", rb_io_buffer_slice, 2);
+    rb_define_method(rb_cIOBuffer, "slice", io_buffer_slice, -1);
     rb_define_method(rb_cIOBuffer, "<=>", rb_io_buffer_compare, 1);
     rb_define_method(rb_cIOBuffer, "resize", io_buffer_resize, 1);
     rb_define_method(rb_cIOBuffer, "clear", io_buffer_clear, -1);
@@ -2685,17 +3208,41 @@ Init_IO_Buffer(void)
 
     rb_include_module(rb_cIOBuffer, rb_mComparable);
 
-#define DEFINE_TYPE(name) RB_IO_BUFFER_TYPE_##name = rb_intern_const(#name)
-    DEFINE_TYPE(U8); DEFINE_TYPE(S8);
-    DEFINE_TYPE(u16); DEFINE_TYPE(U16); DEFINE_TYPE(s16); DEFINE_TYPE(S16);
-    DEFINE_TYPE(u32); DEFINE_TYPE(U32); DEFINE_TYPE(s32); DEFINE_TYPE(S32);
-    DEFINE_TYPE(u64); DEFINE_TYPE(U64); DEFINE_TYPE(s64); DEFINE_TYPE(S64);
-    DEFINE_TYPE(f32); DEFINE_TYPE(F32); DEFINE_TYPE(f64); DEFINE_TYPE(F64);
-#undef DEFINE_TYPE
+#define IO_BUFFER_DEFINE_DATA_TYPE(name) RB_IO_BUFFER_DATA_TYPE_##name = rb_intern_const(#name)
+    IO_BUFFER_DEFINE_DATA_TYPE(U8);
+    IO_BUFFER_DEFINE_DATA_TYPE(S8);
+
+    IO_BUFFER_DEFINE_DATA_TYPE(u16);
+    IO_BUFFER_DEFINE_DATA_TYPE(U16);
+    IO_BUFFER_DEFINE_DATA_TYPE(s16);
+    IO_BUFFER_DEFINE_DATA_TYPE(S16);
+
+    IO_BUFFER_DEFINE_DATA_TYPE(u32);
+    IO_BUFFER_DEFINE_DATA_TYPE(U32);
+    IO_BUFFER_DEFINE_DATA_TYPE(s32);
+    IO_BUFFER_DEFINE_DATA_TYPE(S32);
+
+    IO_BUFFER_DEFINE_DATA_TYPE(u64);
+    IO_BUFFER_DEFINE_DATA_TYPE(U64);
+    IO_BUFFER_DEFINE_DATA_TYPE(s64);
+    IO_BUFFER_DEFINE_DATA_TYPE(S64);
+
+    IO_BUFFER_DEFINE_DATA_TYPE(f32);
+    IO_BUFFER_DEFINE_DATA_TYPE(F32);
+    IO_BUFFER_DEFINE_DATA_TYPE(f64);
+    IO_BUFFER_DEFINE_DATA_TYPE(F64);
+#undef IO_BUFFER_DEFINE_DATA_TYPE
+
+    rb_define_singleton_method(rb_cIOBuffer, "size_of", io_buffer_size_of, 1);
 
     // Data access:
     rb_define_method(rb_cIOBuffer, "get_value", io_buffer_get_value, 2);
+    rb_define_method(rb_cIOBuffer, "get_values", io_buffer_get_values, 2);
+    rb_define_method(rb_cIOBuffer, "each", io_buffer_each, -1);
+    rb_define_method(rb_cIOBuffer, "values", io_buffer_values, -1);
+    rb_define_method(rb_cIOBuffer, "each_byte", io_buffer_each_byte, -1);
     rb_define_method(rb_cIOBuffer, "set_value", io_buffer_set_value, 3);
+    rb_define_method(rb_cIOBuffer, "set_values", io_buffer_set_values, 3);
 
     rb_define_method(rb_cIOBuffer, "copy", io_buffer_copy, -1);
 
@@ -2714,8 +3261,8 @@ Init_IO_Buffer(void)
     rb_define_method(rb_cIOBuffer, "not!", io_buffer_not_inplace, 0);
 
     // IO operations:
-    rb_define_method(rb_cIOBuffer, "read", io_buffer_read, 2);
-    rb_define_method(rb_cIOBuffer, "pread", io_buffer_pread, 3);
-    rb_define_method(rb_cIOBuffer, "write", io_buffer_write, 2);
-    rb_define_method(rb_cIOBuffer, "pwrite", io_buffer_pwrite, 3);
+    rb_define_method(rb_cIOBuffer, "read", io_buffer_read, -1);
+    rb_define_method(rb_cIOBuffer, "pread", io_buffer_pread, -1);
+    rb_define_method(rb_cIOBuffer, "write", io_buffer_write, -1);
+    rb_define_method(rb_cIOBuffer, "pwrite", io_buffer_pwrite, -1);
 }

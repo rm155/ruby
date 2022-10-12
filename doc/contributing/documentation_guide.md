@@ -151,6 +151,28 @@ We might consider whether to suppress when:
 - The same reference is repeated many times
   (e.g., _RDoc_ on this page).
 
+### HTML Tags
+
+In general, avoid using HTML tags (even in formats where it's allowed)
+because `ri` (the Ruby Interactive reference tool)
+may not render them properly.
+
+### Tables
+
+In particular, avoid building tables with HTML tags
+(<tt><table></tt>, etc.).
+
+Alternatives are:
+
+- The GFM (GitHub Flavored Markdown) table extension,
+  which is enabled by default. See
+  {GFM tables extension}[https://github.github.com/gfm/#tables-extension-].
+
+- A {verbatim text block}[rdoc-ref:RDoc::MarkupReference@Verbatim+Text+Blocks],
+  using spaces and punctuation to format the text.
+  Note that {text markup}[rdoc-ref:RDoc::MarkupReference@Text+Markup]
+  will not be honored.
+
 ## Documenting Classes and Modules
 
 The general structure of the class or module documentation should be:
@@ -376,12 +398,22 @@ Mention aliases in the form
 In some cases, it is useful to document which methods are related to
 the current method.  For example, documentation for `Hash#[]` might
 mention `Hash#fetch` as a related method, and `Hash#merge` might mention
-`Hash#merge!` as a related method.  Consider which methods may be related
-to the current method, and if you think the reader would benefit it,
-at the end of the method documentation, add a line starting with
-"Related: " (e.g. "Related: #fetch").  Don't list more than three
-related methods. If you think more than three methods are related,
-pick the three you think are most important and list those three.
+`Hash#merge!` as a related method.
+
+- Consider which methods may be related
+  to the current method, and if you think the reader would benefit it,
+  at the end of the method documentation, add a line starting with
+  "Related: " (e.g. "Related: #fetch.").
+- Don't list more than three related methods.
+  If you think more than three methods are related,
+  list the three you think are most important.
+- Consider adding:
+
+    - A phrase suggesting how the related method is similar to,
+      or different from,the current method.
+      See an example at Time#getutc.
+    - Example code that illustrates the similarities and differences.
+      See examples at Time#ctime, Time#inspect, Time#to_s.
 
 ### Methods Accepting Multiple Argument Types
 

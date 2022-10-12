@@ -84,7 +84,7 @@
 
 use std::convert::From;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_long, c_uint};
+use std::os::raw::{c_char, c_int, c_uint};
 use std::panic::{catch_unwind, UnwindSafe};
 
 // We check that we can do this with the configure script and a couple of
@@ -106,162 +106,13 @@ pub use autogened::*;
 // TODO: For #defines that affect memory layout, we need to check for them
 // on build and fail if they're wrong. e.g. USE_FLONUM *must* be true.
 
-// TODO:
-// Temporary, these external bindings will likely be auto-generated
-// and textually included in this file
+// These are functions we expose from vm_insnhelper.c, not in any header.
+// Parsing it would result in a lot of duplicate definitions.
+// Use bindgen for functions that are defined in headers or in yjit.c.
 #[cfg_attr(test, allow(unused))] // We don't link against C code when testing
 extern "C" {
-    #[link_name = "rb_insn_name"]
-    pub fn raw_insn_name(insn: VALUE) -> *const c_char;
-
-    #[link_name = "rb_insn_len"]
-    pub fn raw_insn_len(v: VALUE) -> c_int;
-
-    #[link_name = "rb_yarv_class_of"]
-    pub fn CLASS_OF(v: VALUE) -> VALUE;
-
-    #[link_name = "rb_get_ec_cfp"]
-    pub fn get_ec_cfp(ec: EcPtr) -> CfpPtr;
-
-    #[link_name = "rb_get_cfp_pc"]
-    pub fn get_cfp_pc(cfp: CfpPtr) -> *mut VALUE;
-
-    #[link_name = "rb_get_cfp_sp"]
-    pub fn get_cfp_sp(cfp: CfpPtr) -> *mut VALUE;
-
-    #[link_name = "rb_get_cfp_self"]
-    pub fn get_cfp_self(cfp: CfpPtr) -> VALUE;
-
-    #[link_name = "rb_get_cfp_ep"]
-    pub fn get_cfp_ep(cfp: CfpPtr) -> *mut VALUE;
-
-    #[link_name = "rb_get_cfp_ep_level"]
-    pub fn get_cfp_ep_level(cfp: CfpPtr, lv: u32) -> *const VALUE;
-
-    #[link_name = "rb_get_cme_def_type"]
-    pub fn get_cme_def_type(cme: *const rb_callable_method_entry_t) -> rb_method_type_t;
-
-    #[link_name = "rb_get_cme_def_body_attr_id"]
-    pub fn get_cme_def_body_attr_id(cme: *const rb_callable_method_entry_t) -> ID;
-
-    #[link_name = "rb_get_cme_def_body_optimized_type"]
-    pub fn get_cme_def_body_optimized_type(
-        cme: *const rb_callable_method_entry_t,
-    ) -> method_optimized_type;
-
-    #[link_name = "rb_get_cme_def_body_optimized_index"]
-    pub fn get_cme_def_body_optimized_index(cme: *const rb_callable_method_entry_t) -> c_uint;
-
-    #[link_name = "rb_get_cme_def_body_cfunc"]
-    pub fn get_cme_def_body_cfunc(cme: *const rb_callable_method_entry_t)
-        -> *mut rb_method_cfunc_t;
-
-    #[link_name = "rb_get_def_method_serial"]
-    /// While this returns a uintptr_t in C, we always use it as a Rust u64
-    pub fn get_def_method_serial(def: *const rb_method_definition_t) -> u64;
-
-    #[link_name = "rb_get_def_original_id"]
-    pub fn get_def_original_id(def: *const rb_method_definition_t) -> ID;
-
-    #[link_name = "rb_get_mct_argc"]
-    pub fn get_mct_argc(mct: *const rb_method_cfunc_t) -> c_int;
-
-    #[link_name = "rb_get_mct_func"]
-    pub fn get_mct_func(mct: *const rb_method_cfunc_t) -> *const u8;
-
-    #[link_name = "rb_get_def_iseq_ptr"]
-    pub fn get_def_iseq_ptr(def: *const rb_method_definition_t) -> IseqPtr;
-
-    #[link_name = "rb_iseq_encoded_size"]
-    pub fn get_iseq_encoded_size(iseq: IseqPtr) -> c_uint;
-
-    #[link_name = "rb_get_iseq_body_local_iseq"]
-    pub fn get_iseq_body_local_iseq(iseq: IseqPtr) -> IseqPtr;
-
-    #[link_name = "rb_get_iseq_body_iseq_encoded"]
-    pub fn get_iseq_body_iseq_encoded(iseq: IseqPtr) -> *mut VALUE;
-
-    #[link_name = "rb_get_iseq_body_stack_max"]
-    pub fn get_iseq_body_stack_max(iseq: IseqPtr) -> c_uint;
-
-    #[link_name = "rb_get_iseq_flags_has_opt"]
-    pub fn get_iseq_flags_has_opt(iseq: IseqPtr) -> bool;
-
-    #[link_name = "rb_get_iseq_flags_has_kw"]
-    pub fn get_iseq_flags_has_kw(iseq: IseqPtr) -> bool;
-
-    #[link_name = "rb_get_iseq_flags_has_rest"]
-    pub fn get_iseq_flags_has_rest(iseq: IseqPtr) -> bool;
-
-    #[link_name = "rb_get_iseq_flags_has_post"]
-    pub fn get_iseq_flags_has_post(iseq: IseqPtr) -> bool;
-
-    #[link_name = "rb_get_iseq_flags_has_kwrest"]
-    pub fn get_iseq_flags_has_kwrest(iseq: IseqPtr) -> bool;
-
-    #[link_name = "rb_get_iseq_flags_has_block"]
-    pub fn get_iseq_flags_has_block(iseq: IseqPtr) -> bool;
-
-    #[link_name = "rb_get_iseq_flags_has_accepts_no_kwarg"]
-    pub fn get_iseq_flags_has_accepts_no_kwarg(iseq: IseqPtr) -> bool;
-
-    #[link_name = "rb_get_iseq_body_local_table_size"]
-    pub fn get_iseq_body_local_table_size(iseq: IseqPtr) -> c_uint;
-
-    #[link_name = "rb_get_iseq_body_param_keyword"]
-    pub fn get_iseq_body_param_keyword(iseq: IseqPtr) -> *const rb_seq_param_keyword_struct;
-
-    #[link_name = "rb_get_iseq_body_param_size"]
-    pub fn get_iseq_body_param_size(iseq: IseqPtr) -> c_uint;
-
-    #[link_name = "rb_get_iseq_body_param_lead_num"]
-    pub fn get_iseq_body_param_lead_num(iseq: IseqPtr) -> c_int;
-
-    #[link_name = "rb_get_iseq_body_param_opt_num"]
-    pub fn get_iseq_body_param_opt_num(iseq: IseqPtr) -> c_int;
-
-    #[link_name = "rb_get_iseq_body_param_opt_table"]
-    pub fn get_iseq_body_param_opt_table(iseq: IseqPtr) -> *const VALUE;
-
-    #[link_name = "rb_get_cikw_keyword_len"]
-    pub fn get_cikw_keyword_len(cikw: *const rb_callinfo_kwarg) -> c_int;
-
-    #[link_name = "rb_get_cikw_keywords_idx"]
-    pub fn get_cikw_keywords_idx(cikw: *const rb_callinfo_kwarg, idx: c_int) -> VALUE;
-
-    #[link_name = "rb_get_call_data_ci"]
-    pub fn get_call_data_ci(cd: *const rb_call_data) -> *const rb_callinfo;
-
-    #[link_name = "rb_yarv_str_eql_internal"]
-    pub fn rb_str_eql_internal(str1: VALUE, str2: VALUE) -> VALUE;
-
-    #[link_name = "rb_yarv_ary_entry_internal"]
-    pub fn rb_ary_entry_internal(ary: VALUE, offset: c_long) -> VALUE;
-
-    #[link_name = "rb_yarv_fix_mod_fix"]
-    pub fn rb_fix_mod_fix(recv: VALUE, obj: VALUE) -> VALUE;
-
-    #[link_name = "rb_FL_TEST"]
-    pub fn FL_TEST(obj: VALUE, flags: VALUE) -> VALUE;
-
-    #[link_name = "rb_FL_TEST_RAW"]
-    pub fn FL_TEST_RAW(obj: VALUE, flags: VALUE) -> VALUE;
-
-    #[link_name = "rb_RB_TYPE_P"]
-    pub fn RB_TYPE_P(obj: VALUE, t: ruby_value_type) -> bool;
-
-    #[link_name = "rb_BASIC_OP_UNREDEFINED_P"]
-    pub fn BASIC_OP_UNREDEFINED_P(bop: ruby_basic_operators, klass: RedefinitionFlag) -> bool;
-
-    #[link_name = "rb_RSTRUCT_LEN"]
-    pub fn RSTRUCT_LEN(st: VALUE) -> c_long;
-
-    #[link_name = "rb_RSTRUCT_SET"]
-    pub fn RSTRUCT_SET(st: VALUE, k: c_int, v: VALUE);
-
-    // Ruby only defines these in vm_insnhelper.c, not in any header.
-    // Parsing it would result in a lot of duplicate definitions.
     pub fn rb_vm_splat_array(flag: VALUE, ary: VALUE) -> VALUE;
+    pub fn rb_vm_concat_array(ary1: VALUE, ary2st: VALUE) -> VALUE;
     pub fn rb_vm_defined(
         ec: EcPtr,
         reg_cfp: CfpPtr,
@@ -269,7 +120,7 @@ extern "C" {
         obj: VALUE,
         v: VALUE,
     ) -> bool;
-    pub fn rb_vm_set_ivar_idx(obj: VALUE, idx: u32, val: VALUE) -> VALUE;
+    pub fn rb_vm_set_ivar_id(obj: VALUE, idx: u32, val: VALUE) -> VALUE;
     pub fn rb_vm_setinstancevariable(iseq: IseqPtr, obj: VALUE, id: ID, val: VALUE, ic: IVC);
     pub fn rb_aliased_callable_method_entry(
         me: *const rb_callable_method_entry_t,
@@ -283,27 +134,65 @@ extern "C" {
         ic: ICVARC,
     ) -> VALUE;
     pub fn rb_vm_ic_hit_p(ic: IC, reg_ep: *const VALUE) -> bool;
-
-    #[link_name = "rb_vm_ci_argc"]
-    pub fn vm_ci_argc(ci: *const rb_callinfo) -> c_int;
-
-    #[link_name = "rb_vm_ci_mid"]
-    pub fn vm_ci_mid(ci: *const rb_callinfo) -> ID;
-
-    #[link_name = "rb_vm_ci_flag"]
-    pub fn vm_ci_flag(ci: *const rb_callinfo) -> c_uint;
-
-    #[link_name = "rb_vm_ci_kwarg"]
-    pub fn vm_ci_kwarg(ci: *const rb_callinfo) -> *const rb_callinfo_kwarg;
-
-    #[link_name = "rb_METHOD_ENTRY_VISI"]
-    pub fn METHOD_ENTRY_VISI(me: *const rb_callable_method_entry_t) -> rb_method_visibility_t;
-
     pub fn rb_str_bytesize(str: VALUE) -> VALUE;
-
-    #[link_name = "rb_RCLASS_ORIGIN"]
-    pub fn RCLASS_ORIGIN(v: VALUE) -> VALUE;
 }
+
+// Renames
+pub use rb_insn_name as raw_insn_name;
+pub use rb_insn_len as raw_insn_len;
+pub use rb_yarv_class_of as CLASS_OF;
+pub use rb_get_ec_cfp as get_ec_cfp;
+pub use rb_get_cfp_pc as get_cfp_pc;
+pub use rb_get_cfp_sp as get_cfp_sp;
+pub use rb_get_cfp_self as get_cfp_self;
+pub use rb_get_cfp_ep as get_cfp_ep;
+pub use rb_get_cfp_ep_level as get_cfp_ep_level;
+pub use rb_get_cme_def_type as get_cme_def_type;
+pub use rb_get_cme_def_body_attr_id as get_cme_def_body_attr_id;
+pub use rb_get_cme_def_body_optimized_type as get_cme_def_body_optimized_type;
+pub use rb_get_cme_def_body_optimized_index as get_cme_def_body_optimized_index;
+pub use rb_get_cme_def_body_cfunc as get_cme_def_body_cfunc;
+pub use rb_get_def_method_serial as get_def_method_serial;
+pub use rb_get_def_original_id as get_def_original_id;
+pub use rb_get_mct_argc as get_mct_argc;
+pub use rb_get_mct_func as get_mct_func;
+pub use rb_get_def_iseq_ptr as get_def_iseq_ptr;
+pub use rb_iseq_encoded_size as get_iseq_encoded_size;
+pub use rb_get_iseq_body_local_iseq as get_iseq_body_local_iseq;
+pub use rb_get_iseq_body_iseq_encoded as get_iseq_body_iseq_encoded;
+pub use rb_get_iseq_body_stack_max as get_iseq_body_stack_max;
+pub use rb_get_iseq_flags_has_opt as get_iseq_flags_has_opt;
+pub use rb_get_iseq_flags_has_kw as get_iseq_flags_has_kw;
+pub use rb_get_iseq_flags_has_rest as get_iseq_flags_has_rest;
+pub use rb_get_iseq_flags_ruby2_keywords as get_iseq_flags_ruby2_keywords;
+pub use rb_get_iseq_flags_has_post as get_iseq_flags_has_post;
+pub use rb_get_iseq_flags_has_kwrest as get_iseq_flags_has_kwrest;
+pub use rb_get_iseq_flags_has_block as get_iseq_flags_has_block;
+pub use rb_get_iseq_flags_has_accepts_no_kwarg as get_iseq_flags_has_accepts_no_kwarg;
+pub use rb_get_iseq_body_local_table_size as get_iseq_body_local_table_size;
+pub use rb_get_iseq_body_param_keyword as get_iseq_body_param_keyword;
+pub use rb_get_iseq_body_param_size as get_iseq_body_param_size;
+pub use rb_get_iseq_body_param_lead_num as get_iseq_body_param_lead_num;
+pub use rb_get_iseq_body_param_opt_num as get_iseq_body_param_opt_num;
+pub use rb_get_iseq_body_param_opt_table as get_iseq_body_param_opt_table;
+pub use rb_get_cikw_keyword_len as get_cikw_keyword_len;
+pub use rb_get_cikw_keywords_idx as get_cikw_keywords_idx;
+pub use rb_get_call_data_ci as get_call_data_ci;
+pub use rb_yarv_str_eql_internal as rb_str_eql_internal;
+pub use rb_yarv_ary_entry_internal as rb_ary_entry_internal;
+pub use rb_yarv_fix_mod_fix as rb_fix_mod_fix;
+pub use rb_FL_TEST as FL_TEST;
+pub use rb_FL_TEST_RAW as FL_TEST_RAW;
+pub use rb_RB_TYPE_P as RB_TYPE_P;
+pub use rb_BASIC_OP_UNREDEFINED_P as BASIC_OP_UNREDEFINED_P;
+pub use rb_RSTRUCT_LEN as RSTRUCT_LEN;
+pub use rb_RSTRUCT_SET as RSTRUCT_SET;
+pub use rb_vm_ci_argc as vm_ci_argc;
+pub use rb_vm_ci_mid as vm_ci_mid;
+pub use rb_vm_ci_flag as vm_ci_flag;
+pub use rb_vm_ci_kwarg as vm_ci_kwarg;
+pub use rb_METHOD_ENTRY_VISI as METHOD_ENTRY_VISI;
+pub use rb_RCLASS_ORIGIN as RCLASS_ORIGIN;
 
 /// Helper so we can get a Rust string for insn_name()
 pub fn insn_name(opcode: usize) -> String {
@@ -463,18 +352,30 @@ impl VALUE {
         self == Qnil
     }
 
+    pub fn string_p(self) -> bool {
+        self.class_of() == unsafe { rb_cString }
+    }
+
     /// Read the flags bits from the RBasic object, then return a Ruby type enum (e.g. RUBY_T_ARRAY)
     pub fn builtin_type(self) -> ruby_value_type {
+        (self.builtin_flags() & (RUBY_T_MASK as usize)) as ruby_value_type
+    }
+
+    pub fn builtin_flags(self) -> usize {
         assert!(!self.special_const_p());
 
         let VALUE(cval) = self;
         let rbasic_ptr = cval as *const RBasic;
         let flags_bits: usize = unsafe { (*rbasic_ptr).flags }.as_usize();
-        (flags_bits & (RUBY_T_MASK as usize)) as ruby_value_type
+        return flags_bits;
     }
 
     pub fn class_of(self) -> VALUE {
         unsafe { CLASS_OF(self) }
+    }
+
+    pub fn shape_of(self) -> u32 {
+        unsafe { rb_shape_get_shape_id(self) }
     }
 
     pub fn as_isize(self) -> isize {
@@ -596,14 +497,21 @@ impl From<VALUE> for i32 {
     fn from(value: VALUE) -> Self {
         let VALUE(uimm) = value;
         assert!(uimm <= (i32::MAX as usize));
-        uimm as i32
+        uimm.try_into().unwrap()
+    }
+}
+
+impl From<VALUE> for u16 {
+    fn from(value: VALUE) -> Self {
+        let VALUE(uimm) = value;
+        uimm.try_into().unwrap()
     }
 }
 
 /// Produce a Ruby string from a Rust string slice
 #[cfg(feature = "asm_comments")]
 pub fn rust_str_to_ruby(str: &str) -> VALUE {
-    unsafe { rb_utf8_str_new(str.as_ptr() as *const i8, str.len() as i64) }
+    unsafe { rb_utf8_str_new(str.as_ptr() as *const _, str.len() as i64) }
 }
 
 /// Produce a Ruby symbol from a Rust string slice
@@ -724,6 +632,8 @@ mod manual_defs {
     pub const VM_CALL_KWARG: u32 = 1 << VM_CALL_KWARG_bit;
     pub const VM_CALL_KW_SPLAT: u32 = 1 << VM_CALL_KW_SPLAT_bit;
     pub const VM_CALL_TAILCALL: u32 = 1 << VM_CALL_TAILCALL_bit;
+    pub const VM_CALL_ZSUPER : u32 = 1 << VM_CALL_ZSUPER_bit;
+    pub const VM_CALL_OPT_SEND : u32 = 1 << VM_CALL_OPT_SEND_bit;
 
     // From internal/struct.h - in anonymous enum, so we can't easily import it
     pub const RSTRUCT_EMBED_LEN_MASK: usize = (RUBY_FL_USER2 | RUBY_FL_USER1) as usize;

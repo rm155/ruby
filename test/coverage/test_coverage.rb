@@ -136,7 +136,7 @@ class TestCoverage < Test::Unit::TestCase
           f.puts 'REPEATS = 400'
           f.puts 'def add_method(target)'
           f.puts '  REPEATS.times do'
-          f.puts '    target.class_eval(<<~RUBY, __FILE__, __LINE__ + 1)'
+          f.puts '    target.class_eval(<<~RUBY)'
           f.puts '      def foo'
           f.puts '        #{"\n" * rand(REPEATS)}'
           f.puts '      end'
@@ -147,14 +147,37 @@ class TestCoverage < Test::Unit::TestCase
         end
 
         assert_in_out_err(%w[-W0 -rcoverage], <<-"end;", ["[1, 1, 1, 400, nil, nil, nil, nil, nil, nil, nil]"], [], bug13305)
-          Coverage.start
+          Coverage.start(:all)
           tmp = Dir.pwd
           require tmp + '/test.rb'
           add_method(Class.new)
-          p Coverage.result[tmp + "/test.rb"]
+          p Coverage.result[tmp + "/test.rb"][:lines]
         end;
       }
     }
+  end
+
+  def test_eval_coverage
+    assert_in_out_err(%w[-rcoverage], <<-"end;", ["[1, nil, 1, nil]"], [])
+      Coverage.start(eval: true, lines: true)
+
+      eval(<<-RUBY, TOPLEVEL_BINDING, "test.rb")
+      s = String.new
+      begin
+      s << "foo
+      bar".freeze; end
+      RUBY
+
+      p Coverage.result["test.rb"][:lines]
+    end;
+  end
+
+  def test_coverage_supported
+    assert Coverage.supported?(:lines)
+    assert Coverage.supported?(:branches)
+    assert Coverage.supported?(:methods)
+    assert Coverage.supported?(:eval)
+    refute Coverage.supported?(:all)
   end
 
   def test_nocoverage_optimized_line

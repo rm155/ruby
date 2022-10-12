@@ -44,10 +44,6 @@ TEST_DEPENDS += $(if $(filter great exam love check,$(MAKECMDGOALS)),all exts)
 
 in-srcdir := $(if $(filter-out .,$(srcdir)),$(CHDIR) $(srcdir) &&)
 
-ifneq ($(filter -O0 -Od,$(optflags)),)
-override XCFLAGS := $(filter-out -D_FORTIFY_SOURCE=%,$(XCFLAGS))
-endif
-
 ifeq ($(if $(filter all main exts enc trans libencs libenc libtrans \
 		    prog program ruby ruby$(EXEEXT) \
 		    wprogram rubyw rubyw$(EXEEXT) \
@@ -137,7 +133,7 @@ config.status: $(wildcard config.cache)
 STUBPROGRAM = rubystub$(EXEEXT)
 IGNOREDPATTERNS = %~ .% %.orig %.rej \#%\#
 SCRIPTBINDIR := $(if $(EXEEXT),,exec/)
-SCRIPTPROGRAMS = $(addprefix $(SCRIPTBINDIR),$(addsuffix $(EXEEXT),$(filter-out $(IGNOREDPATTERNS),$(notdir $(wildcard $(srcdir)/libexec/*)))))
+SCRIPTPROGRAMS = $(addprefix $(SCRIPTBINDIR),$(addsuffix $(EXEEXT),$(filter-out $(IGNOREDPATTERNS),$(notdir $(wildcard $(srcdir)/bin/*)))))
 
 stub: $(STUBPROGRAM)
 scriptbin: $(SCRIPTPROGRAMS)
@@ -163,9 +159,8 @@ $(SCRIPTBINDIR)%$(EXEEXT): bin/% $(STUBPROGRAM) \
 	$(Q) chmod +x $@
 	$(Q) $(POSTLINK)
 
-$(TIMESTAMPDIR)/.exec.time:
-	$(Q) mkdir exec
-	$(Q) exit > $@
+$(SCRIPTBINDIR):
+	$(Q) mkdir $@
 
 .PHONY: commit
 commit: $(if $(filter commit,$(MAKECMDGOALS)),$(filter-out commit,$(MAKECMDGOALS))) up
@@ -264,9 +259,9 @@ pr-% pull-github-%: fetch-github-%
 	$(call pull-github,$*)
 
 HELP_EXTRA_TASKS = \
-	"  checkout-github:     checkout GitHub Pull Request [PR=1234]" \
-	"  pull-github:         rebase GitHub Pull Request to new worktree [PR=1234]" \
-	"  update-github:       merge master branch and push it to Pull Request [PR=1234]" \
+	"  checkout-github:       checkout GitHub Pull Request [PR=1234]" \
+	"  pull-github:           rebase GitHub Pull Request to new worktree [PR=1234]" \
+	"  update-github:         merge master branch and push it to Pull Request [PR=1234]" \
 	""
 
 extract-gems: $(HAVE_BASERUBY:yes=update-gems)
@@ -324,7 +319,10 @@ $(srcdir)/gems/src/$(1): | $(srcdir)/gems/src
 
 $(srcdir)/.bundle/gems/$(1)-$(2): | $(srcdir)/gems/src/$(1) .bundle/gems
 	$(ECHO) Copying $(1)@$(3) to $$(@F)
-	$(Q) $(CHDIR) "$(srcdir)/gems/src/$(1)" && $(GIT) fetch origin $(3) && $(GIT) checkout $(3)
+	$(Q) $(CHDIR) "$(srcdir)/gems/src/$(1)" && \
+	    $(GIT) fetch origin $(3) && \
+	    $(GIT) checkout --detach $(3) && \
+	:
 	$(Q) $(BASERUBY) -C "$(srcdir)" \
 	    -Itool/lib -rbundled_gem \
 	    -e 'BundledGem.copy("gems/src/$(1)/$(1).gemspec", ".bundle")'
@@ -383,19 +381,6 @@ ifeq ($(if $(wildcard $(filter-out .,$(UNICODE_FILES) $(UNICODE_PROPERTY_FILES))
 UNICODE_TABLES_TIMESTAMP =
 $(UNICODE_SRC_DATA_DIR)/.unicode-tables.time: \
 	$(UNICODE_FILES) $(UNICODE_PROPERTY_FILES)
-endif
-
-ifeq ($(wildcard $(srcdir)/revision.h),)
-REVISION_IN_HEADER := none
-REVISION_LATEST := update
-else
-REVISION_IN_HEADER := $(shell sed -n 's/^\#define RUBY_FULL_REVISION "\(.*\)"/\1/p' $(srcdir)/revision.h 2>/dev/null)
-REVISION_LATEST := $(shell $(CHDIR) $(srcdir) && $(GIT) log -1 --format=%H 2>/dev/null)
-endif
-ifneq ($(REVISION_IN_HEADER),$(REVISION_LATEST))
-# GNU make treat the target as unmodified when its dependents get
-# updated but it is not updated, while others may not.
-$(srcdir)/revision.h: $(REVISION_H)
 endif
 
 include $(top_srcdir)/yjit/yjit.mk

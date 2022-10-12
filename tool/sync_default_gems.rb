@@ -73,6 +73,7 @@ REPOSITORIES = {
   pathname: "ruby/pathname",
   digest: "ruby/digest",
   error_highlight: "ruby/error_highlight",
+  syntax_suggest: "ruby/syntax_suggest",
   un: "ruby/un",
   win32ole: "ruby/win32ole",
 }
@@ -81,6 +82,30 @@ def pipe_readlines(args, rs: "\0", chomp: true)
   IO.popen(args) do |f|
     f.readlines(rs, chomp: chomp)
   end
+end
+
+def replace_rdoc_ref(file)
+  src = File.binread(file)
+  src.gsub!(%r[\[\Khttps://docs\.ruby-lang\.org/en/master(?:/doc)?/(([A-Z]\w+(?:/[A-Z]\w+)*)|\w+_rdoc)\.html(\#\S+)?(?=\])]) do
+    name, mod, label = $1, $2, $3
+    mod &&= mod.gsub('/', '::')
+    if label && (m = label.match(/\A\#(?:method-([ci])|(?:(?:class|module)-#{mod}-)?label)-([-+\w]+)\z/))
+      scope, label = m[1], m[2]
+      scope = scope ? scope.tr('ci', '.#') : '@'
+    end
+    "rdoc-ref:#{mod || name.chomp("_rdoc") + ".rdoc"}#{scope}#{label}"
+  end or return false
+  File.rename(file, file + "~")
+  File.binwrite(file, src)
+  return true
+end
+
+def replace_rdoc_ref_all
+  result = pipe_readlines(%W"git status porcelain -z -- *.c *.rb *.rdoc")
+  result.map! {|line| line[/\A.M (.*)/, 1]}
+  result.compact!
+  result = pipe_readlines(%W"git grep -z -l -F [https://docs.ruby-lang.org/en/master/ --" + result)
+  result.inject(false) {|changed, file| changed | replace_rdoc_ref(file)}
 end
 
 # We usually don't use this. Please consider using #sync_default_gems_with_commits instead.
@@ -301,6 +326,7 @@ def sync_default_gems(gem)
     cp_r(Dir.glob("#{upstream}/lib/did_you_mean*"), "lib")
     cp_r("#{upstream}/did_you_mean.gemspec", "lib/did_you_mean")
     cp_r("#{upstream}/test", "test/did_you_mean")
+    rm_rf("test/did_you_mean/lib")
     rm_rf(%w[test/did_you_mean/tree_spell/test_explore.rb])
   when "erb"
     rm_rf(%w[lib/erb* test/erb libexec/erb])
@@ -372,9 +398,15 @@ def sync_default_gems(gem)
   when "open3"
     sync_lib gem, upstream
     rm_rf("lib/open3/jruby_windows.rb")
+  when "syntax_suggest"
+    sync_lib gem, upstream
+    rm_rf(%w[spec/syntax_suggest libexec/syntax_suggest])
+    cp_r("#{upstream}/spec", "spec/syntax_suggest")
+    cp_r("#{upstream}/exe/syntax_suggest", "libexec/syntax_suggest")
   else
     sync_lib gem, upstream
   end
+  replace_rdoc_ref_all
 end
 
 IGNORE_FILE_PATTERN =
@@ -390,7 +422,7 @@ def message_filter(repo, sha)
   log = STDIN.read
   log.delete!("\r")
   url = "https://github.com/#{repo}"
-  print "[#{repo}] ", log.gsub(/\b(?i:fix) +\K#(?=\d+\b)|\(\K#(?=\d+\))|\bGH-(?=\d+\b)/) {
+  print "[#{repo}] ", log.gsub(/\b(?:(?i:fix(?:e[sd])?) +|GH-)\K#(?=\d+\b)|\(\K#(?=\d+\))/) {
     "#{url}/pull/"
   }.gsub(%r{(?<![-\[\](){}\w@/])(?:(\w+(?:-\w+)*/\w+(?:-\w+)*)@)?(\h{10,40})\b}) {|c|
     "https://github.com/#{$1 || repo}/commit/#{$2[0,12]}"
@@ -471,13 +503,13 @@ def sync_default_gems_with_commits(gem, ranges, edit: nil)
       skipped = true
     elsif /^CONFLICT/ =~ result
       result = pipe_readlines(%W"git status --porcelain -z")
-      result.map! {|line| line[/^.U (.*)/, 1]}
+      result.map! {|line| line[/\A.U (.*)/, 1]}
       result.compact!
       ignore, conflict = result.partition {|name| IGNORE_FILE_PATTERN =~ name}
       unless ignore.empty?
         system(*%W"git reset HEAD --", *ignore)
         File.unlink(*ignore)
-        ignore = pipe_readlines(%W"git status --porcelain -z" + ignore).map! {|line| line[/^.. (.*)/, 1]}
+        ignore = pipe_readlines(%W"git status --porcelain -z" + ignore).map! {|line| line[/\A.. (.*)/, 1]}
         system(*%W"git checkout HEAD --", *ignore) unless ignore.empty?
       end
       unless conflict.empty?
@@ -499,6 +531,10 @@ def sync_default_gems_with_commits(gem, ranges, edit: nil)
       `git reset` && `git checkout .` && `git clean -fd`
       puts "Failed to pick #{sha}"
       next
+    end
+
+    if replace_rdoc_ref_all
+      `git commit --amend --no-edit`
     end
 
     puts "Update commit message: #{sha}"
@@ -541,6 +577,12 @@ end
 def update_default_gems(gem, release: false)
 
   author, repository = REPOSITORIES[gem.to_sym].split('/')
+  default_branch = case gem
+                  when 'syntax_suggest'
+                    "main"
+                  else
+                    "master"
+                  end
 
   puts "Update #{author}/#{repository}"
 
@@ -566,8 +608,8 @@ def update_default_gems(gem, release: false)
       last_release = `git tag`.chomp.split.delete_if{|v| v =~ /pre|beta/ }.last
       `git checkout #{last_release}`
     else
-      `git checkout master`
-      `git rebase origin/master`
+      `git checkout #{default_branch}`
+      `git rebase origin/#{default_branch}`
     end
   end
 end
@@ -600,6 +642,17 @@ when "--message-filter"
   abort unless ARGV.size == 2
   message_filter(*ARGV)
   exit
+when "rdoc-ref"
+  ARGV.shift
+  pattern = ARGV.empty? ? %w[*.c *.rb *.rdoc] : ARGV
+  result = pipe_readlines(%W"git grep -z -l -F [https://docs.ruby-lang.org/en/master/ --" + pattern)
+  result.inject(false) do |changed, file|
+    if replace_rdoc_ref(file)
+      puts "replaced rdoc-ref in #{file}"
+      changed = true
+    end
+    changed
+  end
 when nil, "-h", "--help"
     puts <<-HELP
 \e[1mSync with upstream code of default libraries\e[0m

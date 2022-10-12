@@ -12,8 +12,8 @@ end
 #
 # First, what’s elsewhere. \Module \FileUtils:
 #
-# - Inherits from {class Object}[https://docs.ruby-lang.org/en/master/Object.html].
-# - Supplements {class File}[https://docs.ruby-lang.org/en/master/File.html]
+# - Inherits from {class Object}[rdoc-ref:Object].
+# - Supplements {class File}[rdoc-ref:File]
 #   (but is not included or extended there).
 #
 # Here, module \FileUtils provides methods that are useful for:
@@ -162,8 +162,8 @@ end
 # by applying a special pre-process:
 #
 # - If the target path points to a directory, this method uses methods
-#   {File#chown}[https://docs.ruby-lang.org/en/master/File.html#method-i-chown]
-#   and {File#chmod}[https://docs.ruby-lang.org/en/master/File.html#method-i-chmod]
+#   {File#chown}[rdoc-ref:File#chown]
+#   and {File#chmod}[rdoc-ref:File#chmod]
 #   in removing directories.
 # - The owner of the target directory should be either the current process
 #   or the super user (root).
@@ -291,7 +291,7 @@ module FileUtils
   #
   # With no keyword arguments, creates a directory at each +path+ in +list+
   # by calling: <tt>Dir.mkdir(path, mode)</tt>;
-  # see {Dir.mkdir}[https://docs.ruby-lang.org/en/master/Dir.html#method-c-mkdir]:
+  # see {Dir.mkdir}[rdoc-ref:Dir.mkdir]:
   #
   #   FileUtils.mkdir(%w[tmp0 tmp1]) # => ["tmp0", "tmp1"]
   #   FileUtils.mkdir('tmp4')        # => ["tmp4"]
@@ -299,7 +299,7 @@ module FileUtils
   # Keyword arguments:
   #
   # - <tt>mode: <i>mode</i></tt> - also calls <tt>File.chmod(mode, path)</tt>;
-  #   see {File.chmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-chmod].
+  #   see {File.chmod}[rdoc-ref:File.chmod].
   # - <tt>noop: true</tt> - does not create directories.
   # - <tt>verbose: true</tt> - prints an equivalent command:
   #
@@ -339,7 +339,7 @@ module FileUtils
   # With no keyword arguments, creates a directory at each +path+ in +list+,
   # along with any needed ancestor directories,
   # by calling: <tt>Dir.mkdir(path, mode)</tt>;
-  # see {Dir.mkdir}[https://docs.ruby-lang.org/en/master/Dir.html#method-c-mkdir]:
+  # see {Dir.mkdir}[rdoc-ref:Dir.mkdir]:
   #
   #   FileUtils.mkdir_p(%w[tmp0/tmp1 tmp2/tmp3]) # => ["tmp0/tmp1", "tmp2/tmp3"]
   #   FileUtils.mkdir_p('tmp4/tmp5')             # => ["tmp4/tmp5"]
@@ -347,7 +347,7 @@ module FileUtils
   # Keyword arguments:
   #
   # - <tt>mode: <i>mode</i></tt> - also calls <tt>File.chmod(mode, path)</tt>;
-  #   see {File.chmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-chmod].
+  #   see {File.chmod}[rdoc-ref:File.chmod].
   # - <tt>noop: true</tt> - does not create directories.
   # - <tt>verbose: true</tt> - prints an equivalent command:
   #
@@ -374,7 +374,7 @@ module FileUtils
       path = remove_trailing_slash(item)
 
       stack = []
-      until File.directory?(path)
+      until File.directory?(path) || File.dirname(path) == path
         stack.push path
         path = File.dirname(path)
       end
@@ -417,7 +417,7 @@ module FileUtils
   #
   # With no keyword arguments, removes the directory at each +path+ in +list+,
   # by calling: <tt>Dir.rmdir(path)</tt>;
-  # see {Dir.rmdir}[https://docs.ruby-lang.org/en/master/Dir.html#method-c-rmdir]:
+  # see {Dir.rmdir}[rdoc-ref:Dir.rmdir]:
   #
   #   FileUtils.rmdir(%w[tmp0/tmp1 tmp2/tmp3]) # => ["tmp0/tmp1", "tmp2/tmp3"]
   #   FileUtils.rmdir('tmp4/tmp5')             # => ["tmp4/tmp5"]
@@ -1044,7 +1044,7 @@ module FileUtils
   module_function :copy_file
 
   # Copies \IO stream +src+ to \IO stream +dest+ via
-  # {IO.copy_stream}[https://docs.ruby-lang.org/en/master/IO.html#method-c-copy_stream].
+  # {IO.copy_stream}[rdoc-ref:IO.copy_stream].
   #
   # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
   #
@@ -1165,7 +1165,7 @@ module FileUtils
   #
   # Keyword arguments:
   #
-  # - <tt>force: true</tt> - ignores raised exceptions of StandardError
+  # - <tt>force: true</tt> - ignores raised exceptions of Errno::ENOENT
   #   and its descendants.
   # - <tt>noop: true</tt> - does not remove files; returns +nil+.
   # - <tt>verbose: true</tt> - prints an equivalent command:
@@ -1248,7 +1248,7 @@ module FileUtils
   #
   # Keyword arguments:
   #
-  # - <tt>force: true</tt> - ignores raised exceptions of StandardError
+  # - <tt>force: true</tt> - ignores raised exceptions of Errno::ENOENT
   #   and its descendants.
   # - <tt>noop: true</tt> - does not remove entries; returns +nil+.
   # - <tt>secure: true</tt> - removes +src+ securely;
@@ -1315,7 +1315,7 @@ module FileUtils
   # see {Avoiding the TOCTTOU Vulnerability}[rdoc-ref:FileUtils@Avoiding+the+TOCTTOU+Vulnerability].
   #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
   #
   # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
@@ -1384,10 +1384,12 @@ module FileUtils
         ent.remove
       rescue
         raise unless force
+        raise unless Errno::ENOENT === $!
       end
     end
   rescue
     raise unless force
+    raise unless Errno::ENOENT === $!
   end
   module_function :remove_entry_secure
 
@@ -1413,7 +1415,7 @@ module FileUtils
   # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
   #
   # Related: FileUtils.remove_entry_secure.
   #
@@ -1423,10 +1425,12 @@ module FileUtils
         ent.remove
       rescue
         raise unless force
+        raise unless Errno::ENOENT === $!
       end
     end
   rescue
     raise unless force
+    raise unless Errno::ENOENT === $!
   end
   module_function :remove_entry
 
@@ -1437,7 +1441,7 @@ module FileUtils
   # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
   #
   # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
@@ -1445,6 +1449,7 @@ module FileUtils
     Entry_.new(path).remove_file
   rescue
     raise unless force
+    raise unless Errno::ENOENT === $!
   end
   module_function :remove_file
 
@@ -1456,7 +1461,7 @@ module FileUtils
   # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
   #
   # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
@@ -1555,14 +1560,14 @@ module FileUtils
   # Keyword arguments:
   #
   # - <tt>group: <i>group</i></tt> - changes the group if not +nil+,
-  #   using {File.chown}[https://docs.ruby-lang.org/en/master/File.html#method-c-chown].
+  #   using {File.chown}[rdoc-ref:File.chown].
   # - <tt>mode: <i>permissions</i></tt> - changes the permissions.
-  #   using {File.chmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-chmod].
+  #   using {File.chmod}[rdoc-ref:File.chmod].
   # - <tt>noop: true</tt> - does not copy entries; returns +nil+.
   # - <tt>owner: <i>owner</i></tt> - changes the owner if not +nil+,
-  #   using {File.chown}[https://docs.ruby-lang.org/en/master/File.html#method-c-chown].
+  #   using {File.chown}[rdoc-ref:File.chown].
   # - <tt>preserve: true</tt> - preserve timestamps
-  #   using {File.utime}[https://docs.ruby-lang.org/en/master/File.html#method-c-utime].
+  #   using {File.utime}[rdoc-ref:File.utime].
   # - <tt>verbose: true</tt> - prints an equivalent command:
   #
   #     FileUtils.install('src0.txt', 'dest0.txt', noop: true, verbose: true)
@@ -1699,9 +1704,9 @@ module FileUtils
   # returns +list+ if it is an array, <tt>[list]</tt> otherwise:
   #
   # - Modifies each entry that is a regular file using
-  #   {File.chmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-chmod].
+  #   {File.chmod}[rdoc-ref:File.chmod].
   # - Modifies each entry that is a symbolic link using
-  #   {File.lchmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-lchmod].
+  #   {File.lchmod}[rdoc-ref:File.lchmod].
   #
   # Argument +list+ or its elements
   # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
@@ -1801,9 +1806,9 @@ module FileUtils
   # returns +list+ if it is an array, <tt>[list]</tt> otherwise:
   #
   # - Modifies each entry that is a regular file using
-  #   {File.chown}[https://docs.ruby-lang.org/en/master/File.html#method-c-chown].
+  #   {File.chown}[rdoc-ref:File.chown].
   # - Modifies each entry that is a symbolic link using
-  #   {File.lchown}[https://docs.ruby-lang.org/en/master/File.html#method-c-lchown].
+  #   {File.lchown}[rdoc-ref:File.lchown].
   #
   # Argument +list+ or its elements
   # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
@@ -2328,13 +2333,21 @@ module FileUtils
 
     def postorder_traverse
       if directory?
-        entries().each do |ent|
+        begin
+          children = entries()
+        rescue Errno::EACCES
+          # Failed to get the list of children.
+          # Assuming there is no children, try to process the parent directory.
+          yield self
+          return
+        end
+
+        children.each do |ent|
           ent.postorder_traverse do |e|
             yield e
           end
         end
       end
-    ensure
       yield self
     end
 

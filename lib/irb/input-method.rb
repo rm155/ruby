@@ -14,7 +14,6 @@ require_relative 'magic-file'
 require_relative 'completion'
 require 'io/console'
 require 'reline'
-require 'rdoc'
 
 module IRB
   STDIN_FILE_NAME = "(line)" # :nodoc:
@@ -138,7 +137,7 @@ module IRB
     # Creates a new input method object
     def initialize(file)
       super
-      @io = IRB::MagicFile.open(file)
+      @io = file.is_a?(IO) ? file : IRB::MagicFile.open(file)
       @external_encoding = @io.external_encoding
     end
     # The file name of this input method, usually given during initialization.
@@ -262,7 +261,7 @@ module IRB
     end
   end
 
-  class ReidlineInputMethod < InputMethod
+  class RelineInputMethod < InputMethod
     include Reline
 
     # Creates a new input method object using Reline
@@ -321,6 +320,11 @@ module IRB
         [195, 164], # The "ä" that appears when Alt+d is pressed on xterm.
         [226, 136, 130] # The "∂" that appears when Alt+d in pressed on iTerm2.
       ]
+      begin
+        require 'rdoc'
+      rescue LoadError
+        return nil
+      end
 
       if just_cursor_moving and completion_journey_data.nil?
         return nil
@@ -464,6 +468,15 @@ module IRB
       end
       str += " and #{inputrc_path}" if File.exist?(inputrc_path)
       str
+    end
+  end
+
+  class ReidlineInputMethod < RelineInputMethod
+    def initialize
+      warn <<~MSG.strip
+        IRB::ReidlineInputMethod is deprecated, please use IRB::RelineInputMethod instead.
+      MSG
+      super
     end
   end
 end

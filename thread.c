@@ -100,6 +100,10 @@
 #include "vm_debug.h"
 #include "vm_sync.h"
 
+#if USE_MJIT && defined(HAVE_SYS_WAIT_H)
+#include <sys/wait.h>
+#endif
+
 #ifndef USE_NATIVE_THREAD_PRIORITY
 #define USE_NATIVE_THREAD_PRIORITY 0
 #define RUBY_THREAD_PRIORITY_MAX 3
@@ -1685,6 +1689,12 @@ rb_thread_io_blocking_region(rb_blocking_function_t *func, void *data1, int fd)
         .th = rb_ec_thread_ptr(ec)
     };
 
+    // `errno` is only valid when there is an actual error - but we can't
+    // extract that from the return value of `func` alone, so we clear any
+    // prior `errno` value here so that we can later check if it was set by
+    // `func` or not (as opposed to some previously set value).
+    errno = 0;
+
     RB_VM_LOCK_ENTER();
     {
         ccan_list_add(&rb_ec_vm_ptr(ec)->waiting_fds, &waiting_fd.wfd_node);
@@ -1715,6 +1725,11 @@ rb_thread_io_blocking_region(rb_blocking_function_t *func, void *data1, int fd)
     }
     /* TODO: check func() */
     RUBY_VM_CHECK_INTS_BLOCKING(ec);
+
+    // If the error was a timeout, we raise a specific exception for that:
+    if (saved_errno == ETIMEDOUT) {
+        rb_raise(rb_eIOTimeoutError, "Blocking operation timed out!");
+    }
 
     errno = saved_errno;
 
@@ -2331,16 +2346,16 @@ rb_threadptr_execute_interrupts(rb_thread_t *th, int blocking_timing)
                 ret |= rb_signal_exec(th, sig);
             }
             th->status = prev_status;
+        }
 
 #if USE_MJIT
-            // Handle waitpid_signal for MJIT issued by ruby_sigchld_handler. This needs to be done
-            // outside ruby_sigchld_handler to avoid recursively relying on the SIGCHLD handler.
-            if (mjit_waitpid_finished) {
-                mjit_waitpid_finished = false;
-                mjit_notify_waitpid(mjit_waitpid_status);
-            }
-#endif
+        // Handle waitpid_signal for MJIT issued by ruby_sigchld_handler. This needs to be done
+        // outside ruby_sigchld_handler to avoid recursively relying on the SIGCHLD handler.
+        if (mjit_waitpid_finished && th == th->vm->ractor.main_thread) {
+            mjit_waitpid_finished = false;
+            mjit_notify_waitpid(WIFEXITED(mjit_waitpid_status) ? WEXITSTATUS(mjit_waitpid_status) : -1);
         }
+#endif
 
         /* exception from another thread */
         if (pending_interrupt && threadptr_pending_interrupt_active_p(th)) {

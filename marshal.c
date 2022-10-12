@@ -28,6 +28,7 @@
 #include "internal/encoding.h"
 #include "internal/error.h"
 #include "internal/hash.h"
+#include "internal/numeric.h"
 #include "internal/object.h"
 #include "internal/struct.h"
 #include "internal/symbol.h"
@@ -38,6 +39,7 @@
 #include "ruby/st.h"
 #include "ruby/util.h"
 #include "builtin.h"
+#include "shape.h"
 
 #define BITSPERSHORT (2*CHAR_BIT)
 #define SHORTMASK ((1<<BITSPERSHORT)-1)
@@ -171,6 +173,7 @@ struct dump_arg {
     st_table *data;
     st_table *compat_tbl;
     st_table *encodings;
+    unsigned long num_entries;
 };
 
 struct dump_call_arg {
@@ -620,10 +623,6 @@ w_obj_each(st_data_t key, st_data_t val, st_data_t a)
         }
         return ST_CONTINUE;
     }
-    if (!ivarg->num_ivar) {
-        rb_raise(rb_eRuntimeError, "instance variable added to %"PRIsVALUE" instance",
-                 CLASS_OF(arg->obj));
-    }
     --ivarg->num_ivar;
     w_symbol(ID2SYM(id), arg->arg);
     w_object(value, arg->arg, arg->limit);
@@ -718,11 +717,16 @@ has_ivars(VALUE obj, VALUE encname, VALUE *ivobj)
 static void
 w_ivar_each(VALUE obj, st_index_t num, struct dump_call_arg *arg)
 {
+    shape_id_t shape_id = rb_shape_get_shape_id(arg->obj);
     struct w_ivar_arg ivarg = {arg, num};
     if (!num) return;
     rb_ivar_foreach(obj, w_obj_each, (st_data_t)&ivarg);
     if (ivarg.num_ivar) {
         rb_raise(rb_eRuntimeError, "instance variable removed from %"PRIsVALUE" instance",
+                 CLASS_OF(arg->obj));
+    }
+    if (shape_id != rb_shape_get_shape_id(arg->obj)) {
+        rb_raise(rb_eRuntimeError, "instance variable added to %"PRIsVALUE" instance",
                  CLASS_OF(arg->obj));
     }
 }
@@ -754,6 +758,62 @@ w_objivar(VALUE obj, struct dump_call_arg *arg)
     w_ivar_each(obj, num, arg);
 }
 
+#if SIZEOF_LONG > 4
+// Optimized dump for fixnum larger than 31-bits
+static void
+w_bigfixnum(VALUE obj, struct dump_arg *arg)
+{
+    RUBY_ASSERT(FIXNUM_P(obj));
+
+    w_byte(TYPE_BIGNUM, arg);
+
+#if SIZEOF_LONG == SIZEOF_VALUE
+    long num, slen_num;
+    num = FIX2LONG(obj);
+#else
+    long long num, slen_num;
+    num = NUM2LL(obj);
+#endif
+
+    char sign = num < 0 ? '-' : '+';
+    w_byte(sign, arg);
+
+    // Guaranteed not to overflow, as FIXNUM is 1-bit less than long
+    if (num < 0) num = -num;
+
+    // calculate the size in shorts
+    int slen = 0;
+    {
+        slen_num = num;
+        while (slen_num) {
+            slen++;
+            slen_num = SHORTDN(slen_num);
+        }
+    }
+
+    RUBY_ASSERT(slen > 0 && slen <= SIZEOF_LONG / 2);
+
+    w_long((long)slen, arg);
+
+    for (int i = 0; i < slen; i++) {
+        w_short(num & SHORTMASK, arg);
+        num = SHORTDN(num);
+    }
+
+    // We aren't adding this object to the link table, but we need to increment
+    // the index.
+    arg->num_entries++;
+
+    RUBY_ASSERT(num == 0);
+}
+#endif
+
+static void
+w_remember(VALUE obj, struct dump_arg *arg)
+{
+    st_add_direct(arg->data, obj, arg->num_entries++);
+}
+
 static void
 w_object(VALUE obj, struct dump_arg *arg, int limit)
 {
@@ -765,17 +825,6 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
 
     if (limit == 0) {
         rb_raise(rb_eArgError, "exceed depth limit");
-    }
-
-    if (limit > 0) limit--;
-    c_arg.limit = limit;
-    c_arg.arg = arg;
-    c_arg.obj = obj;
-
-    if (st_lookup(arg->data, obj, &num)) {
-        w_byte(TYPE_LINK, arg);
-        w_long((long)num, arg);
-        return;
     }
 
     if (NIL_P(obj)) {
@@ -797,19 +846,32 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
             w_long(FIX2LONG(obj), arg);
         }
         else {
-            w_object(rb_int2big(FIX2LONG(obj)), arg, limit);
+            w_bigfixnum(obj, arg);
         }
 #endif
     }
     else if (SYMBOL_P(obj)) {
         w_symbol(obj, arg);
     }
-    else if (FLONUM_P(obj)) {
-        st_add_direct(arg->data, obj, arg->data->num_entries);
-        w_byte(TYPE_FLOAT, arg);
-        w_float(RFLOAT_VALUE(obj), arg);
-    }
     else {
+        if (st_lookup(arg->data, obj, &num)) {
+            w_byte(TYPE_LINK, arg);
+            w_long((long)num, arg);
+            return;
+        }
+
+        if (limit > 0) limit--;
+        c_arg.limit = limit;
+        c_arg.arg = arg;
+        c_arg.obj = obj;
+
+        if (FLONUM_P(obj)) {
+            w_remember(obj, arg);
+            w_byte(TYPE_FLOAT, arg);
+            w_float(RFLOAT_VALUE(obj), arg);
+            return;
+        }
+
         VALUE v;
 
         if (!RBASIC_CLASS(obj)) {
@@ -818,7 +880,7 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
         }
 
         if (rb_obj_respond_to(obj, s_mdump, TRUE)) {
-            st_add_direct(arg->data, obj, arg->data->num_entries);
+            w_remember(obj, arg);
 
             v = dump_funcall(arg, obj, s_mdump, 0, 0);
             w_class(TYPE_USRMARSHAL, obj, arg, FALSE);
@@ -848,11 +910,11 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
             if (hasiv) {
                 w_ivar(hasiv, ivobj, encname, &c_arg);
             }
-            st_add_direct(arg->data, obj, arg->data->num_entries);
+            w_remember(obj, arg);
             return;
         }
 
-        st_add_direct(arg->data, obj, arg->data->num_entries);
+        w_remember(obj, arg);
 
         hasiv = has_ivars(obj, (encname = encoding_name(obj, arg)), &ivobj);
         {
@@ -1044,6 +1106,7 @@ clear_dump_arg(struct dump_arg *arg)
     arg->symbols = 0;
     st_free_table(arg->data);
     arg->data = 0;
+    arg->num_entries = 0;
     if (arg->compat_tbl) {
         st_free_table(arg->compat_tbl);
         arg->compat_tbl = 0;
@@ -1126,6 +1189,7 @@ rb_marshal_dump_limited(VALUE obj, VALUE port, int limit)
     arg->dest = 0;
     arg->symbols = st_init_numtable();
     arg->data    = rb_init_identtable();
+    arg->num_entries = 0;
     arg->compat_tbl = 0;
     arg->encodings = 0;
     arg->str = rb_str_buf_new(0);
@@ -1492,7 +1556,7 @@ r_symreal(struct load_arg *arg, int ivar)
     }
     if (idx > 0) {
         rb_enc_associate_index(s, idx);
-        if (rb_enc_str_coderange(s) == ENC_CODERANGE_BROKEN) {
+        if (is_broken_string(s)) {
             rb_raise(rb_eArgError, "invalid byte sequence in %s: %+"PRIsVALUE,
                      rb_enc_name(rb_enc_from_index(idx)), s);
         }
@@ -1881,10 +1945,29 @@ r_object_for(struct load_arg *arg, bool partial, int *ivp, VALUE extmod, int typ
 
             sign = r_byte(arg);
             len = r_long(arg);
-            data = r_bytes0(len * 2, arg);
-            v = rb_integer_unpack(RSTRING_PTR(data), len, 2, 0,
-                INTEGER_PACK_LITTLE_ENDIAN | (sign == '-' ? INTEGER_PACK_NEGATIVE : 0));
-            rb_str_resize(data, 0L);
+
+            if (SIZEOF_VALUE >= 8 && len <= 4) {
+                // Representable within uintptr, likely FIXNUM
+                VALUE num = 0;
+                for (int i = 0; i < len; i++) {
+                    num |= (VALUE)r_byte(arg) << (i * 16);
+                    num |= (VALUE)r_byte(arg) << (i * 16 + 8);
+                }
+#if SIZEOF_VALUE == SIZEOF_LONG
+                v = ULONG2NUM(num);
+#else
+                v = ULL2NUM(num);
+#endif
+                if (sign == '-') {
+                    v = rb_int_uminus(v);
+                }
+            }
+            else {
+                data = r_bytes0(len * 2, arg);
+                v = rb_integer_unpack(RSTRING_PTR(data), len, 2, 0,
+                    INTEGER_PACK_LITTLE_ENDIAN | (sign == '-' ? INTEGER_PACK_NEGATIVE : 0));
+                rb_str_resize(data, 0L);
+            }
             v = r_entry(v, arg);
             v = r_leave(v, arg, false);
         }
