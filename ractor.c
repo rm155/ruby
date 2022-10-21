@@ -195,8 +195,6 @@ rb_ractor_related_objects_mark(rb_ractor_t *r)
     rb_gc_mark(r->sync.wait.yielded_basket.sender);
     rb_gc_mark(r->receiving_mutex);
 
-    rb_gc_mark(r->loc);
-    rb_gc_mark(r->name);
     rb_gc_mark(r->r_stdin);
     rb_gc_mark(r->r_stdout);
     rb_gc_mark(r->r_stderr);
@@ -222,6 +220,8 @@ static void
 ractor_mark(void *ptr)
 {
     rb_ractor_t *r = (rb_ractor_t *)ptr;
+    rb_gc_mark(r->loc);
+    rb_gc_mark(r->name);
 }
 
 static void
