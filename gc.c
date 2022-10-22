@@ -744,6 +744,7 @@ typedef struct rb_objspace {
         unsigned int gc_stressful: 1;
         unsigned int has_hook: 1;
         unsigned int during_minor_gc : 1;
+	unsigned int marking_unsorted_root : 1; //TODO: Remove once all roots are sorted
 #if GC_ENABLE_INCREMENTAL_MARK
         unsigned int during_incremental_marking : 1;
 #endif
@@ -7253,7 +7254,7 @@ in_marking_range(rb_objspace_t *objspace, VALUE obj)
 	case T_ICLASS:
 	    return objspace == GET_VM()->objspace; //TODO: Remove once constants referenced by classes become safe
 	default:
-	    return GET_OBJSPACE_OF_VALUE(obj) == objspace; //TODO: Apply this only to shareable objects once the roots have been sorted
+	    return (!objspace->flags.marking_unsorted_root && !FL_TEST(obj, FL_SHAREABLE)) || GET_OBJSPACE_OF_VALUE(obj) == objspace; //TODO: Apply this only to shareable objects once the roots have been sorted
     }
 }
 
@@ -7716,6 +7717,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     struct gc_list *list;
     rb_execution_context_t *ec = GET_EC();
     rb_vm_t *vm = rb_ec_vm_ptr(ec);
+    objspace->flags.marking_unsorted_root = FALSE;
 
 #if PRINT_ROOT_TICKS
     tick_t start_tick = tick();
@@ -7752,60 +7754,102 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 } while (0)
 
     MARK_CHECKPOINT("vm");
-    SET_STACK_END;
-    rb_vm_mark(vm);
-    if (vm->self) gc_mark(objspace, vm->self);
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	SET_STACK_END;
+	rb_vm_mark(vm);
+	if (vm->self) gc_mark(objspace, vm->self);
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("ractor");
-    if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(GET_RACTOR());
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(GET_RACTOR());
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("finalizers");
-    mark_finalizer_tbl(objspace, finalizer_table);
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	mark_finalizer_tbl(objspace, finalizer_table);
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("machine_context");
-    mark_current_machine_context(objspace, ec);
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	mark_current_machine_context(objspace, ec);
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     /* mark protected global variables */
     MARK_CHECKPOINT("global_list");
-    for (list = global_list; list; list = list->next) {
-        gc_mark_maybe(objspace, *list->varptr);
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	for (list = global_list; list; list = list->next) {
+	    gc_mark_maybe(objspace, *list->varptr);
+	}
     }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("end_proc");
-    rb_mark_end_proc();
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	rb_mark_end_proc();
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("global_tbl");
-    rb_gc_mark_global_tbl();
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	rb_gc_mark_global_tbl();
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("shareable_tbl");
-    mark_set_no_pin(objspace, objspace->shareable_tbl);
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	mark_set_no_pin(objspace, objspace->shareable_tbl);
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
+
+    rb_global_space_t *global_space = &rb_global_space;
 
     MARK_CHECKPOINT("object_id");
-    rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->next_object_id_lock);
-    rb_gc_mark(global_space->next_object_id);
-    rb_native_mutex_unlock(&global_space->next_object_id_lock);
-    rb_native_mutex_lock(&objspace->obj_id_lock);
-    mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
-    rb_native_mutex_unlock(&objspace->obj_id_lock);
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
+	rb_native_mutex_lock(&global_space->next_object_id_lock);
+	rb_gc_mark(global_space->next_object_id);
+	rb_native_mutex_unlock(&global_space->next_object_id_lock);
+	rb_native_mutex_lock(&objspace->obj_id_lock);
+	mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
+	rb_native_mutex_unlock(&objspace->obj_id_lock);
+    }
+    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("local_gc_exemption_tbl");
+    objspace->flags.marking_unsorted_root = TRUE;
+    {
 
-    rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
-    global_space->exemption_tbl_counter++;
-    if (global_space->exemption_tbl_counter == 1) {
-	rb_native_mutex_lock(&global_space->exemption_tbl_lock);
+	rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
+	global_space->exemption_tbl_counter++;
+	if (global_space->exemption_tbl_counter == 1) {
+	    rb_native_mutex_lock(&global_space->exemption_tbl_lock);
+	}
+	rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
+
+	mark_set_no_pin(objspace, global_space->local_gc_exemption_tbl);
+
+	rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
+	global_space->exemption_tbl_counter--;
+	if (global_space->exemption_tbl_counter == 0) {
+	    rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
+	}
+	rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
+
     }
-    rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
-
-    mark_set_no_pin(objspace, global_space->local_gc_exemption_tbl);
-
-    rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
-    global_space->exemption_tbl_counter--;
-    if (global_space->exemption_tbl_counter == 0) {
-	rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
-    }
-    rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
+    objspace->flags.marking_unsorted_root = FALSE;
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
 
