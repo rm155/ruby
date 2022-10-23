@@ -115,6 +115,7 @@ const char *rb_obj_info(VALUE obj);
 const char *rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj);
 
 void rb_add_to_shareable_tbl(VALUE obj);
+void rb_add_to_end_proc_list(VALUE *addr);
 VALUE rb_gc_ractor_teardown_cleanup();
 
 VALUE rb_gc_disable_no_rest(void);

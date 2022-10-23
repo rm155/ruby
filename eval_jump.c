@@ -71,6 +71,7 @@ rb_set_end_proc(void (*func)(VALUE), VALUE data)
     link->next = *list;
     link->func = func;
     link->data = data;
+    rb_add_to_end_proc_list(&link->data);
     *list = link;
 }
 
