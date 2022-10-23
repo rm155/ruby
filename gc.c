@@ -716,6 +716,7 @@ enum gc_mode {
 
 typedef struct rb_global_space {
     VALUE next_object_id;
+    rb_ractor_t *prev_id_assigner;
     rb_nativethread_lock_t next_object_id_lock;
     st_table *local_gc_exemption_tbl; //TODO: Remove once all the cases are handled individually
     rb_nativethread_lock_t exemption_tbl_lock;
@@ -2762,6 +2763,16 @@ get_current_alloc_target_ractor(void)
     return GET_RACTOR()->local_objspace->alloc_target_ractor;
 }
 
+static rb_ractor_t *
+current_allocating_ractor(void)
+{
+    rb_ractor_t *r = GET_RACTOR();
+    if(r->local_objspace->alloc_target_ractor) {
+	return r->local_objspace->alloc_target_ractor;
+    }
+    return r;
+}
+
 static VALUE
 newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked)
 {
@@ -3953,6 +3964,7 @@ rb_global_space_init(void)
 {
     rb_global_space_t *global_space = calloc1(sizeof(rb_global_space_t));
     global_space->next_object_id = INT2FIX(OBJ_ID_INITIAL);
+    global_space->prev_id_assigner = NULL;
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->exemption_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->exemption_tbl_counter_lock);
@@ -4983,6 +4995,7 @@ cached_object_id(VALUE obj)
 	rb_native_mutex_lock(&global_space->next_object_id_lock);
         id = global_space->next_object_id;
         global_space->next_object_id = rb_int_plus(id, INT2FIX(OBJ_ID_INCREMENT));
+	global_space->prev_id_assigner = current_allocating_ractor();
 	rb_native_mutex_unlock(&global_space->next_object_id_lock);
 
         VALUE already_disabled = gc_disable_no_rest(objspace);
@@ -7817,16 +7830,14 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     rb_global_space_t *global_space = &rb_global_space;
 
     MARK_CHECKPOINT("object_id");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	rb_native_mutex_lock(&global_space->next_object_id_lock);
+    rb_native_mutex_lock(&global_space->next_object_id_lock);
+    if (global_space->prev_id_assigner == objspace->ractor) { //TODO: Should also evaluate to true for the global GC
 	rb_gc_mark(global_space->next_object_id);
-	rb_native_mutex_unlock(&global_space->next_object_id_lock);
-	rb_native_mutex_lock(&objspace->obj_id_lock);
-	mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
-	rb_native_mutex_unlock(&objspace->obj_id_lock);
     }
-    objspace->flags.marking_unsorted_root = FALSE;
+    rb_native_mutex_unlock(&global_space->next_object_id_lock);
+    rb_native_mutex_lock(&objspace->obj_id_lock);
+    mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
 
     MARK_CHECKPOINT("local_gc_exemption_tbl");
     objspace->flags.marking_unsorted_root = TRUE;
