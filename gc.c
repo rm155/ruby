@@ -7797,44 +7797,24 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("ractor");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(GET_RACTOR());
-    }
-    objspace->flags.marking_unsorted_root = FALSE;
+    if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(GET_RACTOR());
 
     MARK_CHECKPOINT("finalizers");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	mark_finalizer_tbl(objspace, finalizer_table);
-    }
-    objspace->flags.marking_unsorted_root = FALSE;
+    mark_finalizer_tbl(objspace, finalizer_table);
 
     MARK_CHECKPOINT("machine_context");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	mark_current_machine_context(objspace, ec);
-    }
-    objspace->flags.marking_unsorted_root = FALSE;
+    mark_current_machine_context(objspace, ec);
 
     /* mark protected global variables */
     MARK_CHECKPOINT("global_list");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	for (list = global_list; list; list = list->next) {
-	    gc_mark_maybe(objspace, *list->varptr);
-	}
+    for (list = global_list; list; list = list->next) {
+	gc_mark_maybe(objspace, *list->varptr);
     }
-    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("end_proc");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	for (list = objspace->end_proc_list; list; list = list->next) {
-	    rb_gc_mark(*list->varptr);
-	}
+    for (list = objspace->end_proc_list; list; list = list->next) {
+	rb_gc_mark(*list->varptr);
     }
-    objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("global_tbl");
     objspace->flags.marking_unsorted_root = TRUE;
@@ -7844,11 +7824,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     objspace->flags.marking_unsorted_root = FALSE;
 
     MARK_CHECKPOINT("shareable_tbl");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	mark_set_no_pin(objspace, objspace->shareable_tbl);
-    }
-    objspace->flags.marking_unsorted_root = FALSE;
+    mark_set_no_pin(objspace, objspace->shareable_tbl);
 
     rb_global_space_t *global_space = &rb_global_space;
 
