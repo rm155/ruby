@@ -875,6 +875,8 @@ typedef struct rb_objspace {
     VALUE stress_to_class;
 #endif
 
+    const struct rb_callcache *global_cc_cache_table[VM_GLOBAL_CC_CACHE_TABLE_SIZE]; // vm_eval.c
+
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
 
@@ -1094,6 +1096,21 @@ gc_mode_verify(enum gc_mode mode)
 #endif
     return mode;
 }
+
+const struct rb_callcache *
+get_from_global_cc_cache_table(int index)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    return objspace->global_cc_cache_table[index];
+}
+
+void
+set_in_global_cc_cache_table(int index, const struct rb_callcache *cc)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    objspace->global_cc_cache_table[index] = cc;
+}
+
 
 static inline bool
 has_sweeping_pages(rb_objspace_t *objspace)

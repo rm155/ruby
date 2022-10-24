@@ -441,7 +441,8 @@ gccct_method_search_slowpath(rb_vm_t *vm, VALUE klass, ID mid, int argc, unsigne
         cc = NULL;
     }
 
-    return vm->global_cc_cache_table[index] = cc;
+    set_in_global_cc_cache_table(index, cc);
+    return cc;
 }
 
 static inline const struct rb_callcache *
@@ -460,7 +461,7 @@ gccct_method_search(rb_execution_context_t *ec, VALUE recv, ID mid, int argc)
     // search global method cache
     unsigned int index = (unsigned int)(gccct_hash(klass, mid) % VM_GLOBAL_CC_CACHE_TABLE_SIZE);
     rb_vm_t *vm = rb_ec_vm_ptr(ec);
-    const struct rb_callcache *cc = vm->global_cc_cache_table[index];
+    const struct rb_callcache *cc = get_from_global_cc_cache_table(index);
 
     if (LIKELY(cc)) {
         if (LIKELY(vm_cc_class_check(cc, klass))) {

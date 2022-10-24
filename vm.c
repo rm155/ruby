@@ -2834,14 +2834,14 @@ rb_vm_mark(void *ptr)
         rb_id_table_foreach_values(vm->negative_cme_table, vm_mark_negative_cme, NULL);
         rb_mark_tbl_no_pin(vm->overloaded_cme_table);
         for (i=0; i<VM_GLOBAL_CC_CACHE_TABLE_SIZE; i++) {
-            const struct rb_callcache *cc = vm->global_cc_cache_table[i];
+            const struct rb_callcache *cc = get_from_global_cc_cache_table(i);
 
             if (cc != NULL) {
                 if (!vm_cc_invalidated_p(cc)) {
                     rb_gc_mark((VALUE)cc);
                 }
                 else {
-                    vm->global_cc_cache_table[i] = NULL;
+		    set_in_global_cc_cache_table(i, NULL);
                 }
             }
         }
