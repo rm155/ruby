@@ -44,6 +44,7 @@ rb_serial_t rb_next_class_serial(void);
 
 /* vm.c */
 VALUE rb_obj_is_thread(VALUE obj);
+void rb_vm_ractor_mark(void *ptr);
 void rb_vm_mark(void *ptr);
 void rb_vm_each_stack_value(void *ptr, void (*cb)(VALUE, void*), void *ctx);
 PUREFUNC(VALUE rb_vm_top_self(void));

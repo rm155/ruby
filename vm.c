@@ -2777,15 +2777,11 @@ vm_mark_negative_cme(VALUE val, void *dmy)
 }
 
 void
-rb_vm_mark(void *ptr)
+rb_vm_ractor_mark(void *ptr)
 {
-    RUBY_MARK_ENTER("vm");
-    RUBY_GC_INFO("-------------------------------------------------\n");
     if (ptr) {
         rb_vm_t *vm = ptr;
         rb_ractor_t *r = 0;
-        long i, len;
-        const VALUE *obj_ary;
 
         ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
             // ractor.set only contains blocking or running ractors
@@ -2793,6 +2789,18 @@ rb_vm_mark(void *ptr)
                       rb_ractor_status_p(r, ractor_running));
             rb_gc_mark(rb_ractor_self(r));
         }
+    }
+}
+
+void
+rb_vm_mark(void *ptr)
+{
+    RUBY_MARK_ENTER("vm");
+    RUBY_GC_INFO("-------------------------------------------------\n");
+    if (ptr) {
+        rb_vm_t *vm = ptr;
+        long i, len;
+        const VALUE *obj_ary;
 
         rb_gc_mark_movable(vm->mark_object_ary);
 
@@ -2833,18 +2841,6 @@ rb_vm_mark(void *ptr)
 
         rb_id_table_foreach_values(vm->negative_cme_table, vm_mark_negative_cme, NULL);
         rb_mark_tbl_no_pin(vm->overloaded_cme_table);
-        for (i=0; i<VM_GLOBAL_CC_CACHE_TABLE_SIZE; i++) {
-            const struct rb_callcache *cc = get_from_global_cc_cache_table(i);
-
-            if (cc != NULL) {
-                if (!vm_cc_invalidated_p(cc)) {
-                    rb_gc_mark((VALUE)cc);
-                }
-                else {
-		    set_in_global_cc_cache_table(i, NULL);
-                }
-            }
-        }
 
         mjit_mark();
     }

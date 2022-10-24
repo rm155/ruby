@@ -7035,6 +7035,23 @@ mark_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
     rb_id_table_foreach_values(tbl, mark_const_entry_i, objspace);
 }
 
+static void
+mark_global_cc_cache_table(void)
+{
+    for (int i=0; i<VM_GLOBAL_CC_CACHE_TABLE_SIZE; i++) {
+	const struct rb_callcache *cc = get_from_global_cc_cache_table(i);
+
+	if (cc != NULL) {
+	    if (!vm_cc_invalidated_p(cc)) {
+		rb_gc_mark((VALUE)cc);
+	    }
+	    else {
+		set_in_global_cc_cache_table(i, NULL);
+	    }
+	}
+    }
+}
+
 #if STACK_GROW_DIRECTION < 0
 #define GET_STACK_BOUNDS(start, end, appendix) ((start) = STACK_END, (end) = STACK_START)
 #elif STACK_GROW_DIRECTION > 0
@@ -7808,10 +7825,16 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     objspace->flags.marking_unsorted_root = TRUE;
     {
 	SET_STACK_END;
-	rb_vm_mark(vm);
-	if (vm->self) gc_mark(objspace, vm->self);
+	if (objspace == vm->objspace) { //TODO: Should also evaluate to true for the global GC
+	    rb_vm_mark(vm);
+	    if (vm->self) gc_mark(objspace, vm->self);
+	}
+	rb_vm_ractor_mark(vm);
     }
     objspace->flags.marking_unsorted_root = FALSE;
+
+    MARK_CHECKPOINT("cache_table");
+    mark_global_cc_cache_table();
 
     MARK_CHECKPOINT("ractor");
     if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(GET_RACTOR());
