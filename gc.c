@@ -7807,16 +7807,12 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 } while (0)
 
     MARK_CHECKPOINT("vm");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	SET_STACK_END;
-	if (objspace == vm->objspace) { //TODO: Should also evaluate to true for the global GC
-	    rb_vm_mark(vm);
-	    if (vm->self) gc_mark(objspace, vm->self);
-	}
-	rb_vm_ractor_mark(vm);
+    SET_STACK_END;
+    if (objspace == vm->objspace) {
+	rb_vm_mark(vm);
+	if (vm->self) gc_mark(objspace, vm->self);
     }
-    objspace->flags.marking_unsorted_root = FALSE;
+    rb_vm_ractor_mark(vm);
 
     MARK_CHECKPOINT("cache_table");
     mark_global_cc_cache_table();
@@ -7840,11 +7836,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     rb_mark_end_proc(objspace);
 
     MARK_CHECKPOINT("global_tbl");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
-	rb_gc_mark_global_tbl();
-    }
-    objspace->flags.marking_unsorted_root = FALSE;
+    rb_gc_mark_global_tbl();
 
     MARK_CHECKPOINT("shareable_tbl");
     mark_set_no_pin(objspace, objspace->shareable_tbl);
@@ -7853,7 +7845,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 
     MARK_CHECKPOINT("object_id");
     rb_native_mutex_lock(&global_space->next_object_id_lock);
-    if (global_space->prev_id_assigner == objspace->ractor) { //TODO: Should also evaluate to true for the global GC
+    if (global_space->prev_id_assigner == objspace->ractor) {
 	rb_gc_mark(global_space->next_object_id);
     }
     rb_native_mutex_unlock(&global_space->next_object_id_lock);
