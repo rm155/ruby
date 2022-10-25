@@ -4,6 +4,7 @@
  */
 
 #include "eval_intern.h"
+#include "internal/gc.h"
 
 /* exit */
 
@@ -51,6 +52,7 @@ struct end_proc_data {
     void (*func) (VALUE);
     VALUE data;
     struct end_proc_data *next;
+    struct rb_objspace *objspace;
 };
 
 static struct end_proc_data *end_procs, *ephemeral_end_procs;
@@ -71,18 +73,18 @@ rb_set_end_proc(void (*func)(VALUE), VALUE data)
     link->next = *list;
     link->func = func;
     link->data = data;
-    rb_add_to_end_proc_list(&link->data);
+    link->objspace = get_objspace_of_value(data);
     *list = link;
 }
 
 void
-rb_mark_end_proc(void)
+rb_mark_end_proc(struct rb_objspace *objspace)
 {
     struct end_proc_data *link;
 
     link = end_procs;
     while (link) {
-        rb_gc_mark(link->data);
+        if (objspace == link->objspace) rb_gc_mark(link->data);
         link = link->next;
     }
     link = ephemeral_end_procs;

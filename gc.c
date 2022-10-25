@@ -780,7 +780,6 @@ typedef struct rb_objspace {
     st_table *finalizer_table;
 
     st_table *shareable_tbl;
-    struct gc_list *end_proc_list;
 
     struct {
         int run;
@@ -1014,6 +1013,12 @@ asan_unlock_freelist(struct heap_page *page)
 #define GET_HEAP_PAGE(x)   (GET_PAGE_HEADER(x)->page)
 #define GET_RACTOR_OF_VALUE(x)   (GET_HEAP_PAGE(x)->ractor)
 #define GET_OBJSPACE_OF_VALUE(x)   (GET_HEAP_PAGE(x)->objspace)
+
+rb_objspace_t *
+get_objspace_of_value(VALUE v)
+{
+    return GET_OBJSPACE_OF_VALUE(v);
+}
 
 #define NUM_IN_PAGE(p)   (((bits_t)(p) & HEAP_PAGE_ALIGN_MASK) / BASE_SLOT_SIZE)
 #define BITMAP_INDEX(p)  (NUM_IN_PAGE(p) / BITS_BITLENGTH )
@@ -1942,14 +1947,6 @@ rb_objspace_free(rb_objspace_t *objspace)
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
 
     st_free_table(objspace->shareable_tbl);
-
-    if (objspace->end_proc_list) {
-        struct gc_list *list, *next;
-        for (list = objspace->end_proc_list; list; list = next) {
-            next = list->next;
-            xfree(list);
-        }
-    }
 
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
@@ -4775,18 +4772,6 @@ rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm)
 	}
     }
     rb_objspace_call_finalizer(vm->objspace);
-}
-
-void
-rb_add_to_end_proc_list(VALUE *addr)
-{
-    rb_objspace_t *objspace = &rb_objspace;
-    struct gc_list *tmp;
-
-    tmp = ALLOC(struct gc_list);
-    tmp->next = objspace->end_proc_list;
-    tmp->varptr = addr;
-    objspace->end_proc_list = tmp;
 }
 
 void
@@ -7852,9 +7837,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     }
 
     MARK_CHECKPOINT("end_proc");
-    for (list = objspace->end_proc_list; list; list = list->next) {
-	rb_gc_mark(*list->varptr);
-    }
+    rb_mark_end_proc(objspace);
 
     MARK_CHECKPOINT("global_tbl");
     objspace->flags.marking_unsorted_root = TRUE;

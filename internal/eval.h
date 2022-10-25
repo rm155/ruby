@@ -15,6 +15,8 @@
 #define id_signo ruby_static_id_signo
 #define id_status ruby_static_id_status
 
+struct rb_objspace; /* in vm_core.h */
+
 /* eval.c */
 extern ID ruby_static_id_signo;
 extern ID ruby_static_id_status;
@@ -27,6 +29,6 @@ VALUE rb_get_backtrace(VALUE info);
 
 /* eval_jump.c */
 void rb_call_end_proc(VALUE data);
-void rb_mark_end_proc(void);
+void rb_mark_end_proc(struct rb_objspace *objspace);
 
 #endif /* INTERNAL_EVAL_H */
