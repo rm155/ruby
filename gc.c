@@ -4778,6 +4778,9 @@ void
 rb_add_to_shareable_tbl(VALUE obj)
 {
     rb_objspace_t *objspace = &rb_objspace;
+    if (objspace->alloc_target_ractor && !rb_special_const_p(obj)) {
+	objspace = GET_OBJSPACE_OF_VALUE(obj);
+    }
     st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
 }
 
