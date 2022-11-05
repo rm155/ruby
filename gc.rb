@@ -30,12 +30,12 @@ module GC
   #  Note: These keyword arguments are implementation and version dependent. They
   #  are not guaranteed to be future-compatible, and may be ignored if the
   #  underlying implementation does not support them.
-  def self.start full_mark: true, immediate_mark: true, immediate_sweep: true
-    Primitive.gc_start_internal full_mark, immediate_mark, immediate_sweep, false
+  def self.start full_mark: true, immediate_mark: true, immediate_sweep: true, global: false
+    Primitive.gc_start_internal full_mark, immediate_mark, immediate_sweep, global, false
   end
 
-  def garbage_collect full_mark: true, immediate_mark: true, immediate_sweep: true
-    Primitive.gc_start_internal full_mark, immediate_mark, immediate_sweep, false
+  def garbage_collect full_mark: true, immediate_mark: true, immediate_sweep: true, global: false
+    Primitive.gc_start_internal full_mark, immediate_mark, immediate_sweep, global, false
   end
 
   #  call-seq:
@@ -298,8 +298,8 @@ module GC
 end
 
 module ObjectSpace
-  def garbage_collect full_mark: true, immediate_mark: true, immediate_sweep: true
-    Primitive.gc_start_internal full_mark, immediate_mark, immediate_sweep, false
+  def garbage_collect full_mark: true, immediate_mark: true, immediate_sweep: true, global: false
+    Primitive.gc_start_internal full_mark, immediate_mark, immediate_sweep, global, false
   end
 
   module_function :garbage_collect

@@ -210,8 +210,10 @@ rb_ractor_related_objects_mark(rb_ractor_t *r)
         }
     }
 
-    rb_gc_mark(r->threads.main->self);
-    if (r->threads.main->thgroup) rb_gc_mark(r->threads.main->thgroup);
+    if (r->threads.main) {
+	    rb_gc_mark(r->threads.main->self);
+	    if (r->threads.main->thgroup) rb_gc_mark(r->threads.main->thgroup);
+    }
 
     ractor_local_storage_mark(r);
 }
@@ -1601,6 +1603,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->name = name;
     r->loc = loc;
     r->during_teardown_cleanup = false;
+    rb_add_to_shareable_tbl(r->pub.self);
 }
 
 void

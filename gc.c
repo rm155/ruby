@@ -521,6 +521,7 @@ typedef enum {
     GPR_FLAG_IMMEDIATE_MARK    = 0x8000,
     GPR_FLAG_FULL_MARK        = 0x10000,
     GPR_FLAG_COMPACT          = 0x20000,
+    GPR_FLAG_GLOBAL          = 0x40000,
 
     GPR_DEFAULT_REASON =
         (GPR_FLAG_FULL_MARK | GPR_FLAG_IMMEDIATE_MARK |
@@ -745,6 +746,7 @@ typedef struct rb_objspace {
         unsigned int gc_stressful: 1;
         unsigned int has_hook: 1;
         unsigned int during_minor_gc : 1;
+        unsigned int during_global_gc : 1;
 	unsigned int marking_unsorted_root : 1; //TODO: Remove once all roots are sorted
 #if GC_ENABLE_INCREMENTAL_MARK
         unsigned int during_incremental_marking : 1;
@@ -880,15 +882,23 @@ typedef struct rb_objspace {
     struct ccan_list_node objspace_node;
 
     rb_ractor_t *alloc_target_ractor;
+    struct rb_objspace *global_gc_current_target;
 } rb_objspace_t;
 
 static rb_objspace_t *
 current_ractor_objspace(rb_vm_t *vm)
 {
+    rb_objspace_t *objspace;
     if (vm->ractor.cnt <= 1) {
-	return vm->objspace;
+	objspace = vm->objspace;
     }
-    return GET_RACTOR()->local_objspace;
+    else {
+	objspace = GET_RACTOR()->local_objspace;
+    }
+    if(objspace->global_gc_current_target) {
+	objspace = objspace->global_gc_current_target;
+    }
+    return objspace;
 }
 
 
@@ -1287,9 +1297,12 @@ enum gc_enter_event {
 };
 
 static inline void gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
+static inline void gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
 static inline void gc_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
+static inline void gc_global_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
 
 static void gc_marks(rb_objspace_t *objspace, int full_mark);
+static void gc_marks_global(rb_objspace_t *objspace, int full_mark);
 static void gc_marks_start(rb_objspace_t *objspace, int full);
 static void gc_marks_finish(rb_objspace_t *objspace);
 static void gc_marks_rest(rb_objspace_t *objspace);
@@ -7821,7 +7834,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     mark_global_cc_cache_table();
 
     MARK_CHECKPOINT("ractor");
-    if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(GET_RACTOR());
+    if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(objspace->ractor);
 
     MARK_CHECKPOINT("finalizers");
     mark_finalizer_tbl(objspace, finalizer_table);
@@ -9003,6 +9016,17 @@ gc_marks(rb_objspace_t *objspace, int full_mark)
     gc_prof_mark_timer_stop(objspace);
 }
 
+static void
+gc_marks_global(rb_objspace_t *objspace, int full_mark)
+{
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	objspace->global_gc_current_target = os;
+	gc_marks(os, full_mark);
+    }
+    objspace->global_gc_current_target = NULL;
+}
+
 /* RGENGC */
 
 static void
@@ -9695,7 +9719,15 @@ garbage_collect(rb_objspace_t *objspace, unsigned int reason)
         objspace->profile.prepare_time = getrusage_time();
 #endif
 
-        gc_rest(objspace);
+	if (reason & GPR_FLAG_FULL_MARK) {
+	    rb_objspace_t *os = NULL;
+	    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+		gc_rest(os);
+	    }
+	}
+	else {
+	    gc_rest(objspace);
+	}
 
 #if GC_PROFILE_MORE_DETAIL
         objspace->profile.prepare_time = getrusage_time() - objspace->profile.prepare_time;
@@ -9708,44 +9740,31 @@ garbage_collect(rb_objspace_t *objspace, unsigned int reason)
     return ret;
 }
 
-static int
-gc_start(rb_objspace_t *objspace, unsigned int reason)
+static void
+gc_set_flags_start(rb_objspace_t *objspace, unsigned int reason, unsigned int *do_full_mark)
 {
-    unsigned int do_full_mark = !!(reason & GPR_FLAG_FULL_MARK);
-#if GC_ENABLE_INCREMENTAL_MARK
-    unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
-#endif
-
     /* reason may be clobbered, later, so keep set immediate_sweep here */
     objspace->flags.immediate_sweep = !!(reason & GPR_FLAG_IMMEDIATE_SWEEP);
 
+    objspace->flags.during_global_gc = !!(reason & GPR_FLAG_GLOBAL);
+
     /* Explicitly enable compaction (GC.compact) */
-    if (do_full_mark && ruby_enable_autocompact) {
+    if (*do_full_mark && ruby_enable_autocompact) {
         objspace->flags.during_compacting = TRUE;
     }
     else {
         objspace->flags.during_compacting = !!(reason & GPR_FLAG_COMPACT);
     }
+}
 
-    if (!heap_allocated_pages) return FALSE; /* heap is not ready */
-    if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(objspace)) return TRUE; /* GC is not allowed */
-
-    GC_ASSERT(gc_mode(objspace) == gc_mode_none);
-    GC_ASSERT(!is_lazy_sweeping(objspace));
-    GC_ASSERT(!is_incremental_marking(objspace));
-
-    unsigned int lock_lev;
-    gc_enter(objspace, gc_enter_event_start, &lock_lev);
-
-#if RGENGC_CHECK_MODE >= 2
-    gc_verify_internal_consistency(objspace);
-#endif
-
+static void
+gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *do_full_mark, unsigned int *immediate_mark)
+{
     if (ruby_gc_stressful) {
         int flag = FIXNUM_P(ruby_gc_stress_mode) ? FIX2INT(ruby_gc_stress_mode) : 0;
 
         if ((flag & (1<<gc_stress_no_major)) == 0) {
-            do_full_mark = TRUE;
+            *do_full_mark = TRUE;
         }
 
         objspace->flags.immediate_sweep = !(flag & (1<<gc_stress_no_immediate_sweep));
@@ -9753,26 +9772,26 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
     else {
         if (objspace->rgengc.need_major_gc) {
             reason |= objspace->rgengc.need_major_gc;
-            do_full_mark = TRUE;
+            *do_full_mark = TRUE;
         }
         else if (RGENGC_FORCE_MAJOR_GC) {
             reason = GPR_FLAG_MAJOR_BY_FORCE;
-            do_full_mark = TRUE;
+            *do_full_mark = TRUE;
         }
 
         objspace->rgengc.need_major_gc = GPR_FLAG_NONE;
     }
 
-    if (do_full_mark && (reason & GPR_FLAG_MAJOR_MASK) == 0) {
+    if (*do_full_mark && (reason & GPR_FLAG_MAJOR_MASK) == 0) {
         reason |= GPR_FLAG_MAJOR_BY_FORCE; /* GC by CAPI, METHOD, and so on. */
     }
 
 #if GC_ENABLE_INCREMENTAL_MARK
-    if (!GC_ENABLE_INCREMENTAL_MARK || objspace->flags.dont_incremental || immediate_mark) {
+    if (!GC_ENABLE_INCREMENTAL_MARK || objspace->flags.dont_incremental || *immediate_mark) {
         objspace->flags.during_incremental_marking = FALSE;
     }
     else {
-        objspace->flags.during_incremental_marking = do_full_mark;
+        objspace->flags.during_incremental_marking = *do_full_mark;
     }
 #endif
 
@@ -9784,7 +9803,7 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 
     gc_report(1, objspace, "gc_start(reason: %x) => %u, %d, %d\n",
               reason,
-              do_full_mark, !is_incremental_marking(objspace), objspace->flags.immediate_sweep);
+              *do_full_mark, !is_incremental_marking(objspace), objspace->flags.immediate_sweep);
 
 #if USE_DEBUG_COUNTER
     RB_DEBUG_COUNTER_INC(gc_count);
@@ -9812,19 +9831,89 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
     objspace->profile.total_allocated_objects_at_gc_start = objspace->total_allocated_objects;
     objspace->profile.heap_used_at_gc_start = heap_allocated_pages;
     gc_prof_setup_new_record(objspace, reason);
-    gc_reset_malloc_info(objspace, do_full_mark);
-    rb_transient_heap_start_marking(do_full_mark);
+    gc_reset_malloc_info(objspace, *do_full_mark);
+    rb_transient_heap_start_marking(*do_full_mark);
 
     gc_event_hook(objspace, RUBY_INTERNAL_EVENT_GC_START, 0 /* TODO: pass minor/immediate flag? */);
     GC_ASSERT(during_gc);
+}
 
-    gc_prof_timer_start(objspace);
-    {
-        gc_marks(objspace, do_full_mark);
+static int
+gc_start(rb_objspace_t *objspace, unsigned int reason)
+{
+    unsigned int do_full_mark = !!(reason & GPR_FLAG_FULL_MARK);
+#if GC_ENABLE_INCREMENTAL_MARK
+    unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
+#endif
+    unsigned int global_gc = !!(reason & GPR_FLAG_GLOBAL);
+    if (global_gc) {
+	do_full_mark = 1;
+	immediate_mark = 1;
     }
-    gc_prof_timer_stop(objspace);
 
-    gc_exit(objspace, gc_enter_event_start, &lock_lev);
+    if (global_gc) {
+	rb_objspace_t *os = NULL;
+	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	    gc_set_flags_start(os, reason, &do_full_mark);
+
+	    if (!heap_allocated_pages) return FALSE; /* heap is not ready */
+	    if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(os)) return TRUE; /* GC is not allowed */
+
+	    GC_ASSERT(gc_mode(os) == gc_mode_none);
+	    GC_ASSERT(!is_lazy_sweeping(os));
+	    GC_ASSERT(!is_incremental_marking(os));
+	}
+    }
+    else {
+	gc_set_flags_start(objspace, reason, &do_full_mark);
+
+	if (!heap_allocated_pages) return FALSE; /* heap is not ready */
+	if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(objspace)) return TRUE; /* GC is not allowed */
+
+	GC_ASSERT(gc_mode(objspace) == gc_mode_none);
+	GC_ASSERT(!is_lazy_sweeping(objspace));
+	GC_ASSERT(!is_incremental_marking(objspace));
+    }
+
+    unsigned int lock_lev;
+    if (global_gc) {
+	gc_global_enter(objspace, gc_enter_event_start, &lock_lev);
+    }
+    else {
+	gc_enter(objspace, gc_enter_event_start, &lock_lev);
+    }
+
+#if RGENGC_CHECK_MODE >= 2
+    gc_verify_internal_consistency(objspace);
+#endif
+
+    if (global_gc) {
+	rb_objspace_t *os = NULL;
+	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	    gc_set_flags_finish(os, reason, &do_full_mark, &immediate_mark);
+	}
+    }
+    else {
+	gc_set_flags_finish(objspace, reason, &do_full_mark, &immediate_mark);
+    }
+
+    if (global_gc) {
+	gc_marks_global(objspace, do_full_mark);
+    }
+    else {
+	gc_prof_timer_start(objspace);
+	{
+	    gc_marks(objspace, do_full_mark);
+	}
+	gc_prof_timer_stop(objspace);
+    }
+
+    if (global_gc) {
+	gc_global_exit(objspace, gc_enter_event_start, &lock_lev);
+    }
+    else {
+	gc_exit(objspace, gc_enter_event_start, &lock_lev);
+    }
     return TRUE;
 }
 
@@ -10020,7 +10109,7 @@ gc_exit_clock(rb_objspace_t *objspace, enum gc_enter_event event)
 static inline void
 gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
 {
-    RB_VM_LOCK_ENTER_LEV(lock_lev);
+    if(lock_lev) RB_VM_LOCK_ENTER_LEV(lock_lev);
 
     gc_enter_clock(objspace, event);
 
@@ -10049,6 +10138,18 @@ gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_
 }
 
 static inline void
+gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
+{
+    gc_enter(objspace, event, lock_lev);
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	if (os == objspace)
+	    continue;
+	gc_enter(os, event, NULL);
+    }
+}
+
+static inline void
 gc_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
 {
     GC_ASSERT(during_gc != 0);
@@ -10060,7 +10161,7 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_l
     during_gc = FALSE;
 
     gc_exit_clock(objspace, event);
-    RB_VM_LOCK_LEAVE_LEV(lock_lev);
+    if(lock_lev) RB_VM_LOCK_LEAVE_LEV(lock_lev);
 
 #if RGENGC_CHECK_MODE >= 2
     if (event == gc_enter_event_sweep_continue && gc_mode(objspace) == gc_mode_none) {
@@ -10069,6 +10170,18 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_l
         gc_verify_internal_consistency(objspace);
     }
 #endif
+}
+
+static inline void
+gc_global_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
+{
+    gc_exit(objspace, event, lock_lev);
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	if (os == objspace)
+	    continue;
+	gc_exit(os, event, NULL);
+    }
 }
 
 static void *
@@ -10101,12 +10214,13 @@ garbage_collect_with_gvl(rb_objspace_t *objspace, unsigned int reason)
 }
 
 static VALUE
-gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE immediate_mark, VALUE immediate_sweep, VALUE compact)
+gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE immediate_mark, VALUE immediate_sweep, VALUE global, VALUE compact)
 {
     rb_objspace_t *objspace = &rb_objspace;
     unsigned int reason = (GPR_FLAG_FULL_MARK |
                            GPR_FLAG_IMMEDIATE_MARK |
                            GPR_FLAG_IMMEDIATE_SWEEP |
+                           GPR_FLAG_GLOBAL |
                            GPR_FLAG_METHOD);
 
     /* For now, compact implies full mark / sweep, so ignore other flags */
@@ -10119,6 +10233,7 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
         if (!RTEST(full_mark))       reason &= ~GPR_FLAG_FULL_MARK;
         if (!RTEST(immediate_mark))  reason &= ~GPR_FLAG_IMMEDIATE_MARK;
         if (!RTEST(immediate_sweep)) reason &= ~GPR_FLAG_IMMEDIATE_SWEEP;
+        if (!RTEST(global)) reason &= ~GPR_FLAG_GLOBAL;
     }
 
     garbage_collect(objspace, reason);
@@ -11190,7 +11305,7 @@ static VALUE
 gc_compact(VALUE self)
 {
     /* Run GC with compaction enabled */
-    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue);
+    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue, Qtrue);
 
     return gc_compact_stats(self);
 }
@@ -11205,7 +11320,7 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
     rb_objspace_t *objspace = &rb_objspace;
 
     /* Clear the heap. */
-    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qfalse);
+    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue, Qfalse);
     size_t growth_slots = gc_params.heap_init_slots;
 
     if (RTEST(double_heap)) {
@@ -11238,7 +11353,7 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
     }
     RB_VM_LOCK_LEAVE();
 
-    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue);
+    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue, Qtrue);
 
     objspace_reachable_objects_from_root(objspace, root_obj_check_moved_i, NULL);
     objspace_each_objects(objspace, heap_check_moved_i, NULL, TRUE);
