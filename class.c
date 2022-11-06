@@ -256,6 +256,9 @@ rb_class_boot(VALUE super)
     RCLASS_SET_SUPER(klass, super);
     RCLASS_M_TBL_INIT(klass);
 
+    FL_SET_RAW(klass, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(klass);
+
     return (VALUE)klass;
 }
 
