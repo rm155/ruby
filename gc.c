@@ -1305,6 +1305,7 @@ static void gc_marks(rb_objspace_t *objspace, int full_mark);
 static void gc_marks_global(rb_objspace_t *objspace, int full_mark);
 static void gc_marks_start(rb_objspace_t *objspace, int full);
 static void gc_marks_finish(rb_objspace_t *objspace);
+static void gc_marks_rest_without_sweep(rb_objspace_t *objspace);
 static void gc_marks_rest(rb_objspace_t *objspace);
 static void gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap);
 
@@ -3556,6 +3557,13 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         break;
       default:
         break;
+    }
+
+    rb_global_space_t *global_space = &rb_global_space;
+    if (global_space->local_gc_exemption_tbl) {
+	rb_native_mutex_lock(&global_space->exemption_tbl_lock);
+	st_delete(global_space->local_gc_exemption_tbl, &obj, NULL);
+	rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
     }
 
     if (FL_TEST(obj, FL_SHAREABLE)) {
@@ -7333,7 +7341,7 @@ static void reachable_objects_from_callback(VALUE obj);
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-    if (!in_marking_range(objspace, obj)) {
+    if (!objspace->flags.during_global_gc && !in_marking_range(objspace, obj)) {
 	return;
     }
     if (LIKELY(during_gc)) {
@@ -7829,6 +7837,12 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	if (vm->self) gc_mark(objspace, vm->self);
     }
     rb_vm_ractor_mark(vm);
+    if(vm->ractor.cnt > 0){
+	rb_objspace_t *os = NULL;
+	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	    rb_gc_mark(os->ractor->pub.self);
+	}
+    }
 
     MARK_CHECKPOINT("cache_table");
     mark_global_cc_cache_table();
@@ -7854,9 +7868,6 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     MARK_CHECKPOINT("global_tbl");
     rb_gc_mark_global_tbl();
 
-    MARK_CHECKPOINT("shareable_tbl");
-    mark_set_no_pin(objspace, objspace->shareable_tbl);
-
     rb_global_space_t *global_space = &rb_global_space;
 
     MARK_CHECKPOINT("object_id");
@@ -7869,28 +7880,37 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
     rb_native_mutex_unlock(&objspace->obj_id_lock);
 
-    MARK_CHECKPOINT("local_gc_exemption_tbl");
-    objspace->flags.marking_unsorted_root = TRUE;
-    {
+    if (!objspace->flags.during_global_gc) {
+	MARK_CHECKPOINT("shareable_tbl");
+	mark_set_no_pin(objspace, objspace->shareable_tbl);
 
-	rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
-	global_space->exemption_tbl_counter++;
-	if (global_space->exemption_tbl_counter == 1) {
-	    rb_native_mutex_lock(&global_space->exemption_tbl_lock);
+	MARK_CHECKPOINT("local_gc_exemption_tbl");
+	objspace->flags.marking_unsorted_root = TRUE;
+	{
+
+	    if(during_gc) {
+		rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
+		global_space->exemption_tbl_counter++;
+		if (global_space->exemption_tbl_counter == 1) {
+		    rb_native_mutex_lock(&global_space->exemption_tbl_lock);
+		}
+		rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
+	    }
+
+	    mark_set_no_pin(objspace, global_space->local_gc_exemption_tbl);
+
+	    if(during_gc) {
+		rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
+		global_space->exemption_tbl_counter--;
+		if (global_space->exemption_tbl_counter == 0) {
+		    rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
+		}
+		rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
+	    }
+
 	}
-	rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
-
-	mark_set_no_pin(objspace, global_space->local_gc_exemption_tbl);
-
-	rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
-	global_space->exemption_tbl_counter--;
-	if (global_space->exemption_tbl_counter == 0) {
-	    rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
-	}
-	rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
-
+	objspace->flags.marking_unsorted_root = FALSE;
     }
-    objspace->flags.marking_unsorted_root = FALSE;
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
 
@@ -8949,7 +8969,7 @@ gc_sweep_compact(rb_objspace_t *objspace)
 }
 
 static void
-gc_marks_rest(rb_objspace_t *objspace)
+gc_marks_rest_without_sweep(rb_objspace_t *objspace)
 {
     gc_report(1, objspace, "gc_marks_rest\n");
 
@@ -8967,6 +8987,12 @@ gc_marks_rest(rb_objspace_t *objspace)
     }
 
     gc_marks_finish(objspace);
+}
+
+static void
+gc_marks_rest(rb_objspace_t *objspace)
+{
+    gc_marks_rest_without_sweep(objspace);
 
     /* move to sweep */
     gc_sweep(objspace);
@@ -9022,7 +9048,36 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
 	objspace->global_gc_current_target = os;
-	gc_marks(os, full_mark);
+	gc_prof_mark_timer_start(os);
+
+	/* setup marking */
+
+	gc_marks_start(os, full_mark);
+	gc_prof_mark_timer_stop(os);
+    }
+
+    os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	objspace->global_gc_current_target = os;
+	gc_prof_mark_timer_start(os);
+	if (!is_incremental_marking(os)) {
+	    gc_marks_rest_without_sweep(os);
+	}
+
+#if RGENGC_PROFILE > 0
+	if (gc_prof_record(os)) {
+	    gc_profile_record *record = gc_prof_record(os);
+	    record->old_objects = os->rgengc.old_objects;
+	}
+#endif
+	gc_prof_mark_timer_stop(os);
+
+    }
+
+    os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	objspace->global_gc_current_target = os;
+	gc_sweep(os);
     }
     objspace->global_gc_current_target = NULL;
 }
@@ -10233,8 +10288,8 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
         if (!RTEST(full_mark))       reason &= ~GPR_FLAG_FULL_MARK;
         if (!RTEST(immediate_mark))  reason &= ~GPR_FLAG_IMMEDIATE_MARK;
         if (!RTEST(immediate_sweep)) reason &= ~GPR_FLAG_IMMEDIATE_SWEEP;
-        if (!RTEST(global)) reason &= ~GPR_FLAG_GLOBAL;
     }
+    if (!RTEST(global)) reason &= ~GPR_FLAG_GLOBAL;
 
     garbage_collect(objspace, reason);
     gc_finalize_deferred(objspace);
@@ -11320,7 +11375,7 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
     rb_objspace_t *objspace = &rb_objspace;
 
     /* Clear the heap. */
-    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue, Qfalse);
+    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qfalse, Qfalse);
     size_t growth_slots = gc_params.heap_init_slots;
 
     if (RTEST(double_heap)) {
@@ -11353,7 +11408,7 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
     }
     RB_VM_LOCK_LEAVE();
 
-    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue, Qtrue);
+    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qfalse, Qtrue);
 
     objspace_reachable_objects_from_root(objspace, root_obj_check_moved_i, NULL);
     objspace_each_objects(objspace, heap_check_moved_i, NULL, TRUE);
