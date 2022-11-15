@@ -11305,7 +11305,7 @@ static VALUE
 gc_compact(VALUE self)
 {
     /* Run GC with compaction enabled */
-    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qtrue, Qtrue);
+    gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qfalse, Qtrue);
 
     return gc_compact_stats(self);
 }
