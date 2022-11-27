@@ -258,7 +258,7 @@ rb_str_size_as_embedded(VALUE str)
     /* if the string is not currently embedded, but it can be embedded, how
      * much space would it require */
     else if (rb_str_reembeddable_p(str)) {
-        real_size = rb_str_embed_size(RSTRING(str)->as.heap.len) + TERM_LEN(str);
+        real_size = rb_str_embed_size(RSTRING(str)->as.heap.aux.capa) + TERM_LEN(str);
     }
     else {
 #endif
@@ -503,7 +503,7 @@ register_fstring(VALUE str, bool copy)
         do {
             args.fstr = str;
             st_update(frozen_strings, (st_data_t)str, fstr_update_callback, (st_data_t)&args);
-        } while (args.fstr == Qundef);
+        } while (UNDEF_P(args.fstr));
     }
     RB_VM_LOCK_LEAVE();
 
@@ -889,29 +889,28 @@ must_not_null(const char *ptr)
 }
 
 static inline VALUE
-str_alloc(VALUE klass, size_t size)
-{
-    assert(size > 0);
-    RVARGC_NEWOBJ_OF(str, struct RString, klass,
-                     T_STRING | (RGENGC_WB_PROTECTED_STRING ? FL_WB_PROTECTED : 0), size);
-    return (VALUE)str;
-}
-
-static inline VALUE
 str_alloc_embed(VALUE klass, size_t capa)
 {
     size_t size = rb_str_embed_size(capa);
+    assert(size > 0);
     assert(rb_gc_size_allocatable_p(size));
 #if !USE_RVARGC
     assert(size <= sizeof(struct RString));
 #endif
-    return str_alloc(klass, size);
+
+    RVARGC_NEWOBJ_OF(str, struct RString, klass,
+                     T_STRING | (RGENGC_WB_PROTECTED_STRING ? FL_WB_PROTECTED : 0), size);
+
+    return (VALUE)str;
 }
 
 static inline VALUE
 str_alloc_heap(VALUE klass)
 {
-    return str_alloc(klass, sizeof(struct RString));
+    RVARGC_NEWOBJ_OF(str, struct RString, klass,
+                     T_STRING | STR_NOEMBED | (RGENGC_WB_PROTECTED_STRING ? FL_WB_PROTECTED : 0), sizeof(struct RString));
+
+    return (VALUE)str;
 }
 
 static inline VALUE
@@ -948,7 +947,6 @@ str_new0(VALUE klass, const char *ptr, long len, int termlen)
          * mul_add_mul can be reverted to a simple ALLOC_N. */
         RSTRING(str)->as.heap.ptr =
             rb_xmalloc_mul_add_mul(sizeof(char), len, sizeof(char), termlen);
-        STR_SET_NOEMBED(str);
     }
     if (ptr) {
         memcpy(RSTRING_PTR(str), ptr, len);
@@ -1055,7 +1053,6 @@ str_new_static(VALUE klass, const char *ptr, long len, int encindex)
         RSTRING(str)->as.heap.len = len;
         RSTRING(str)->as.heap.ptr = (char *)ptr;
         RSTRING(str)->as.heap.aux.capa = len;
-        STR_SET_NOEMBED(str);
         RBASIC(str)->flags |= STR_NOFREE;
     }
     rb_enc_associate_index(str, encindex);
@@ -1452,7 +1449,6 @@ heap_str_make_shared(VALUE klass, VALUE orig)
     assert(!STR_SHARED_P(orig));
 
     VALUE str = str_alloc_heap(klass);
-    STR_SET_NOEMBED(str);
     RSTRING(str)->as.heap.len = RSTRING_LEN(orig);
     RSTRING(str)->as.heap.ptr = RSTRING_PTR(orig);
     RSTRING(str)->as.heap.aux.capa = RSTRING(orig)->as.heap.aux.capa;
@@ -1553,7 +1549,6 @@ rb_str_buf_new(long capa)
         capa = STR_BUF_MIN_SIZE;
     }
 #endif
-    FL_SET(str, STR_NOEMBED);
     RSTRING(str)->as.heap.aux.capa = capa;
     RSTRING(str)->as.heap.ptr = ALLOC_N(char, (size_t)capa + 1);
     RSTRING(str)->as.heap.ptr[0] = '\0';
@@ -1733,29 +1728,28 @@ str_replace(VALUE str, VALUE str2)
 }
 
 static inline VALUE
-ec_str_alloc(struct rb_execution_context_struct *ec, VALUE klass, size_t size)
-{
-    assert(size > 0);
-    RB_RVARGC_EC_NEWOBJ_OF(ec, str, struct RString, klass,
-                           T_STRING | (RGENGC_WB_PROTECTED_STRING ? FL_WB_PROTECTED : 0), size);
-    return (VALUE)str;
-}
-
-static inline VALUE
 ec_str_alloc_embed(struct rb_execution_context_struct *ec, VALUE klass, size_t capa)
 {
     size_t size = rb_str_embed_size(capa);
+    assert(size > 0);
     assert(rb_gc_size_allocatable_p(size));
 #if !USE_RVARGC
     assert(size <= sizeof(struct RString));
 #endif
-    return ec_str_alloc(ec, klass, size);
+
+    RB_RVARGC_EC_NEWOBJ_OF(ec, str, struct RString, klass,
+                           T_STRING | (RGENGC_WB_PROTECTED_STRING ? FL_WB_PROTECTED : 0), size);
+
+    return (VALUE)str;
 }
 
 static inline VALUE
 ec_str_alloc_heap(struct rb_execution_context_struct *ec, VALUE klass)
 {
-    return ec_str_alloc(ec, klass, sizeof(struct RString));
+    RB_RVARGC_EC_NEWOBJ_OF(ec, str, struct RString, klass,
+                           T_STRING | STR_NOEMBED | (RGENGC_WB_PROTECTED_STRING ? FL_WB_PROTECTED : 0), sizeof(struct RString));
+
+    return (VALUE)str;
 }
 
 static inline VALUE
@@ -1773,6 +1767,7 @@ str_duplicate_setup(VALUE klass, VALUE str, VALUE dup)
     if (STR_EMBED_P(str)) {
         long len = RSTRING_EMBED_LEN(str);
 
+        assert(STR_EMBED_P(dup));
         assert(str_embed_capa(dup) >= len + 1);
         STR_SET_EMBED_LEN(dup, len);
         MEMCPY(RSTRING(dup)->as.embed.ary, RSTRING(str)->as.embed.ary, char, len + 1);
@@ -1793,6 +1788,7 @@ str_duplicate_setup(VALUE klass, VALUE str, VALUE dup)
         else if (STR_EMBED_P(root)) {
             MEMCPY(RSTRING(dup)->as.embed.ary, RSTRING(root)->as.embed.ary,
                    char, RSTRING_EMBED_LEN_MAX + 1);
+            FL_UNSET(dup, STR_NOEMBED);
         }
 #endif
         else {
@@ -1816,7 +1812,7 @@ static inline VALUE
 ec_str_duplicate(struct rb_execution_context_struct *ec, VALUE klass, VALUE str)
 {
     VALUE dup;
-    if (!USE_RVARGC || FL_TEST(str, STR_NOEMBED)) {
+    if (FL_TEST(str, STR_NOEMBED)) {
         dup = ec_str_alloc_heap(ec, klass);
     }
     else {
@@ -1830,7 +1826,7 @@ static inline VALUE
 str_duplicate(VALUE klass, VALUE str)
 {
     VALUE dup;
-    if (!USE_RVARGC || FL_TEST(str, STR_NOEMBED)) {
+    if (FL_TEST(str, STR_NOEMBED)) {
         dup = str_alloc_heap(klass);
     }
     else {
@@ -1888,10 +1884,10 @@ rb_str_init(int argc, VALUE *argv, VALUE str)
         rb_get_kwargs(opt, keyword_ids, 0, 2, kwargs);
         venc = kwargs[0];
         vcapa = kwargs[1];
-        if (venc != Qundef && !NIL_P(venc)) {
+        if (!UNDEF_P(venc) && !NIL_P(venc)) {
             enc = rb_to_encoding(venc);
         }
-        if (vcapa != Qundef && !NIL_P(vcapa)) {
+        if (!UNDEF_P(vcapa) && !NIL_P(vcapa)) {
             long capa = NUM2LONG(vcapa);
             long len = 0;
             int termlen = enc ? rb_enc_mbminlen(enc) : 1;
@@ -2318,7 +2314,6 @@ rb_str_times(VALUE str, VALUE times)
             str2 = str_alloc_heap(rb_cString);
             RSTRING(str2)->as.heap.aux.capa = len;
             RSTRING(str2)->as.heap.ptr = ZALLOC_N(char, (size_t)len + 1);
-            STR_SET_NOEMBED(str2);
         }
         STR_SET_LEN(str2, len);
         rb_enc_copy(str2, str);
@@ -8938,7 +8933,7 @@ rb_str_enumerate_lines(int argc, VALUE *argv, VALUE str, VALUE ary)
             keywords[0] = rb_intern_const("chomp");
         }
         rb_get_kwargs(opts, keywords, 0, 1, &chomp);
-        chomp = (chomp != Qundef && RTEST(chomp));
+        chomp = (!UNDEF_P(chomp) && RTEST(chomp));
     }
 
     if (NIL_P(rs)) {
@@ -9736,6 +9731,9 @@ rstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
     const char *t;
 
     rb_str_check_dummy_enc(enc);
+    if (rb_enc_str_coderange(str) == ENC_CODERANGE_BROKEN) {
+        rb_raise(rb_eEncCompatError, "invalid byte sequence in %s", rb_enc_name(enc));
+    }
     if (!s || s >= e) return 0;
     t = e;
 
@@ -11540,23 +11538,6 @@ rb_sym_to_s(VALUE sym)
     return str_new_shared(rb_cString, rb_sym2str(sym));
 }
 
-/*
- *  call-seq:
- *    to_sym -> self
- *
- *  Returns +self+.
- *
- *  Symbol#intern is an alias for Symbol#to_sym.
- *
- *  Related: String#to_sym.
- */
-
-static VALUE
-sym_to_sym(VALUE sym)
-{
-    return sym;
-}
-
 MJIT_FUNC_EXPORTED VALUE
 rb_sym_proc_call(ID mid, int argc, const VALUE *argv, int kw_splat, VALUE passed_proc)
 {
@@ -12123,8 +12104,6 @@ Init_String(void)
     rb_define_method(rb_cSymbol, "to_s", rb_sym_to_s, 0);
     rb_define_method(rb_cSymbol, "id2name", rb_sym_to_s, 0);
     rb_define_method(rb_cSymbol, "name", rb_sym2str, 0); /* in symbol.c */
-    rb_define_method(rb_cSymbol, "intern", sym_to_sym, 0);
-    rb_define_method(rb_cSymbol, "to_sym", sym_to_sym, 0);
     rb_define_method(rb_cSymbol, "to_proc", rb_sym_to_proc, 0); /* in proc.c */
     rb_define_method(rb_cSymbol, "succ", sym_succ, 0);
     rb_define_method(rb_cSymbol, "next", sym_succ, 0);

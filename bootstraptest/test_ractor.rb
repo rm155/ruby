@@ -283,7 +283,7 @@ assert_equal 30.times.map { 'ok' }.to_s, %q{
   30.times.map{|i|
     test i
   }
-} unless ENV['RUN_OPTS'] =~ /--jit-min-calls=5/ || # This always fails with --jit-wait --jit-min-calls=5
+} unless ENV['RUN_OPTS'] =~ /--mjit-call-threshold=5/ || # This always fails with --mjit-wait --mjit-call-threshold=5
   (ENV.key?('TRAVIS') && ENV['TRAVIS_CPU_ARCH'] == 'arm64') # https://bugs.ruby-lang.org/issues/17878
 
 # Exception for empty select
@@ -1577,6 +1577,51 @@ assert_equal "ok", %q{
   rescue Ractor::IsolationError
     "ok"
   end
+}
+
+assert_equal "ok", %q{
+  module M
+    def foo
+      @foo
+    end
+  end
+
+  class A
+    include M
+
+    def initialize
+      100.times { |i| instance_variable_set(:"@var_#{i}", "bad: #{i}") }
+      @foo = 2
+    end
+  end
+
+  class B
+    include M
+
+    def initialize
+      @foo = 1
+    end
+  end
+
+  Ractor.new do
+    b = B.new
+    100_000.times do
+      raise unless b.foo == 1
+    end
+  end
+
+  a = A.new
+  100_000.times do
+    raise unless a.foo == 2
+  end
+
+  "ok"
+}
+
+assert_match /\Atest_ractor\.rb:1:\s+warning:\s+Ractor is experimental/, %q{
+  Warning[:experimental] = $VERBOSE = true
+  STDERR.reopen(STDOUT)
+  eval("Ractor.new{}.take", nil, "test_ractor.rb", 1)
 }
 
 end # if !ENV['GITHUB_WORKFLOW']

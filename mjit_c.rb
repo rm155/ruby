@@ -4,19 +4,9 @@
 module RubyVM::MJIT
   C = Object.new
 
+  # This `class << C` section is for calling C functions. For importing variables
+  # or macros as is, please consider using tool/mjit/bindgen.rb instead.
   class << C
-    def SHAPE_BITS
-      RubyVM::Shape::SHAPE_BITS
-    end
-
-    def SHAPE_FLAG_SHIFT
-      RubyVM::Shape::SHAPE_FLAG_SHIFT
-    end
-
-    def ROBJECT_EMBED_LEN_MAX
-      Primitive.cexpr! 'INT2NUM(RBIMPL_EMBED_LEN_MAX_OF(VALUE))'
-    end
-
     def cdhash_to_hash(cdhash_addr)
       Primitive.cdhash_to_hash(cdhash_addr)
     end
@@ -27,6 +17,12 @@ module RubyVM::MJIT
 
     def has_cache_for_send(cc, insn)
       Primitive.has_cache_for_send(cc.to_i, insn)
+    end
+
+    def rb_shape_get_shape_by_id(shape_id)
+      _shape_id = shape_id.to_i
+      shape_addr = Primitive.cexpr! 'PTR2NUM((VALUE)rb_shape_get_shape_by_id((shape_id_t)NUM2UINT(_shape_id)))'
+      rb_shape_t.new(shape_addr)
     end
 
     def rb_iseq_check(iseq)
@@ -126,23 +122,12 @@ module RubyVM::MJIT
         return Qnil;
       }
     end
-
-    def rb_cFalseClass; Primitive.cexpr! 'PTR2NUM(rb_cFalseClass)' end
-    def rb_cNilClass;   Primitive.cexpr! 'PTR2NUM(rb_cNilClass)'   end
-    def rb_cTrueClass;  Primitive.cexpr! 'PTR2NUM(rb_cTrueClass)'  end
-    def rb_cInteger;    Primitive.cexpr! 'PTR2NUM(rb_cInteger)'    end
-    def rb_cSymbol;     Primitive.cexpr! 'PTR2NUM(rb_cSymbol)'     end
-    def rb_cFloat;      Primitive.cexpr! 'PTR2NUM(rb_cFloat)'      end
   end
 
   ### MJIT bindgen begin ###
 
   def C.USE_LAZY_LOAD
     Primitive.cexpr! %q{ RBOOL(USE_LAZY_LOAD != 0) }
-  end
-
-  def C.USE_RVARGC
-    Primitive.cexpr! %q{ RBOOL(USE_RVARGC != 0) }
   end
 
   def C.NOT_COMPILED_STACK_SIZE
@@ -173,12 +158,68 @@ module RubyVM::MJIT
     Primitive.cexpr! %q{ INT2NUM(VM_METHOD_TYPE_ISEQ) }
   end
 
+  def C.SHAPE_CAPACITY_CHANGE
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_CAPACITY_CHANGE) }
+  end
+
+  def C.SHAPE_FLAG_SHIFT
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_FLAG_SHIFT) }
+  end
+
+  def C.SHAPE_FROZEN
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_FROZEN) }
+  end
+
+  def C.SHAPE_ID_NUM_BITS
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_ID_NUM_BITS) }
+  end
+
+  def C.SHAPE_INITIAL_CAPACITY
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_INITIAL_CAPACITY) }
+  end
+
+  def C.SHAPE_IVAR
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_IVAR) }
+  end
+
+  def C.SHAPE_IVAR_UNDEF
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_IVAR_UNDEF) }
+  end
+
+  def C.SHAPE_ROOT
+    Primitive.cexpr! %q{ UINT2NUM(SHAPE_ROOT) }
+  end
+
   def C.INVALID_SHAPE_ID
     Primitive.cexpr! %q{ ULONG2NUM(INVALID_SHAPE_ID) }
   end
 
   def C.SHAPE_MASK
     Primitive.cexpr! %q{ ULONG2NUM(SHAPE_MASK) }
+  end
+
+  def C.rb_cFalseClass
+    Primitive.cexpr! %q{ PTR2NUM(rb_cFalseClass) }
+  end
+
+  def C.rb_cFloat
+    Primitive.cexpr! %q{ PTR2NUM(rb_cFloat) }
+  end
+
+  def C.rb_cInteger
+    Primitive.cexpr! %q{ PTR2NUM(rb_cInteger) }
+  end
+
+  def C.rb_cNilClass
+    Primitive.cexpr! %q{ PTR2NUM(rb_cNilClass) }
+  end
+
+  def C.rb_cSymbol
+    Primitive.cexpr! %q{ PTR2NUM(rb_cSymbol) }
+  end
+
+  def C.rb_cTrueClass
+    Primitive.cexpr! %q{ PTR2NUM(rb_cTrueClass) }
   end
 
   def C.CALL_DATA
@@ -285,7 +326,7 @@ module RubyVM::MJIT
       debug: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), debug)")],
       debug_flags: [CType::Pointer.new { CType::Immediate.parse("char") }, Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), debug_flags)")],
       wait: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), wait)")],
-      min_calls: [CType::Immediate.parse("unsigned int"), Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), min_calls)")],
+      call_threshold: [CType::Immediate.parse("unsigned int"), Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), call_threshold)")],
       verbose: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), verbose)")],
       max_cache_size: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), max_cache_size)")],
       pause: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct mjit_options *)NULL)), pause)")],
@@ -521,19 +562,10 @@ module RubyVM::MJIT
     @rb_iseq_t ||= self.rb_iseq_struct
   end
 
-  def C.rb_iv_index_tbl_entry
-    @rb_iv_index_tbl_entry ||= CType::Struct.new(
-      "rb_iv_index_tbl_entry", Primitive.cexpr!("SIZEOF(struct rb_iv_index_tbl_entry)"),
-      index: [CType::Immediate.parse("uint32_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_iv_index_tbl_entry *)NULL)), index)")],
-      source_shape_id: [self.shape_id_t, Primitive.cexpr!("OFFSETOF((*((struct rb_iv_index_tbl_entry *)NULL)), source_shape_id)")],
-      dest_shape_id: [self.shape_id_t, Primitive.cexpr!("OFFSETOF((*((struct rb_iv_index_tbl_entry *)NULL)), dest_shape_id)")],
-    )
-  end
-
   def C.rb_method_definition_struct
     @rb_method_definition_struct ||= CType::Struct.new(
       "rb_method_definition_struct", Primitive.cexpr!("SIZEOF(struct rb_method_definition_struct)"),
-      type: [self.rb_method_type_t, 0],
+      type: [CType::BitField.new(4, 0), 0],
       iseq_overload: [CType::BitField.new(1, 4), 4],
       alias_count: [CType::BitField.new(27, 5), 5],
       complemented_count: [CType::BitField.new(28, 0), 32],
@@ -593,6 +625,23 @@ module RubyVM::MJIT
 
   def C.rb_serial_t
     @rb_serial_t ||= CType::Immediate.parse("unsigned long long")
+  end
+
+  def C.rb_shape
+    @rb_shape ||= CType::Struct.new(
+      "rb_shape", Primitive.cexpr!("SIZEOF(struct rb_shape)"),
+      edges: [CType::Pointer.new { self.rb_id_table }, Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), edges)")],
+      edge_name: [self.ID, Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), edge_name)")],
+      next_iv_index: [self.attr_index_t, Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), next_iv_index)")],
+      capacity: [CType::Immediate.parse("uint32_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), capacity)")],
+      type: [CType::Immediate.parse("uint8_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), type)")],
+      size_pool_index: [CType::Immediate.parse("uint8_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), size_pool_index)")],
+      parent_id: [self.shape_id_t, Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), parent_id)")],
+    )
+  end
+
+  def C.rb_shape_t
+    @rb_shape_t ||= self.rb_shape
   end
 
   def C.VALUE

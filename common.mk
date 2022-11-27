@@ -50,7 +50,7 @@ GEM_PATH =
 GEM_VENDOR =
 
 BENCHMARK_DRIVER_GIT_URL = https://github.com/benchmark-driver/benchmark-driver
-BENCHMARK_DRIVER_GIT_REF = v0.15.18
+BENCHMARK_DRIVER_GIT_REF = v0.16.0
 SIMPLECOV_GIT_URL = https://github.com/colszowka/simplecov.git
 SIMPLECOV_GIT_REF = v0.17.0
 SIMPLECOV_HTML_GIT_URL = https://github.com/colszowka/simplecov-html.git
@@ -249,19 +249,7 @@ mjit_config.h: Makefile
 
 .PHONY: mjit-bindgen
 mjit-bindgen:
-	$(Q)$(XRUBY) -C $(srcdir) -Ilib \
-		-e 'ENV["GEM_HOME"] = File.expand_path(".bundle")' \
-		-e 'ENV["BUNDLE_APP_CONFIG"] = File.expand_path(".bundle")' \
-		-e 'ENV["BUNDLE_PATH__SYSTEM"] = "true"' \
-		-e 'ENV["BUNDLE_WITHOUT"] = "lint doc"' \
-		-e 'load "spec/bundler/support/bundle.rb"' -- install --gemfile=tool/mjit/Gemfile
-	$(Q)$(XRUBY) -C $(srcdir) -Ilib \
-		-e 'ENV["GEM_HOME"] = File.expand_path(".bundle")' \
-		-e 'ENV["BUNDLE_APP_CONFIG"] = File.expand_path(".bundle")' \
-		-e 'ENV["BUNDLE_GEMFILE"] = "tool/mjit/Gemfile"' \
-		-e 'ENV["BUNDLE_PATH__SYSTEM"] = "true"' \
-		-e 'ENV["BUNDLE_WITHOUT"] = "lint doc"' \
-		-e 'load "spec/bundler/support/bundle.rb"' -- exec tool/mjit/bindgen.rb $(CURDIR)
+	$(Q) $(BASERUBY) -rrubygems -C $(srcdir)/tool/mjit bindgen.rb $(CURDIR)
 
 # These rules using MJIT_HEADER_SUFFIX must be in common.mk, not
 # Makefile.in, in order to override the macro in defs/universal.mk.
@@ -303,6 +291,8 @@ showflags:
 	"	LC_ALL = $(LC_ALL)" \
 	"	LC_CTYPE = $(LC_CTYPE)" \
 	"	MFLAGS = $(MFLAGS)" \
+	"	RUSTC = $(RUSTC)" \
+	"	YJIT_RUSTC_ARGS = $(YJIT_RUSTC_ARGS)" \
 	$(MESSAGE_END)
 	-@$(CC_VERSION)
 
@@ -648,6 +638,7 @@ clean-local:: clean-runnable
 	$(Q)$(RM) y.tab.c y.output encdb.h transdb.h config.log rbconfig.rb $(ruby_pc) $(COROUTINE_H:/Context.h=/.time)
 	$(Q)$(RM) probes.h probes.$(OBJEXT) probes.stamp ruby-glommed.$(OBJEXT) ruby.imp ChangeLog $(STATIC_RUBY)$(EXEEXT)
 	$(Q)$(RM) GNUmakefile.old Makefile.old $(arch)-fake.rb bisect.sh $(ENC_TRANS_D) builtin_binary.inc
+	-$(Q)$(RMALL) yjit/target
 	-$(Q) $(RMDIR) enc/jis enc/trans enc $(COROUTINE_H:/Context.h=) coroutine 2> $(NULL) || $(NULLCMD)
 
 bin/clean-runnable:: PHONY
@@ -774,7 +765,7 @@ clean-spec: PHONY
 	-$(Q) $(RMDIRS) $(RUBYSPEC_CAPIEXT) 2> $(NULL) || $(NULLCMD)
 	-$(Q) $(RMALL) rubyspec_temp
 
-check: main test test-tool test-all test-spec
+check: main $(DOT_WAIT) test $(DOT_WAIT) test-tool $(DOT_WAIT) test-all $(DOT_WAIT) test-spec
 	$(ECHO) check succeeded
 	-$(Q) : : "run only on sh"; \
 	if [ x"$(GIT)" != x ] && $(CHDIR) "$(srcdir)" && \
@@ -852,7 +843,7 @@ yes-test-tool: prog PHONY
 no-test-tool: PHONY
 
 test-sample: test-basic # backward compatibility for mswin-build
-test-short: btest-ruby test-knownbug test-basic
+test-short: btest-ruby $(DOT_WAIT) test-knownbug $(DOT_WAIT) test-basic
 test: test-short
 
 # $ make test-all TESTOPTS="--help" displays more detail
@@ -900,7 +891,7 @@ $(RBCONFIG): $(tooldir)/mkconfig.rb config.status $(srcdir)/version.h
 test-rubyspec: test-spec
 yes-test-rubyspec: yes-test-spec
 
-test-spec-precheck: programs
+test-spec-precheck: programs yes-fake
 
 test-spec: $(TEST_RUNNABLE)-test-spec
 yes-test-spec: test-spec-precheck
@@ -954,8 +945,6 @@ PHONY:
 {$(srcdir)}.y.c:
 	$(ECHO) generating $@
 	$(Q)$(BASERUBY) $(tooldir)/id2token.rb $(SRC_FILE) > parse.tmp.y
-	$(Q)$(BASERUBY) $(tooldir)/pure_parser.rb parse.tmp.y $(YACC)
-	$(Q)$(RM) parse.tmp.y.bak
 	$(Q)$(YACC) -d $(YFLAGS) -o y.tab.c parse.tmp.y
 	$(Q)$(RM) parse.tmp.y
 	$(Q)sed -f $(tooldir)/ytab.sed -e "/^#/s|parse\.tmp\.[iy]|$(SRC_FILE)|" -e "/^#/s!y\.tab\.c!$@!" y.tab.c > $@.new
@@ -1096,13 +1085,13 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/marshal.rb \
 		$(srcdir)/mjit.rb \
 		$(srcdir)/mjit_c.rb \
-		$(srcdir)/mjit_compiler.rb \
 		$(srcdir)/pack.rb \
 		$(srcdir)/trace_point.rb \
 		$(srcdir)/warning.rb \
 		$(srcdir)/array.rb \
 		$(srcdir)/kernel.rb \
 		$(srcdir)/ractor.rb \
+		$(srcdir)/symbol.rb \
 		$(srcdir)/timev.rb \
 		$(srcdir)/thread_sync.rb \
 		$(srcdir)/nilclass.rb \
@@ -1226,15 +1215,12 @@ builtin_binary.inc: $(PREP) $(BUILTIN_RB_SRCS) $(srcdir)/template/builtin_binary
 
 $(BUILTIN_RB_INCS): $(top_srcdir)/tool/mk_builtin_loader.rb
 
-$(srcdir)/revision.h: $(REVISION_H)
+$(srcdir)/revision.h$(no_baseruby:no=~disabled~): $(REVISION_H)
 
-revision.$(HAVE_BASERUBY:no=tmp)::
-	$(Q) $(NULLCMD) > $@
-revision.$(HAVE_BASERUBY:yes=tmp):: $(srcdir)/version.h $(tooldir)/file2lastrev.rb $(REVISION_FORCE)
-	$(Q) $(BASERUBY) $(tooldir)/file2lastrev.rb -q --revision.h --srcdir="$(srcdir)" > $@
-
-$(REVISION_H): revision.tmp
-	$(Q)$(IFCHANGE) "--timestamp=$@" "$(srcdir)/revision.h" revision.tmp
+$(REVISION_H)$(no_baseruby:no=~disabled~):
+	$(Q) $(BASERUBY) $(tooldir)/file2lastrev.rb -q --revision.h --srcdir="$(srcdir)" --output=revision.h --timestamp=$@
+$(REVISION_H)$(yes_baseruby:yes=~disabled~):
+	$(Q) touch $@
 
 $(srcdir)/ext/ripper/ripper.c: $(srcdir)/ext/ripper/tools/preproc.rb $(srcdir)/parse.y $(srcdir)/defs/id.def $(srcdir)/ext/ripper/depend
 	$(ECHO) generating $@
@@ -1412,6 +1398,17 @@ extract-gems$(gnumake:yes=-sequential): PHONY
 	    -e   'BundledGem.unpack("gems/#{g}.gem", ".bundle")' \
 	    -e 'end' \
 	    gems/bundled_gems
+
+extract-gems: outdate-bundled-gems
+outdate-bundled-gems: PHONY
+	$(Q) $(BASERUBY) -C "$(srcdir)" \
+	-rfileutils \
+	-e "Dir.glob('.bundle/gems/*/') {|g|" \
+	-e   "FileUtils::Verbose.rm_rf(g) unless File.exist?(%[gems/#{File.basename(g)}.gem])" \
+	-e "}" \
+	-e "Dir.glob('.bundle/specifications/*.gemspec') {|g|" \
+	-e   "FileUtils::Verbose.rm_f(g) unless File.exist?(%[gems/#{File.basename(g, '.gemspec')}.gem])" \
+	-e "}"
 
 update-bundled_gems: PHONY
 	$(Q) $(RUNRUBY) -rrubygems \
@@ -3564,6 +3561,7 @@ cont.$(OBJEXT): {$(VPATH)}internal/value_type.h
 cont.$(OBJEXT): {$(VPATH)}internal/variable.h
 cont.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 cont.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
+cont.$(OBJEXT): {$(VPATH)}iseq.h
 cont.$(OBJEXT): {$(VPATH)}method.h
 cont.$(OBJEXT): {$(VPATH)}missing.h
 cont.$(OBJEXT): {$(VPATH)}mjit.h
@@ -3580,6 +3578,8 @@ cont.$(OBJEXT): {$(VPATH)}thread_native.h
 cont.$(OBJEXT): {$(VPATH)}vm_core.h
 cont.$(OBJEXT): {$(VPATH)}vm_debug.h
 cont.$(OBJEXT): {$(VPATH)}vm_opts.h
+cont.$(OBJEXT): {$(VPATH)}vm_sync.h
+cont.$(OBJEXT): {$(VPATH)}yjit.h
 debug.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 debug.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 debug.$(OBJEXT): $(CCAN_DIR)/list/list.h
@@ -6040,6 +6040,7 @@ enumerator.$(OBJEXT): {$(VPATH)}missing.h
 enumerator.$(OBJEXT): {$(VPATH)}onigmo.h
 enumerator.$(OBJEXT): {$(VPATH)}oniguruma.h
 enumerator.$(OBJEXT): {$(VPATH)}ruby_assert.h
+enumerator.$(OBJEXT): {$(VPATH)}shape.h
 enumerator.$(OBJEXT): {$(VPATH)}st.h
 enumerator.$(OBJEXT): {$(VPATH)}subst.h
 error.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
@@ -6262,6 +6263,7 @@ eval.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 eval.$(OBJEXT): $(top_srcdir)/internal/array.h
 eval.$(OBJEXT): $(top_srcdir)/internal/class.h
 eval.$(OBJEXT): $(top_srcdir)/internal/compilers.h
+eval.$(OBJEXT): $(top_srcdir)/internal/cont.h
 eval.$(OBJEXT): $(top_srcdir)/internal/error.h
 eval.$(OBJEXT): $(top_srcdir)/internal/eval.h
 eval.$(OBJEXT): $(top_srcdir)/internal/gc.h
@@ -6745,7 +6747,6 @@ gc.$(OBJEXT): {$(VPATH)}encoding.h
 gc.$(OBJEXT): {$(VPATH)}eval_intern.h
 gc.$(OBJEXT): {$(VPATH)}gc.c
 gc.$(OBJEXT): {$(VPATH)}gc.h
-gc.$(OBJEXT): {$(VPATH)}gc.rb
 gc.$(OBJEXT): {$(VPATH)}gc.rbinc
 gc.$(OBJEXT): {$(VPATH)}id.h
 gc.$(OBJEXT): {$(VPATH)}id_table.h
@@ -6902,6 +6903,7 @@ gc.$(OBJEXT): {$(VPATH)}internal/variable.h
 gc.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 gc.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 gc.$(OBJEXT): {$(VPATH)}io.h
+gc.$(OBJEXT): {$(VPATH)}iseq.h
 gc.$(OBJEXT): {$(VPATH)}method.h
 gc.$(OBJEXT): {$(VPATH)}missing.h
 gc.$(OBJEXT): {$(VPATH)}mjit.h
@@ -6963,7 +6965,6 @@ goruby.$(OBJEXT): {$(VPATH)}config.h
 goruby.$(OBJEXT): {$(VPATH)}constant.h
 goruby.$(OBJEXT): {$(VPATH)}defines.h
 goruby.$(OBJEXT): {$(VPATH)}golf_prelude.c
-goruby.$(OBJEXT): {$(VPATH)}golf_prelude.rb
 goruby.$(OBJEXT): {$(VPATH)}goruby.c
 goruby.$(OBJEXT): {$(VPATH)}id.h
 goruby.$(OBJEXT): {$(VPATH)}id_table.h
@@ -7124,6 +7125,10 @@ goruby.$(OBJEXT): {$(VPATH)}thread_native.h
 goruby.$(OBJEXT): {$(VPATH)}vm_core.h
 goruby.$(OBJEXT): {$(VPATH)}vm_debug.h
 goruby.$(OBJEXT): {$(VPATH)}vm_opts.h
+hash.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
+hash.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
+hash.$(OBJEXT): $(CCAN_DIR)/list/list.h
+hash.$(OBJEXT): $(CCAN_DIR)/str/str.h
 hash.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 hash.$(OBJEXT): $(top_srcdir)/internal/array.h
 hash.$(OBJEXT): $(top_srcdir)/internal/bignum.h
@@ -7134,6 +7139,7 @@ hash.$(OBJEXT): $(top_srcdir)/internal/cont.h
 hash.$(OBJEXT): $(top_srcdir)/internal/error.h
 hash.$(OBJEXT): $(top_srcdir)/internal/gc.h
 hash.$(OBJEXT): $(top_srcdir)/internal/hash.h
+hash.$(OBJEXT): $(top_srcdir)/internal/imemo.h
 hash.$(OBJEXT): $(top_srcdir)/internal/object.h
 hash.$(OBJEXT): $(top_srcdir)/internal/proc.h
 hash.$(OBJEXT): $(top_srcdir)/internal/serial.h
@@ -7146,6 +7152,7 @@ hash.$(OBJEXT): $(top_srcdir)/internal/variable.h
 hash.$(OBJEXT): $(top_srcdir)/internal/vm.h
 hash.$(OBJEXT): $(top_srcdir)/internal/warnings.h
 hash.$(OBJEXT): {$(VPATH)}assert.h
+hash.$(OBJEXT): {$(VPATH)}atomic.h
 hash.$(OBJEXT): {$(VPATH)}backward/2/assume.h
 hash.$(OBJEXT): {$(VPATH)}backward/2/attributes.h
 hash.$(OBJEXT): {$(VPATH)}backward/2/bool.h
@@ -7314,21 +7321,28 @@ hash.$(OBJEXT): {$(VPATH)}internal/value_type.h
 hash.$(OBJEXT): {$(VPATH)}internal/variable.h
 hash.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 hash.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
+hash.$(OBJEXT): {$(VPATH)}iseq.h
+hash.$(OBJEXT): {$(VPATH)}method.h
 hash.$(OBJEXT): {$(VPATH)}missing.h
+hash.$(OBJEXT): {$(VPATH)}node.h
 hash.$(OBJEXT): {$(VPATH)}onigmo.h
 hash.$(OBJEXT): {$(VPATH)}oniguruma.h
 hash.$(OBJEXT): {$(VPATH)}probes.dmyh
 hash.$(OBJEXT): {$(VPATH)}probes.h
 hash.$(OBJEXT): {$(VPATH)}ractor.h
 hash.$(OBJEXT): {$(VPATH)}ruby_assert.h
+hash.$(OBJEXT): {$(VPATH)}ruby_atomic.h
 hash.$(OBJEXT): {$(VPATH)}shape.h
 hash.$(OBJEXT): {$(VPATH)}st.h
 hash.$(OBJEXT): {$(VPATH)}subst.h
 hash.$(OBJEXT): {$(VPATH)}symbol.h
+hash.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 hash.$(OBJEXT): {$(VPATH)}thread_native.h
 hash.$(OBJEXT): {$(VPATH)}transient_heap.h
 hash.$(OBJEXT): {$(VPATH)}util.h
+hash.$(OBJEXT): {$(VPATH)}vm_core.h
 hash.$(OBJEXT): {$(VPATH)}vm_debug.h
+hash.$(OBJEXT): {$(VPATH)}vm_opts.h
 hash.$(OBJEXT): {$(VPATH)}vm_sync.h
 inits.$(OBJEXT): $(hdrdir)/ruby.h
 inits.$(OBJEXT): $(hdrdir)/ruby/ruby.h
@@ -8337,7 +8351,6 @@ load.$(OBJEXT): {$(VPATH)}vm_core.h
 load.$(OBJEXT): {$(VPATH)}vm_opts.h
 loadpath.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 loadpath.$(OBJEXT): $(hdrdir)/ruby/version.h
-loadpath.$(OBJEXT): $(top_srcdir)/revision.h
 loadpath.$(OBJEXT): $(top_srcdir)/version.h
 loadpath.$(OBJEXT): {$(VPATH)}assert.h
 loadpath.$(OBJEXT): {$(VPATH)}backward/2/assume.h
@@ -8493,6 +8506,7 @@ loadpath.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 loadpath.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 loadpath.$(OBJEXT): {$(VPATH)}loadpath.c
 loadpath.$(OBJEXT): {$(VPATH)}missing.h
+loadpath.$(OBJEXT): {$(VPATH)}revision.h
 loadpath.$(OBJEXT): {$(VPATH)}st.h
 loadpath.$(OBJEXT): {$(VPATH)}subst.h
 loadpath.$(OBJEXT): {$(VPATH)}verconf.h
@@ -9363,6 +9377,7 @@ memory_view.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 memory_view.$(OBJEXT): {$(VPATH)}memory_view.c
 memory_view.$(OBJEXT): {$(VPATH)}memory_view.h
 memory_view.$(OBJEXT): {$(VPATH)}missing.h
+memory_view.$(OBJEXT): {$(VPATH)}shape.h
 memory_view.$(OBJEXT): {$(VPATH)}st.h
 memory_view.$(OBJEXT): {$(VPATH)}subst.h
 memory_view.$(OBJEXT): {$(VPATH)}util.h
@@ -9568,7 +9583,6 @@ miniinit.$(OBJEXT): {$(VPATH)}miniprelude.c
 miniinit.$(OBJEXT): {$(VPATH)}missing.h
 miniinit.$(OBJEXT): {$(VPATH)}mjit.rb
 miniinit.$(OBJEXT): {$(VPATH)}mjit_c.rb
-miniinit.$(OBJEXT): {$(VPATH)}mjit_compiler.rb
 miniinit.$(OBJEXT): {$(VPATH)}nilclass.rb
 miniinit.$(OBJEXT): {$(VPATH)}node.h
 miniinit.$(OBJEXT): {$(VPATH)}numeric.rb
@@ -9582,6 +9596,7 @@ miniinit.$(OBJEXT): {$(VPATH)}ruby_atomic.h
 miniinit.$(OBJEXT): {$(VPATH)}shape.h
 miniinit.$(OBJEXT): {$(VPATH)}st.h
 miniinit.$(OBJEXT): {$(VPATH)}subst.h
+miniinit.$(OBJEXT): {$(VPATH)}symbol.rb
 miniinit.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 miniinit.$(OBJEXT): {$(VPATH)}thread_native.h
 miniinit.$(OBJEXT): {$(VPATH)}thread_sync.rb
@@ -9795,7 +9810,6 @@ mjit.$(OBJEXT): {$(VPATH)}method.h
 mjit.$(OBJEXT): {$(VPATH)}missing.h
 mjit.$(OBJEXT): {$(VPATH)}mjit.c
 mjit.$(OBJEXT): {$(VPATH)}mjit.h
-mjit.$(OBJEXT): {$(VPATH)}mjit.rb
 mjit.$(OBJEXT): {$(VPATH)}mjit.rbinc
 mjit.$(OBJEXT): {$(VPATH)}mjit_config.h
 mjit.$(OBJEXT): {$(VPATH)}mjit_unit.h
@@ -10011,8 +10025,6 @@ mjit_compiler.$(OBJEXT): {$(VPATH)}mjit_c.rbinc
 mjit_compiler.$(OBJEXT): {$(VPATH)}mjit_compile_attr.inc
 mjit_compiler.$(OBJEXT): {$(VPATH)}mjit_compiler.c
 mjit_compiler.$(OBJEXT): {$(VPATH)}mjit_compiler.h
-mjit_compiler.$(OBJEXT): {$(VPATH)}mjit_compiler.rb
-mjit_compiler.$(OBJEXT): {$(VPATH)}mjit_compiler.rbinc
 mjit_compiler.$(OBJEXT): {$(VPATH)}mjit_unit.h
 mjit_compiler.$(OBJEXT): {$(VPATH)}node.h
 mjit_compiler.$(OBJEXT): {$(VPATH)}ruby_assert.h
@@ -10405,7 +10417,6 @@ numeric.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 numeric.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 numeric.$(OBJEXT): {$(VPATH)}missing.h
 numeric.$(OBJEXT): {$(VPATH)}numeric.c
-numeric.$(OBJEXT): {$(VPATH)}numeric.rb
 numeric.$(OBJEXT): {$(VPATH)}numeric.rbinc
 numeric.$(OBJEXT): {$(VPATH)}onigmo.h
 numeric.$(OBJEXT): {$(VPATH)}oniguruma.h
@@ -10603,7 +10614,6 @@ object.$(OBJEXT): {$(VPATH)}internal/value_type.h
 object.$(OBJEXT): {$(VPATH)}internal/variable.h
 object.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 object.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
-object.$(OBJEXT): {$(VPATH)}kernel.rb
 object.$(OBJEXT): {$(VPATH)}kernel.rbinc
 object.$(OBJEXT): {$(VPATH)}missing.h
 object.$(OBJEXT): {$(VPATH)}nilclass.rbinc
@@ -10616,6 +10626,7 @@ object.$(OBJEXT): {$(VPATH)}shape.h
 object.$(OBJEXT): {$(VPATH)}st.h
 object.$(OBJEXT): {$(VPATH)}subst.h
 object.$(OBJEXT): {$(VPATH)}util.h
+object.$(OBJEXT): {$(VPATH)}variable.h
 pack.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 pack.$(OBJEXT): $(top_srcdir)/internal/array.h
 pack.$(OBJEXT): $(top_srcdir)/internal/bits.h
@@ -10797,6 +10808,7 @@ pack.$(OBJEXT): {$(VPATH)}onigmo.h
 pack.$(OBJEXT): {$(VPATH)}oniguruma.h
 pack.$(OBJEXT): {$(VPATH)}pack.c
 pack.$(OBJEXT): {$(VPATH)}pack.rbinc
+pack.$(OBJEXT): {$(VPATH)}shape.h
 pack.$(OBJEXT): {$(VPATH)}st.h
 pack.$(OBJEXT): {$(VPATH)}subst.h
 pack.$(OBJEXT): {$(VPATH)}util.h
@@ -11009,6 +11021,7 @@ parse.$(OBJEXT): {$(VPATH)}ractor.h
 parse.$(OBJEXT): {$(VPATH)}regenc.h
 parse.$(OBJEXT): {$(VPATH)}regex.h
 parse.$(OBJEXT): {$(VPATH)}ruby_assert.h
+parse.$(OBJEXT): {$(VPATH)}shape.h
 parse.$(OBJEXT): {$(VPATH)}st.h
 parse.$(OBJEXT): {$(VPATH)}subst.h
 parse.$(OBJEXT): {$(VPATH)}symbol.h
@@ -11645,7 +11658,6 @@ ractor.$(OBJEXT): {$(VPATH)}onigmo.h
 ractor.$(OBJEXT): {$(VPATH)}oniguruma.h
 ractor.$(OBJEXT): {$(VPATH)}ractor.c
 ractor.$(OBJEXT): {$(VPATH)}ractor.h
-ractor.$(OBJEXT): {$(VPATH)}ractor.rb
 ractor.$(OBJEXT): {$(VPATH)}ractor.rbinc
 ractor.$(OBJEXT): {$(VPATH)}ractor_core.h
 ractor.$(OBJEXT): {$(VPATH)}ruby_assert.h
@@ -11840,6 +11852,7 @@ random.$(OBJEXT): {$(VPATH)}ractor.h
 random.$(OBJEXT): {$(VPATH)}random.c
 random.$(OBJEXT): {$(VPATH)}random.h
 random.$(OBJEXT): {$(VPATH)}ruby_atomic.h
+random.$(OBJEXT): {$(VPATH)}shape.h
 random.$(OBJEXT): {$(VPATH)}siphash.c
 random.$(OBJEXT): {$(VPATH)}siphash.h
 random.$(OBJEXT): {$(VPATH)}st.h
@@ -12032,6 +12045,7 @@ range.$(OBJEXT): {$(VPATH)}missing.h
 range.$(OBJEXT): {$(VPATH)}onigmo.h
 range.$(OBJEXT): {$(VPATH)}oniguruma.h
 range.$(OBJEXT): {$(VPATH)}range.c
+range.$(OBJEXT): {$(VPATH)}shape.h
 range.$(OBJEXT): {$(VPATH)}st.h
 range.$(OBJEXT): {$(VPATH)}subst.h
 rational.$(OBJEXT): $(hdrdir)/ruby/ruby.h
@@ -13408,6 +13422,7 @@ ruby.$(OBJEXT): $(top_srcdir)/internal/array.h
 ruby.$(OBJEXT): $(top_srcdir)/internal/class.h
 ruby.$(OBJEXT): $(top_srcdir)/internal/cmdlineopt.h
 ruby.$(OBJEXT): $(top_srcdir)/internal/compilers.h
+ruby.$(OBJEXT): $(top_srcdir)/internal/cont.h
 ruby.$(OBJEXT): $(top_srcdir)/internal/error.h
 ruby.$(OBJEXT): $(top_srcdir)/internal/file.h
 ruby.$(OBJEXT): $(top_srcdir)/internal/gc.h
@@ -13598,6 +13613,7 @@ ruby.$(OBJEXT): {$(VPATH)}internal/variable.h
 ruby.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 ruby.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 ruby.$(OBJEXT): {$(VPATH)}io.h
+ruby.$(OBJEXT): {$(VPATH)}iseq.h
 ruby.$(OBJEXT): {$(VPATH)}method.h
 ruby.$(OBJEXT): {$(VPATH)}missing.h
 ruby.$(OBJEXT): {$(VPATH)}mjit.h
@@ -14009,6 +14025,7 @@ shape.$(OBJEXT): {$(VPATH)}constant.h
 shape.$(OBJEXT): {$(VPATH)}debug_counter.h
 shape.$(OBJEXT): {$(VPATH)}defines.h
 shape.$(OBJEXT): {$(VPATH)}encoding.h
+shape.$(OBJEXT): {$(VPATH)}gc.h
 shape.$(OBJEXT): {$(VPATH)}id.h
 shape.$(OBJEXT): {$(VPATH)}id_table.h
 shape.$(OBJEXT): {$(VPATH)}intern.h
@@ -15399,6 +15416,7 @@ symbol.$(OBJEXT): {$(VPATH)}backward/2/limits.h
 symbol.$(OBJEXT): {$(VPATH)}backward/2/long_long.h
 symbol.$(OBJEXT): {$(VPATH)}backward/2/stdalign.h
 symbol.$(OBJEXT): {$(VPATH)}backward/2/stdarg.h
+symbol.$(OBJEXT): {$(VPATH)}builtin.h
 symbol.$(OBJEXT): {$(VPATH)}config.h
 symbol.$(OBJEXT): {$(VPATH)}constant.h
 symbol.$(OBJEXT): {$(VPATH)}debug_counter.h
@@ -15571,6 +15589,8 @@ symbol.$(OBJEXT): {$(VPATH)}st.h
 symbol.$(OBJEXT): {$(VPATH)}subst.h
 symbol.$(OBJEXT): {$(VPATH)}symbol.c
 symbol.$(OBJEXT): {$(VPATH)}symbol.h
+symbol.$(OBJEXT): {$(VPATH)}symbol.rb
+symbol.$(OBJEXT): {$(VPATH)}symbol.rbinc
 symbol.$(OBJEXT): {$(VPATH)}vm_debug.h
 symbol.$(OBJEXT): {$(VPATH)}vm_sync.h
 thread.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
@@ -15796,7 +15816,6 @@ thread.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).c
 thread.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 thread.$(OBJEXT): {$(VPATH)}thread_native.h
 thread.$(OBJEXT): {$(VPATH)}thread_sync.c
-thread.$(OBJEXT): {$(VPATH)}thread_sync.rb
 thread.$(OBJEXT): {$(VPATH)}thread_sync.rbinc
 thread.$(OBJEXT): {$(VPATH)}timev.h
 thread.$(OBJEXT): {$(VPATH)}vm_core.h
@@ -15811,6 +15830,7 @@ time.$(OBJEXT): $(top_srcdir)/internal/compar.h
 time.$(OBJEXT): $(top_srcdir)/internal/compilers.h
 time.$(OBJEXT): $(top_srcdir)/internal/fixnum.h
 time.$(OBJEXT): $(top_srcdir)/internal/gc.h
+time.$(OBJEXT): $(top_srcdir)/internal/hash.h
 time.$(OBJEXT): $(top_srcdir)/internal/numeric.h
 time.$(OBJEXT): $(top_srcdir)/internal/rational.h
 time.$(OBJEXT): $(top_srcdir)/internal/serial.h
@@ -15992,6 +16012,7 @@ time.$(OBJEXT): {$(VPATH)}missing.h
 time.$(OBJEXT): {$(VPATH)}onigmo.h
 time.$(OBJEXT): {$(VPATH)}oniguruma.h
 time.$(OBJEXT): {$(VPATH)}ruby_assert.h
+time.$(OBJEXT): {$(VPATH)}shape.h
 time.$(OBJEXT): {$(VPATH)}st.h
 time.$(OBJEXT): {$(VPATH)}subst.h
 time.$(OBJEXT): {$(VPATH)}time.c
@@ -16356,6 +16377,7 @@ transient_heap.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 transient_heap.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 transient_heap.$(OBJEXT): {$(VPATH)}missing.h
 transient_heap.$(OBJEXT): {$(VPATH)}ruby_assert.h
+transient_heap.$(OBJEXT): {$(VPATH)}shape.h
 transient_heap.$(OBJEXT): {$(VPATH)}st.h
 transient_heap.$(OBJEXT): {$(VPATH)}subst.h
 transient_heap.$(OBJEXT): {$(VPATH)}transient_heap.c
@@ -16751,6 +16773,7 @@ version.$(OBJEXT): $(hdrdir)/ruby.h
 version.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 version.$(OBJEXT): $(hdrdir)/ruby/version.h
 version.$(OBJEXT): $(top_srcdir)/internal/array.h
+version.$(OBJEXT): $(top_srcdir)/internal/cmdlineopt.h
 version.$(OBJEXT): $(top_srcdir)/internal/compilers.h
 version.$(OBJEXT): $(top_srcdir)/internal/gc.h
 version.$(OBJEXT): $(top_srcdir)/internal/imemo.h
@@ -16759,7 +16782,6 @@ version.$(OBJEXT): $(top_srcdir)/internal/static_assert.h
 version.$(OBJEXT): $(top_srcdir)/internal/variable.h
 version.$(OBJEXT): $(top_srcdir)/internal/vm.h
 version.$(OBJEXT): $(top_srcdir)/internal/warnings.h
-version.$(OBJEXT): $(top_srcdir)/revision.h
 version.$(OBJEXT): $(top_srcdir)/version.h
 version.$(OBJEXT): {$(VPATH)}assert.h
 version.$(OBJEXT): {$(VPATH)}atomic.h
@@ -16924,6 +16946,7 @@ version.$(OBJEXT): {$(VPATH)}method.h
 version.$(OBJEXT): {$(VPATH)}missing.h
 version.$(OBJEXT): {$(VPATH)}mjit.h
 version.$(OBJEXT): {$(VPATH)}node.h
+version.$(OBJEXT): {$(VPATH)}revision.h
 version.$(OBJEXT): {$(VPATH)}ruby_assert.h
 version.$(OBJEXT): {$(VPATH)}ruby_atomic.h
 version.$(OBJEXT): {$(VPATH)}shape.h
@@ -17989,6 +18012,7 @@ yjit.$(OBJEXT): $(top_srcdir)/internal/array.h
 yjit.$(OBJEXT): $(top_srcdir)/internal/class.h
 yjit.$(OBJEXT): $(top_srcdir)/internal/compile.h
 yjit.$(OBJEXT): $(top_srcdir)/internal/compilers.h
+yjit.$(OBJEXT): $(top_srcdir)/internal/cont.h
 yjit.$(OBJEXT): $(top_srcdir)/internal/fixnum.h
 yjit.$(OBJEXT): $(top_srcdir)/internal/gc.h
 yjit.$(OBJEXT): $(top_srcdir)/internal/hash.h
@@ -18186,6 +18210,7 @@ yjit.$(OBJEXT): {$(VPATH)}probes.h
 yjit.$(OBJEXT): {$(VPATH)}probes_helper.h
 yjit.$(OBJEXT): {$(VPATH)}ruby_assert.h
 yjit.$(OBJEXT): {$(VPATH)}ruby_atomic.h
+yjit.$(OBJEXT): {$(VPATH)}shape.h
 yjit.$(OBJEXT): {$(VPATH)}st.h
 yjit.$(OBJEXT): {$(VPATH)}subst.h
 yjit.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
@@ -18198,6 +18223,5 @@ yjit.$(OBJEXT): {$(VPATH)}vm_opts.h
 yjit.$(OBJEXT): {$(VPATH)}vm_sync.h
 yjit.$(OBJEXT): {$(VPATH)}yjit.c
 yjit.$(OBJEXT): {$(VPATH)}yjit.h
-yjit.$(OBJEXT): {$(VPATH)}yjit.rb
 yjit.$(OBJEXT): {$(VPATH)}yjit.rbinc
 # AUTOGENERATED DEPENDENCIES END

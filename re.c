@@ -221,10 +221,9 @@ rb_memsearch_qs_utf8(const unsigned char *xs, long m, const unsigned char *ys, l
 }
 
 static inline long
-rb_memsearch_wchar(const unsigned char *xs, long m, const unsigned char *ys, long n)
+rb_memsearch_with_char_size(const unsigned char *xs, long m, const unsigned char *ys, long n, int char_size)
 {
     const unsigned char *x = xs, x0 = *xs, *y = ys;
-    enum {char_size = 2};
 
     for (n -= m; n >= 0; n -= char_size, y += char_size) {
         if (x0 == *y && memcmp(x+1, y+1, m-1) == 0)
@@ -234,16 +233,15 @@ rb_memsearch_wchar(const unsigned char *xs, long m, const unsigned char *ys, lon
 }
 
 static inline long
+rb_memsearch_wchar(const unsigned char *xs, long m, const unsigned char *ys, long n)
+{
+    return rb_memsearch_with_char_size(xs, m, ys, n, 2);
+}
+
+static inline long
 rb_memsearch_qchar(const unsigned char *xs, long m, const unsigned char *ys, long n)
 {
-    const unsigned char *x = xs, x0 = *xs, *y = ys;
-    enum {char_size = 4};
-
-    for (n -= m; n >= 0; n -= char_size, y += char_size) {
-        if (x0 == *y && memcmp(x+1, y+1, m-1) == 0)
-            return y - ys;
-    }
-    return -1;
+    return rb_memsearch_with_char_size(xs, m, ys, n, 4);
 }
 
 long
@@ -1068,12 +1066,13 @@ update_char_offset(VALUE match)
     }
 }
 
-static void
+static VALUE
 match_check(VALUE match)
 {
     if (!RMATCH(match)->regexp) {
         rb_raise(rb_eTypeError, "uninitialized MatchData");
     }
+    return match;
 }
 
 /* :nodoc: */
@@ -2270,16 +2269,16 @@ match_values_at(int argc, VALUE *argv, VALUE match)
 static VALUE
 match_to_s(VALUE match)
 {
-    VALUE str = rb_reg_last_match(match);
+    VALUE str = rb_reg_last_match(match_check(match));
 
-    match_check(match);
     if (NIL_P(str)) str = rb_str_new(0,0);
     return str;
 }
 
 static int
 match_named_captures_iter(const OnigUChar *name, const OnigUChar *name_end,
-        int back_num, int *back_refs, OnigRegex regex, void *arg) {
+        int back_num, int *back_refs, OnigRegex regex, void *arg)
+{
     struct MEMO *memo = MEMO_CAST(arg);
     VALUE hash = memo->v1;
     VALUE match = memo->v2;
@@ -3733,6 +3732,16 @@ str_to_option(VALUE str)
     return flag;
 }
 
+static void
+set_timeout(rb_hrtime_t *hrt, VALUE timeout)
+{
+    double timeout_d = NIL_P(timeout) ? 0.0 : NUM2DBL(timeout);
+    if (!NIL_P(timeout) && timeout_d <= 0) {
+        rb_raise(rb_eArgError, "invalid timeout: %"PRIsVALUE, timeout);
+    }
+    double2hrtime(hrt, timeout_d);
+}
+
 /*
  *  call-seq:
  *    Regexp.new(string, options = 0, n_flag = nil, timeout: nil) -> regexp
@@ -3774,6 +3783,8 @@ str_to_option(VALUE str)
  *  If optional keyword argument +timeout+ is given,
  *  its float value overrides the timeout interval for the class,
  *  Regexp.timeout.
+ *  If +nil+ is passed as +timeout, it uses the timeout interval
+ *  for the class, Regexp.timeout.
  *
  *  With argument +regexp+ given, returns a new regexp. The source,
  *  options, timeout are the same as +regexp+. +options+ and +n_flag+
@@ -3821,14 +3832,14 @@ rb_reg_initialize_m(int argc, VALUE *argv, VALUE self)
         str = RREGEXP_SRC(re);
     }
     else {
-        if (opts != Qundef) {
+        if (!UNDEF_P(opts)) {
             int f;
             if (FIXNUM_P(opts)) flags = FIX2INT(opts);
             else if ((f = str_to_option(opts)) >= 0) flags = f;
             else if (!NIL_P(opts) && rb_bool_expected(opts, "ignorecase", FALSE))
                 flags = ONIG_OPTION_IGNORECASE;
         }
-        if (n_flag != Qundef && !NIL_P(n_flag)) {
+        if (!UNDEF_P(n_flag) && !NIL_P(n_flag)) {
             char *kcode = StringValuePtr(n_flag);
             if (kcode[0] == 'n' || kcode[0] == 'N') {
                 enc = rb_ascii8bit_encoding();
@@ -3847,11 +3858,7 @@ rb_reg_initialize_m(int argc, VALUE *argv, VALUE self)
 
     regex_t *reg = RREGEXP_PTR(self);
 
-    {
-        double limit = NIL_P(timeout) ? 0.0 : NUM2DBL(timeout);
-        if (limit < 0) limit = 0;
-        double2hrtime(&reg->timelimit, limit);
-    }
+    set_timeout(&reg->timelimit, timeout);
 
     return self;
 }
@@ -4474,16 +4481,13 @@ rb_reg_s_timeout_get(VALUE dummy)
  */
 
 static VALUE
-rb_reg_s_timeout_set(VALUE dummy, VALUE limit)
+rb_reg_s_timeout_set(VALUE dummy, VALUE timeout)
 {
-    double timeout = NIL_P(limit) ? 0.0 : NUM2DBL(limit);
-
     rb_ractor_ensure_main_ractor("can not access Regexp.timeout from non-main Ractors");
 
-    if (timeout < 0) timeout = 0;
-    double2hrtime(&rb_reg_match_time_limit, timeout);
+    set_timeout(&rb_reg_match_time_limit, timeout);
 
-    return limit;
+    return timeout;
 }
 
 /*

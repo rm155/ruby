@@ -286,7 +286,8 @@ module IRB
         if IRB.conf[:USE_COLORIZE]
           proc do |output, complete: |
             next unless IRB::Color.colorable?
-            IRB::Color.colorize_code(output, complete: complete)
+            lvars = IRB.CurrentContext&.local_variables || []
+            IRB::Color.colorize_code(output, complete: complete, local_variables: lvars)
           end
         else
           proc do |output|
@@ -295,8 +296,13 @@ module IRB
         end
       Reline.dig_perfect_match_proc = IRB::InputCompletor::PerfectMatchedProc
       Reline.autocompletion = IRB.conf[:USE_AUTOCOMPLETE]
+
       if IRB.conf[:USE_AUTOCOMPLETE]
-        Reline.add_dialog_proc(:show_doc, SHOW_DOC_DIALOG, Reline::DEFAULT_DIALOG_CONTEXT)
+        begin
+          require 'rdoc'
+          Reline.add_dialog_proc(:show_doc, SHOW_DOC_DIALOG, Reline::DEFAULT_DIALOG_CONTEXT)
+        rescue LoadError
+        end
       end
     end
 
@@ -320,11 +326,6 @@ module IRB
         [195, 164], # The "ä" that appears when Alt+d is pressed on xterm.
         [226, 136, 130] # The "∂" that appears when Alt+d in pressed on iTerm2.
       ]
-      begin
-        require 'rdoc'
-      rescue LoadError
-        return nil
-      end
 
       if just_cursor_moving and completion_journey_data.nil?
         return nil
@@ -460,7 +461,7 @@ module IRB
     # For debug message
     def inspect
       config = Reline::Config.new
-      str = "ReidlineInputMethod with Reline #{Reline::VERSION}"
+      str = "RelineInputMethod with Reline #{Reline::VERSION}"
       if config.respond_to?(:inputrc_path)
         inputrc_path = File.expand_path(config.inputrc_path)
       else

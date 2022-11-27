@@ -253,7 +253,7 @@ struct iseq_inline_constant_cache_entry {
 };
 STATIC_ASSERT(sizeof_iseq_inline_constant_cache_entry,
               (offsetof(struct iseq_inline_constant_cache_entry, ic_cref) +
-               sizeof(const rb_cref_t *)) <= sizeof(struct RObject));
+               sizeof(const rb_cref_t *)) <= RVALUE_SIZE);
 
 struct iseq_inline_constant_cache {
     struct iseq_inline_constant_cache_entry *entry;
@@ -538,6 +538,10 @@ struct rb_iseq_struct {
 
 #define ISEQ_BODY(iseq) ((iseq)->body)
 
+#ifndef EXTSTATIC
+#define EXTSTATIC 0
+#endif
+
 #ifndef USE_LAZY_LOAD
 #define USE_LAZY_LOAD 0
 #endif
@@ -697,7 +701,6 @@ typedef struct rb_vm_struct {
     /* object shapes */
     rb_shape_t *shape_list;
     rb_shape_t *root_shape;
-    rb_shape_t *frozen_root_shape;
     shape_id_t next_shape_id;
 
     /* load */
@@ -711,6 +714,11 @@ typedef struct rb_vm_struct {
     VALUE loaded_features_realpaths;
     struct st_table *loaded_features_index;
     struct st_table *loading_table;
+#if EXTSTATIC
+    // For running the init function of statically linked
+    // extensions when they are loaded
+    struct st_table *static_ext_inits;
+#endif
 
     /* signal */
     struct {
@@ -787,8 +795,8 @@ typedef struct rb_vm_struct {
 #define RUBY_VM_FIBER_VM_STACK_SIZE           (  16 * 1024 * sizeof(VALUE)) /*   64 KB or  128 KB */
 #define RUBY_VM_FIBER_VM_STACK_SIZE_MIN       (   2 * 1024 * sizeof(VALUE)) /*    8 KB or   16 KB */
 #define RUBY_VM_FIBER_MACHINE_STACK_SIZE      (  64 * 1024 * sizeof(VALUE)) /*  256 KB or  512 KB */
-#if defined(__powerpc64__)
-#define RUBY_VM_FIBER_MACHINE_STACK_SIZE_MIN  (  32 * 1024 * sizeof(VALUE)) /*   128 KB or  256 KB */
+#if defined(__powerpc64__) || defined(__ppc64__) // macOS has __ppc64__
+#define RUBY_VM_FIBER_MACHINE_STACK_SIZE_MIN  (  32 * 1024 * sizeof(VALUE)) /*  128 KB or  256 KB */
 #else
 #define RUBY_VM_FIBER_MACHINE_STACK_SIZE_MIN  (  16 * 1024 * sizeof(VALUE)) /*   64 KB or  128 KB */
 #endif
@@ -1166,6 +1174,7 @@ rb_iseq_t *rb_iseq_new_with_callback(const struct rb_iseq_new_with_callback_call
 
 VALUE rb_iseq_disasm(const rb_iseq_t *iseq);
 int rb_iseq_disasm_insn(VALUE str, const VALUE *iseqval, size_t pos, const rb_iseq_t *iseq, VALUE child);
+attr_index_t rb_estimate_iv_count(VALUE klass, const rb_iseq_t * initialize_iseq);
 
 VALUE rb_iseq_coverage(const rb_iseq_t *iseq);
 
@@ -1378,7 +1387,8 @@ static inline int
 VM_FRAME_CFRAME_P(const rb_control_frame_t *cfp)
 {
     int cframe_p = VM_ENV_FLAGS(cfp->ep, VM_FRAME_FLAG_CFRAME) != 0;
-    VM_ASSERT(RUBY_VM_NORMAL_ISEQ_P(cfp->iseq) != cframe_p);
+    VM_ASSERT(RUBY_VM_NORMAL_ISEQ_P(cfp->iseq) != cframe_p ||
+              (VM_FRAME_TYPE(cfp) & VM_FRAME_MAGIC_MASK) == VM_FRAME_MAGIC_DUMMY);
     return cframe_p;
 }
 

@@ -63,8 +63,8 @@ fn main() {
         // Import YARV bytecode instruction constants
         .allowlist_type("ruby_vminsn_type")
 
-        // From include/ruby/internal/config.h
-        .allowlist_var("USE_RVARGC")
+        // From include/ruby/internal/special_consts.h
+        .allowlist_type("ruby_special_consts")
 
         // From include/ruby/internal/intern/string.h
         .allowlist_function("rb_utf8_str_new")
@@ -85,7 +85,7 @@ fn main() {
         // From shape.h
         .allowlist_function("rb_shape_get_shape_id")
         .allowlist_function("rb_shape_get_shape_by_id")
-        .allowlist_function("rb_shape_flags_mask")
+        .allowlist_function("rb_shape_id_num_bits")
         .allowlist_function("rb_shape_get_iv_index")
 
         // From ruby/internal/intern/object.h
@@ -247,6 +247,7 @@ fn main() {
         .blocklist_type("rb_control_frame_struct")
         .opaque_type("rb_control_frame_struct")
         .allowlist_function("rb_vm_bh_to_procval")
+        .allowlist_function("rb_vm_ep_local_ep")
         .allowlist_type("vm_special_object_type")
         .allowlist_var("VM_ENV_DATA_INDEX_SPECVAL")
         .allowlist_var("VM_ENV_DATA_INDEX_FLAGS")
@@ -260,6 +261,7 @@ fn main() {
         .allowlist_function("rb_yjit_reserve_addr_space")
         .allowlist_function("rb_yjit_mark_writable")
         .allowlist_function("rb_yjit_mark_executable")
+        .allowlist_function("rb_yjit_mark_unused")
         .allowlist_function("rb_yjit_get_page_size")
         .allowlist_function("rb_leaf_invokebuiltin_iseq_p")
         .allowlist_function("rb_leaf_builtin_function")
@@ -283,7 +285,7 @@ fn main() {
         .allowlist_function("rb_yjit_get_proc_ptr")
         .allowlist_function("rb_yjit_exit_locations_dict")
         .allowlist_function("rb_yjit_icache_invalidate")
-
+        .allowlist_function("rb_optimized_call")
         // from vm_sync.h
         .allowlist_function("rb_vm_barrier")
 
@@ -293,6 +295,9 @@ fn main() {
 
         // From internal/compile.h
         .allowlist_function("rb_vm_insn_decode")
+
+        // from internal/cont.h
+        .allowlist_function("rb_jit_cont_each_iseq")
 
         // From iseq.h
         .allowlist_function("rb_vm_insn_addr2opcode")
@@ -304,7 +309,6 @@ fn main() {
 
         // From internal/variable.h
         .allowlist_function("rb_gvar_(get|set)")
-        .allowlist_function("rb_obj_ensure_iv_index_mapping")
 
         // From include/ruby/internal/intern/variable.h
         .allowlist_function("rb_attr_get")
@@ -344,15 +348,18 @@ fn main() {
         .allowlist_function("rb_get_def_bmethod_proc")
         .allowlist_function("rb_iseq_encoded_size")
         .allowlist_function("rb_get_iseq_body_local_iseq")
+        .allowlist_function("rb_get_iseq_body_parent_iseq")
         .allowlist_function("rb_get_iseq_body_iseq_encoded")
         .allowlist_function("rb_get_iseq_body_stack_max")
+        .allowlist_function("rb_get_iseq_flags_has_lead")
         .allowlist_function("rb_get_iseq_flags_has_opt")
         .allowlist_function("rb_get_iseq_flags_has_kw")
         .allowlist_function("rb_get_iseq_flags_has_rest")
         .allowlist_function("rb_get_iseq_flags_has_post")
         .allowlist_function("rb_get_iseq_flags_has_kwrest")
         .allowlist_function("rb_get_iseq_flags_has_block")
-        .allowlist_function("rb_get_iseq_flags_has_accepts_no_kwarg")
+        .allowlist_function("rb_get_iseq_flags_ambiguous_param0")
+        .allowlist_function("rb_get_iseq_flags_accepts_no_kwarg")
         .allowlist_function("rb_get_iseq_flags_ruby2_keywords")
         .allowlist_function("rb_get_iseq_body_local_table_size")
         .allowlist_function("rb_get_iseq_body_param_keyword")

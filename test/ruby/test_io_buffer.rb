@@ -330,6 +330,10 @@ class TestIOBuffer < Test::Unit::TestCase
   end
 
   def test_read
+    # This is currently a bug in IO:Buffer [#19084] which affects extended
+    # strings. On 32 bit machines, the example below becomes extended, so
+    # we omit this test until the bug is fixed.
+    omit if GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT] == 1
     io = Tempfile.new
     io.write("Hello World")
     io.seek(0)
@@ -339,7 +343,7 @@ class TestIOBuffer < Test::Unit::TestCase
 
     assert_equal "Hello", buffer.get_string(0, 5)
   ensure
-    io.close!
+    io.close! if io
   end
 
   def test_write
@@ -402,5 +406,20 @@ class TestIOBuffer < Test::Unit::TestCase
     assert_equal IO::Buffer.for("1334133413"), source.dup.or!(mask)
     assert_equal IO::Buffer.for("\x00\x01\x004\x00\x01\x004\x00\x01"), source.dup.xor!(mask)
     assert_equal IO::Buffer.for("\xce\xcd\xcc\xcb\xce\xcd\xcc\xcb\xce\xcd"), source.dup.not!
+  end
+
+  def test_shared
+    message = "Hello World"
+    buffer = IO::Buffer.new(64, IO::Buffer::MAPPED | IO::Buffer::SHARED)
+
+    pid = fork do
+      buffer.set_string(message)
+    end
+
+    Process.wait(pid)
+    string = buffer.get_string(0, message.bytesize)
+    assert_equal message, string
+  rescue NotImplementedError
+    omit "Fork/shared memory is not supported."
   end
 end

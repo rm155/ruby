@@ -1,7 +1,4 @@
 module RubyVM::MJIT
-  USE_RVARGC = C.USE_RVARGC
-  ROBJECT_EMBED_LEN_MAX = C.ROBJECT_EMBED_LEN_MAX
-
   UNSUPPORTED_INSNS = [
     :defineclass, # low priority
   ]
@@ -46,9 +43,9 @@ module RubyVM::MJIT
       C.fprintf(f, "\n} // end of #{funcname}\n")
 
       return success
-    rescue => e # Should rb_rescue be called in C?
+    rescue Exception => e # should we use rb_rescue in C instead?
       if C.mjit_opts.warnings || C.mjit_opts.verbose > 0
-        $stderr.puts e.full_message
+        $stderr.puts "MJIT error: #{e.full_message}"
       end
       return false
     end
@@ -99,6 +96,8 @@ module RubyVM::MJIT
       C.fprintf(f, "#undef GET_SELF\n")
       return status.success
     end
+
+    private
 
     # Compile one conditional branch. If it has branchXXX insn, this should be
     # called multiple times for each branch.
@@ -243,12 +242,7 @@ module RubyVM::MJIT
       end
 
       return compile_insn_default(insn, stack_size, sp_inc, local_stack_p, pos, next_pos, insn_len, inlined_iseq_p, operands)
-    rescue => e
-      puts e.full_message
-      nil
     end
-
-    private
 
     # Optimized case of send / opt_send_without_block instructions.
     # _mjit_compile_send.erb
@@ -352,12 +346,8 @@ module RubyVM::MJIT
     def compile_ivar(insn_name, stack_size, pos, status, operands, body)
       ic_copy = (status.is_entries + (C.iseq_inline_storage_entry.new(operands[1]) - body.is_entries)).iv_cache
       dest_shape_id = ic_copy.value >> C.SHAPE_FLAG_SHIFT
+      source_shape_id = parent_shape_id(dest_shape_id)
       attr_index = ic_copy.value & ((1 << C.SHAPE_FLAG_SHIFT) - 1)
-      source_shape_id = if dest_shape_id == C.INVALID_SHAPE_ID
-                          dest_shape_id
-                        else
-                          RubyVM::Shape.find_by_id(dest_shape_id).parent_id
-                        end
 
       src = +''
       if !status.compile_info.disable_ivar_cache && source_shape_id != C.INVALID_SHAPE_ID
@@ -369,19 +359,9 @@ module RubyVM::MJIT
         src << "    VALUE obj = GET_SELF();\n"
         # JIT: cache hit path of vm_getivar/vm_setivar, or cancel JIT (recompile it with exivar)
         if insn_name == :setinstancevariable
-          src << "    const shape_id_t source_shape_id = (shape_id_t)#{source_shape_id};\n"
           src << "    const uint32_t index = #{attr_index - 1};\n"
           src << "    const shape_id_t dest_shape_id = (shape_id_t)#{dest_shape_id};\n"
-          src << "    if (source_shape_id == ROBJECT_SHAPE_ID(obj) && \n"
-          src << "        dest_shape_id != ROBJECT_SHAPE_ID(obj)) {\n"
-          src << "        if (UNLIKELY(index >= ROBJECT_NUMIV(obj))) {\n"
-          src << "           rb_init_iv_list(obj);\n"
-          src << "        }\n"
-          src << "        ROBJECT_SET_SHAPE_ID(obj, dest_shape_id);\n"
-          src << "        VALUE *ptr = ROBJECT_IVPTR(obj);\n"
-          src << "        RB_OBJ_WRITE(obj, &ptr[index], stack[#{stack_size - 1}]);\n"
-          src << "    }\n"
-          src << "    else if (dest_shape_id == ROBJECT_SHAPE_ID(obj)) {\n"
+          src << "    if (dest_shape_id == ROBJECT_SHAPE_ID(obj)) {\n"
           src << "        VALUE *ptr = ROBJECT_IVPTR(obj);\n"
           src << "        RB_OBJ_WRITE(obj, &ptr[index], stack[#{stack_size - 1}]);\n"
           src << "    }\n"
@@ -436,9 +416,10 @@ module RubyVM::MJIT
     def compile_invokebuiltin(f, insn, stack_size, sp_inc, body, operands)
       bf = C.RB_BUILTIN.new(operands[0])
       if bf.compiler > 0
+        index = (insn.name == :invokebuiltin ? -1 : operands[1])
         C.fprintf(f, "{\n")
         C.fprintf(f, "    VALUE val;\n")
-        C.builtin_compiler(f, bf, operands[1], stack_size, body.builtin_inline_p)
+        C.builtin_compiler(f, bf, index, stack_size, body.builtin_inline_p)
         C.fprintf(f, "    stack[#{stack_size + sp_inc - 1}] = val;\n")
         C.fprintf(f, "}\n")
         return true
@@ -979,6 +960,19 @@ module RubyVM::MJIT
     # @param struct [RubyVM::MJIT::CPointer::Struct]
     def to_addr(struct)
       struct&.to_s || 'NULL'
+    end
+
+    def parent_shape_id(shape_id)
+      return shape_id if shape_id == C.INVALID_SHAPE_ID
+
+      parent_id = C.rb_shape_get_shape_by_id(shape_id).parent_id
+      parent = C.rb_shape_get_shape_by_id(parent_id)
+
+      if parent.type == C.SHAPE_CAPACITY_CHANGE
+        parent.parent_id
+      else
+        parent_id
+      end
     end
   end
 

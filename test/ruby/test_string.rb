@@ -887,6 +887,18 @@ CODE
     end
   end
 
+  class StringWithIVSet < String
+    def set_iv
+      @foo = 1
+    end
+  end
+
+  def test_ivar_set_after_frozen_dup
+    str = StringWithIVSet.new.freeze
+    str.dup.set_iv
+    assert_raise(FrozenError) { str.set_iv }
+  end
+
   def test_each
     verbose, $VERBOSE = $VERBOSE, nil
 
@@ -2805,6 +2817,11 @@ CODE
     assert_equal("\u3042", s5)
 
     assert_raise(Encoding::CompatibilityError) { S("\u3042".encode("ISO-2022-JP")).rstrip! }
+    assert_raise(Encoding::CompatibilityError) { S("abc \x80 ".force_encoding('UTF-8')).rstrip! }
+    assert_raise(Encoding::CompatibilityError) { S("abc\x80 ".force_encoding('UTF-8')).rstrip! }
+    assert_raise(Encoding::CompatibilityError) { S("abc \x80".force_encoding('UTF-8')).rstrip! }
+    assert_raise(Encoding::CompatibilityError) { S("\x80".force_encoding('UTF-8')).rstrip! }
+    assert_raise(Encoding::CompatibilityError) { S(" \x80 ".force_encoding('UTF-8')).rstrip! }
   end
 
   def test_lstrip

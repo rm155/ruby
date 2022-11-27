@@ -371,11 +371,14 @@ rand_init(const rb_random_interface_t *rng, rb_random_t *rnd, VALUE seed)
         INTEGER_PACK_LSWORD_FIRST|INTEGER_PACK_NATIVE_BYTE_ORDER);
     if (sign < 0)
         sign = -sign;
-    if (len > 1) {
+    if (len <= 1) {
+        rng->init_int32(rnd, len ? buf[0] : 0);
+    }
+    else {
         if (sign != 2 && buf[len-1] == 1) /* remove leading-zero-guard */
             len--;
+        rng->init(rnd, buf, len);
     }
-    rng->init(rnd, buf, len);
     explicit_bzero(buf, len * sizeof(*buf));
     ALLOCV_END(buf0);
     return seed;
@@ -399,6 +402,15 @@ random_init(int argc, VALUE *argv, VALUE obj)
     if (!rng) {
         rb_raise(rb_eTypeError, "undefined random interface: %s",
                  RTYPEDDATA_TYPE(obj)->wrap_struct_name);
+    }
+
+    unsigned int major = rng->version.major;
+    unsigned int minor = rng->version.minor;
+    if (major != RUBY_RANDOM_INTERFACE_VERSION_MAJOR) {
+        rb_raise(rb_eTypeError, "Random interface version "
+                 STRINGIZE(RUBY_RANDOM_INTERFACE_VERSION_MAJOR) "."
+                 STRINGIZE(RUBY_RANDOM_INTERFACE_VERSION_MINOR) " "
+                 "expected: %d.%d", major, minor);
     }
     argc = rb_check_arity(argc, 0, 1);
     rb_check_frozen(obj);
@@ -487,28 +499,35 @@ fill_random_bytes_urandom(void *seed, size_t size)
 #if 0
 #elif defined MAC_OS_X_VERSION_10_7 && MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7
 
-# if defined MAC_OS_X_VERSION_10_10 && MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_10
-#   include <CommonCrypto/CommonCryptoError.h> /* for old Xcode */
-#   include <CommonCrypto/CommonRandom.h>
+# if defined(USE_COMMON_RANDOM)
+# elif defined MAC_OS_X_VERSION_10_10 && MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_10
 #   define USE_COMMON_RANDOM 1
 # else
-#   include <Security/SecRandom.h>
 #   define USE_COMMON_RANDOM 0
+# endif
+# if USE_COMMON_RANDOM
+#   include <CommonCrypto/CommonCryptoError.h> /* for old Xcode */
+#   include <CommonCrypto/CommonRandom.h>
+# else
+#   include <Security/SecRandom.h>
 # endif
 
 static int
 fill_random_bytes_syscall(void *seed, size_t size, int unused)
 {
 #if USE_COMMON_RANDOM
-    int failed = CCRandomGenerateBytes(seed, size) != kCCSuccess;
+    CCRNGStatus status = CCRandomGenerateBytes(seed, size);
+    int failed = status != kCCSuccess;
 #else
-    int failed = SecRandomCopyBytes(kSecRandomDefault, size, seed) != errSecSuccess;
+    int status = SecRandomCopyBytes(kSecRandomDefault, size, seed);
+    int failed = status != errSecSuccess;
 #endif
 
     if (failed) {
 # if 0
 # if USE_COMMON_RANDOM
         /* How to get the error message? */
+        fprintf(stderr, "CCRandomGenerateBytes failed: %d\n", status);
 # else
         CFStringRef s = SecCopyErrorMessageString(status, NULL);
         const char *m = s ? CFStringGetCStringPtr(s, kCFStringEncodingUTF8) : NULL;
@@ -876,15 +895,17 @@ rand_mt_load(VALUE obj, VALUE dump)
 }
 
 static void
+rand_mt_init_int32(rb_random_t *rnd, uint32_t data)
+{
+    struct MT *mt = &((rb_random_mt_t *)rnd)->mt;
+    init_genrand(mt, data);
+}
+
+static void
 rand_mt_init(rb_random_t *rnd, const uint32_t *buf, size_t len)
 {
     struct MT *mt = &((rb_random_mt_t *)rnd)->mt;
-    if (len <= 1) {
-        init_genrand(mt, len ? buf[0] : 0);
-    }
-    else {
-        init_by_array(mt, buf, (int)len);
-    }
+    init_by_array(mt, buf, (int)len);
 }
 
 static unsigned int

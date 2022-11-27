@@ -123,7 +123,6 @@ impl<T> ::std::cmp::PartialEq for __BindgenUnionField<T> {
     }
 }
 impl<T> ::std::cmp::Eq for __BindgenUnionField<T> {}
-pub const USE_RVARGC: u32 = 1;
 pub const INTEGER_REDEFINED_OP_FLAG: u32 = 1;
 pub const FLOAT_REDEFINED_OP_FLAG: u32 = 2;
 pub const STRING_REDEFINED_OP_FLAG: u32 = 4;
@@ -152,6 +151,17 @@ extern "C" {
 extern "C" {
     pub fn rb_method_basic_definition_p(klass: VALUE, mid: ID) -> ::std::os::raw::c_int;
 }
+pub const RUBY_Qfalse: ruby_special_consts = 0;
+pub const RUBY_Qnil: ruby_special_consts = 4;
+pub const RUBY_Qtrue: ruby_special_consts = 20;
+pub const RUBY_Qundef: ruby_special_consts = 36;
+pub const RUBY_IMMEDIATE_MASK: ruby_special_consts = 7;
+pub const RUBY_FIXNUM_FLAG: ruby_special_consts = 1;
+pub const RUBY_FLONUM_MASK: ruby_special_consts = 3;
+pub const RUBY_FLONUM_FLAG: ruby_special_consts = 2;
+pub const RUBY_SYMBOL_FLAG: ruby_special_consts = 12;
+pub const RUBY_SPECIAL_SHIFT: ruby_special_consts = 8;
+pub type ruby_special_consts = u32;
 #[repr(C)]
 pub struct RBasic {
     pub flags: VALUE,
@@ -237,10 +247,9 @@ extern "C" {
 }
 pub const ROBJECT_EMBED: ruby_robject_flags = 8192;
 pub type ruby_robject_flags = u32;
-pub const ROBJECT_OFFSET_NUMIV: i32 = 16;
-pub const ROBJECT_OFFSET_AS_HEAP_IVPTR: i32 = 24;
-pub const ROBJECT_OFFSET_AS_HEAP_IV_INDEX_TBL: i32 = 32;
-pub const ROBJECT_OFFSET_AS_ARY: i32 = 24;
+pub const ROBJECT_OFFSET_AS_HEAP_IVPTR: i32 = 16;
+pub const ROBJECT_OFFSET_AS_HEAP_IV_INDEX_TBL: i32 = 24;
+pub const ROBJECT_OFFSET_AS_ARY: i32 = 16;
 extern "C" {
     pub static mut rb_mKernel: VALUE;
 }
@@ -408,11 +417,16 @@ pub type shape_id_t = u32;
 pub struct rb_shape {
     pub edges: *mut rb_id_table,
     pub edge_name: ID,
-    pub iv_count: attr_index_t,
+    pub next_iv_index: attr_index_t,
+    pub capacity: u32,
     pub type_: u8,
+    pub size_pool_index: u8,
     pub parent_id: shape_id_t,
 }
 pub type rb_shape_t = rb_shape;
+extern "C" {
+    pub fn rb_shape_id_num_bits() -> u8;
+}
 extern "C" {
     pub fn rb_shape_get_shape_by_id(shape_id: shape_id_t) -> *mut rb_shape_t;
 }
@@ -421,9 +435,6 @@ extern "C" {
 }
 extern "C" {
     pub fn rb_shape_get_iv_index(shape: *mut rb_shape_t, id: ID, value: *mut attr_index_t) -> bool;
-}
-extern "C" {
-    pub fn rb_shape_flags_mask() -> VALUE;
 }
 pub const idDot2: ruby_method_ids = 128;
 pub const idDot3: ruby_method_ids = 129;
@@ -955,6 +966,9 @@ pub const VM_ENV_FLAG_WB_REQUIRED: vm_frame_env_flags = 8;
 pub const VM_ENV_FLAG_ISOLATED: vm_frame_env_flags = 16;
 pub type vm_frame_env_flags = u32;
 extern "C" {
+    pub fn rb_vm_ep_local_ep(ep: *const VALUE) -> *const VALUE;
+}
+extern "C" {
     pub fn rb_iseq_path(iseq: *const rb_iseq_t) -> VALUE;
 }
 extern "C" {
@@ -1014,9 +1028,6 @@ extern "C" {
 }
 extern "C" {
     pub fn rb_hash_resurrect(hash: VALUE) -> VALUE;
-}
-extern "C" {
-    pub fn rb_obj_ensure_iv_index_mapping(obj: VALUE, id: ID) -> u32;
 }
 extern "C" {
     pub fn rb_gvar_get(arg1: ID) -> VALUE;
@@ -1247,6 +1258,9 @@ pub const YARVINSN_trace_putobject_INT2FIX_0_: ruby_vminsn_type = 200;
 pub const YARVINSN_trace_putobject_INT2FIX_1_: ruby_vminsn_type = 201;
 pub const VM_INSTRUCTION_SIZE: ruby_vminsn_type = 202;
 pub type ruby_vminsn_type = u32;
+pub type rb_iseq_callback = ::std::option::Option<
+    unsafe extern "C" fn(arg1: *const rb_iseq_t, arg2: *mut ::std::os::raw::c_void),
+>;
 extern "C" {
     pub fn rb_vm_insn_addr2opcode(addr: *const ::std::os::raw::c_void) -> ::std::os::raw::c_int;
 }
@@ -1268,10 +1282,16 @@ extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 extern "C" {
+    pub fn rb_jit_cont_each_iseq(callback: rb_iseq_callback, data: *mut ::std::os::raw::c_void);
+}
+extern "C" {
     pub fn rb_yjit_mark_writable(mem_block: *mut ::std::os::raw::c_void, mem_size: u32) -> bool;
 }
 extern "C" {
     pub fn rb_yjit_mark_executable(mem_block: *mut ::std::os::raw::c_void, mem_size: u32);
+}
+extern "C" {
+    pub fn rb_yjit_mark_unused(mem_block: *mut ::std::os::raw::c_void, mem_size: u32) -> bool;
 }
 extern "C" {
     pub fn rb_yjit_icache_invalidate(
@@ -1402,6 +1422,9 @@ extern "C" {
     pub fn rb_get_iseq_body_local_iseq(iseq: *const rb_iseq_t) -> *const rb_iseq_t;
 }
 extern "C" {
+    pub fn rb_get_iseq_body_parent_iseq(iseq: *const rb_iseq_t) -> *const rb_iseq_t;
+}
+extern "C" {
     pub fn rb_get_iseq_body_local_table_size(iseq: *const rb_iseq_t) -> ::std::os::raw::c_uint;
 }
 extern "C" {
@@ -1409,6 +1432,9 @@ extern "C" {
 }
 extern "C" {
     pub fn rb_get_iseq_body_stack_max(iseq: *const rb_iseq_t) -> ::std::os::raw::c_uint;
+}
+extern "C" {
+    pub fn rb_get_iseq_flags_has_lead(iseq: *const rb_iseq_t) -> bool;
 }
 extern "C" {
     pub fn rb_get_iseq_flags_has_opt(iseq: *const rb_iseq_t) -> bool;
@@ -1432,7 +1458,10 @@ extern "C" {
     pub fn rb_get_iseq_flags_has_block(iseq: *const rb_iseq_t) -> bool;
 }
 extern "C" {
-    pub fn rb_get_iseq_flags_has_accepts_no_kwarg(iseq: *const rb_iseq_t) -> bool;
+    pub fn rb_get_iseq_flags_ambiguous_param0(iseq: *const rb_iseq_t) -> bool;
+}
+extern "C" {
+    pub fn rb_get_iseq_flags_accepts_no_kwarg(iseq: *const rb_iseq_t) -> bool;
 }
 extern "C" {
     pub fn rb_get_iseq_body_param_keyword(
@@ -1450,6 +1479,16 @@ extern "C" {
 }
 extern "C" {
     pub fn rb_get_iseq_body_param_opt_table(iseq: *const rb_iseq_t) -> *const VALUE;
+}
+extern "C" {
+    pub fn rb_optimized_call(
+        recv: *mut VALUE,
+        ec: *mut rb_execution_context_t,
+        argc: ::std::os::raw::c_int,
+        argv: *mut VALUE,
+        kw_splat: ::std::os::raw::c_int,
+        block_handler: VALUE,
+    ) -> VALUE;
 }
 extern "C" {
     pub fn rb_leaf_invokebuiltin_iseq_p(iseq: *const rb_iseq_t) -> bool;
@@ -1541,9 +1580,8 @@ extern "C" {
 extern "C" {
     pub fn rb_assert_cme_handle(handle: VALUE);
 }
-pub type iseq_callback = ::std::option::Option<unsafe extern "C" fn(arg1: *const rb_iseq_t)>;
 extern "C" {
-    pub fn rb_yjit_for_each_iseq(callback: iseq_callback);
+    pub fn rb_yjit_for_each_iseq(callback: rb_iseq_callback, data: *mut ::std::os::raw::c_void);
 }
 extern "C" {
     pub fn rb_yjit_obj_written(

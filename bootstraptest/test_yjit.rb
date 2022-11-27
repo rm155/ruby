@@ -45,6 +45,29 @@ assert_normal_exit %q{
   Object.send(:remove_const, :Foo)
 }
 
+assert_normal_exit %q{
+  # Test to ensure send on overriden c functions
+  # doesn't corrupt the stack
+  class Bar
+    def bar(x)
+      x
+    end
+  end
+
+  class Foo
+    def bar
+      Bar.new
+    end
+  end
+
+  foo = Foo.new
+  # before this change, this line would error
+  # because "s" would still be on the stack
+  # String.to_s is the overridden method here
+  p foo.bar.bar("s".__send__(:to_s))
+}
+
+
 assert_equal '[nil, nil, nil, nil, nil, nil]', %q{
   [NilClass, TrueClass, FalseClass, Integer, Float, Symbol].each do |klass|
     klass.class_eval("def foo = @foo")
@@ -2249,6 +2272,26 @@ assert_equal '[[:c_return, :itself, main]]', %q{
   events
 }
 
+# test c_call invalidation
+assert_equal '[[:c_call, :itself]]', %q{
+  # enable the event once to make sure invalidation
+  # happens the second time we enable it
+  TracePoint.new(:c_call) {}.enable{}
+
+  def compiled
+    itself
+  end
+
+  # assume first call compiles
+  compiled
+
+  events = []
+  tp = TracePoint.new(:c_call) { |tp| events << [tp.event, tp.method_id] }
+  tp.enable { compiled }
+
+  events
+}
+
 # test enabling tracing for a suspended fiber
 assert_equal '[[:return, 42]]', %q{
   def traced_method
@@ -3336,4 +3379,47 @@ assert_equal '[[1, nil, 2]]', %q{
   end
 
   5.times.map { opt_and_kwargs(1, c: 2) }.uniq
+}
+
+# bmethod with forwarded block
+assert_equal '2', %q{
+  define_method(:foo) do |&block|
+    block.call
+  end
+
+  def bar(&block)
+    foo(&block)
+  end
+
+  bar { 1 }
+  bar { 2 }
+}
+
+# bmethod with forwarded block and arguments
+assert_equal '5', %q{
+  define_method(:foo) do |n, &block|
+    n + block.call
+  end
+
+  def bar(n, &block)
+    foo(n, &block)
+  end
+
+  bar(0) { 1 }
+  bar(3) { 2 }
+}
+
+# bmethod with forwarded unwanted block
+assert_equal '1', %q{
+  one = 1
+  define_method(:foo) do
+    one
+  end
+
+  def bar(&block)
+    foo(&block)
+  end
+
+  bar { }
+  bar { }
 }

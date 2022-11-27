@@ -1,8 +1,18 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-ENV['BUNDLE_GEMFILE'] ||= File.expand_path('./Gemfile', __dir__)
-require 'bundler/setup'
+ENV['GEM_HOME'] = File.expand_path('./.bundle', __dir__)
+require 'rubygems/source'
+require 'bundler/inline'
+gemfile do
+  source 'https://rubygems.org'
+  gem 'ffi-clang', '0.7.0', require: false
+end
+
+# Help ffi-clang find libclang
+# Hint: apt install libclang1
+ENV['LIBCLANG'] ||= Dir.glob("/usr/lib/llvm-*/lib/libclang.so.1").grep_v(/-cpp/).sort.last
+require 'ffi/clang'
 
 require 'etc'
 require 'fiddle/import'
@@ -11,11 +21,6 @@ require 'set'
 unless build_dir = ARGV.first
   abort "Usage: #{$0} BUILD_DIR"
 end
-
-# Help ffi-clang find libclang
-# Hint: apt install libclang1
-ENV['LIBCLANG'] ||= Dir.glob("/lib/#{RUBY_PLATFORM}-gnu/libclang-*.so*").grep_v(/-cpp/).sort.last
-require 'ffi/clang'
 
 class Node < Struct.new(
   :kind,
@@ -224,7 +229,7 @@ class BindingGenerator
 
         case child
         # BitField is struct-specific. So it must be handled here.
-        in Node[kind: :field_decl, spelling:, bitwidth:, children: [_grandchild]] if bitwidth > 0
+        in Node[kind: :field_decl, spelling:, bitwidth:, children: [_grandchild, *]] if bitwidth > 0
           buf << field_builder.call(spelling, "CType::BitField.new(#{bitwidth}, #{node.offsetof.fetch(spelling) % 8})")
         # "(unnamed ...)" struct and union are handled here, which are also struct-specific.
         in Node[kind: :field_decl, spelling:, type:, children: [grandchild]] if type.match?(/\((unnamed|anonymous) [^)]+\)\z/)
@@ -329,7 +334,6 @@ generator = BindingGenerator.new(
   src_path: src_path,
   uses: %w[
     USE_LAZY_LOAD
-    USE_RVARGC
   ],
   values: {
     INT: %w[
@@ -341,9 +345,27 @@ generator = BindingGenerator.new(
       VM_METHOD_TYPE_CFUNC
       VM_METHOD_TYPE_ISEQ
     ],
+    UINT: %w[
+      SHAPE_ID_NUM_BITS
+      SHAPE_CAPACITY_CHANGE
+      SHAPE_FLAG_SHIFT
+      SHAPE_FROZEN
+      SHAPE_INITIAL_CAPACITY
+      SHAPE_IVAR
+      SHAPE_IVAR_UNDEF
+      SHAPE_ROOT
+    ],
     ULONG: %w[
       INVALID_SHAPE_ID
       SHAPE_MASK
+    ],
+    PTR: %w[
+      rb_cFalseClass
+      rb_cFloat
+      rb_cInteger
+      rb_cNilClass
+      rb_cSymbol
+      rb_cTrueClass
     ],
   },
   types: %w[
@@ -373,13 +395,14 @@ generator = BindingGenerator.new(
     rb_iseq_location_t
     rb_iseq_struct
     rb_iseq_t
-    rb_iv_index_tbl_entry
     rb_method_definition_struct
     rb_method_iseq_t
     rb_method_type_t
     rb_mjit_compile_info
     rb_mjit_unit
     rb_serial_t
+    rb_shape
+    rb_shape_t
   ],
   dynamic_types: %w[
     VALUE

@@ -50,11 +50,6 @@ MJIT_STATIC VALUE
 ruby_vm_special_exception_copy(VALUE exc)
 {
     VALUE e = rb_obj_alloc(rb_class_real(RBASIC_CLASS(exc)));
-    rb_shape_t * shape = rb_shape_get_shape(exc);
-    if (rb_shape_frozen_shape_p(shape)) {
-        shape = rb_shape_get_shape_by_id(shape->parent_id);
-    }
-    rb_shape_set_shape(e, shape);
     rb_obj_copy_ivar(e, exc);
     return e;
 }
@@ -201,7 +196,9 @@ vm_check_frame_detail(VALUE type, int req_block, int req_me, int req_cref, VALUE
 
     if ((type & VM_FRAME_MAGIC_MASK) == VM_FRAME_MAGIC_DUMMY) {
         VM_ASSERT(iseq == NULL ||
-                  RUBY_VM_NORMAL_ISEQ_P(iseq) /* argument error. it should be fixed */);
+                  RBASIC_CLASS((VALUE)iseq) == 0 || // dummy frame for loading
+                  RUBY_VM_NORMAL_ISEQ_P(iseq) //argument error
+                  );
     }
     else {
         VM_ASSERT(is_cframe == !RUBY_VM_NORMAL_ISEQ_P(iseq));
@@ -427,6 +424,34 @@ MJIT_STATIC void
 rb_vm_pop_frame(rb_execution_context_t *ec)
 {
     vm_pop_frame(ec, ec->cfp, ec->cfp->ep);
+}
+
+// it pushes pseudo-frame with fname filename.
+VALUE
+rb_vm_push_frame_fname(rb_execution_context_t *ec, VALUE fname)
+{
+    VALUE tmpbuf = rb_imemo_tmpbuf_auto_free_pointer();
+    void *ptr = ruby_xcalloc(sizeof(struct rb_iseq_constant_body) + sizeof(struct rb_iseq_struct), 1);
+    rb_imemo_tmpbuf_set_ptr(tmpbuf, ptr);
+
+    struct rb_iseq_struct *dmy_iseq = (struct rb_iseq_struct *)ptr;
+    struct rb_iseq_constant_body *dmy_body = (struct rb_iseq_constant_body *)&dmy_iseq[1];
+    dmy_iseq->body = dmy_body;
+    dmy_body->type = ISEQ_TYPE_TOP;
+    dmy_body->location.pathobj = fname;
+
+    vm_push_frame(ec,
+                  dmy_iseq, //const rb_iseq_t *iseq,
+                  VM_FRAME_MAGIC_DUMMY | VM_ENV_FLAG_LOCAL | VM_FRAME_FLAG_FINISH, // VALUE type,
+                  ec->cfp->self, // VALUE self,
+                  VM_BLOCK_HANDLER_NONE, // VALUE specval,
+                  Qfalse, // VALUE cref_or_me,
+                  NULL, // const VALUE *pc,
+                  ec->cfp->sp, // VALUE *sp,
+                  0, // int local_size,
+                  0); // int stack_max
+
+    return tmpbuf;
 }
 
 /* method dispatch */
@@ -993,7 +1018,7 @@ vm_get_ev_const(rb_execution_context_t *ec, VALUE orig_klass, ID id, bool allow_
                 if ((ce = rb_const_lookup(klass, id))) {
                     rb_const_warn_if_deprecated(ce, klass, id);
                     val = ce->value;
-                    if (val == Qundef) {
+                    if (UNDEF_P(val)) {
                         if (am == klass) break;
                         am = klass;
                         if (is_defined) return 1;
@@ -1139,7 +1164,23 @@ vm_getivar(VALUE obj, ID id, const rb_iseq_t *iseq, IVC ic, const struct rb_call
       case T_CLASS:
       case T_MODULE:
         {
-            goto general_path;
+            if (UNLIKELY(!rb_ractor_main_p())) {
+                // For two reasons we can only use the fast path on the main
+                // ractor.
+                // First, only the main ractor is allowed to set ivars on classes
+                // and modules. So we can skip locking.
+                // Second, other ractors need to check the shareability of the
+                // values returned from the class ivars.
+                goto general_path;
+            }
+
+            ivar_list = RCLASS_IVPTR(obj);
+
+#if !SHAPE_IN_BASIC_FLAGS
+            shape_id = RCLASS_SHAPE_ID(obj);
+#endif
+
+            break;
         }
       default:
         if (FL_TEST_RAW(obj, FL_EXIVAR)) {
@@ -1171,7 +1212,7 @@ vm_getivar(VALUE obj, ID id, const rb_iseq_t *iseq, IVC ic, const struct rb_call
         }
 
         val = ivar_list[index];
-        RUBY_ASSERT(val != Qundef);
+        RUBY_ASSERT(!UNDEF_P(val));
     }
     else { // cache miss case
 #if RUBY_DEBUG
@@ -1202,7 +1243,7 @@ vm_getivar(VALUE obj, ID id, const rb_iseq_t *iseq, IVC ic, const struct rb_call
 
             // We fetched the ivar list above
             val = ivar_list[index];
-            RUBY_ASSERT(val != Qundef);
+            RUBY_ASSERT(!UNDEF_P(val));
         }
         else {
             if (is_attr) {
@@ -1217,7 +1258,7 @@ vm_getivar(VALUE obj, ID id, const rb_iseq_t *iseq, IVC ic, const struct rb_call
 
     }
 
-    RUBY_ASSERT(val != Qundef);
+    RUBY_ASSERT(!UNDEF_P(val));
 
     return val;
 
@@ -1258,41 +1299,13 @@ vm_setivar_slowpath(VALUE obj, ID id, VALUE val, const rb_iseq_t *iseq, IVC ic, 
         {
             rb_check_frozen_internal(obj);
 
-            attr_index_t index;
+            attr_index_t index = rb_obj_ivar_set(obj, id, val);
 
-            uint32_t num_iv = ROBJECT_NUMIV(obj);
-            rb_shape_t* shape = rb_shape_get_shape(obj);
             shape_id_t next_shape_id = ROBJECT_SHAPE_ID(obj);
 
-            rb_shape_t* next_shape = rb_shape_get_next(shape, obj, id);
+            populate_cache(index, next_shape_id, id, iseq, ic, cc, is_attr);
 
-            if (shape != next_shape) {
-                RUBY_ASSERT(next_shape->parent_id == rb_shape_id(shape));
-                rb_shape_set_shape(obj, next_shape);
-                next_shape_id = ROBJECT_SHAPE_ID(obj);
-            }
-
-            if (rb_shape_get_iv_index(next_shape, id, &index)) { // based off the hash stored in the transition tree
-                if (index >= MAX_IVARS) {
-                    rb_raise(rb_eArgError, "too many instance variables");
-                }
-
-                populate_cache(index, next_shape_id, id, iseq, ic, cc, is_attr);
-            }
-            else {
-                rb_bug("Didn't find instance variable %s\n", rb_id2name(id));
-            }
-
-            // Ensure the IV buffer is wide enough to store the IV
-            if (UNLIKELY(index >= num_iv)) {
-                RUBY_ASSERT(index == num_iv);
-                rb_init_iv_list(obj);
-            }
-
-            VALUE *ptr = ROBJECT_IVPTR(obj);
-            RB_OBJ_WRITE(obj, &ptr[index], val);
             RB_DEBUG_COUNTER_INC(ivar_set_ic_miss_iv_hit);
-
             return val;
         }
       case T_CLASS:
@@ -1402,17 +1415,16 @@ vm_setivar(VALUE obj, ID id, VALUE val, shape_id_t dest_shape_id, attr_index_t i
             else if (dest_shape_id != INVALID_SHAPE_ID) {
                 rb_shape_t *dest_shape = rb_shape_get_shape_by_id(dest_shape_id);
                 shape_id_t source_shape_id = dest_shape->parent_id;
-                if (shape_id == source_shape_id && dest_shape->edge_name == id && dest_shape->type == SHAPE_IVAR) {
+
+                RUBY_ASSERT(dest_shape->type == SHAPE_IVAR || dest_shape->type == SHAPE_IVAR_UNDEF);
+
+                if (shape_id == source_shape_id && dest_shape->edge_name == id) {
                     RUBY_ASSERT(dest_shape_id != INVALID_SHAPE_ID && shape_id != INVALID_SHAPE_ID);
-                    if (UNLIKELY(index >= ROBJECT_NUMIV(obj))) {
-                        rb_init_iv_list(obj);
-                    }
 
                     ROBJECT_SET_SHAPE_ID(obj, dest_shape_id);
 
-                    RUBY_ASSERT(rb_shape_get_next(rb_shape_get_shape_by_id(source_shape_id), obj, id) == dest_shape);
-                    RUBY_ASSERT(index < ROBJECT_NUMIV(obj));
-
+                    RUBY_ASSERT(rb_shape_get_next_iv_shape(rb_shape_get_shape_by_id(source_shape_id), id) == dest_shape);
+                    RUBY_ASSERT(index < dest_shape->capacity);
                 }
                 else {
                     break;
@@ -1475,15 +1487,13 @@ vm_getclassvariable(const rb_iseq_t *iseq, const rb_control_frame_t *reg_cfp, ID
 {
     const rb_cref_t *cref;
 
-    if (ic->entry && ic->entry->global_cvar_state == GET_GLOBAL_CVAR_STATE()) {
-        VALUE v = Qundef;
+    if (ic->entry && ic->entry->global_cvar_state == GET_GLOBAL_CVAR_STATE() && LIKELY(rb_ractor_main_p())) {
         RB_DEBUG_COUNTER_INC(cvar_read_inline_hit);
 
-        if (st_lookup(RCLASS_IV_TBL(ic->entry->class_value), (st_data_t)id, &v) &&
-            LIKELY(rb_ractor_main_p())) {
+        VALUE v = rb_ivar_lookup(ic->entry->class_value, id, Qundef);
+        RUBY_ASSERT(!UNDEF_P(v));
 
-            return v;
-        }
+        return v;
     }
 
     cref = vm_get_cref(GET_EP());
@@ -1537,14 +1547,14 @@ vm_setinstancevariable(const rb_iseq_t *iseq, VALUE obj, ID id, VALUE val, IVC i
     attr_index_t index;
     vm_ic_atomic_shape_and_index(ic, &dest_shape_id, &index);
 
-    if (UNLIKELY(vm_setivar(obj, id, val, dest_shape_id, index) == Qundef)) {
+    if (UNLIKELY(UNDEF_P(vm_setivar(obj, id, val, dest_shape_id, index)))) {
         switch (BUILTIN_TYPE(obj)) {
           case T_OBJECT:
           case T_CLASS:
           case T_MODULE:
             break;
           default:
-            if (vm_setivar_default(obj, id, val, dest_shape_id, index) != Qundef) {
+            if (!UNDEF_P(vm_setivar_default(obj, id, val, dest_shape_id, index))) {
                 return;
             }
         }
@@ -2267,7 +2277,7 @@ opt_equality(const rb_iseq_t *cd_owner, VALUE recv, VALUE obj, CALL_DATA cd)
     VM_ASSERT(cd_owner != NULL);
 
     VALUE val = opt_equality_specialized(recv, obj);
-    if (val != Qundef) return val;
+    if (!UNDEF_P(val)) return val;
 
     if (!vm_method_cfunc_is(cd_owner, cd, recv, rb_obj_equal)) {
         return Qundef;
@@ -2301,7 +2311,7 @@ static VALUE
 opt_equality_by_mid(VALUE recv, VALUE obj, ID mid)
 {
     VALUE val = opt_equality_specialized(recv, obj);
-    if (val != Qundef) {
+    if (!UNDEF_P(val)) {
         return val;
     }
     else {
@@ -3265,7 +3275,7 @@ vm_call_attrset_direct(rb_execution_context_t *ec, rb_control_frame_t *cfp, cons
     ID id = vm_cc_cme(cc)->def->body.attr.id;
     rb_check_frozen_internal(obj);
     VALUE res = vm_setivar(obj, id, val, dest_shape_id, index);
-    if (res == Qundef) {
+    if (UNDEF_P(res)) {
         switch (BUILTIN_TYPE(obj)) {
           case T_OBJECT:
           case T_CLASS:
@@ -3274,7 +3284,7 @@ vm_call_attrset_direct(rb_execution_context_t *ec, rb_control_frame_t *cfp, cons
           default:
             {
                 res = vm_setivar_default(obj, id, val, dest_shape_id, index);
-                if (res != Qundef) {
+                if (!UNDEF_P(res)) {
                     return res;
                 }
             }
@@ -4490,7 +4500,7 @@ check_respond_to_missing(VALUE obj, VALUE v)
 
     args[0] = obj; args[1] = Qfalse;
     r = rb_check_funcall(v, idRespond_to_missing, 2, args);
-    if (r != Qundef && RTEST(r)) {
+    if (!UNDEF_P(r) && RTEST(r)) {
         return true;
     }
     else {
@@ -4936,6 +4946,11 @@ vm_define_method(const rb_execution_context_t *ec, VALUE obj, ID id, VALUE iseqv
     }
 
     rb_add_method_iseq(klass, id, (const rb_iseq_t *)iseqval, cref, visi);
+    // Set max_iv_count on klasses based on number of ivar sets that are in the initialize method
+    if (id == rb_intern("initialize") && klass != rb_cObject &&  RB_TYPE_P(klass, T_CLASS) && (rb_get_alloc_func(klass) == rb_class_allocate_instance)) {
+
+        RCLASS_EXT(klass)->max_iv_count = rb_estimate_iv_count(klass, (const rb_iseq_t *)iseqval);
+    }
 
     if (!is_singleton && vm_scope_module_func_check(ec)) {
         klass = rb_singleton_class(klass);
@@ -5040,7 +5055,7 @@ vm_sendish(
     }
 #endif
 
-    if (val != Qundef) {
+    if (!UNDEF_P(val)) {
         return val;             /* CFUNC normal return */
     }
     else {
@@ -5058,7 +5073,7 @@ vm_sendish(
         VM_ENV_FLAGS_SET(GET_EP(), VM_FRAME_FLAG_FINISH);
         return vm_exec(ec, true);
     }
-    else if ((val = jit_exec(ec)) == Qundef) {
+    else if (UNDEF_P(val = jit_exec(ec))) {
         VM_ENV_FLAGS_SET(GET_EP(), VM_FRAME_FLAG_FINISH);
         return vm_exec(ec, false);
     }
@@ -5514,7 +5529,7 @@ vm_opt_neq(const rb_iseq_t *iseq, CALL_DATA cd, CALL_DATA cd_eq, VALUE recv, VAL
     if (vm_method_cfunc_is(iseq, cd, recv, rb_obj_not_equal)) {
         VALUE val = opt_equality(iseq, recv, obj, cd_eq);
 
-        if (val != Qundef) {
+        if (!UNDEF_P(val)) {
             return RBOOL(!RTEST(val));
         }
     }

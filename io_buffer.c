@@ -47,7 +47,7 @@ struct rb_io_buffer {
 };
 
 static inline void *
-io_buffer_map_memory(size_t size)
+io_buffer_map_memory(size_t size, int flags)
 {
 #if defined(_WIN32)
     void * base = VirtualAlloc(0, size, MEM_COMMIT, PAGE_READWRITE);
@@ -56,7 +56,14 @@ io_buffer_map_memory(size_t size)
         rb_sys_fail("io_buffer_map_memory:VirtualAlloc");
     }
 #else
-    void * base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    int mmap_flags = MAP_ANONYMOUS;
+    if (flags & RB_IO_BUFFER_SHARED) {
+        mmap_flags |= MAP_SHARED;
+    } else {
+        mmap_flags |= MAP_PRIVATE;
+    }
+
+    void * base = mmap(NULL, size, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
 
     if (base == MAP_FAILED) {
         rb_sys_fail("io_buffer_map_memory:mmap");
@@ -93,6 +100,7 @@ io_buffer_map_file(struct rb_io_buffer *data, int descriptor, size_t size, rb_of
     else {
         // This buffer refers to external data.
         data->flags |= RB_IO_BUFFER_EXTERNAL;
+        data->flags |= RB_IO_BUFFER_SHARED;
     }
 
     void *base = MapViewOfFile(mapping, access, (DWORD)(offset >> 32), (DWORD)(offset & 0xFFFFFFFF), size);
@@ -119,6 +127,7 @@ io_buffer_map_file(struct rb_io_buffer *data, int descriptor, size_t size, rb_of
     else {
         // This buffer refers to external data.
         data->flags |= RB_IO_BUFFER_EXTERNAL;
+        data->flags |= RB_IO_BUFFER_SHARED;
         access |= MAP_SHARED;
     }
 
@@ -184,7 +193,7 @@ io_buffer_initialize(struct rb_io_buffer *data, void *base, size_t size, enum rb
             base = calloc(size, 1);
         }
         else if (flags & RB_IO_BUFFER_MAPPED) {
-            base = io_buffer_map_memory(size);
+            base = io_buffer_map_memory(size, flags);
         }
 
         if (!base) {
@@ -526,7 +535,7 @@ io_flags_for_size(size_t size)
  *  Create a new zero-filled IO::Buffer of +size+ bytes.
  *  By default, the buffer will be _internal_: directly allocated chunk
  *  of the memory. But if the requested +size+ is more than OS-specific
- *  IO::Bufer::PAGE_SIZE, the buffer would be allocated using the
+ *  IO::Buffer::PAGE_SIZE, the buffer would be allocated using the
  *  virtual memory mechanism (anonymous +mmap+ on Unix, +VirtualAlloc+
  *  on Windows). The behavior can be forced by passing IO::Buffer::MAPPED
  *  as a second parameter.
@@ -653,6 +662,10 @@ rb_io_buffer_to_s(VALUE self)
 
     if (data->flags & RB_IO_BUFFER_MAPPED) {
         rb_str_cat2(result, " MAPPED");
+    }
+
+    if (data->flags & RB_IO_BUFFER_SHARED) {
+        rb_str_cat2(result, " SHARED");
     }
 
     if (data->flags & RB_IO_BUFFER_LOCKED) {
@@ -880,6 +893,22 @@ rb_io_buffer_mapped_p(VALUE self)
 }
 
 /*
+ *  call-seq: shared? -> true or false
+ *
+ *  If the buffer is _shared_, meaning it references memory that can be shared
+ *  with other processes (and thus might change without being modified
+ *  locally).
+ */
+static VALUE
+rb_io_buffer_shared_p(VALUE self)
+{
+    struct rb_io_buffer *data = NULL;
+    TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
+
+    return RBOOL(data->flags & RB_IO_BUFFER_SHARED);
+}
+
+/*
  *  call-seq: locked? -> true or false
  *
  *  If the buffer is _locked_, meaning it is inside #locked block execution.
@@ -1072,6 +1101,27 @@ io_buffer_validate_range(struct rb_io_buffer *data, size_t offset, size_t length
     }
 }
 
+static VALUE
+rb_io_buffer_slice(struct rb_io_buffer *data, VALUE self, size_t offset, size_t length)
+{
+    io_buffer_validate_range(data, offset, length);
+
+    VALUE instance = rb_io_buffer_type_allocate(rb_class_of(self));
+    struct rb_io_buffer *slice = NULL;
+    TypedData_Get_Struct(instance, struct rb_io_buffer, &rb_io_buffer_type, slice);
+
+    slice->base = (char*)data->base + offset;
+    slice->size = length;
+
+    // The source should be the root buffer:
+    if (data->source != Qnil)
+        slice->source = data->source;
+    else
+        slice->source = self;
+
+    return instance;
+}
+
 /*
  *  call-seq: slice([offset = 0, [length]]) -> io_buffer
  *
@@ -1128,27 +1178,6 @@ io_buffer_validate_range(struct rb_io_buffer *data, size_t offset, size_t length
  *    string
  *    # => tost
  */
-static VALUE
-rb_io_buffer_slice(struct rb_io_buffer *data, VALUE self, size_t offset, size_t length)
-{
-    io_buffer_validate_range(data, offset, length);
-
-    VALUE instance = rb_io_buffer_type_allocate(rb_class_of(self));
-    struct rb_io_buffer *slice = NULL;
-    TypedData_Get_Struct(instance, struct rb_io_buffer, &rb_io_buffer_type, slice);
-
-    slice->base = (char*)data->base + offset;
-    slice->size = length;
-
-    // The source should be the root buffer:
-    if (data->source != Qnil)
-        slice->source = data->source;
-    else
-        slice->source = self;
-
-    return instance;
-}
-
 static VALUE
 io_buffer_slice(int argc, VALUE *argv, VALUE self)
 {
@@ -1433,7 +1462,7 @@ static void
 io_buffer_validate_type(size_t size, size_t offset)
 {
     if (offset > size) {
-        rb_raise(rb_eArgError, "Type extends beyond end of buffer! (offset=%ld > size=%ld)", offset, size);
+        rb_raise(rb_eArgError, "Type extends beyond end of buffer! (offset=%"PRIdSIZE" > size=%"PRIdSIZE")", offset, size);
     }
 }
 
@@ -2355,7 +2384,7 @@ rb_io_buffer_read(VALUE self, VALUE io, size_t length, size_t offset)
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_read(scheduler, io, self, SIZET2NUM(length), SIZET2NUM(offset));
 
-        if (result != Qundef) {
+        if (!UNDEF_P(result)) {
             return result;
         }
     }
@@ -2472,7 +2501,7 @@ rb_io_buffer_pread(VALUE self, VALUE io, rb_off_t from, size_t length, size_t of
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_pread(scheduler, io, OFFT2NUM(from), self, SIZET2NUM(length), SIZET2NUM(offset));
 
-        if (result != Qundef) {
+        if (!UNDEF_P(result)) {
             return result;
         }
     }
@@ -2545,7 +2574,7 @@ rb_io_buffer_write(VALUE self, VALUE io, size_t length, size_t offset)
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_write(scheduler, io, self, SIZET2NUM(length), SIZET2NUM(offset));
 
-        if (result != Qundef) {
+        if (!UNDEF_P(result)) {
             return result;
         }
     }
@@ -2639,7 +2668,7 @@ rb_io_buffer_pwrite(VALUE self, VALUE io, rb_off_t from, size_t length, size_t o
     if (scheduler != Qnil) {
         VALUE result = rb_fiber_scheduler_io_pwrite(scheduler, io, OFFT2NUM(from), self, SIZET2NUM(length), SIZET2NUM(offset));
 
-        if (result != Qundef) {
+        if (!UNDEF_P(result)) {
             return result;
         }
     }
@@ -3176,6 +3205,7 @@ Init_IO_Buffer(void)
     rb_define_const(rb_cIOBuffer, "EXTERNAL", RB_INT2NUM(RB_IO_BUFFER_EXTERNAL));
     rb_define_const(rb_cIOBuffer, "INTERNAL", RB_INT2NUM(RB_IO_BUFFER_INTERNAL));
     rb_define_const(rb_cIOBuffer, "MAPPED", RB_INT2NUM(RB_IO_BUFFER_MAPPED));
+    rb_define_const(rb_cIOBuffer, "SHARED", RB_INT2NUM(RB_IO_BUFFER_SHARED));
     rb_define_const(rb_cIOBuffer, "LOCKED", RB_INT2NUM(RB_IO_BUFFER_LOCKED));
     rb_define_const(rb_cIOBuffer, "PRIVATE", RB_INT2NUM(RB_IO_BUFFER_PRIVATE));
     rb_define_const(rb_cIOBuffer, "READONLY", RB_INT2NUM(RB_IO_BUFFER_READONLY));
@@ -3191,6 +3221,7 @@ Init_IO_Buffer(void)
     rb_define_method(rb_cIOBuffer, "external?", rb_io_buffer_external_p, 0);
     rb_define_method(rb_cIOBuffer, "internal?", rb_io_buffer_internal_p, 0);
     rb_define_method(rb_cIOBuffer, "mapped?", rb_io_buffer_mapped_p, 0);
+    rb_define_method(rb_cIOBuffer, "shared?", rb_io_buffer_shared_p, 0);
     rb_define_method(rb_cIOBuffer, "locked?", rb_io_buffer_locked_p, 0);
     rb_define_method(rb_cIOBuffer, "readonly?", io_buffer_readonly_p, 0);
 

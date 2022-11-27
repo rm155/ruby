@@ -27,6 +27,7 @@
 #include "probes_helper.h"
 #include "iseq.h"
 #include "ruby/debug.h"
+#include "internal/cont.h"
 
 // For mmapp(), sysconf()
 #ifndef _WIN32
@@ -65,19 +66,35 @@ STATIC_ASSERT(pointer_tagging_scheme, USE_FLONUM);
 bool
 rb_yjit_mark_writable(void *mem_block, uint32_t mem_size)
 {
-    if (mprotect(mem_block, mem_size, PROT_READ | PROT_WRITE)) {
-        return false;
-    }
-    return true;
+    return mprotect(mem_block, mem_size, PROT_READ | PROT_WRITE) == 0;
 }
 
 void
 rb_yjit_mark_executable(void *mem_block, uint32_t mem_size)
 {
+    // Do not call mprotect when mem_size is zero. Some platforms may return
+    // an error for it. https://github.com/Shopify/ruby/issues/450
+    if (mem_size == 0) {
+        return;
+    }
     if (mprotect(mem_block, mem_size, PROT_READ | PROT_EXEC)) {
         rb_bug("Couldn't make JIT page (%p, %lu bytes) executable, errno: %s\n",
             mem_block, (unsigned long)mem_size, strerror(errno));
     }
+}
+
+// Free the specified memory block.
+bool
+rb_yjit_mark_unused(void *mem_block, uint32_t mem_size)
+{
+    // On Linux, you need to use madvise MADV_DONTNEED to free memory.
+    // We might not need to call this on macOS, but it's not really documented.
+    // We generally prefer to do the same thing on both to ease testing too.
+    madvise(mem_block, mem_size, MADV_DONTNEED);
+
+    // On macOS, mprotect PROT_NONE seems to reduce RSS.
+    // We also call this on Linux to avoid executing unused pages.
+    return mprotect(mem_block, mem_size, PROT_NONE) == 0;
 }
 
 // `start` is inclusive and `end` is exclusive.
@@ -290,6 +307,10 @@ rb_yjit_reserve_addr_space(uint32_t mem_size)
     // Check that the memory mapping was successful
     if (mem_block == MAP_FAILED) {
         perror("ruby: yjit: mmap:");
+        if(errno == ENOMEM) {
+            // No crash report if it's only insufficient memory
+            exit(EXIT_FAILURE);
+        }
         rb_bug("mmap failed");
     }
 
@@ -382,6 +403,9 @@ rb_iseq_reset_jit_func(const rb_iseq_t *iseq)
 {
     RUBY_ASSERT_ALWAYS(IMEMO_TYPE_P(iseq, imemo_iseq));
     iseq->body->jit_func = NULL;
+    // Enable re-compiling this ISEQ. Event when it's invalidated for TracePoint,
+    // we'd like to re-compile ISEQs that haven't been converted to trace_* insns.
+    iseq->body->total_calls = 0;
 }
 
 // Get the PC for a given index in an iseq
@@ -572,6 +596,12 @@ rb_get_iseq_body_local_iseq(const rb_iseq_t *iseq)
     return iseq->body->local_iseq;
 }
 
+const rb_iseq_t *
+rb_get_iseq_body_parent_iseq(const rb_iseq_t *iseq)
+{
+    return iseq->body->parent_iseq;
+}
+
 unsigned int
 rb_get_iseq_body_local_table_size(const rb_iseq_t *iseq)
 {
@@ -594,6 +624,12 @@ unsigned
 rb_get_iseq_body_stack_max(const rb_iseq_t *iseq)
 {
     return iseq->body->stack_max;
+}
+
+bool
+rb_get_iseq_flags_has_lead(const rb_iseq_t *iseq)
+{
+    return iseq->body->param.flags.has_lead;
 }
 
 bool
@@ -639,7 +675,13 @@ rb_get_iseq_flags_has_block(const rb_iseq_t *iseq)
 }
 
 bool
-rb_get_iseq_flags_has_accepts_no_kwarg(const rb_iseq_t *iseq)
+rb_get_iseq_flags_ambiguous_param0(const rb_iseq_t *iseq)
+{
+    return iseq->body->param.flags.ambiguous_param0;
+}
+
+bool
+rb_get_iseq_flags_accepts_no_kwarg(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.accepts_no_kwarg;
 }
@@ -673,6 +715,15 @@ rb_get_iseq_body_param_opt_table(const rb_iseq_t *iseq)
 {
     return iseq->body->param.opt_table;
 }
+
+VALUE
+rb_optimized_call(VALUE *recv, rb_execution_context_t *ec, int argc, VALUE *argv, int kw_splat, VALUE block_handler)
+{
+    rb_proc_t *proc;
+    GetProcPtr(recv, proc);
+    return rb_vm_invoke_proc(ec, proc, argc, argv, kw_splat, block_handler);
+}
+
 
 // If true, the iseq is leaf and it can be replaced by a single C call.
 bool
@@ -889,13 +940,17 @@ rb_assert_cme_handle(VALUE handle)
     RUBY_ASSERT_ALWAYS(IMEMO_TYPE_P(handle, imemo_ment));
 }
 
-typedef void (*iseq_callback)(const rb_iseq_t *);
+// Used for passing a callback and other data over rb_objspace_each_objects
+struct iseq_callback_data {
+    rb_iseq_callback callback;
+    void *data;
+};
 
 // Heap-walking callback for rb_yjit_for_each_iseq().
 static int
 for_each_iseq_i(void *vstart, void *vend, size_t stride, void *data)
 {
-    const iseq_callback callback = (iseq_callback)data;
+    const struct iseq_callback_data *callback_data = (struct iseq_callback_data *)data;
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
         void *ptr = asan_poisoned_object_p(v);
@@ -903,7 +958,7 @@ for_each_iseq_i(void *vstart, void *vend, size_t stride, void *data)
 
         if (rb_obj_is_iseq(v)) {
             rb_iseq_t *iseq = (rb_iseq_t *)v;
-            callback(iseq);
+            callback_data->callback(iseq, callback_data->data);
         }
 
         asan_poison_object_if(ptr, v);
@@ -914,9 +969,10 @@ for_each_iseq_i(void *vstart, void *vend, size_t stride, void *data)
 // Iterate through the whole GC heap and invoke a callback for each iseq.
 // Used for global code invalidation.
 void
-rb_yjit_for_each_iseq(iseq_callback callback)
+rb_yjit_for_each_iseq(rb_iseq_callback callback, void *data)
 {
-    rb_objspace_each_objects(for_each_iseq_i, (void *)callback);
+    struct iseq_callback_data callback_data = { .callback = callback, .data = data };
+    rb_objspace_each_objects(for_each_iseq_i, (void *)&callback_data);
 }
 
 // For running write barriers from Rust. Required when we add a new edge in the
@@ -1015,6 +1071,14 @@ rb_yjit_invalidate_all_method_lookup_assumptions(void)
     // method caches, so we do nothing here for now.
 }
 
+// Number of object shapes, which might be useful for investigating YJIT exit reasons.
+static VALUE
+object_shape_count(rb_execution_context_t *ec, VALUE self)
+{
+    // next_shape_id starts from 0, so it's the same as the count
+    return ULONG2NUM((unsigned long)GET_VM()->next_shape_id);
+}
+
 // Primitives used by yjit.rb
 VALUE rb_yjit_stats_enabled_p(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_trace_exit_locations_enabled_p(rb_execution_context_t *ec, VALUE self);
@@ -1022,6 +1086,7 @@ VALUE rb_yjit_get_stats(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_reset_stats_bang(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_disasm_iseq(rb_execution_context_t *ec, VALUE self, VALUE iseq);
 VALUE rb_yjit_insns_compiled(rb_execution_context_t *ec, VALUE self, VALUE iseq);
+VALUE rb_yjit_code_gc(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_simulate_oom_bang(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_get_exit_locations(rb_execution_context_t *ec, VALUE self);
 

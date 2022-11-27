@@ -64,6 +64,7 @@ AC_ARG_WITH(baseruby,
 	[
 		AC_PATH_PROG([BASERUBY], [ruby], [false])
 	])
+# BASERUBY must be >= 2.2.0. Note that `"2.2.0" > "2.2"` is true.
 AS_IF([test "$HAVE_BASERUBY" != no -a "`RUBYOPT=- $BASERUBY --disable=gems -e 'print 42 if RUBY_VERSION > "2.2"' 2>/dev/null`" = 42], [
     AS_CASE(["$build_os"], [mingw*], [
         # Can MSys shell run a command with a drive letter?
@@ -785,7 +786,8 @@ AS_IF([test "$GCC" = yes], [
 				 [disable -D_FORTIFY_SOURCE=2 option, which causes link error on mingw]),
 		  [fortify_source=$enableval])
     AS_IF([test "x$fortify_source" != xno], [
-        RUBY_TRY_CFLAGS([$optflags -D_FORTIFY_SOURCE=2], [RUBY_APPEND_OPTION(XCFLAGS, -D_FORTIFY_SOURCE=2)], [],
+        RUBY_TRY_CFLAGS([$optflags -D_FORTIFY_SOURCE=2],
+                        [RUBY_APPEND_OPTION(XCFLAGS, -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)], [],
                         [@%:@include <stdio.h>])
     ])
 
@@ -793,7 +795,7 @@ AS_IF([test "$GCC" = yes], [
 
     # -fstack-protector
     AS_CASE(["$target_os"],
-    [mingw*|emscripten*|wasi*], [
+    [emscripten*|wasi*], [
 	stack_protector=no
     ])
     AS_IF([test -z "${stack_protector+set}"], [
@@ -805,6 +807,8 @@ AS_IF([test "$GCC" = yes], [
 	    AS_IF([test "x$stack_protector" = xyes], [stack_protector=option; break])
 	])
     ])
+    AC_MSG_CHECKING([for -fstack-protector])
+    AC_MSG_RESULT(["$stack_protector"])
     AS_CASE(["$stack_protector"], [-*], [
 	RUBY_APPEND_OPTION(XCFLAGS, $stack_protector)
 	RUBY_APPEND_OPTION(XLDFLAGS, $stack_protector)
@@ -1280,6 +1284,11 @@ dnl AC_HEADER_STDC has been checked in AC_USE_SYSTEM_EXTENSIONS
 AC_HEADER_STDBOOL
 AC_HEADER_SYS_WAIT
 
+AC_CHECK_HEADERS([afunix.h], [], [],
+[#ifdef _WIN32
+# include <winsock2.h>
+#endif
+])
 AC_CHECK_HEADERS(atomic.h)
 AC_CHECK_HEADERS(copyfile.h)
 AC_CHECK_HEADERS(direct.h)
@@ -1902,8 +1911,8 @@ AS_CASE(["${target_cpu}-${target_os}:${target_archs}"],
 [universal-darwin*:*ppc*], [
   AC_LIBSOURCES(alloca.c)
   AC_SUBST([ALLOCA], [\${LIBOBJDIR}alloca.${ac_objext}])
-  RUBY_DEFINE_IF([defined __powerpc__], C_ALLOCA, 1)
-  RUBY_DEFINE_IF([defined __powerpc__], alloca, alloca)
+  RUBY_DEFINE_IF([defined __POWERPC__], C_ALLOCA, 1) # Darwin defines __POWERPC__ for ppc and ppc64 both
+  RUBY_DEFINE_IF([defined __POWERPC__], alloca, alloca)
   ],
 [
   AC_FUNC_ALLOCA
@@ -2573,10 +2582,13 @@ AS_CASE([$coroutine_type], [yes|''], [
         [arm64-darwin*], [
             coroutine_type=arm64
         ],
-        [powerpc-darwin*], [
+        # Correct target name is powerpc*-, but Ruby seems to prefer ppc*-.
+        # Notice that Darwin PPC ABI differs from AIX and ELF.
+        # Adding PPC targets for AIX, *BSD and *Linux will require separate implementations.
+        [powerpc-darwin*|ppc-darwin*], [
             coroutine_type=ppc
         ],
-        [powerpc64-darwin*], [
+        [powerpc64-darwin*|ppc64-darwin*], [
             coroutine_type=ppc64
         ],
         [x*64-linux*], [
@@ -2958,6 +2970,23 @@ STATIC=
   ])
 }
 
+EXTSTATIC=
+AC_SUBST(EXTSTATIC)dnl
+AC_ARG_WITH(static-linked-ext,
+	    AS_HELP_STRING([--with-static-linked-ext], [link external modules statically]),
+            [AS_CASE([$withval],[yes],[STATIC=;EXTSTATIC=static],[no],[],[EXTSTATIC="$withval"])])
+AS_CASE([",$EXTSTATIC,"], [,static,|*,enc,*], [
+  ENCOBJS='enc/encinit.$(OBJEXT) enc/libenc.$(LIBEXT) enc/libtrans.$(LIBEXT)'
+  EXTOBJS='ext/extinit.$(OBJEXT)'
+  AC_DEFINE_UNQUOTED(EXTSTATIC, 1)
+  AC_SUBST(ENCSTATIC, static)
+], [
+  ENCOBJS='dmyenc.$(OBJEXT)'
+  EXTOBJS='dmyext.$(OBJEXT)'
+])
+AC_SUBST(ENCOBJS)
+AC_SUBST(EXTOBJS)
+
 : "rpath" && {
     AS_CASE(["$target_os"],
 	[solaris*], [	AS_IF([test "$GCC" = yes], [
@@ -3070,7 +3099,7 @@ AS_IF([test "$rb_cv_dlopen" = yes], [
 	  "-undefined dynamic_lookup" \
 	  ; do
             test "x${linker_flag}" = x || flag="${linker_flag}`echo ${flag} | tr ' ' ,`"
-            RUBY_TRY_LDFLAGS([$flag], [], [$flag=])
+            RUBY_TRY_LDFLAGS([$flag], [], [flag=])
             AS_IF([test x"$flag" = x], [continue])
 
             AC_MSG_CHECKING([whether $flag is accepted for bundle])
@@ -3262,23 +3291,6 @@ AC_ARG_WITH(ext,
 AC_ARG_WITH(out-ext,
             AS_HELP_STRING([--with-out-ext=EXTS],
                            [pass to --without-ext option of extmk.rb]))
-EXTSTATIC=
-AC_SUBST(EXTSTATIC)dnl
-AC_ARG_WITH(static-linked-ext,
-	    AS_HELP_STRING([--with-static-linked-ext], [link external modules statically]),
-            [AS_CASE([$withval],[yes],[STATIC=;EXTSTATIC=static],[no],[],[EXTSTATIC="$withval"])])
-AS_CASE([",$EXTSTATIC,"], [,static,|*,enc,*], [
-  ENCOBJS='enc/encinit.$(OBJEXT) enc/libenc.$(LIBEXT) enc/libtrans.$(LIBEXT)'
-  EXTOBJS='ext/extinit.$(OBJEXT)'
-  AC_DEFINE_UNQUOTED(EXTSTATIC, 1)
-  AC_SUBST(ENCSTATIC, static)
-], [
-  ENCOBJS='dmyenc.$(OBJEXT)'
-  EXTOBJS='dmyext.$(OBJEXT)'
-])
-AC_SUBST(ENCOBJS)
-AC_SUBST(EXTOBJS)
-
 AC_ARG_WITH(setup,
 	    AS_HELP_STRING([--with-setup=SETUP], [use extension libraries setup]),
 	    [setup=$withval])
@@ -3727,10 +3739,58 @@ AS_IF([test x"$MJIT_SUPPORT" = "xyes"],
 
 AC_SUBST(MJIT_SUPPORT)
 
+AC_CHECK_PROG(RUSTC, [rustc], [rustc], [no]) dnl no ac_tool_prefix
+
+dnl check if rustc is recent enough to build YJIT (rustc >= 1.58.0)
+YJIT_RUSTC_OK=no
+AS_IF([test "$RUSTC" != "no"],
+    AC_MSG_CHECKING([whether ${RUSTC} works for YJIT])
+    YJIT_TARGET_ARCH=
+    AS_CASE(["$target_cpu"],
+        [arm64|aarch64], [YJIT_TARGET_ARCH=aarch64],
+        [x86_64], [YJIT_TARGET_ARCH=x86_64],
+    )
+    dnl Fails in case rustc target doesn't match ruby target.
+    dnl Can happen on Rosetta, for example.
+    AS_IF([echo "#[cfg(target_arch = \"$YJIT_TARGET_ARCH\")]\n fn main() { let x = 1; format!(\"{x}\"); }" |
+            $RUSTC - --emit asm=/dev/null 2>/dev/null],
+        [YJIT_RUSTC_OK=yes]
+    )
+    AC_MSG_RESULT($YJIT_RUSTC_OK)
+)
+
+dnl check if we can build YJIT on this target platform
+dnl we can't easily cross-compile with rustc so we don't support that
+YJIT_TARGET_OK=no
+AS_IF([test "$cross_compiling" = no],
+    AS_CASE(["$target_cpu-$target_os"],
+        [*android*], [
+            YJIT_TARGET_OK=no
+        ],
+        [arm64-darwin*|aarch64-darwin*|x86_64-darwin*], [
+            YJIT_TARGET_OK=yes
+        ],
+        [arm64-*linux*|aarch64-*linux*|x86_64-*linux*], [
+            YJIT_TARGET_OK=yes
+        ],
+        [arm64-*bsd*|aarch64-*bsd*|x86_64-*bsd*], [
+            YJIT_TARGET_OK=yes
+        ]
+    )
+)
+
+dnl build YJIT in release mode if rustc >= 1.58.0 is present and we are on a supported platform
 AC_ARG_ENABLE(yjit,
-        AS_HELP_STRING([--enable-yjit],
-        [enable experimental in-process JIT compiler that requires Rust build tools [default=no]]),
-        [YJIT_SUPPORT=$enableval], [YJIT_SUPPORT=no])
+    AS_HELP_STRING([--enable-yjit],
+    [enable experimental in-process JIT compiler that requires Rust build tools [default=no]]),
+    [YJIT_SUPPORT=$enableval],
+    [AS_CASE(["$enable_jit_support:$YJIT_TARGET_OK:$YJIT_RUSTC_OK"],
+        [yes:yes:yes|:yes:yes], [
+            YJIT_SUPPORT=yes
+        ],
+        [YJIT_SUPPORT=no]
+    )]
+)
 
 CARGO=
 CARGO_BUILD_ARGS=
@@ -3740,7 +3800,6 @@ AS_CASE(["${YJIT_SUPPORT}"],
     AS_IF([test x"$enable_jit_support" = "xno"],
         AC_MSG_ERROR([--disable-jit-support but --enable-yjit. YJIT requires JIT support])
     )
-    AC_CHECK_TOOL(RUSTC, [rustc], [no])
     AS_IF([test x"$RUSTC" = "xno"],
         AC_MSG_ERROR([rustc is required. Installation instructions available at https://www.rust-lang.org/tools/install])
     )
@@ -3751,16 +3810,17 @@ AS_CASE(["${YJIT_SUPPORT}"],
     ],
     [dev], [
 	rb_rust_target_subdir=debug
-	CARGO_BUILD_ARGS='--features stats,disasm,asm_comments'
+	CARGO_BUILD_ARGS='--features stats,disasm'
 	AC_DEFINE(RUBY_DEBUG, 1)
     ],
     [dev_nodebug], [
 	rb_rust_target_subdir=dev_nodebug
-	CARGO_BUILD_ARGS='--profile dev_nodebug --features stats,disasm,asm_comments'
+	CARGO_BUILD_ARGS='--profile dev_nodebug --features stats,disasm'
     ],
     [stats], [
 	rb_rust_target_subdir=stats
 	CARGO_BUILD_ARGS='--profile stats --features stats'
+	AC_DEFINE(YJIT_STATS, 1)
     ])
 
     AS_IF([test -n "${CARGO_BUILD_ARGS}"], [
@@ -3775,9 +3835,11 @@ AS_CASE(["${YJIT_SUPPORT}"],
         LDFLAGS="$LDFLAGS -lpthread -lc++abi"
     ])
     YJIT_OBJ='yjit.$(OBJEXT)'
+    AS_IF([test x"$YJIT_SUPPORT" != "xyes" ], [
+        AC_DEFINE_UNQUOTED(YJIT_SUPPORT, [$YJIT_SUPPORT])
+    ])
     AC_DEFINE(USE_YJIT, 1)
 ], [AC_DEFINE(USE_YJIT, 0)])
-
 
 dnl These variables end up in ::RbConfig::CONFIG
 AC_SUBST(YJIT_SUPPORT)dnl what flavor of YJIT the Ruby build includes

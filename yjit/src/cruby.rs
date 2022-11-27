@@ -96,6 +96,7 @@ pub type size_t = u64;
 pub type RedefinitionFlag = u32;
 
 #[allow(dead_code)]
+#[allow(clippy::useless_transmute)]
 mod autogened {
     use super::*;
     // Textually include output from rust-bindgen as suggested by its user guide.
@@ -161,6 +162,7 @@ pub use rb_iseq_encoded_size as get_iseq_encoded_size;
 pub use rb_get_iseq_body_local_iseq as get_iseq_body_local_iseq;
 pub use rb_get_iseq_body_iseq_encoded as get_iseq_body_iseq_encoded;
 pub use rb_get_iseq_body_stack_max as get_iseq_body_stack_max;
+pub use rb_get_iseq_flags_has_lead as get_iseq_flags_has_lead;
 pub use rb_get_iseq_flags_has_opt as get_iseq_flags_has_opt;
 pub use rb_get_iseq_flags_has_kw as get_iseq_flags_has_kw;
 pub use rb_get_iseq_flags_has_rest as get_iseq_flags_has_rest;
@@ -168,7 +170,8 @@ pub use rb_get_iseq_flags_ruby2_keywords as get_iseq_flags_ruby2_keywords;
 pub use rb_get_iseq_flags_has_post as get_iseq_flags_has_post;
 pub use rb_get_iseq_flags_has_kwrest as get_iseq_flags_has_kwrest;
 pub use rb_get_iseq_flags_has_block as get_iseq_flags_has_block;
-pub use rb_get_iseq_flags_has_accepts_no_kwarg as get_iseq_flags_has_accepts_no_kwarg;
+pub use rb_get_iseq_flags_ambiguous_param0 as get_iseq_flags_ambiguous_param0;
+pub use rb_get_iseq_flags_accepts_no_kwarg as get_iseq_flags_accepts_no_kwarg;
 pub use rb_get_iseq_body_local_table_size as get_iseq_body_local_table_size;
 pub use rb_get_iseq_body_param_keyword as get_iseq_body_param_keyword;
 pub use rb_get_iseq_body_param_size as get_iseq_body_param_size;
@@ -321,7 +324,8 @@ impl VALUE {
     /// Return true if the number is an immediate integer, flonum or static symbol
     fn immediate_p(self) -> bool {
         let VALUE(cval) = self;
-        (cval & 7) != 0
+        let mask = RUBY_IMMEDIATE_MASK as usize;
+        (cval & mask) != 0
     }
 
     /// Return true if the value is a Ruby immediate integer, flonum, static symbol, nil or false
@@ -329,22 +333,45 @@ impl VALUE {
         self.immediate_p() || !self.test()
     }
 
+    /// Return true if the value is a heap object
+    pub fn heap_object_p(self) -> bool {
+        !self.special_const_p()
+    }
+
     /// Return true if the value is a Ruby Fixnum (immediate-size integer)
     pub fn fixnum_p(self) -> bool {
         let VALUE(cval) = self;
-        (cval & 1) == 1
+        let flag = RUBY_FIXNUM_FLAG as usize;
+        (cval & flag) == flag
     }
 
     /// Return true if the value is an immediate Ruby floating-point number (flonum)
     pub fn flonum_p(self) -> bool {
         let VALUE(cval) = self;
-        (cval & 3) == 2
+        let mask = RUBY_FLONUM_MASK as usize;
+        let flag = RUBY_FLONUM_FLAG as usize;
+        (cval & mask) == flag
     }
 
-    /// Return true for a static (non-heap) Ruby symbol
+    /// Return true if the value is a Ruby symbol (RB_SYMBOL_P)
+    pub fn symbol_p(self) -> bool {
+        self.static_sym_p() || self.dynamic_sym_p()
+    }
+
+    /// Return true for a static (non-heap) Ruby symbol (RB_STATIC_SYM_P)
     pub fn static_sym_p(self) -> bool {
         let VALUE(cval) = self;
-        (cval & 0xff) == RUBY_SYMBOL_FLAG
+        let flag = RUBY_SYMBOL_FLAG as usize;
+        (cval & 0xff) == flag
+    }
+
+    /// Return true for a dynamic Ruby symbol (RB_DYNAMIC_SYM_P)
+    fn dynamic_sym_p(self) -> bool {
+        return if self.special_const_p() {
+            false
+        } else {
+            self.builtin_type() == RUBY_T_SYMBOL
+        }
     }
 
     /// Returns true or false depending on whether the value is nil
@@ -509,7 +536,7 @@ impl From<VALUE> for u16 {
 }
 
 /// Produce a Ruby string from a Rust string slice
-#[cfg(feature = "asm_comments")]
+#[cfg(feature = "disasm")]
 pub fn rust_str_to_ruby(str: &str) -> VALUE {
     unsafe { rb_utf8_str_new(str.as_ptr() as *const _, str.len() as i64) }
 }
@@ -594,13 +621,13 @@ where
 
 // Non-idiomatic capitalization for consistency with CRuby code
 #[allow(non_upper_case_globals)]
-pub const Qfalse: VALUE = VALUE(0);
+pub const Qfalse: VALUE = VALUE(RUBY_Qfalse as usize);
 #[allow(non_upper_case_globals)]
-pub const Qnil: VALUE = VALUE(8);
+pub const Qnil: VALUE = VALUE(RUBY_Qnil as usize);
 #[allow(non_upper_case_globals)]
-pub const Qtrue: VALUE = VALUE(20);
+pub const Qtrue: VALUE = VALUE(RUBY_Qtrue as usize);
 #[allow(non_upper_case_globals)]
-pub const Qundef: VALUE = VALUE(52);
+pub const Qundef: VALUE = VALUE(RUBY_Qundef as usize);
 
 #[allow(unused)]
 mod manual_defs {
@@ -614,16 +641,6 @@ mod manual_defs {
 
     pub const RUBY_FIXNUM_MIN: isize = RUBY_LONG_MIN / 2;
     pub const RUBY_FIXNUM_MAX: isize = RUBY_LONG_MAX / 2;
-    pub const RUBY_FIXNUM_FLAG: usize = 0x1;
-
-    // All these are defined in include/ruby/internal/special_consts.h,
-    // in the same enum as RUBY_Qfalse, etc.
-    // Do we want to switch to using Ruby's definition of Qnil, Qfalse, etc?
-    pub const RUBY_SYMBOL_FLAG: usize = 0x0c;
-    pub const RUBY_FLONUM_FLAG: usize = 0x2;
-    pub const RUBY_FLONUM_MASK: usize = 0x3;
-    pub const RUBY_SPECIAL_SHIFT: usize = 8;
-    pub const RUBY_IMMEDIATE_MASK: usize = 0x7;
 
     // From vm_callinfo.h - uses calculation that seems to confuse bindgen
     pub const VM_CALL_ARGS_SPLAT: u32 = 1 << VM_CALL_ARGS_SPLAT_bit;

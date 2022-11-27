@@ -331,7 +331,7 @@ rb_iseq_update_references(rb_iseq_t *iseq)
 
             for (j = 0; i < body->param.keyword->num; i++, j++) {
                 VALUE obj = body->param.keyword->default_values[j];
-                if (obj != Qundef) {
+                if (!UNDEF_P(obj)) {
                     body->param.keyword->default_values[j] = rb_gc_location(obj);
                 }
             }
@@ -1435,6 +1435,9 @@ iseqw_s_compile_file(int argc, VALUE *argv, VALUE self)
 
     f = rb_file_open_str(file, "r");
 
+    rb_execution_context_t *ec = GET_EC();
+    VALUE v = rb_vm_push_frame_fname(ec, file);
+
     parser = rb_parser_new();
     rb_parser_set_context(parser, NULL, FALSE);
     ast = (rb_ast_t *)rb_parser_load_file(parser, file);
@@ -1453,6 +1456,9 @@ iseqw_s_compile_file(int argc, VALUE *argv, VALUE self)
                                          rb_realpath_internal(Qnil, file, 1),
                                          1, NULL, 0, ISEQ_TYPE_TOP, &option));
     rb_ast_dispose(ast);
+
+    rb_vm_pop_frame(ec);
+    RB_GC_GUARD(v);
     return ret;
 }
 
@@ -2485,6 +2491,47 @@ rb_iseq_disasm(const rb_iseq_t *iseq)
 }
 
 /*
+ * Estimates the number of instance variables that will be set on
+ * a given `class` with the initialize method defined in
+ * `initialize_iseq`
+ */
+attr_index_t
+rb_estimate_iv_count(VALUE klass, const rb_iseq_t * initialize_iseq)
+{
+    bool calls_super = false;
+
+    struct rb_id_table * iv_names = rb_id_table_create(0);
+
+    VALUE * code = ISEQ_BODY(initialize_iseq)->iseq_encoded;
+
+    for (unsigned int i = 0; i < ISEQ_BODY(initialize_iseq)->iseq_size; ) {
+        VALUE insn = code[i];
+        int original_insn = rb_vm_insn_addr2insn((const void *)insn);
+
+        if (BIN(setinstancevariable) == original_insn) {
+            ID name = (ID)code[i + 1];
+            rb_id_table_insert(iv_names, name, Qtrue);
+        }
+        else if (BIN(invokesuper) == original_insn) {
+            calls_super = true;
+        }
+
+        i += insn_len(original_insn);
+    }
+
+    attr_index_t count = (attr_index_t)rb_id_table_size(iv_names);
+
+    if (calls_super) {
+        VALUE superclass = rb_class_superclass(klass);
+        count += RCLASS_EXT(superclass)->max_iv_count;
+    }
+
+    rb_id_table_free(iv_names);
+
+    return count;
+}
+
+/*
  *  call-seq:
  *     iseq.disasm -> str
  *     iseq.disassemble -> str
@@ -2910,7 +2957,7 @@ iseq_data_to_ary(const rb_iseq_t *iseq)
             }
             for (j=0; i<keyword->num; i++, j++) {
                 VALUE key = rb_ary_new_from_args(1, ID2SYM(keyword->table[i]));
-                if (keyword->default_values[j] != Qundef) {
+                if (!UNDEF_P(keyword->default_values[j])) {
                     rb_ary_push(key, keyword->default_values[j]);
                 }
                 rb_ary_push(keywords, key);

@@ -8,6 +8,11 @@ use crate::cruby::*;
 use crate::options::*;
 use crate::yjit::yjit_enabled_p;
 
+// stats_alloc is a middleware to instrument global allocations in Rust.
+#[cfg(feature="stats")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: &stats_alloc::StatsAlloc<std::alloc::System> = &stats_alloc::INSTRUMENTED_SYSTEM;
+
 // YJIT exit counts for each instruction type
 const VM_INSTRUCTION_SIZE_USIZE:usize = VM_INSTRUCTION_SIZE as usize;
 static mut EXIT_OP_COUNT: [u64; VM_INSTRUCTION_SIZE_USIZE] = [0; VM_INSTRUCTION_SIZE_USIZE];
@@ -173,6 +178,9 @@ make_counters! {
     send_optimized_method,
     send_optimized_method_call,
     send_optimized_method_block_call,
+    send_call_block,
+    send_call_kwarg,
+    send_call_multi_ractor,
     send_missing_method,
     send_refined_method,
     send_cfunc_ruby_array_varg,
@@ -217,6 +225,14 @@ make_counters! {
     invokesuper_me_changed,
     invokesuper_block,
 
+    invokeblock_none,
+    invokeblock_iseq_arg0_splat,
+    invokeblock_iseq_block_changed,
+    invokeblock_iseq_tag_changed,
+    invokeblock_ifunc,
+    invokeblock_proc,
+    invokeblock_symbol,
+
     leave_se_interrupt,
     leave_interp_return,
     leave_start_pc_non_zero,
@@ -251,7 +267,9 @@ make_counters! {
     vm_insns_count,
     compiled_iseq_count,
     compiled_block_count,
+    compiled_branch_count,
     compilation_failure,
+    freed_iseq_count,
 
     exit_from_branch_stub,
 
@@ -277,12 +295,12 @@ make_counters! {
 /// Check if stats generation is enabled
 #[no_mangle]
 pub extern "C" fn rb_yjit_stats_enabled_p(_ec: EcPtr, _ruby_self: VALUE) -> VALUE {
-    #[cfg(feature = "stats")]
+
     if get_option!(gen_stats) {
         return Qtrue;
+    } else {
+        return Qfalse;
     }
-
-    return Qfalse;
 }
 
 /// Primitive called in yjit.rb.
@@ -350,23 +368,47 @@ fn rb_yjit_gen_stats_dict() -> VALUE {
         return Qnil;
     }
 
+    macro_rules! hash_aset_usize {
+        ($hash:ident, $counter_name:expr, $value:expr) => {
+            let key = rust_str_to_sym($counter_name);
+            let value = VALUE::fixnum_from_usize($value);
+            rb_hash_aset($hash, key, value);
+        }
+    }
+
     let hash = unsafe { rb_hash_new() };
 
-    // Inline and outlined code size
+    // CodeBlock stats
     unsafe {
         // Get the inline and outlined code blocks
         let cb = CodegenGlobals::get_inline_cb();
         let ocb = CodegenGlobals::get_outlined_cb();
 
         // Inline code size
-        let key = rust_str_to_sym("inline_code_size");
-        let value = VALUE::fixnum_from_usize(cb.get_write_pos());
-        rb_hash_aset(hash, key, value);
+        hash_aset_usize!(hash, "inline_code_size", cb.code_size());
 
         // Outlined code size
-        let key = rust_str_to_sym("outlined_code_size");
-        let value = VALUE::fixnum_from_usize(ocb.unwrap().get_write_pos());
-        rb_hash_aset(hash, key, value);
+        hash_aset_usize!(hash, "outlined_code_size", ocb.unwrap().code_size());
+
+        // GCed pages
+        let freed_page_count = cb.num_freed_pages();
+        hash_aset_usize!(hash, "freed_page_count", freed_page_count);
+
+        // GCed code size
+        hash_aset_usize!(hash, "freed_code_size", freed_page_count * cb.page_size());
+
+        // Live pages
+        hash_aset_usize!(hash, "live_page_count", cb.num_mapped_pages() - freed_page_count);
+
+        // Code GC count
+        hash_aset_usize!(hash, "code_gc_count", CodegenGlobals::get_code_gc_count());
+
+        // Size of memory region allocated for JIT code
+        hash_aset_usize!(hash, "code_region_size", cb.mapped_region_size());
+
+        // Rust global allocations in bytes
+        #[cfg(feature="stats")]
+        hash_aset_usize!(hash, "yjit_alloc_size", global_allocation_size());
     }
 
     // If we're not generating stats, the hash is done
@@ -375,7 +417,7 @@ fn rb_yjit_gen_stats_dict() -> VALUE {
     }
 
     // If the stats feature is enabled
-    #[cfg(feature = "stats")]
+
     unsafe {
         // Indicate that the complete set of stats is available
         rb_hash_aset(hash, rust_str_to_sym("all_stats"), Qtrue);
@@ -385,6 +427,13 @@ fn rb_yjit_gen_stats_dict() -> VALUE {
             // Get the counter value
             let counter_ptr = get_counter_ptr(counter_name);
             let counter_val = *counter_ptr;
+
+            #[cfg(not(feature = "stats"))]
+            if counter_name == &"vm_insns_count" {
+                // If the stats feature is disabled, we don't have vm_insns_count
+                // so we are going to exlcude the key
+                continue;
+            }
 
             // Put counter into hash
             let key = rust_str_to_sym(counter_name);
@@ -569,4 +618,11 @@ pub extern "C" fn rb_yjit_count_side_exit_op(exit_pc: *const VALUE) -> *const VA
 
     // This function must return exit_pc!
     return exit_pc;
+}
+
+// Get the size of global allocations in Rust.
+#[cfg(feature="stats")]
+fn global_allocation_size() -> usize {
+    let stats = GLOBAL_ALLOCATOR.stats();
+    stats.bytes_allocated.saturating_sub(stats.bytes_deallocated)
 }

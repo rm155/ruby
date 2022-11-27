@@ -197,6 +197,13 @@ class Scheduler
     @writable.delete(io)
   end
 
+  def io_select(...)
+    # Emulate the operation using a non-blocking thread:
+    Thread.new do
+      IO.select(...)
+    end.value
+  end
+
   # Used for Kernel#sleep and Thread::Mutex#sleep
   def kernel_sleep(duration = nil)
     # $stderr.puts [__method__, duration, Fiber.current].inspect
@@ -341,5 +348,16 @@ class SleepingUnblockScheduler < Scheduler
 
     # This changes the current thread state to `THREAD_RUNNING` which causes `thread_join_sleep` to hang.
     sleep(0.1)
+  end
+end
+
+class SleepingBlockingScheduler < Scheduler
+  def kernel_sleep(duration = nil)
+    # Deliberaly sleep in a blocking state which can trigger a deadlock if the implementation is not correct.
+    Fiber.blocking{sleep 0.0001}
+
+    self.block(:sleep, duration)
+
+    return true
   end
 end

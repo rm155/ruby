@@ -5,6 +5,7 @@
 use std::cell::Cell;
 use std::fmt;
 use std::convert::From;
+use std::io::Write;
 use std::mem::take;
 use crate::cruby::{VALUE};
 use crate::virtualmem::{CodePtr};
@@ -108,8 +109,8 @@ impl Opnd
                 })
             },
 
-            Opnd::InsnOut{idx, num_bits } => {
-                assert!(num_bits == 64);
+            Opnd::InsnOut{idx, num_bits: out_num_bits } => {
+                assert!(num_bits <= out_num_bits);
                 Opnd::Mem(Mem {
                     base: MemBase::InsnOut(idx),
                     disp: disp,
@@ -142,7 +143,7 @@ impl Opnd
     }
 
     /// Get the size in bits for this operand if there is one.
-    fn num_bits(&self) -> Option<u8> {
+    pub fn num_bits(&self) -> Option<u8> {
         match *self {
             Opnd::Reg(Reg { num_bits, .. }) => Some(num_bits),
             Opnd::Mem(Mem { num_bits, .. }) => Some(num_bits),
@@ -220,7 +221,7 @@ impl From<usize> for Opnd {
 
 impl From<u64> for Opnd {
     fn from(value: u64) -> Self {
-        Opnd::UImm(value.try_into().unwrap())
+        Opnd::UImm(value)
     }
 }
 
@@ -253,20 +254,13 @@ impl From<VALUE> for Opnd {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Target
 {
-    CodePtr(CodePtr),   // Pointer to a piece of YJIT-generated code (e.g. side-exit)
-    FunPtr(*const u8),  // Pointer to a C function
-    Label(usize),       // A label within the generated code
+    CodePtr(CodePtr),     // Pointer to a piece of YJIT-generated code
+    SideExitPtr(CodePtr), // Pointer to a side exit code
+    Label(usize),         // A label within the generated code
 }
 
 impl Target
 {
-    pub fn unwrap_fun_ptr(&self) -> *const u8 {
-        match self {
-            Target::FunPtr(ptr) => *ptr,
-            _ => unreachable!("trying to unwrap {:?} into fun ptr", self)
-        }
-    }
-
     pub fn unwrap_label_idx(&self) -> usize {
         match self {
             Target::Label(idx) => *idx,
@@ -328,7 +322,7 @@ pub enum Insn {
     CPushAll,
 
     // C function call with N arguments (variadic)
-    CCall { opnds: Vec<Opnd>, target: Target, out: Opnd },
+    CCall { opnds: Vec<Opnd>, fptr: *const u8, out: Opnd },
 
     // C function return
     CRet(Opnd),
@@ -433,9 +427,9 @@ pub enum Insn {
     // binary OR operation.
     Or { left: Opnd, right: Opnd, out: Opnd },
 
-    /// Pad nop instructions to accomodate Op::Jmp in case the block is
-    /// invalidated.
-    PadEntryExit,
+    /// Pad nop instructions to accomodate Op::Jmp in case the block or the insn
+    /// is invalidated.
+    PadInvalPatch,
 
     // Mark a position in the generated code
     PosMarker(PosMarkerFn),
@@ -521,7 +515,7 @@ impl Insn {
             Insn::Mov { .. } => "Mov",
             Insn::Not { .. } => "Not",
             Insn::Or { .. } => "Or",
-            Insn::PadEntryExit => "PadEntryExit",
+            Insn::PadInvalPatch => "PadEntryExit",
             Insn::PosMarker(_) => "PosMarker",
             Insn::RShift { .. } => "RShift",
             Insn::Store { .. } => "Store",
@@ -658,7 +652,7 @@ impl<'a> Iterator for InsnOpndIterator<'a> {
             Insn::Jz(_) |
             Insn::Label(_) |
             Insn::LeaLabel { .. } |
-            Insn::PadEntryExit |
+            Insn::PadInvalPatch |
             Insn::PosMarker(_) => None,
             Insn::CPopInto(opnd) |
             Insn::CPush(opnd) |
@@ -755,7 +749,7 @@ impl<'a> InsnOpndMutIterator<'a> {
             Insn::Jz(_) |
             Insn::Label(_) |
             Insn::LeaLabel { .. } |
-            Insn::PadEntryExit |
+            Insn::PadInvalPatch |
             Insn::PosMarker(_) => None,
             Insn::CPopInto(opnd) |
             Insn::CPush(opnd) |
@@ -931,15 +925,14 @@ impl Assembler
 
         // Mutate the pool bitmap to indicate that the register at that index
         // has been allocated and is live.
-        fn alloc_reg(pool: &mut u32, regs: &Vec<Reg>) -> Reg {
+        fn alloc_reg(pool: &mut u32, regs: &Vec<Reg>) -> Option<Reg> {
             for (index, reg) in regs.iter().enumerate() {
                 if (*pool & (1 << index)) == 0 {
                     *pool |= 1 << index;
-                    return *reg;
+                    return Some(*reg);
                 }
             }
-
-            unreachable!("Register spill not supported");
+            None
         }
 
         // Allocate a specific register
@@ -962,6 +955,29 @@ impl Assembler
 
             if let Some(reg_index) = reg_index {
                 *pool &= !(1 << reg_index);
+            }
+        }
+
+        // Dump live registers for register spill debugging.
+        fn dump_live_regs(insns: Vec<Insn>, live_ranges: Vec<usize>, num_regs: usize, spill_index: usize) {
+            // Convert live_ranges to live_regs: the number of live registers at each index
+            let mut live_regs: Vec<usize> = vec![];
+            let mut end_idxs: Vec<usize> = vec![];
+            for (cur_idx, &end_idx) in live_ranges.iter().enumerate() {
+                end_idxs.push(end_idx);
+                while let Some(end_idx) = end_idxs.iter().position(|&end_idx| cur_idx == end_idx) {
+                    end_idxs.remove(end_idx);
+                }
+                live_regs.push(end_idxs.len());
+            }
+
+            // Dump insns along with live registers
+            for (insn_idx, insn) in insns.iter().enumerate() {
+                print!("{:3} ", if spill_index == insn_idx { "==>" } else { "" });
+                for reg in 0..=num_regs {
+                    print!("{:1}", if reg < live_regs[insn_idx] { "|" } else { "" });
+                }
+                println!(" [{:3}] {:?}", insn_idx, insn);
             }
         }
 
@@ -1049,8 +1065,17 @@ impl Assembler
                             let reg = opnd.unwrap_reg();
                             Some(take_reg(&mut pool, &regs, &reg))
                         },
-                        _ => {
-                            Some(alloc_reg(&mut pool, &regs))
+                        _ => match alloc_reg(&mut pool, &regs) {
+                            Some(reg) => Some(reg),
+                            None => {
+                                let mut insns = asm.insns;
+                                insns.push(insn);
+                                for insn in iterator.insns {
+                                    insns.push(insn);
+                                }
+                                dump_live_regs(insns, live_ranges, regs.len(), index);
+                                unreachable!("Register spill not supported");
+                            }
                         }
                     };
                 }
@@ -1093,19 +1118,16 @@ impl Assembler
     pub fn compile(self, cb: &mut CodeBlock) -> Vec<u32>
     {
         #[cfg(feature = "disasm")]
-        let start_addr = cb.get_write_ptr().raw_ptr();
+        let start_addr = cb.get_write_ptr();
 
         let alloc_regs = Self::get_alloc_regs();
         let gc_offsets = self.compile_with_regs(cb, alloc_regs);
 
         #[cfg(feature = "disasm")]
-        if get_option!(dump_disasm) == DumpDisasm::All || (get_option!(dump_disasm) == DumpDisasm::Inline && cb.inline()) {
-            use crate::disasm::disasm_addr_range;
-            let last_ptr = cb.get_write_ptr();
-            let disasm = disasm_addr_range(cb, start_addr, last_ptr.raw_ptr() as usize - start_addr as usize);
-            if disasm.len() > 0 {
-                println!("{disasm}");
-            }
+        if let Some(dump_disasm) = get_option_ref!(dump_disasm) {
+            use crate::disasm::dump_disasm_addr_range;
+            let end_addr = cb.get_write_ptr();
+            dump_disasm_addr_range(cb, start_addr, end_addr, dump_disasm)
         }
         gc_offsets
     }
@@ -1267,7 +1289,7 @@ impl Assembler {
 
     pub fn ccall(&mut self, fptr: *const u8, opnds: Vec<Opnd>) -> Opnd {
         let out = self.next_opnd_out(Opnd::match_num_bits(&opnds));
-        self.push_insn(Insn::CCall { target: Target::FunPtr(fptr), opnds, out });
+        self.push_insn(Insn::CCall { fptr, opnds, out });
         out
     }
 
@@ -1474,8 +1496,8 @@ impl Assembler {
         out
     }
 
-    pub fn pad_entry_exit(&mut self) {
-        self.push_insn(Insn::PadEntryExit);
+    pub fn pad_inval_patch(&mut self) {
+        self.push_insn(Insn::PadInvalPatch);
     }
 
     //pub fn pos_marker<F: FnMut(CodePtr)>(&mut self, marker_fn: F)

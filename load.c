@@ -681,6 +681,8 @@ load_iseq_eval(rb_execution_context_t *ec, VALUE fname)
     const rb_iseq_t *iseq = rb_iseq_load_iseq(fname);
 
     if (!iseq) {
+        rb_execution_context_t *ec = GET_EC();
+        VALUE v = rb_vm_push_frame_fname(ec, fname);
         rb_ast_t *ast;
         VALUE parser = rb_parser_new();
         rb_parser_set_context(parser, NULL, FALSE);
@@ -688,6 +690,8 @@ load_iseq_eval(rb_execution_context_t *ec, VALUE fname)
         iseq = rb_iseq_new_top(&ast->body, rb_fstring_lit("<top (required)>"),
                                fname, rb_realpath_internal(Qnil, fname, 1), NULL);
         rb_ast_dispose(ast);
+        rb_vm_pop_frame(ec);
+        RB_GC_GUARD(v);
     }
     rb_exec_event_hook_script_compiled(ec, iseq, Qnil);
     rb_iseq_eval(iseq);
@@ -845,14 +849,6 @@ load_lock(rb_vm_t *vm, const char *ftptr, bool warn)
         data = (st_data_t)rb_thread_shield_new();
         st_insert(loading_tbl, (st_data_t)ftptr, data);
         return (char *)ftptr;
-    }
-    else if (imemo_type_p(data, imemo_memo)) {
-        struct MEMO *memo = MEMO_CAST(data);
-        void (*init)(void) = memo->u3.func;
-        data = (st_data_t)rb_thread_shield_new();
-        st_insert(loading_tbl, (st_data_t)ftptr, data);
-        (*init)();
-        return (char *)"";
     }
     if (warn) {
         VALUE warning = rb_warning_string("loading in progress, circular require considered harmful - %s", ftptr);
@@ -1021,16 +1017,33 @@ search_required(rb_vm_t *vm, VALUE fname, volatile VALUE *path, feature_func rb_
     }
     tmp = fname;
     type = rb_find_file_ext(&tmp, ft == 's' ? ruby_ext : loadable_ext);
+#if EXTSTATIC
+    if (!ft && type != 1) { // not already a feature and not found as a dynamic library
+        VALUE lookup_name = tmp;
+        // Append ".so" if not already present so for example "etc" can find "etc.so".
+        // We always register statically linked extensions with a ".so" extension.
+        // See encinit.c and extinit.c (generated at build-time).
+        if (!ext) {
+            lookup_name = rb_str_dup(lookup_name);
+            rb_str_cat_cstr(lookup_name, ".so");
+        }
+        ftptr = RSTRING_PTR(lookup_name);
+        if (st_lookup(vm->static_ext_inits, (st_data_t)ftptr, NULL)) {
+            *path = rb_filesystem_str_new_cstr(ftptr);
+            return 's';
+        }
+    }
+#endif
     switch (type) {
       case 0:
         if (ft)
-            goto statically_linked;
+            goto feature_present;
         ftptr = RSTRING_PTR(tmp);
         return rb_feature_p(vm, ftptr, 0, FALSE, TRUE, 0);
 
       default:
         if (ft) {
-            goto statically_linked;
+            goto feature_present;
         }
         /* fall through */
       case 1:
@@ -1041,7 +1054,7 @@ search_required(rb_vm_t *vm, VALUE fname, volatile VALUE *path, feature_func rb_
     }
     return type ? 's' : 'r';
 
-  statically_linked:
+  feature_present:
     if (loading) *path = rb_filesystem_str_new_cstr(loading);
     return ft;
 }
@@ -1058,6 +1071,20 @@ load_ext(VALUE path)
     rb_scope_visibility_set(METHOD_VISI_PUBLIC);
     return (VALUE)dln_load(RSTRING_PTR(path));
 }
+
+#if EXTSTATIC
+static bool
+run_static_ext_init(rb_vm_t *vm, const char *feature)
+{
+    st_data_t key = (st_data_t)feature;
+    st_data_t init_func;
+    if (st_delete(vm->static_ext_inits, &key, &init_func)) {
+        ((void (*)(void))init_func)();
+        return true;
+    }
+    return false;
+}
+#endif
 
 static int
 no_feature_p(rb_vm_t *vm, const char *feature, const char *ext, int rb, int expanded, const char **fn)
@@ -1160,6 +1187,11 @@ require_internal(rb_execution_context_t *ec, VALUE fname, int exception, bool wa
             else if (!*ftptr) {
                 result = TAG_RETURN;
             }
+#if EXTSTATIC
+            else if (found == 's' && run_static_ext_init(th->vm, RSTRING_PTR(path))) {
+                result = TAG_RETURN;
+            }
+#endif
             else if (RTEST(rb_hash_aref(realpaths,
                                         realpath = rb_realpath_internal(Qnil, path, 1)))) {
                 result = 0;
@@ -1276,6 +1308,7 @@ rb_require(const char *fname)
     return rb_require_string(rb_str_new_cstr(fname));
 }
 
+#if EXTSTATIC
 static int
 register_init_ext(st_data_t *key, st_data_t *value, st_data_t init, int existing)
 {
@@ -1285,22 +1318,22 @@ register_init_ext(st_data_t *key, st_data_t *value, st_data_t init, int existing
         rb_warn("%s is already registered", name);
     }
     else {
-        *value = (st_data_t)MEMO_NEW(0, 0, init);
-        *key = (st_data_t)ruby_strdup(name);
+        *value = (st_data_t)init;
     }
     return ST_CONTINUE;
 }
 
-RUBY_FUNC_EXPORTED void
+void
 ruby_init_ext(const char *name, void (*init)(void))
 {
     rb_vm_t *vm = GET_VM();
-    st_table *loading_tbl = get_loading_table(vm);
+    st_table *inits_table = vm->static_ext_inits;
 
     if (feature_provided(vm, name, 0))
         return;
-    st_update(loading_tbl, (st_data_t)name, register_init_ext, (st_data_t)init);
+    st_update(inits_table, (st_data_t)name, register_init_ext, (st_data_t)init);
 }
+#endif
 
 /*
  *  call-seq:

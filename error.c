@@ -666,6 +666,11 @@ bug_important_message(FILE *out, const char *const msg, size_t len)
     fwrite(p, 1, endmsg - p, out);
 }
 
+#undef CRASH_REPORTER_MAY_BE_CREATED
+#if defined(__APPLE__) && \
+    (!defined(MAC_OS_X_VERSION_10_6) || MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_6 || defined(__POWERPC__)) /* 10.6 PPC case */
+# define CRASH_REPORTER_MAY_BE_CREATED
+#endif
 static void
 preface_dump(FILE *out)
 {
@@ -674,7 +679,7 @@ preface_dump(FILE *out)
         "-- Crash Report log information "
         "--------------------------------------------\n"
         "   See Crash Report log file in one of the following locations:\n"
-# if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_6
+# ifdef CRASH_REPORTER_MAY_BE_CREATED
         "     * ~/Library/Logs/CrashReporter\n"
         "     * /Library/Logs/CrashReporter\n"
 # endif
@@ -699,7 +704,7 @@ postscript_dump(FILE *out)
         "[IMPORTANT]"
         /*" ------------------------------------------------"*/
         "\n""Don't forget to include the Crash Report log file under\n"
-# if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_6
+# ifdef CRASH_REPORTER_MAY_BE_CREATED
         "CrashReporter or "
 # endif
         "DiagnosticReports directory in bug reports.\n"
@@ -1000,7 +1005,7 @@ rb_check_type(VALUE x, int t)
 {
     int xt;
 
-    if (RB_UNLIKELY(x == Qundef)) {
+    if (RB_UNLIKELY(UNDEF_P(x))) {
         rb_bug(UNDEF_LEAKED);
     }
 
@@ -1021,7 +1026,7 @@ rb_check_type(VALUE x, int t)
 void
 rb_unexpected_type(VALUE x, int t)
 {
-    if (RB_UNLIKELY(x == Qundef)) {
+    if (RB_UNLIKELY(UNDEF_P(x))) {
         rb_bug(UNDEF_LEAKED);
     }
 
@@ -1223,7 +1228,7 @@ VALUE
 rb_get_message(VALUE exc)
 {
     VALUE e = rb_check_funcall(exc, id_message, 0, 0);
-    if (e == Qundef) return Qnil;
+    if (UNDEF_P(e)) return Qnil;
     if (!RB_TYPE_P(e, T_STRING)) e = rb_check_string_type(e);
     return e;
 }
@@ -1238,7 +1243,7 @@ rb_get_detailed_message(VALUE exc, VALUE opt)
     else {
         e = rb_check_funcall_kw(exc, id_detailed_message, 1, &opt, 1);
     }
-    if (e == Qundef) return Qnil;
+    if (UNDEF_P(e)) return Qnil;
     if (!RB_TYPE_P(e, T_STRING)) e = rb_check_string_type(e);
     return e;
 }
@@ -1630,15 +1635,15 @@ exc_equal(VALUE exc, VALUE obj)
         int state;
 
         obj = rb_protect(try_convert_to_exception, obj, &state);
-        if (state || obj == Qundef) {
+        if (state || UNDEF_P(obj)) {
             rb_set_errinfo(Qnil);
             return Qfalse;
         }
         if (rb_obj_class(exc) != rb_obj_class(obj)) return Qfalse;
         mesg = rb_check_funcall(obj, id_message, 0, 0);
-        if (mesg == Qundef) return Qfalse;
+        if (UNDEF_P(mesg)) return Qfalse;
         backtrace = rb_check_funcall(obj, id_backtrace, 0, 0);
-        if (backtrace == Qundef) return Qfalse;
+        if (UNDEF_P(backtrace)) return Qfalse;
     }
     else {
         mesg = rb_attr_get(obj, id_mesg);
@@ -1741,7 +1746,7 @@ exit_success_p(VALUE exc)
 static VALUE
 err_init_recv(VALUE exc, VALUE recv)
 {
-    if (recv != Qundef) rb_ivar_set(exc, id_recv, recv);
+    if (!UNDEF_P(recv)) rb_ivar_set(exc, id_recv, recv);
     return exc;
 }
 
@@ -2085,7 +2090,7 @@ name_err_mesg_to_str(VALUE obj)
             break;
           default:
             d = rb_protect(name_err_mesg_receiver_name, obj, &state);
-            if (state || d == Qundef || NIL_P(d))
+            if (state || UNDEF_P(d) || NIL_P(d))
                 d = rb_protect(rb_inspect, obj, &state);
             if (state) {
                 rb_set_errinfo(Qnil);
@@ -2140,7 +2145,7 @@ name_err_receiver(VALUE self)
     VALUE *ptr, recv, mesg;
 
     recv = rb_ivar_lookup(self, id_recv, Qundef);
-    if (recv != Qundef) return recv;
+    if (!UNDEF_P(recv)) return recv;
 
     mesg = rb_attr_get(self, id_mesg);
     if (!rb_typeddata_is_kind_of(mesg, &name_err_mesg_data_type)) {
@@ -2198,7 +2203,7 @@ key_err_receiver(VALUE self)
     VALUE recv;
 
     recv = rb_ivar_lookup(self, id_receiver, Qundef);
-    if (recv != Qundef) return recv;
+    if (!UNDEF_P(recv)) return recv;
     rb_raise(rb_eArgError, "no receiver is available");
 }
 
@@ -2215,7 +2220,7 @@ key_err_key(VALUE self)
     VALUE key;
 
     key = rb_ivar_lookup(self, id_key, Qundef);
-    if (key != Qundef) return key;
+    if (!UNDEF_P(key)) return key;
     rb_raise(rb_eArgError, "no key is available");
 }
 
@@ -2253,7 +2258,7 @@ key_err_initialize(int argc, VALUE *argv, VALUE self)
         keywords[1] = id_key;
         rb_get_kwargs(options, keywords, 0, numberof(values), values);
         for (i = 0; i < numberof(values); ++i) {
-            if (values[i] != Qundef) {
+            if (!UNDEF_P(values[i])) {
                 rb_ivar_set(self, keywords[i], values[i]);
             }
         }
@@ -2275,7 +2280,7 @@ no_matching_pattern_key_err_matchee(VALUE self)
     VALUE matchee;
 
     matchee = rb_ivar_lookup(self, id_matchee, Qundef);
-    if (matchee != Qundef) return matchee;
+    if (!UNDEF_P(matchee)) return matchee;
     rb_raise(rb_eArgError, "no matchee is available");
 }
 
@@ -2292,7 +2297,7 @@ no_matching_pattern_key_err_key(VALUE self)
     VALUE key;
 
     key = rb_ivar_lookup(self, id_key, Qundef);
-    if (key != Qundef) return key;
+    if (!UNDEF_P(key)) return key;
     rb_raise(rb_eArgError, "no key is available");
 }
 
@@ -2319,7 +2324,7 @@ no_matching_pattern_key_err_initialize(int argc, VALUE *argv, VALUE self)
         keywords[1] = id_key;
         rb_get_kwargs(options, keywords, 0, numberof(values), values);
         for (i = 0; i < numberof(values); ++i) {
-            if (values[i] != Qundef) {
+            if (!UNDEF_P(values[i])) {
                 rb_ivar_set(self, keywords[i], values[i]);
             }
         }

@@ -286,10 +286,16 @@ module Test
         @jobserver = nil
         makeflags = ENV.delete("MAKEFLAGS")
         if !options[:parallel] and
-          /(?:\A|\s)--jobserver-(?:auth|fds)=(\d+),(\d+)/ =~ makeflags
+          /(?:\A|\s)--jobserver-(?:auth|fds)=(?:(\d+),(\d+)|fifo:((?:\\.|\S)+))/ =~ makeflags
           begin
-            r = IO.for_fd($1.to_i(10), "rb", autoclose: false)
-            w = IO.for_fd($2.to_i(10), "wb", autoclose: false)
+            if fifo = $3
+              fifo.gsub!(/\\(?=.)/, '')
+              r = File.open(fifo, IO::RDONLY|IO::NONBLOCK|IO::BINARY)
+              w = File.open(fifo, IO::WRONLY|IO::NONBLOCK|IO::BINARY)
+            else
+              r = IO.for_fd($1.to_i(10), "rb", autoclose: false)
+              w = IO.for_fd($2.to_i(10), "wb", autoclose: false)
+            end
           rescue
             r.close if r
             nil
@@ -787,7 +793,7 @@ module Test
           unless rep.empty?
             rep.each do |r|
               if r[:error]
-                puke(*r[:error], Timeout::Error)
+                puke(*r[:error], Timeout::Error.new)
                 next
               end
               r[:report]&.each do |f|
@@ -1742,6 +1748,9 @@ module Test
             when Test::Unit::AssertionFailedError then
               @failures += 1
               "Failure:\n#{klass}##{meth} [#{location e}]:\n#{e.message}\n"
+            when Timeout::Error
+              @errors += 1
+              "Timeout:\n#{klass}##{meth}\n"
             else
               @errors += 1
               bt = Test::filter_backtrace(e.backtrace).join "\n    "

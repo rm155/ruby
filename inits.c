@@ -20,6 +20,7 @@ static void Init_builtin_prelude(void);
 void
 rb_call_inits(void)
 {
+    CALL(default_shapes);
     CALL(Thread_Mutex);
 #if USE_TRANSIENT_HEAP
     CALL(TransientHeap);
@@ -98,6 +99,7 @@ rb_call_builtin_inits(void)
     BUILTIN(warning);
     BUILTIN(array);
     BUILTIN(kernel);
+    BUILTIN(symbol);
     BUILTIN(timev);
     BUILTIN(thread_sync);
     BUILTIN(yjit);
@@ -106,7 +108,6 @@ rb_call_builtin_inits(void)
 #if USE_MJIT
     BUILTIN(mjit);
     BUILTIN(mjit_c);
-    BUILTIN(mjit_compiler);
 #endif
     Init_builtin_prelude();
 }

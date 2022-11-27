@@ -4820,7 +4820,7 @@ when_vals(rb_iseq_t *iseq, LINK_ANCHOR *const cond_seq, const NODE *vals,
         const NODE *val = vals->nd_head;
         VALUE lit = rb_node_case_when_optimizable_literal(val);
 
-        if (lit == Qundef) {
+        if (UNDEF_P(lit)) {
             only_special_literals = 0;
         }
         else if (NIL_P(rb_hash_lookup(literals, lit))) {
@@ -7400,7 +7400,7 @@ compile_loop(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, in
     ADD_LABEL(ret, end_label);
     ADD_ADJUST_RESTORE(ret, adjust_label);
 
-    if (node->nd_state == Qundef) {
+    if (UNDEF_P(node->nd_state)) {
         /* ADD_INSN(ret, line_node, putundef); */
         COMPILE_ERROR(ERROR_ARGS "unsupported: putundef");
         return COMPILE_NG;
@@ -7455,7 +7455,30 @@ compile_iter(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, in
                            ISEQ_TYPE_BLOCK, line);
         CHECK(COMPILE(ret, "iter caller", node->nd_iter));
     }
-    ADD_LABEL(ret, retry_end_l);
+
+    {
+        // We need to put the label "retry_end_l" immediately after the last "send" instruction.
+        // This because vm_throw checks if the break cont is equal to the index of next insn of the "send".
+        // (Otherwise, it is considered "break from proc-closure". See "TAG_BREAK" handling in "vm_throw_start".)
+        //
+        // Normally, "send" instruction is at the last.
+        // However, qcall under branch coverage measurement adds some instructions after the "send".
+        //
+        // Note that "invokesuper" appears instead of "send".
+        INSN *iobj;
+        LINK_ELEMENT *last_elem = LAST_ELEMENT(ret);
+        iobj = IS_INSN(last_elem) ? (INSN*) last_elem : (INSN*) get_prev_insn((INSN*) last_elem);
+        while (INSN_OF(iobj) != BIN(send) && INSN_OF(iobj) != BIN(invokesuper)) {
+            iobj = (INSN*) get_prev_insn(iobj);
+        }
+        ELEM_INSERT_NEXT(&iobj->link, (LINK_ELEMENT*) retry_end_l);
+
+        // LINK_ANCHOR has a pointer to the last element, but ELEM_INSERT_NEXT does not update it
+        // even if we add an insn to the last of LINK_ANCHOR. So this updates it manually.
+        if (&iobj->link == LAST_ELEMENT(ret)) {
+            ret->last = (LINK_ELEMENT*) retry_end_l;
+        }
+    }
 
     if (popped) {
         ADD_INSN(ret, line_node, pop);
@@ -12163,6 +12186,40 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     const char catch_except_p = (char)ibf_load_small_value(load, &reading_pos);
     const bool builtin_inline_p = (bool)ibf_load_small_value(load, &reading_pos);
 
+    // setup fname and dummy frame
+    VALUE path = ibf_load_object(load, location_pathobj_index);
+    {
+        VALUE realpath = Qnil;
+
+        if (RB_TYPE_P(path, T_STRING)) {
+            realpath = path = rb_fstring(path);
+        }
+        else if (RB_TYPE_P(path, T_ARRAY)) {
+            VALUE pathobj = path;
+            if (RARRAY_LEN(pathobj) != 2) {
+                rb_raise(rb_eRuntimeError, "path object size mismatch");
+            }
+            path = rb_fstring(RARRAY_AREF(pathobj, 0));
+            realpath = RARRAY_AREF(pathobj, 1);
+            if (!NIL_P(realpath)) {
+                if (!RB_TYPE_P(realpath, T_STRING)) {
+                    rb_raise(rb_eArgError, "unexpected realpath %"PRIxVALUE
+                             "(%x), path=%+"PRIsVALUE,
+                             realpath, TYPE(realpath), path);
+                }
+                realpath = rb_fstring(realpath);
+            }
+        }
+        else {
+            rb_raise(rb_eRuntimeError, "unexpected path object");
+        }
+        rb_iseq_pathobj_set(iseq, path, realpath);
+    }
+
+    // push dummy frame
+    rb_execution_context_t *ec = GET_EC();
+    VALUE dummy_frame = rb_vm_push_frame_fname(ec, path);
+
 #undef IBF_BODY_OFFSET
 
     load_body->type = type;
@@ -12231,33 +12288,6 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     load->current_buffer = &load->global_buffer;
 #endif
 
-    {
-        VALUE realpath = Qnil, path = ibf_load_object(load, location_pathobj_index);
-        if (RB_TYPE_P(path, T_STRING)) {
-            realpath = path = rb_fstring(path);
-        }
-        else if (RB_TYPE_P(path, T_ARRAY)) {
-            VALUE pathobj = path;
-            if (RARRAY_LEN(pathobj) != 2) {
-                rb_raise(rb_eRuntimeError, "path object size mismatch");
-            }
-            path = rb_fstring(RARRAY_AREF(pathobj, 0));
-            realpath = RARRAY_AREF(pathobj, 1);
-            if (!NIL_P(realpath)) {
-                if (!RB_TYPE_P(realpath, T_STRING)) {
-                    rb_raise(rb_eArgError, "unexpected realpath %"PRIxVALUE
-                             "(%x), path=%+"PRIsVALUE,
-                             realpath, TYPE(realpath), path);
-                }
-                realpath = rb_fstring(realpath);
-            }
-        }
-        else {
-            rb_raise(rb_eRuntimeError, "unexpected path object");
-        }
-        rb_iseq_pathobj_set(iseq, path, realpath);
-    }
-
     RB_OBJ_WRITE(iseq, &load_body->location.base_label,    ibf_load_location_str(load, location_base_label_index));
     RB_OBJ_WRITE(iseq, &load_body->location.label,         ibf_load_location_str(load, location_label_index));
 
@@ -12265,6 +12295,9 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     load->current_buffer = saved_buffer;
 #endif
     verify_call_cache(iseq);
+
+    RB_GC_GUARD(dummy_frame);
+    rb_vm_pop_frame(ec);
 }
 
 struct ibf_dump_iseq_list_arg

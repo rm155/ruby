@@ -115,6 +115,8 @@ int flock(int, int);
 # define link(f, t)      rb_w32_ulink((f), (t))
 # undef unlink
 # define unlink(p)       rb_w32_uunlink(p)
+# undef readlink
+# define readlink(f, t, l)    rb_w32_ureadlink((f), (t), (l))
 # undef rename
 # define rename(f, t)    rb_w32_urename((f), (t))
 # undef symlink
@@ -1763,8 +1765,8 @@ rb_file_socket_p(VALUE obj, VALUE fname)
 
     if (rb_stat(fname, &st) < 0) return Qfalse;
     if (S_ISSOCK(st.st_mode)) return Qtrue;
-
 #endif
+
     return Qfalse;
 }
 
@@ -3152,7 +3154,6 @@ rb_file_s_readlink(VALUE klass, VALUE path)
     return rb_readlink(path, rb_filesystem_encoding());
 }
 
-#ifndef _WIN32
 struct readlink_arg {
     const char *path;
     char *buf;
@@ -3208,7 +3209,6 @@ rb_readlink(VALUE path, rb_encoding *enc)
 
     return v;
 }
-#endif
 #else
 #define rb_file_s_readlink rb_f_notimplement
 #endif
@@ -5600,6 +5600,7 @@ rb_stat_init(VALUE obj, VALUE fname)
     if (STAT(StringValueCStr(fname), &st) == -1) {
         rb_sys_fail_path(fname);
     }
+
     if (DATA_PTR(obj)) {
         xfree(DATA_PTR(obj));
         DATA_PTR(obj) = NULL;
@@ -7037,7 +7038,7 @@ const char ruby_null_device[] =
  *        f.pos = 800
  *        f.read # => ""
  *
- *  ==== Data Mode
+ *  ==== \Data Mode
  *
  *  To specify whether data is to be treated as text or as binary data,
  *  either of the following may be suffixed to any of the string read/write modes
@@ -7106,7 +7107,7 @@ const char ruby_null_device[] =
  *  - +File::CREAT+: Create file if it does not exist.
  *  - +File::EXCL+: Raise an exception if +File::CREAT+ is given and the file exists.
  *
- *  === Data Mode Specified as an \Integer
+ *  === \Data Mode Specified as an \Integer
  *
  *  Data mode cannot be specified as an integer.
  *  When the stream access mode is given as an integer,
@@ -7147,7 +7148,7 @@ const char ruby_null_device[] =
  *  strings read are converted from external to internal encoding,
  *  and strings written are converted from internal to external encoding.
  *  For further details about transcoding input and output,
- *  see {Encodings}[rdoc-ref:io_streams.rdoc@Encodings].
+ *  see {Encodings}[rdoc-ref:encodings.rdoc@Encodings].
  *
  *  If the external encoding is <tt>'BOM|UTF-8'</tt>, <tt>'BOM|UTF-16LE'</tt>
  *  or <tt>'BOM|UTF16-BE'</tt>,
@@ -7211,7 +7212,7 @@ const char ruby_null_device[] =
  *    f.chmod(0644)
  *    f.chmod(0444)
  *
- *  == \File Constants
+ *  == \File \Constants
  *
  *  Various constants for use in \File and \IO methods
  *  may be found in module File::Constants;
@@ -7283,7 +7284,7 @@ const char ruby_null_device[] =
  *
  *  - ::blockdev?: Returns whether the file at the given path is a block device.
  *  - ::chardev?: Returns whether the file at the given path is a character device.
- *  - ::directory?: Returns whether the file at the given path is a diretory.
+ *  - ::directory?: Returns whether the file at the given path is a directory.
  *  - ::executable?: Returns whether the file at the given path is executable
  *    by the effective user and group of the current process.
  *  - ::executable_real?: Returns whether the file at the given path is executable

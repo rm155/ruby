@@ -523,7 +523,7 @@ hash_each(VALUE key, VALUE value, VALUE v)
 
 #define SINGLETON_DUMP_UNABLE_P(klass) \
     (rb_id_table_size(RCLASS_M_TBL(klass)) > 0 || \
-     (RCLASS_IV_TBL(klass) && RCLASS_IV_TBL(klass)->num_entries > 1))
+     rb_ivar_count(klass) > 1)
 
 static void
 w_extended(VALUE klass, struct dump_arg *arg, int check)
@@ -743,7 +743,7 @@ w_ivar(st_index_t num, VALUE ivobj, VALUE encname, struct dump_call_arg *arg)
         w_object(Qtrue, arg->arg, limit);
         num--;
     }
-    if (ivobj != Qundef && num) {
+    if (!UNDEF_P(ivobj) && num) {
         w_ivar_each(ivobj, num, arg);
     }
 }
@@ -930,7 +930,7 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
                     arg->compat_tbl = rb_init_identtable();
                 }
                 st_insert(arg->compat_tbl, (st_data_t)obj, (st_data_t)real_obj);
-                if (obj != real_obj && ivobj == Qundef) hasiv = 0;
+                if (obj != real_obj && UNDEF_P(ivobj)) hasiv = 0;
             }
         }
         if (hasiv) w_byte(TYPE_IVAR, arg);
@@ -2251,7 +2251,7 @@ r_object_for(struct load_arg *arg, bool partial, int *ivp, VALUE extmod, int typ
         break;
     }
 
-    if (v == Qundef) {
+    if (UNDEF_P(v)) {
         rb_raise(rb_eArgError, "dump format error (bad link)");
     }
 

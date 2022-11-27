@@ -64,7 +64,7 @@ push_subclass_entry_to_list(VALUE super, VALUE klass)
 void
 rb_class_subclass_add(VALUE super, VALUE klass)
 {
-    if (super && super != Qundef) {
+    if (super && !UNDEF_P(super)) {
         rb_subclass_entry_t *entry = push_subclass_entry_to_list(super, klass);
         RCLASS_SUBCLASS_ENTRY(klass) = entry;
     }
@@ -197,7 +197,7 @@ class_alloc(VALUE flags, VALUE klass)
 {
     size_t alloc_size = sizeof(struct RClass);
 
-#if USE_RVARGC
+#if RCLASS_EXT_EMBEDDED
     alloc_size += sizeof(rb_classext_t);
 #endif
 
@@ -206,17 +206,13 @@ class_alloc(VALUE flags, VALUE klass)
     if (RGENGC_WB_PROTECTED_CLASS) flags |= FL_WB_PROTECTED;
     RVARGC_NEWOBJ_OF(obj, struct RClass, klass, flags, alloc_size);
 
-#if USE_RVARGC
+#if RCLASS_EXT_EMBEDDED
     memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
-# if SIZEOF_SERIAL_T != SIZEOF_VALUE
-    RCLASS(obj)->class_serial_ptr = ZALLOC(rb_serial_t);
-# endif
 #else
     obj->ptr = ZALLOC(rb_classext_t);
 #endif
 
     /* ZALLOC
-      RCLASS_IV_TBL(obj) = 0;
       RCLASS_CONST_TBL(obj) = 0;
       RCLASS_M_TBL(obj) = 0;
       RCLASS_IV_INDEX_TBL(obj) = 0;
@@ -226,7 +222,6 @@ class_alloc(VALUE flags, VALUE klass)
       RCLASS_MODULE_SUBCLASSES(obj) = NULL;
      */
     RCLASS_SET_ORIGIN((VALUE)obj, (VALUE)obj);
-    RCLASS_SERIAL(obj) = rb_next_class_serial();
     RB_OBJ_WRITE(obj, &RCLASS_REFINED_CLASS(obj), Qnil);
     RCLASS_ALLOCATOR(obj) = 0;
 
@@ -285,7 +280,7 @@ rb_class_update_superclasses(VALUE klass)
     VALUE super = RCLASS_SUPER(klass);
 
     if (!RB_TYPE_P(klass, T_CLASS)) return;
-    if (super == Qundef) return;
+    if (UNDEF_P(super)) return;
 
     // If the superclass array is already built
     if (RCLASS_SUPERCLASSES(klass))
@@ -409,23 +404,19 @@ class_init_copy_check(VALUE clone, VALUE orig)
 static void
 copy_tables(VALUE clone, VALUE orig)
 {
-    if (RCLASS_IV_TBL(clone)) {
-        st_free_table(RCLASS_IV_TBL(clone));
-        RCLASS_IV_TBL(clone) = 0;
-    }
     if (RCLASS_CONST_TBL(clone)) {
         rb_free_const_table(RCLASS_CONST_TBL(clone));
         RCLASS_CONST_TBL(clone) = 0;
     }
     RCLASS_M_TBL(clone) = 0;
-    if (RCLASS_IV_TBL(orig)) {
+    if (!RB_TYPE_P(clone, T_ICLASS)) {
         st_data_t id;
 
         rb_iv_tbl_copy(clone, orig);
         CONST_ID(id, "__tmp_classpath__");
-        st_delete(RCLASS_IV_TBL(clone), &id, 0);
+        rb_attr_delete(clone, id);
         CONST_ID(id, "__classpath__");
-        st_delete(RCLASS_IV_TBL(clone), &id, 0);
+        rb_attr_delete(clone, id);
     }
     if (RCLASS_CONST_TBL(orig)) {
         struct clone_const_arg arg;
@@ -527,7 +518,6 @@ rb_mod_init_copy(VALUE clone, VALUE orig)
             prev_clone_p = clone_p;
             RCLASS_M_TBL(clone_p) = RCLASS_M_TBL(p);
             RCLASS_CONST_TBL(clone_p) = RCLASS_CONST_TBL(p);
-            RCLASS_IV_TBL(clone_p) = RCLASS_IV_TBL(p);
             RCLASS_ALLOCATOR(clone_p) = RCLASS_ALLOCATOR(p);
             if (RB_TYPE_P(clone, T_CLASS)) {
                 RCLASS_SET_INCLUDER(clone_p, clone);
@@ -614,16 +604,14 @@ rb_singleton_class_clone_and_attach(VALUE obj, VALUE attach)
 
         RCLASS_SET_SUPER(clone, RCLASS_SUPER(klass));
         RCLASS_ALLOCATOR(clone) = RCLASS_ALLOCATOR(klass);
-        if (RCLASS_IV_TBL(klass)) {
-            rb_iv_tbl_copy(clone, klass);
-        }
+        rb_iv_tbl_copy(clone, klass);
         if (RCLASS_CONST_TBL(klass)) {
             struct clone_const_arg arg;
             arg.tbl = RCLASS_CONST_TBL(clone) = rb_id_table_create(0);
             arg.klass = clone;
             rb_id_table_foreach(RCLASS_CONST_TBL(klass), clone_const_i, &arg);
         }
-        if (attach != Qundef) {
+        if (!UNDEF_P(attach)) {
             rb_singleton_class_attached(clone, attach);
         }
         RCLASS_M_TBL_INIT(clone);
@@ -1069,13 +1057,10 @@ rb_include_class_new(VALUE module, VALUE super)
         module = METACLASS_OF(module);
     }
     RUBY_ASSERT(!RB_TYPE_P(module, T_ICLASS));
-    if (!RCLASS_IV_TBL(module)) {
-        RCLASS_IV_TBL(module) = st_init_numtable();
-    }
     if (!RCLASS_CONST_TBL(module)) {
         RCLASS_CONST_TBL(module) = rb_id_table_create(0);
     }
-    RCLASS_IV_TBL(klass) = RCLASS_IV_TBL(module);
+
     RCLASS_CVC_TBL(klass) = RCLASS_CVC_TBL(module);
     RCLASS_CONST_TBL(klass) = RCLASS_CONST_TBL(module);
 
@@ -1592,6 +1577,33 @@ rb_class_subclasses(VALUE klass)
     return class_descendants(klass, true);
 }
 
+/*
+ *  call-seq:
+ *     attached_object -> object
+ *
+ *  Returns the object for which the receiver is the singleton class.
+ *
+ *  Raises an TypeError if the class is not a singleton class.
+ *
+ *     class Foo; end
+ *
+ *     Foo.singleton_class.attached_object        #=> Foo
+ *     Foo.attached_object                        #=> TypeError: `Foo' is not a singleton class
+ *     Foo.new.singleton_class.attached_object    #=> #<Foo:0x000000010491a370>
+ *     TrueClass.attached_object                  #=> TypeError: `TrueClass' is not a singleton class
+ *     NilClass.attached_object                   #=> TypeError: `NilClass' is not a singleton class
+ */
+
+VALUE
+rb_class_attached_object(VALUE klass)
+{
+    if (!FL_TEST(klass, FL_SINGLETON)) {
+        rb_raise(rb_eTypeError, "`%"PRIsVALUE"' is not a singleton class", klass);
+    }
+
+    return rb_attr_get(klass, id_attached);
+}
+
 static void
 ins_methods_push(st_data_t name, st_data_t ary)
 {
@@ -1642,10 +1654,7 @@ ins_methods_pub_i(st_data_t name, st_data_t type, st_data_t ary)
 static int
 ins_methods_undef_i(st_data_t name, st_data_t type, st_data_t ary)
 {
-    if ((rb_method_visibility_t)type == METHOD_VISI_UNDEF) {
-        ins_methods_push(name, ary);
-    }
-    return ST_CONTINUE;
+    return ins_methods_type_i(name, type, ary, METHOD_VISI_UNDEF);
 }
 
 struct method_entry_arg {
@@ -2122,9 +2131,7 @@ singleton_class_of(VALUE obj)
     klass = METACLASS_OF(obj);
     if (!(FL_TEST(klass, FL_SINGLETON) &&
           rb_attr_get(klass, id_attached) == obj)) {
-        rb_serial_t serial = RCLASS_SERIAL(klass);
         klass = rb_make_metaclass(obj, klass);
-        RCLASS_SERIAL(klass) = serial;
     }
 
     RB_FL_SET_RAW(klass, RB_OBJ_FROZEN_RAW(obj));

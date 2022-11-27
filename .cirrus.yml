@@ -10,7 +10,7 @@ env:
 
 task:
   name: Arm64 Graviton2 / $CC
-  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc}', '.document')"
+  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc,ronn,[1-8]}', '.document')"
   arm_container:
     # We use the arm64 images at https://github.com/ruby/ruby-ci-image/pkgs/container/ruby-ci-image .
     image: ghcr.io/ruby/ruby-ci-image:$CC
@@ -39,9 +39,8 @@ task:
     # the `make` environment variable used in compilers.yml causes some rubygems
     # tests to fail.
     # https://github.com/rubygems/rubygems/issues/4921
-    - echo "GNUMAKEFLAGS=-s -j$((1 + $CIRRUS_CPU))" >> $CIRRUS_ENV
-  print_env_script:
-    - echo "GNUMAKEFLAGS=$GNUMAKEFLAGS"
+    - echo "GNUMAKEFLAGS=-s -j$((1 + $CIRRUS_CPU))" >> "$CIRRUS_ENV"
+    - cat "$CIRRUS_ENV"
   # Arm containers are executed in AWS's EKS, and it's not yet supporting IPv6
   # See https://github.com/aws/containers-roadmap/issues/835
   disable_ipv6_script: sudo ./tool/disable_ipv6.sh
@@ -67,7 +66,7 @@ task:
 yjit_task:
   name: Arm64 Graviton2 / $CC YJIT
   auto_cancellation: $CIRRUS_BRANCH != 'master'
-  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc}')"
+  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc,ronn,[1-8]}', '.document')"
   arm_container:
     # We use the arm64 images at https://github.com/ruby/ruby-ci-image/pkgs/container/ruby-ci-image .
     image: ghcr.io/ruby/ruby-ci-image:$CC
@@ -90,7 +89,7 @@ yjit_task:
     matrix:
       - CC: clang-12
         configure: --enable-yjit=dev
-        rustup_init: --default-toolchain=1.58.1
+        rustup_init: --default-toolchain=1.58.0
       - CC: gcc-11
         configure: --enable-yjit
   id_script: id
@@ -99,9 +98,9 @@ yjit_task:
     # the `make` environment variable used in compilers.yml causes some rubygems
     # tests to fail.
     # https://github.com/rubygems/rubygems/issues/4921
-    - echo "GNUMAKEFLAGS=-s -j$((1 + $CIRRUS_CPU))" >> $CIRRUS_ENV
-  print_env_script:
-    - echo "GNUMAKEFLAGS=$GNUMAKEFLAGS"
+    - echo "GNUMAKEFLAGS=-s -j$((1 + $CIRRUS_CPU))" >> "$CIRRUS_ENV"
+    - echo RUST_BACKTRACE=1 >> "$CIRRUS_ENV"
+    - cat "$CIRRUS_ENV"
   # Arm containers are executed in AWS's EKS, and it's not yet supporting IPv6
   # See https://github.com/aws/containers-roadmap/issues/835
   disable_ipv6_script: sudo ./tool/disable_ipv6.sh
@@ -124,11 +123,11 @@ yjit_task:
     else
       echo "only running bindgen on clang image"
     fi
-  boot_miniruby_script: RUST_BACKTRACE=1 ./miniruby --yjit-call-threshold=1 -e0
-  test_dump_insns_script: RUST_BACKTRACE=1 ./miniruby --yjit-call-threshold=1 --yjit-dump-insns -e0
-  output_stats_script: RUST_BACKTRACE=1 ./miniruby --yjit-call-threshold=1 --yjit-stats -e0
+  boot_miniruby_script: ./miniruby --yjit-call-threshold=1 -e0
+  test_dump_insns_script: ./miniruby --yjit-call-threshold=1 --yjit-dump-insns -e0
+  output_stats_script: ./miniruby --yjit-call-threshold=1 --yjit-stats -e0
   full_build_script: source $HOME/.cargo/env && make
   cargo_test_script: source $HOME/.cargo/env && cd yjit && cargo test
   make_test_script: source $HOME/.cargo/env && make test RUN_OPTS="--yjit-call-threshold=1 --yjit-verify-ctx"
-  make_test_all_script: source $HOME/.cargo/env && make test-all RUN_OPTS="--yjit-call-threshold=1" TESTOPTS="$RUBY_TESTOPTS"
-  make_test_spec_script: source $HOME/.cargo/env && make test-spec RUN_OPTS="--yjit-call-threshold=1"
+  make_test_all_script: source $HOME/.cargo/env && make test-all RUN_OPTS="--yjit-call-threshold=1 --yjit-verify-ctx" TESTOPTS="$RUBY_TESTOPTS"
+  make_test_spec_script: source $HOME/.cargo/env && make test-spec RUN_OPTS="--yjit-call-threshold=1 --yjit-verify-ctx"

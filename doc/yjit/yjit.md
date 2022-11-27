@@ -8,14 +8,16 @@
 YJIT - Yet Another Ruby JIT
 ===========================
 
-**DISCLAIMER: Please note that this project is experimental. It is very much a work in progress, it may cause your software to crash, and current performance results will vary widely, especially on larger applications.**
-
 YJIT is a lightweight, minimalistic Ruby JIT built inside CRuby.
 It lazily compiles code using a Basic Block Versioning (BBV) architecture. The target use case is that of servers running
 Ruby on Rails, an area where MJIT has not yet managed to deliver speedups.
-To simplify development, we currently support only macOS and Linux on x86-64, but an ARM64 backend
-is part of future plans.
+YJIT is currently supported for macOS and Linux on x86-64 and arm64/aarch64 CPUs.
 This project is open source and falls under the same license as CRuby.
+
+<p align="center"><b>
+    If you're using YJIT in production, please
+    <a href="mailto:maxime.chevalierboisvert@shopify.com">share your success stories with us!</a>
+ </b></p>
 
 If you wish to learn more about the approach taken, here are some conference talks and publications:
 - RubyKaigi 2021 talk: [YJIT: Building a New JIT Compiler Inside CRuby](https://www.youtube.com/watch?v=PBVLf3yfMs8)
@@ -42,13 +44,9 @@ To cite this repository in your publications, please use this bibtex snippet:
 
 ## Current Limitations
 
-YJIT is a work in progress and as such may not yet be mature enough for mission-critical software. Below is a list of known limitations, all of which we plan to eventually address:
-
-- No garbage collection for generated code.
-- Currently supports only macOS and Linux.
-- Supports x86-64 and arm64/aarch64 CPUs only.
-
-Because there is no GC for generated code yet, your software could run out of executable memory if it is large enough. You can change how much executable memory is allocated using [YJIT's command-line options](#command-line-options).
+YJIT may not be suitable for certain applications. It currently only supports macOS and Linux on x86-64 and arm64/aarch64 CPUs. YJIT will use more memory than the Ruby interpreter because the JIT compiler needs to generate machine code in memory and maintain additional state
+information.
+You can change how much executable memory is allocated using [YJIT's command-line options](#command-line-options). There is a slight performance tradeoff because allocating less executable memory could result in the generated machine code being collected more often.
 
 ## Installation
 
@@ -58,7 +56,7 @@ You will need to install:
 - A C compiler such as GCC or Clang
 - GNU Make and Autoconf
 - The Rust compiler `rustc` and Cargo (if you want to build in dev/debug mode)
-  - The Rust version must be [>= 1.58.1](../../yjit/Cargo.toml).
+  - The Rust version must be [>= 1.58.0](../../yjit/Cargo.toml).
 
 To install the Rust build toolchain, we suggest following the [recommended installation method][rust-install]. Rust also provides first class [support][editor-tools] for many source code editors.
 
@@ -105,10 +103,12 @@ make -j install
 ```
 
 Typically configure will choose the default C compiler. To specify the C compiler, use
+
 ```
 # Choosing a specific c compiler
 export CC=/path/to/my/chosen/c/compiler
 ```
+
 before running `./configure`.
 
 You can test that YJIT works correctly by running:
@@ -141,15 +141,15 @@ You can dump statistics about compilation and execution by running YJIT with the
 
 The machine code generated for a given method can be printed by adding `puts RubyVM::YJIT.disasm(method(:method_name))` to a Ruby script. Note that no code will be generated if the method is not compiled.
 
-
 ### Command-Line Options
 
 YJIT supports all command-line options supported by upstream CRuby, but also adds a few YJIT-specific options:
 
 - `--yjit`: enable YJIT (disabled by default)
-- `--yjit-call-threshold=N`: number of calls after which YJIT begins to compile a function (default 2)
+- `--yjit-call-threshold=N`: number of calls after which YJIT begins to compile a function (default 10)
 - `--yjit-exec-mem-size=N`: size of the executable memory block to allocate, in MiB (default 256 MiB)
 - `--yjit-stats`: produce statistics after the execution of a program (must compile with `cppflags=-DRUBY_DEBUG` to use this)
+- `--yjit-trace-exits`: produce a Marshal dump of backtraces from specific exits. Automatically enables `--yjit-stats` (must compile with `cppflags=-DRUBY_DEBUG` to use this)
 - `--yjit-max-versions=N`: maximum number of versions to generate per basic block (default 4)
 - `--yjit-greedy-versioning`: greedy versioning mode (disabled by default, may increase code size)
 
@@ -176,7 +176,7 @@ You can also compile YJIT in debug mode and use the `--yjit-stats` command-line 
 
 ### Memory Statistics
 
-YJIT, including in production configuration, keeps track of the size of generated code. If you check YJIT.runtime_stats you can see them:
+YJIT, including in production configuration, keeps track of the size of generated code. If you check `YJIT.runtime_stats` you can see them:
 
 ```
 $ RUBYOPT="--yjit" irb
@@ -188,11 +188,11 @@ These are the size in bytes of generated inlined code and generated outlined cod
 
 ### Other Statistics
 
-If you compile Ruby with RUBY_DEBUG and/or YJIT_STATS defined and run with "--yjit --yjit-stats", YJIT will track and return performance statistics in RubyVM::YJIT.runtime_stats.
+If you compile Ruby with `RUBY_DEBUG` and/or `YJIT_STATS` defined and run with `--yjit --yjit-stats`, YJIT will track and return performance statistics in `RubyVM::YJIT.runtime_stats`.
 
 ```
 $ RUBYOPT="--yjit --yjit-stats" irb
-irb(main):001:0> YJIT.runtime_stats
+irb(main):001:0> RubyVM::YJIT.runtime_stats
 =>
 {:inline_code_size=>340745,
  :outlined_code_size=>297664,

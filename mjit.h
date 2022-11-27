@@ -52,7 +52,7 @@ struct mjit_options {
     // If true, all ISeqs are synchronously compiled. For testing.
     bool wait;
     // Number of calls to trigger JIT compilation. For testing.
-    unsigned int min_calls;
+    unsigned int call_threshold;
     // Force printing info about MJIT work of level VERBOSE or
     // less. 0=silence, 1=medium, 2=verbose.
     int verbose;
@@ -79,7 +79,7 @@ struct rb_mjit_compile_info {
     bool disable_const_cache;
 };
 
-typedef VALUE (*mjit_func_t)(rb_execution_context_t *, rb_control_frame_t *);
+typedef VALUE (*jit_func_t)(rb_execution_context_t *, rb_control_frame_t *);
 
 RUBY_SYMBOL_EXPORT_BEGIN
 RUBY_EXTERN struct mjit_options mjit_opts;
@@ -101,8 +101,6 @@ extern void mjit_init(const struct mjit_options *opts);
 extern void mjit_free_iseq(const rb_iseq_t *iseq);
 extern void mjit_update_references(const rb_iseq_t *iseq);
 extern void mjit_mark(void);
-extern struct mjit_cont *mjit_cont_new(rb_execution_context_t *ec);
-extern void mjit_cont_free(struct mjit_cont *cont);
 extern void mjit_mark_cc_entries(const struct rb_iseq_constant_body *const body);
 extern void mjit_notify_waitpid(int exit_code);
 
@@ -120,8 +118,6 @@ void mjit_finish(bool close_handle_p);
 # else // USE_MJIT
 
 static inline void mjit_cancel_all(const char *reason){}
-static inline struct mjit_cont *mjit_cont_new(rb_execution_context_t *ec){return NULL;}
-static inline void mjit_cont_free(struct mjit_cont *cont){}
 static inline void mjit_free_iseq(const rb_iseq_t *iseq){}
 static inline void mjit_mark(void){}
 static inline VALUE jit_exec(rb_execution_context_t *ec) { return Qundef; /* unreachable */ }

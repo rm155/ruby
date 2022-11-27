@@ -33,6 +33,7 @@
 #include "internal/string.h"
 #include "internal/symbol.h"
 #include "internal/variable.h"
+#include "variable.h"
 #include "probes.h"
 #include "ruby/encoding.h"
 #include "ruby/st.h"
@@ -124,7 +125,7 @@ rb_equal(VALUE obj1, VALUE obj2)
 
     if (obj1 == obj2) return Qtrue;
     result = rb_equal_opt(obj1, obj2);
-    if (result == Qundef) {
+    if (UNDEF_P(result)) {
         result = rb_funcall(obj1, id_eq, 1, obj2);
     }
     return RBOOL(RTEST(result));
@@ -137,7 +138,7 @@ rb_eql(VALUE obj1, VALUE obj2)
 
     if (obj1 == obj2) return TRUE;
     result = rb_eql_opt(obj1, obj2);
-    if (result == Qundef) {
+    if (UNDEF_P(result)) {
         result = rb_funcall(obj1, id_eql, 1, obj2);
     }
     return RTEST(result);
@@ -268,37 +269,49 @@ rb_obj_singleton_class(VALUE obj)
 MJIT_FUNC_EXPORTED void
 rb_obj_copy_ivar(VALUE dest, VALUE obj)
 {
-    VALUE *dest_buf = ROBJECT_IVPTR(dest);
-    VALUE *src_buf = ROBJECT_IVPTR(obj);
-    uint32_t dest_len = ROBJECT_NUMIV(dest);
-    uint32_t src_len = ROBJECT_NUMIV(obj);
-    uint32_t max_len = dest_len < src_len ? src_len : dest_len;
+    RUBY_ASSERT(!RB_TYPE_P(obj, T_CLASS) && !RB_TYPE_P(obj, T_MODULE));
 
-    rb_ensure_iv_list_size(dest, dest_len, max_len);
+    RUBY_ASSERT(BUILTIN_TYPE(dest) == BUILTIN_TYPE(obj));
+    uint32_t src_num_ivs = RBASIC_IV_COUNT(obj);
+    rb_shape_t * src_shape = rb_shape_get_shape(obj);
+    rb_shape_t * shape_to_set_on_dest = src_shape;
+    VALUE * src_buf;
+    VALUE * dest_buf;
 
-    dest_len = ROBJECT_NUMIV(dest);
-    uint32_t min_len = dest_len > src_len ? src_len : dest_len;
-
-    if (RBASIC(obj)->flags & ROBJECT_EMBED) {
-        src_buf = ROBJECT(obj)->as.ary;
-
-        // embedded -> embedded
-        if (RBASIC(dest)->flags & ROBJECT_EMBED) {
-            dest_buf = ROBJECT(dest)->as.ary;
-        }
-        // embedded -> extended
-        else {
-            dest_buf = ROBJECT(dest)->as.heap.ivptr;
-        }
-    }
-    // extended -> extended
-    else {
-        RUBY_ASSERT(!(RBASIC(dest)->flags & ROBJECT_EMBED));
-        dest_buf = ROBJECT(dest)->as.heap.ivptr;
-        src_buf = ROBJECT(obj)->as.heap.ivptr;
+    if (!src_num_ivs) {
+        return;
     }
 
-    MEMCPY(dest_buf, src_buf, VALUE, min_len);
+    // The copy should be mutable, so we don't want the frozen shape
+    if (rb_shape_frozen_shape_p(src_shape)) {
+        shape_to_set_on_dest = rb_shape_get_parent(src_shape);
+    }
+
+    src_buf = ROBJECT_IVPTR(obj);
+    dest_buf = ROBJECT_IVPTR(dest);
+
+    rb_shape_t * initial_shape = rb_shape_get_shape(dest);
+
+    if (initial_shape->size_pool_index != src_shape->size_pool_index) {
+        RUBY_ASSERT(initial_shape->type == SHAPE_T_OBJECT);
+
+        shape_to_set_on_dest = rb_shape_rebuild_shape(initial_shape, src_shape);
+    }
+
+    RUBY_ASSERT(src_num_ivs <= shape_to_set_on_dest->capacity);
+    if (initial_shape->capacity < shape_to_set_on_dest->capacity) {
+        rb_ensure_iv_list_size(dest, initial_shape->capacity, shape_to_set_on_dest->capacity);
+        dest_buf = ROBJECT_IVPTR(dest);
+    }
+
+    MEMCPY(dest_buf, src_buf, VALUE, src_num_ivs);
+
+    // Fire write barriers
+    for (uint32_t i = 0; i < src_num_ivs; i++) {
+        RB_OBJ_WRITTEN(dest, Qundef, dest_buf[i]);
+    }
+
+    rb_shape_set_shape(dest, shape_to_set_on_dest);
 }
 
 static void
@@ -313,17 +326,6 @@ init_copy(VALUE dest, VALUE obj)
     rb_copy_wb_protected_attribute(dest, obj);
     rb_copy_generic_ivar(dest, obj);
     rb_gc_copy_finalizer(dest, obj);
-
-    rb_shape_t *shape_to_set = rb_shape_get_shape(obj);
-
-    // If the object is frozen, the "dup"'d object will *not* be frozen,
-    // so we need to copy the frozen shape's parent to the new object.
-    if (rb_shape_frozen_shape_p(shape_to_set)) {
-        shape_to_set = rb_shape_get_shape_by_id(shape_to_set->parent_id);
-    }
-
-    // shape ids are different
-    rb_shape_set_shape(dest, shape_to_set);
 
     if (RB_TYPE_P(obj, T_OBJECT)) {
         rb_obj_copy_ivar(dest, obj);
@@ -395,7 +397,7 @@ rb_get_freeze_opt(int argc, VALUE *argv)
     rb_scan_args(argc, argv, "0:", &opt);
     if (!NIL_P(opt)) {
         rb_get_kwargs(opt, keyword_ids, 0, 1, &kwfreeze);
-        if (kwfreeze != Qundef)
+        if (!UNDEF_P(kwfreeze))
             kwfreeze = obj_freeze_opt(kwfreeze);
     }
     return kwfreeze;
@@ -2529,7 +2531,7 @@ rb_mod_const_defined(int argc, VALUE *argv, VALUE mod)
 
 #if 0
         mod = rb_const_search(mod, id, beglen > 0 || !RTEST(recur), RTEST(recur), FALSE);
-        if (mod == Qundef) return Qfalse;
+        if (UNDEF_P(mod)) return Qfalse;
 #else
         if (!RTEST(recur)) {
             if (!rb_const_defined_at(mod, id))
@@ -2774,7 +2776,7 @@ rb_obj_ivar_get(VALUE obj, VALUE iv)
  */
 
 static VALUE
-rb_obj_ivar_set(VALUE obj, VALUE iv, VALUE val)
+rb_obj_ivar_set_m(VALUE obj, VALUE iv, VALUE val)
 {
     ID id = id_for_var(obj, iv, instance);
     if (!id) id = rb_intern_str(iv);
@@ -2959,7 +2961,7 @@ static VALUE
 convert_type_with_id(VALUE val, const char *tname, ID method, int raise, int index)
 {
     VALUE r = rb_check_funcall(val, method, 0, 0);
-    if (r == Qundef) {
+    if (UNDEF_P(r)) {
         if (raise) {
             const char *msg =
                 ((index < 0 ? conv_method_index(rb_id2name(method)) : index)
@@ -3154,6 +3156,9 @@ rb_convert_to_integer(VALUE val, int base, int raise_exception)
     tmp = rb_protect(rb_check_to_int, val, NULL);
     if (RB_INTEGER_TYPE_P(tmp)) return tmp;
     rb_set_errinfo(Qnil);
+    if (!NIL_P(tmp = rb_check_string_type(val))) {
+        return rb_str_convert_to_inum(tmp, base, TRUE, raise_exception);
+    }
 
     if (!raise_exception) {
         VALUE result = rb_protect(rb_check_to_i, val, NULL);
@@ -4380,7 +4385,7 @@ InitVM_Object(void)
     rb_define_method(rb_mKernel, "public_methods", rb_obj_public_methods, -1); /* in class.c */
     rb_define_method(rb_mKernel, "instance_variables", rb_obj_instance_variables, 0); /* in variable.c */
     rb_define_method(rb_mKernel, "instance_variable_get", rb_obj_ivar_get, 1);
-    rb_define_method(rb_mKernel, "instance_variable_set", rb_obj_ivar_set, 2);
+    rb_define_method(rb_mKernel, "instance_variable_set", rb_obj_ivar_set_m, 2);
     rb_define_method(rb_mKernel, "instance_variable_defined?", rb_obj_ivar_defined, 1);
     rb_define_method(rb_mKernel, "remove_instance_variable",
                      rb_obj_remove_instance_variable, 1); /* in variable.c */
@@ -4477,6 +4482,7 @@ InitVM_Object(void)
     rb_define_method(rb_cClass, "initialize", rb_class_initialize, -1);
     rb_define_method(rb_cClass, "superclass", rb_class_superclass, 0);
     rb_define_method(rb_cClass, "subclasses", rb_class_subclasses, 0); /* in class.c */
+    rb_define_method(rb_cClass, "attached_object", rb_class_attached_object, 0); /* in class.c */
     rb_define_alloc_func(rb_cClass, rb_class_s_alloc);
     rb_undef_method(rb_cClass, "extend_object");
     rb_undef_method(rb_cClass, "append_features");
