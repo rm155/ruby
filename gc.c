@@ -9816,11 +9816,13 @@ garbage_collect(rb_objspace_t *objspace, unsigned int reason)
         objspace->profile.prepare_time = getrusage_time();
 #endif
 
-	if (reason & GPR_FLAG_FULL_MARK) {
+	if (reason & GPR_FLAG_GLOBAL) {
 	    rb_objspace_t *os = NULL;
 	    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+		objspace->global_gc_current_target = os;
 		gc_rest(os);
 	    }
+	    objspace->global_gc_current_target = NULL;
 	}
 	else {
 	    gc_rest(objspace);
