@@ -6135,10 +6135,7 @@ gc_sweep_start(rb_objspace_t *objspace)
 #endif
     }
 
-    rb_ractor_t *r = NULL;
-    ccan_list_for_each(&GET_VM()->ractor.set, r, vmlr_node) {
-        rb_gc_ractor_newobj_cache_clear(&r->newobj_cache);
-    }
+    rb_gc_ractor_newobj_cache_clear(&objspace->ractor->newobj_cache);
 }
 
 #if USE_RVARGC
