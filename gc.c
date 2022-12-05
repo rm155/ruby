@@ -7349,14 +7349,7 @@ gc_aging(rb_objspace_t *objspace, VALUE obj)
 static bool
 in_marking_range(rb_objspace_t *objspace, VALUE obj)
 {
-    switch (BUILTIN_TYPE(obj)) {
-	case T_CLASS:
-	case T_MODULE:
-	case T_ICLASS:
-	    return objspace == GET_VM()->objspace; //TODO: Remove once constants referenced by classes become safe
-	default:
-	    return (!objspace->flags.marking_unsorted_root && !FL_TEST(obj, FL_SHAREABLE)) || GET_OBJSPACE_OF_VALUE(obj) == objspace; //TODO: Apply this only to shareable objects once the roots have been sorted
-    }
+    return (!objspace->flags.marking_unsorted_root && !FL_TEST(obj, FL_SHAREABLE)) || GET_OBJSPACE_OF_VALUE(obj) == objspace; //TODO: Apply this only to shareable objects once the roots have been sorted
 }
 
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
