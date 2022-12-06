@@ -10297,7 +10297,8 @@ gc_exit_clock(rb_objspace_t *objspace, enum gc_enter_event event)
 static inline void
 gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier)
 {
-    if(event != gc_enter_event_start && !objspace->flags.during_global_gc) begin_local_gc(objspace);
+    rb_global_space_t *global_space = &rb_global_space;
+    if(event != gc_enter_event_start && !global_space->global_gc_running) begin_local_gc(objspace);
 
     gc_enter_clock(objspace, event);
 
@@ -10355,7 +10356,8 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event)
 
     gc_exit_clock(objspace, event);
 
-    if (event != gc_enter_event_start && !objspace->flags.during_global_gc) {
+    rb_global_space_t *global_space = &rb_global_space;
+    if (event != gc_enter_event_start && !global_space->global_gc_running) {
 	end_local_gc(objspace);
 #if RGENGC_CHECK_MODE >= 2
 	if (event == gc_enter_event_sweep_continue && gc_mode(objspace) == gc_mode_none) {
