@@ -900,8 +900,6 @@ typedef struct rb_objspace {
 
     rb_nativethread_lock_t gc_lock;
     int gc_lock_level; 
-
-    rb_nativethread_lock_t page_stat_lock;
 } rb_objspace_t;
 
 static rb_objspace_t *
@@ -2001,7 +1999,6 @@ rb_objspace_free(rb_objspace_t *objspace)
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
 
     rb_nativethread_lock_destroy(&objspace->gc_lock);
-    rb_nativethread_lock_destroy(&objspace->page_stat_lock);
 
     st_free_table(objspace->shareable_tbl);
 
@@ -2262,7 +2259,6 @@ heap_page_body_allocate(void)
 static struct heap_page *
 heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 {
-    rb_native_mutex_lock(&objspace->page_stat_lock);
     uintptr_t start, end, p;
     struct heap_page *page;
     uintptr_t hi, lo, mid;
@@ -2361,7 +2357,6 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
     page->free_slots = limit;
 
     asan_lock_freelist(page);
-    rb_native_mutex_unlock(&objspace->page_stat_lock);
     return page;
 }
 
@@ -3367,8 +3362,9 @@ heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
     }
 }
 
+PUREFUNC(static inline int is_pointer_to_heap(rb_objspace_t *objspace, void *ptr);)
 static inline int
-is_pointer_to_heap_without_lock(rb_objspace_t *objspace, void *ptr)
+is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
 {
     register uintptr_t p = (uintptr_t)ptr;
     register struct heap_page *page;
@@ -3396,16 +3392,6 @@ is_pointer_to_heap_without_lock(rb_objspace_t *objspace, void *ptr)
         }
     }
     return FALSE;
-}
-
-PUREFUNC(static inline int is_pointer_to_heap(rb_objspace_t *objspace, void *ptr);)
-static inline int
-is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
-{
-    rb_native_mutex_lock(&objspace->page_stat_lock);
-    int ret = is_pointer_to_heap_without_lock(objspace, ptr);
-    rb_native_mutex_unlock(&objspace->page_stat_lock);
-    return ret;
 }
 
 static enum rb_id_table_iterator_result
@@ -4006,8 +3992,6 @@ Init_heap(rb_objspace_t *objspace)
 
     rb_nativethread_lock_initialize(&objspace->gc_lock);
     objspace->gc_lock_level = 0;
-
-    rb_nativethread_lock_initialize(&objspace->page_stat_lock);
 
 #if RGENGC_ESTIMATE_OLDMALLOC
     objspace->rgengc.oldmalloc_increase_limit = gc_params.oldmalloc_limit_min;
@@ -13450,7 +13434,10 @@ wmap_live_p(rb_objspace_t *objspace, VALUE obj)
     if (SPECIAL_CONST_P(obj)) return TRUE;
     /* If is_pointer_to_heap returns false, the page could be in the tomb heap
      * or have already been freed. */
-    if (!is_pointer_to_heap(objspace, (void *)obj)) return FALSE;
+    rb_native_mutex_lock(&objspace->gc_lock);
+    bool valid_page = !is_pointer_to_heap(objspace, (void *)obj);
+    rb_native_mutex_unlock(&objspace->gc_lock);
+    if (valid_page) return FALSE;
 
     void *poisoned = asan_unpoison_object_temporary(obj);
 
