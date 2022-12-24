@@ -9848,7 +9848,7 @@ gc_reset_malloc_info(rb_objspace_t *objspace, bool full_mark)
 #endif
 }
 
-static void
+void
 block_local_gc(void)
 {
     rb_objspace_t *os = NULL;
@@ -9864,11 +9864,23 @@ block_local_gc(void)
     }
 }
 
-static void
+void
 unblock_local_gc(void)
 {
     rb_global_space_t *global_space = &rb_global_space;
     global_space->global_gc_running = false;
+}
+
+void
+gc_rest_global(rb_objspace_t *objspace) {
+    rb_objspace_t *old_target;
+    rb_objspace_t *os;
+    old_target = objspace->global_gc_current_target;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	objspace->global_gc_current_target = os;
+	gc_rest(os);
+    }
+    objspace->global_gc_current_target = old_target;
 }
 
 static int
@@ -9883,12 +9895,7 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
         objspace->profile.prepare_time = getrusage_time();
 #endif
 
-	rb_objspace_t *os = NULL;
-	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
-	    objspace->global_gc_current_target = os;
-	    gc_rest(os);
-	}
-	objspace->global_gc_current_target = NULL;
+	gc_rest_global(objspace);
 
 #if GC_PROFILE_MORE_DETAIL
         objspace->profile.prepare_time = getrusage_time() - objspace->profile.prepare_time;
@@ -9902,7 +9909,8 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
     return ret;
 }
 
-void begin_local_gc(rb_objspace_t *objspace)
+void
+begin_local_gc(rb_objspace_t *objspace)
 {
     rb_global_space_t *global_space = &rb_global_space;
     if(objspace->gc_lock_level == 0) {
@@ -9917,7 +9925,8 @@ void begin_local_gc(rb_objspace_t *objspace)
     objspace->gc_lock_level++;
 }
 
-void end_local_gc(rb_objspace_t *objspace)
+void
+end_local_gc(rb_objspace_t *objspace)
 {
     objspace->gc_lock_level--;
     if(objspace->gc_lock_level == 0) {
@@ -10466,8 +10475,12 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
     }
     if (!RTEST(global)) reason &= ~GPR_FLAG_GLOBAL;
 
-    garbage_collect(objspace, reason);
-    gc_finalize_deferred(objspace);
+    if (!RTEST(global)) begin_local_gc(objspace);
+    if(!GET_VM()->gc_deactivated) {
+	garbage_collect(objspace, reason);
+	gc_finalize_deferred(objspace);
+    }
+    if (!RTEST(global)) end_local_gc(objspace);
 
     return Qnil;
 }
@@ -11609,10 +11622,14 @@ VALUE
 rb_gc_ractor_teardown_cleanup()
 {
     rb_ractor_t *cr = GET_RACTOR();
+    begin_local_gc(cr->local_objspace);
+    if(!GET_VM()->gc_deactivated) {
     cr->during_teardown_cleanup = true;
     rb_gc();
     cr->during_teardown_cleanup = false;
     gc_finalize_deferred(cr->local_objspace);
+    }
+    end_local_gc(cr->local_objspace);
     return Qnil;
 }
 

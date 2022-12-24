@@ -1959,11 +1959,28 @@ ractor_terminal_interrupt_all(rb_vm_t *vm)
     }
 }
 
+void block_local_gc(void);
+void unblock_local_gc(void);
+struct rb_objspace;
+void gc_rest_global(struct rb_objspace *objspace);
+void
+deactivate_gc(rb_vm_t *vm)
+{
+    {
+	block_local_gc();
+
+	gc_rest_global(vm->objspace);
+	vm->gc_deactivated = true;
+	unblock_local_gc();
+    }
+}
+
 void
 rb_ractor_terminate_all(void)
 {
     rb_vm_t *vm = GET_VM();
     rb_ractor_t *cr = vm->ractor.main_ractor;
+    deactivate_gc(vm);
 
     VM_ASSERT(cr == GET_RACTOR()); // only main-ractor's main-thread should kick it.
 

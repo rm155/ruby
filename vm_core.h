@@ -781,6 +781,8 @@ typedef struct rb_vm_struct {
     } default_params;
 
     short redefined_flag[BOP_LAST_];
+
+    unsigned int gc_deactivated: 1;
 } rb_vm_t;
 
 /* default values */
