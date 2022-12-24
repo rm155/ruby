@@ -14,6 +14,7 @@
 *.inc
 *.log
 *.o
+*.o.tmp
 *.obj
 *.old
 *.orig
@@ -25,6 +26,7 @@
 *.sav
 *.sl
 *.so
+*.so.*
 *.swp
 *.yarb
 *~
@@ -145,6 +147,8 @@ lcov*.info
 
 /bin/*.exe
 /bin/*.dll
+/bin/goruby
+/bin/ruby
 
 # /benchmark/
 /benchmark/bm_require.data
@@ -234,12 +238,13 @@ lcov*.info
 
 # MJIT
 /include/ruby-*/*/rb_mjit_min_header-*.h
-/lib/mjit/instruction.rb
+/lib/ruby_vm/mjit/instruction.rb
 /mjit_config.h
 /rb_mjit_header.h
 
 # YJIT
 /yjit-bench
+/yjit_exit_locations.dump
 
 # /wasm/
 /wasm/tests/*.wasm

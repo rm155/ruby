@@ -1,4 +1,3 @@
-//use crate::asm::x86_64::*;
 use crate::asm::*;
 use crate::backend::ir::*;
 use crate::codegen::*;
@@ -17,6 +16,7 @@ use std::mem;
 use std::rc::{Rc};
 use YARVOpnd::*;
 use TempMapping::*;
+use crate::invariants::block_assumptions_free;
 
 // Maximum number of temp value types we keep track of
 pub const MAX_TEMP_TYPES: usize = 8;
@@ -276,7 +276,7 @@ pub enum YARVOpnd {
 /// Code generation context
 /// Contains information we can use to specialize/optimize code
 /// There are a lot of context objects so we try to keep the size small.
-#[derive(Copy, Clone, Default, PartialEq, Debug)]
+#[derive(Clone, Default, PartialEq, Debug)]
 pub struct Context {
     // Number of values currently on the temporary stack
     stack_size: u16,
@@ -492,6 +492,10 @@ pub struct IseqPayload {
 
     // Indexes of code pages used by this this ISEQ
     pub pages: HashSet<usize>,
+
+    // Blocks that are invalidated but are not yet deallocated.
+    // The code GC will free them later.
+    pub dead_blocks: Vec<BlockRef>,
 }
 
 impl IseqPayload {
@@ -599,8 +603,6 @@ pub extern "C" fn rb_yjit_iseq_free(payload: *mut c_void) {
         }
     };
 
-    use crate::invariants;
-
     // Take ownership of the payload with Box::from_raw().
     // It drops right before this function returns.
     // SAFETY: We got the pointer from Box::into_raw().
@@ -609,10 +611,10 @@ pub extern "C" fn rb_yjit_iseq_free(payload: *mut c_void) {
     // Increment the freed iseq count
     incr_counter!(freed_iseq_count);
 
-    // Remove all blocks in the payload from global invariants table.
+    // Free all blocks in the payload
     for versions in &payload.version_map {
         for block in versions {
-            invariants::block_assumptions_free(&block);
+            free_block(block);
         }
     }
 }
@@ -852,7 +854,7 @@ fn find_block_version(blockid: BlockId, ctx: &Context) -> Option<BlockRef> {
 pub fn limit_block_versions(blockid: BlockId, ctx: &Context) -> Context {
     // Guard chains implement limits separately, do nothing
     if ctx.chain_depth > 0 {
-        return *ctx;
+        return ctx.clone();
     }
 
     // If this block version we're about to add will hit the version limit
@@ -873,7 +875,7 @@ pub fn limit_block_versions(blockid: BlockId, ctx: &Context) -> Context {
         return generic_ctx;
     }
 
-    return *ctx;
+    return ctx.clone();
 }
 
 /// Keep track of a block version. Block should be fully constructed.
@@ -937,7 +939,7 @@ impl Block {
         let block = Block {
             blockid,
             end_idx: 0,
-            ctx: *ctx,
+            ctx: ctx.clone(),
             start_addr: None,
             end_addr: None,
             incoming: Vec::new(),
@@ -961,7 +963,7 @@ impl Block {
     }
 
     pub fn get_ctx(&self) -> Context {
-        self.ctx
+        self.ctx.clone()
     }
 
     #[allow(unused)]
@@ -1487,6 +1489,8 @@ fn gen_block_series_body(
             _ => break
         };
 
+        incr_counter!(block_next_count);
+
         // Get id and context for the new block
         let requested_id = last_target.id;
         let requested_ctx = &last_target.ctx;
@@ -1678,7 +1682,6 @@ fn make_branch_entry(block: &BlockRef, gen_fn: BranchGenFn) -> BranchRef {
     return branchref;
 }
 
-
 c_callable! {
     /// Generated code calls this function with the SysV calling convention.
     /// See [set_branch_target].
@@ -1716,7 +1719,7 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
     let target_idx: usize = target_idx.as_usize();
     let target = branch.targets[target_idx].as_ref().unwrap();
     let target_id = target.id;
-    let target_ctx = target.ctx;
+    let target_ctx = target.ctx.clone();
 
     let target_branch_shape = match target_idx {
         0 => BranchShape::Next0,
@@ -1885,7 +1888,7 @@ fn set_branch_target(
             block: Some(blockref.clone()),
             address: block.start_addr,
             id: target,
-            ctx: *ctx,
+            ctx: ctx.clone(),
         }));
 
         return;
@@ -1896,27 +1899,24 @@ fn set_branch_target(
     // Generate an outlined stub that will call branch_stub_hit()
     let stub_addr = ocb.get_write_ptr();
 
-    // Get a raw pointer to the branch while keeping the reference count alive
-    // Here clone increments the strong count by 1
-    // This means the branch stub owns its own reference to the branch
+    // Get a raw pointer to the branch. We clone and then decrement the strong count which overall
+    // balances the strong count. We do this so that we're passing the result of [Rc::into_raw] to
+    // [Rc::from_raw] as required.
+    // We make sure the block housing the branch is still alive when branch_stub_hit() is running.
     let branch_ptr: *const RefCell<Branch> = BranchRef::into_raw(branchref.clone());
+    unsafe { BranchRef::decrement_strong_count(branch_ptr) };
 
     let mut asm = Assembler::new();
     asm.comment("branch stub hit");
 
-    // Call branch_stub_hit(branch_ptr, target_idx, ec)
-    let jump_addr = asm.ccall(
-        branch_stub_hit as *mut u8,
-        vec![
-            Opnd::const_ptr(branch_ptr as *const u8),
-            Opnd::UImm(target_idx as u64),
-            EC,
-        ]
-    );
+    // Set up the arguments unique to this stub for:
+    // branch_stub_hit(branch_ptr, target_idx, ec)
+    asm.mov(C_ARG_OPNDS[0], Opnd::const_ptr(branch_ptr as *const u8));
+    asm.mov(C_ARG_OPNDS[1], target_idx.into());
 
-    // Jump to the address returned by the
-    // branch_stub_hit call
-    asm.jmp_opnd(jump_addr);
+    // Jump to trampoline to call branch_stub_hit()
+    // Not really a side exit, just don't need a padded jump here.
+    asm.jmp(CodegenGlobals::get_branch_stub_hit_trampoline().as_side_exit());
 
     asm.compile(ocb);
 
@@ -1928,9 +1928,38 @@ fn set_branch_target(
             block: None, // no block yet
             address: Some(stub_addr),
             id: target,
-            ctx: *ctx,
+            ctx: ctx.clone(),
         }));
     }
+}
+
+pub fn gen_branch_stub_hit_trampoline(ocb: &mut OutlinedCb) -> CodePtr {
+    let ocb = ocb.unwrap();
+    let code_ptr = ocb.get_write_ptr();
+    let mut asm = Assembler::new();
+
+    // For `branch_stub_hit(branch_ptr, target_idx, ec)`,
+    // `branch_ptr` and `target_idx` is different for each stub,
+    // but the call and what's after is the same. This trampoline
+    // is the unchanging part.
+    // Since this trampoline is static, it allows code GC inside
+    // branch_stub_hit() to free stubs without problems.
+    asm.comment("branch_stub_hit() trampoline");
+    let jump_addr = asm.ccall(
+        branch_stub_hit as *mut u8,
+        vec![
+            C_ARG_OPNDS[0],
+            C_ARG_OPNDS[1],
+            EC,
+        ]
+    );
+
+    // Jump to the address returned by the branch_stub_hit() call
+    asm.jmp_opnd(jump_addr);
+
+    asm.compile(ocb);
+
+    code_ptr
 }
 
 impl Assembler
@@ -2014,7 +2043,7 @@ pub fn gen_direct_jump(jit: &JITState, ctx: &Context, target0: BlockId, asm: &mu
     let mut new_target = BranchTarget {
         block: None,
         address: None,
-        ctx: *ctx,
+        ctx: ctx.clone(),
         id: target0,
     };
 
@@ -2061,7 +2090,7 @@ pub fn defer_compilation(
         panic!("Double defer!");
     }
 
-    let mut next_ctx = *cur_ctx;
+    let mut next_ctx = cur_ctx.clone();
 
     if next_ctx.chain_depth == u8::MAX {
         panic!("max block version chain depth reached!");
@@ -2085,14 +2114,11 @@ pub fn defer_compilation(
         gen_jump_branch(asm, dst_addr, None, BranchShape::Default);
     }
     asm.mark_branch_end(&branch_rc);
+
+    incr_counter!(defer_count);
 }
 
-// Remove all references to a block then free it.
-pub fn free_block(blockref: &BlockRef) {
-    use crate::invariants::*;
-
-    block_assumptions_free(blockref);
-
+fn remove_from_graph(blockref: &BlockRef) {
     let block = blockref.borrow();
 
     // Remove this block from the predecessor's targets
@@ -2123,6 +2149,19 @@ pub fn free_block(blockref: &BlockRef) {
             }
         }
     }
+}
+
+/// Remove most references to a block to deallocate it.
+/// Does not touch references from iseq payloads.
+pub fn free_block(blockref: &BlockRef) {
+    block_assumptions_free(blockref);
+
+    remove_from_graph(blockref);
+
+    // Branches have a Rc pointing at the block housing them.
+    // Break the cycle.
+    blockref.borrow_mut().incoming.clear();
+    blockref.borrow_mut().outgoing.clear();
 
     // No explicit deallocation here as blocks are ref-counted.
 }
@@ -2246,7 +2285,7 @@ pub fn invalidate_block_version(blockref: &BlockRef) {
                 block: None,
                 address: block.entry_exit,
                 id: block.blockid,
-                ctx: block.ctx,
+                ctx: block.ctx.clone(),
             }));
         }
 
@@ -2293,12 +2332,37 @@ pub fn invalidate_block_version(blockref: &BlockRef) {
     // FIXME:
     // Call continuation addresses on the stack can also be atomically replaced by jumps going to the stub.
 
-    free_block(blockref);
+    delayed_deallocation(blockref);
 
     ocb.unwrap().mark_all_executable();
     cb.mark_all_executable();
 
     incr_counter!(invalidation_count);
+}
+
+// We cannot deallocate blocks immediately after invalidation since there
+// could be stubs waiting to access branch pointers. Return stubs can do
+// this since patching the code for setting up return addresses does not
+// affect old return addresses that are already set up to use potentially
+// invalidated branch pointers. Example:
+//   def foo(n)
+//     if n == 2
+//       return 1.times { Object.define_method(:foo) {} }
+//     end
+//
+//     foo(n + 1)
+//   end
+//   p foo(1)
+pub fn delayed_deallocation(blockref: &BlockRef) {
+    block_assumptions_free(blockref);
+
+    // We do this another time when we deem that it's safe
+    // to deallocate in case there is another Ractor waiting to acquire the
+    // VM lock inside branch_stub_hit().
+    remove_from_graph(blockref);
+
+    let payload = get_iseq_payload(blockref.borrow().blockid.iseq).unwrap();
+    payload.dead_blocks.push(blockref.clone());
 }
 
 #[cfg(test)]

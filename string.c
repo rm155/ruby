@@ -1107,7 +1107,7 @@ rb_str_conv_enc_opts(VALUE str, rb_encoding *from, rb_encoding *to, int ecflags,
     if (!from) from = rb_enc_get(str);
     if (from == to) return str;
     if ((rb_enc_asciicompat(to) && is_enc_ascii_string(str, from)) ||
-        to == rb_ascii8bit_encoding()) {
+        rb_is_ascii8bit_enc(to)) {
         if (STR_ENC_GET(str) != to) {
             str = rb_str_dup(str);
             rb_enc_associate(str, to);
@@ -4473,7 +4473,7 @@ static VALUE get_pat(VALUE);
  *    match(pattern, offset = 0) -> matchdata or nil
  *    match(pattern, offset = 0) {|matchdata| ... } -> object
  *
- *  Returns a \Matchdata object (or +nil+) based on +self+ and the given +pattern+.
+ *  Returns a \MatchData object (or +nil+) based on +self+ and the given +pattern+.
  *
  *  Note: also updates Regexp@Special+global+variables.
  *
@@ -4529,7 +4529,7 @@ rb_str_match_m(int argc, VALUE *argv, VALUE str)
  *  Computes +regexp+ by converting +pattern+ (if not already a \Regexp).
  *    regexp = Regexp.new(pattern)
  *
- *  Returns +true+ if <tt>self+.match(regexp)</tt> returns a \Matchdata object,
+ *  Returns +true+ if <tt>self+.match(regexp)</tt> returns a \MatchData object,
  *  +false+ otherwise:
  *
  *    'foo'.match?(/o/) # => true

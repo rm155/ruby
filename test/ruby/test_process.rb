@@ -3,7 +3,6 @@
 require 'test/unit'
 require 'tempfile'
 require 'timeout'
-require 'io/wait'
 require 'rbconfig'
 
 class TestProcess < Test::Unit::TestCase
@@ -1817,7 +1816,7 @@ class TestProcess < Test::Unit::TestCase
 
     with_tmpchdir do
       assert_nothing_raised('[ruby-dev:12261]') do
-        EnvUtil.timeout(3) do
+        EnvUtil.timeout(10) do
           pid = spawn('yes | ls')
           Process.waitpid pid
         end

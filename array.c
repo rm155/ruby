@@ -226,8 +226,15 @@ ary_embeddable_p(long capa)
 bool
 rb_ary_embeddable_p(VALUE ary)
 {
-    // if the array is shared or a shared root then it's not moveable
-    return !(ARY_SHARED_P(ary) || ARY_SHARED_ROOT_P(ary));
+    /* An array cannot be turned embeddable when the array is:
+     *  - Shared root: other objects may point to the buffer of this array
+     *    so we cannot make it embedded.
+     *  - Frozen: this array may also be a shared root without the shared root
+     *    flag.
+     *  - Shared: we don't want to re-embed an array that points to a shared
+     *    root (to save memory).
+     */
+    return !(ARY_SHARED_ROOT_P(ary) || OBJ_FROZEN(ary) || ARY_SHARED_P(ary));
 }
 
 size_t
@@ -242,7 +249,7 @@ rb_ary_size_as_embedded(VALUE ary)
         real_size = ary_embed_size(ARY_HEAP_CAPA(ary));
     }
     else {
-        real_size = sizeof(struct RString);
+        real_size = sizeof(struct RArray);
     }
     return real_size;
 }
@@ -3456,7 +3463,6 @@ rb_ary_rotate_m(int argc, VALUE *argv, VALUE ary)
 struct ary_sort_data {
     VALUE ary;
     VALUE receiver;
-    struct cmp_opt_data cmp_opt;
 };
 
 static VALUE
@@ -3502,15 +3508,15 @@ sort_2(const void *ap, const void *bp, void *dummy)
     VALUE a = *(const VALUE *)ap, b = *(const VALUE *)bp;
     int n;
 
-    if (FIXNUM_P(a) && FIXNUM_P(b) && CMP_OPTIMIZABLE(data->cmp_opt, Integer)) {
+    if (FIXNUM_P(a) && FIXNUM_P(b) && CMP_OPTIMIZABLE(INTEGER)) {
         if ((long)a > (long)b) return 1;
         if ((long)a < (long)b) return -1;
         return 0;
     }
-    if (STRING_P(a) && STRING_P(b) && CMP_OPTIMIZABLE(data->cmp_opt, String)) {
+    if (STRING_P(a) && STRING_P(b) && CMP_OPTIMIZABLE(STRING)) {
         return rb_str_cmp(a, b);
     }
-    if (RB_FLOAT_TYPE_P(a) && CMP_OPTIMIZABLE(data->cmp_opt, Float)) {
+    if (RB_FLOAT_TYPE_P(a) && CMP_OPTIMIZABLE(FLOAT)) {
         return rb_float_cmp(a, b);
     }
 
@@ -3574,8 +3580,6 @@ rb_ary_sort_bang(VALUE ary)
         RBASIC_CLEAR_CLASS(tmp);
         data.ary = tmp;
         data.receiver = ary;
-        data.cmp_opt.opt_methods = 0;
-        data.cmp_opt.opt_inited = 0;
         RARRAY_PTR_USE(tmp, ptr, {
             ruby_qsort(ptr, len, sizeof(VALUE),
                        rb_block_given_p()?sort_1:sort_2, &data);
@@ -6056,7 +6060,6 @@ ary_max_opt_string(VALUE ary, long i, VALUE vmax)
 static VALUE
 rb_ary_max(int argc, VALUE *argv, VALUE ary)
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     VALUE result = Qundef, v;
     VALUE num;
     long i;
@@ -6076,13 +6079,13 @@ rb_ary_max(int argc, VALUE *argv, VALUE ary)
     else if (n > 0) {
         result = RARRAY_AREF(ary, 0);
         if (n > 1) {
-            if (FIXNUM_P(result) && CMP_OPTIMIZABLE(cmp_opt, Integer)) {
+            if (FIXNUM_P(result) && CMP_OPTIMIZABLE(INTEGER)) {
                 return ary_max_opt_fixnum(ary, 1, result);
             }
-            else if (STRING_P(result) && CMP_OPTIMIZABLE(cmp_opt, String)) {
+            else if (STRING_P(result) && CMP_OPTIMIZABLE(STRING)) {
                 return ary_max_opt_string(ary, 1, result);
             }
-            else if (RB_FLOAT_TYPE_P(result) && CMP_OPTIMIZABLE(cmp_opt, Float)) {
+            else if (RB_FLOAT_TYPE_P(result) && CMP_OPTIMIZABLE(FLOAT)) {
                 return ary_max_opt_float(ary, 1, result);
             }
             else {
@@ -6225,7 +6228,6 @@ ary_min_opt_string(VALUE ary, long i, VALUE vmin)
 static VALUE
 rb_ary_min(int argc, VALUE *argv, VALUE ary)
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     VALUE result = Qundef, v;
     VALUE num;
     long i;
@@ -6245,13 +6247,13 @@ rb_ary_min(int argc, VALUE *argv, VALUE ary)
     else if (n > 0) {
         result = RARRAY_AREF(ary, 0);
         if (n > 1) {
-            if (FIXNUM_P(result) && CMP_OPTIMIZABLE(cmp_opt, Integer)) {
+            if (FIXNUM_P(result) && CMP_OPTIMIZABLE(INTEGER)) {
                 return ary_min_opt_fixnum(ary, 1, result);
             }
-            else if (STRING_P(result) && CMP_OPTIMIZABLE(cmp_opt, String)) {
+            else if (STRING_P(result) && CMP_OPTIMIZABLE(STRING)) {
                 return ary_min_opt_string(ary, 1, result);
             }
-            else if (RB_FLOAT_TYPE_P(result) && CMP_OPTIMIZABLE(cmp_opt, Float)) {
+            else if (RB_FLOAT_TYPE_P(result) && CMP_OPTIMIZABLE(FLOAT)) {
                 return ary_min_opt_float(ary, 1, result);
             }
             else {
@@ -8737,7 +8739,7 @@ rb_ary_deconstruct(VALUE ary)
  *
  *  - #pop: Removes and returns the last element.
  *  - #shift:  Removes and returns the first element.
- *  - #compact!: Removes all non-+nil+ elements.
+ *  - #compact!: Removes all +nil+ elements.
  *  - #delete: Removes elements equal to a given object.
  *  - #delete_at: Removes the element at a given offset.
  *  - #delete_if: Removes elements specified by a given block.

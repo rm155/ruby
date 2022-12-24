@@ -1724,8 +1724,14 @@ mnew_internal(const rb_method_entry_t *me, VALUE klass, VALUE iclass,
 
     method = TypedData_Make_Struct(mclass, struct METHOD, &method_data_type, data);
 
-    RB_OBJ_WRITE(method, &data->recv, obj);
-    RB_OBJ_WRITE(method, &data->klass, klass);
+    if (obj == Qundef) {
+        RB_OBJ_WRITE(method, &data->recv, Qundef);
+        RB_OBJ_WRITE(method, &data->klass, Qundef);
+    }
+    else {
+        RB_OBJ_WRITE(method, &data->recv, obj);
+        RB_OBJ_WRITE(method, &data->klass, klass);
+    }
     RB_OBJ_WRITE(method, &data->iclass, iclass);
     RB_OBJ_WRITE(method, &data->owner, original_me->owner);
     RB_OBJ_WRITE(method, &data->me, me);
@@ -1836,6 +1842,22 @@ method_eq(VALUE method, VALUE other)
 
 /*
  * call-seq:
+ *   meth.eql?(other_meth)  -> true or false
+ *   meth == other_meth  -> true or false
+ *
+ * Two unbound method objects are equal if they refer to the same
+ * method definition.
+ *
+ *    Array.instance_method(:each_slice) == Enumerable.instance_method(:each_slice)
+ *    #=> true
+ *
+ *    Array.instance_method(:sum) == Enumerable.instance_method(:sum)
+ *    #=> false, Array redefines the method for efficiency
+ */
+#define unbound_method_eq method_eq
+
+/*
+ * call-seq:
  *    meth.hash   -> integer
  *
  * Returns a hash value corresponding to the method object.
@@ -1876,9 +1898,9 @@ method_unbind(VALUE obj)
     method = TypedData_Make_Struct(rb_cUnboundMethod, struct METHOD,
                                    &method_data_type, data);
     RB_OBJ_WRITE(method, &data->recv, Qundef);
-    RB_OBJ_WRITE(method, &data->klass, orig->klass);
+    RB_OBJ_WRITE(method, &data->klass, Qundef);
     RB_OBJ_WRITE(method, &data->iclass, orig->iclass);
-    RB_OBJ_WRITE(method, &data->owner, orig->owner);
+    RB_OBJ_WRITE(method, &data->owner, orig->me->owner);
     RB_OBJ_WRITE(method, &data->me, rb_method_entry_clone(orig->me));
 
     return method;
@@ -3139,7 +3161,11 @@ method_inspect(VALUE method)
         defined_class = RBASIC_CLASS(defined_class);
     }
 
-    if (FL_TEST(mklass, FL_SINGLETON)) {
+    if (data->recv == Qundef) {
+        // UnboundMethod
+        rb_str_buf_append(str, rb_inspect(defined_class));
+    }
+    else if (FL_TEST(mklass, FL_SINGLETON)) {
         VALUE v = rb_ivar_get(mklass, attached);
 
         if (UNDEF_P(data->recv)) {
@@ -4324,8 +4350,8 @@ Init_Proc(void)
     rb_cUnboundMethod = rb_define_class("UnboundMethod", rb_cObject);
     rb_undef_alloc_func(rb_cUnboundMethod);
     rb_undef_method(CLASS_OF(rb_cUnboundMethod), "new");
-    rb_define_method(rb_cUnboundMethod, "==", method_eq, 1);
-    rb_define_method(rb_cUnboundMethod, "eql?", method_eq, 1);
+    rb_define_method(rb_cUnboundMethod, "==", unbound_method_eq, 1);
+    rb_define_method(rb_cUnboundMethod, "eql?", unbound_method_eq, 1);
     rb_define_method(rb_cUnboundMethod, "hash", method_hash, 0);
     rb_define_method(rb_cUnboundMethod, "clone", method_clone, 0);
     rb_define_method(rb_cUnboundMethod, "arity", method_arity_m, 0);

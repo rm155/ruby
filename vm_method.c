@@ -4,6 +4,7 @@
 
 #include "id_table.h"
 #include "yjit.h"
+#include "mjit.h"
 
 #define METHOD_DEBUG 0
 
@@ -124,6 +125,7 @@ vm_cme_invalidate(rb_callable_method_entry_t *cme)
     RB_DEBUG_COUNTER_INC(cc_cme_invalidate);
 
     rb_yjit_cme_invalidate(cme);
+    rb_mjit_cme_invalidate(cme);
 }
 
 static int
@@ -149,6 +151,7 @@ rb_clear_constant_cache_for_id(ID id)
     }
 
     rb_yjit_constant_state_changed(id);
+    rb_mjit_constant_state_changed(id);
 }
 
 static void
@@ -188,6 +191,7 @@ clear_method_cache_by_id_in_class(VALUE klass, ID mid)
         if (cc_tbl && rb_id_table_lookup(cc_tbl, mid, &ccs_data)) {
             struct rb_class_cc_entries *ccs = (struct rb_class_cc_entries *)ccs_data;
             rb_yjit_cme_invalidate((rb_callable_method_entry_t *)ccs->cme);
+            rb_mjit_cme_invalidate((rb_callable_method_entry_t *)ccs->cme);
             if (NIL_P(ccs->cme->owner)) invalidate_negative_cache(mid);
             rb_vm_ccs_free(ccs);
             rb_id_table_delete(cc_tbl, mid);
@@ -200,6 +204,7 @@ clear_method_cache_by_id_in_class(VALUE klass, ID mid)
             VALUE cme;
             if (rb_yjit_enabled_p() && rb_id_table_lookup(cm_tbl, mid, &cme)) {
                 rb_yjit_cme_invalidate((rb_callable_method_entry_t *)cme);
+                rb_mjit_cme_invalidate((rb_callable_method_entry_t *)cme);
             }
             rb_id_table_delete(cm_tbl, mid);
             RB_DEBUG_COUNTER_INC(cc_invalidate_leaf_callable);
@@ -1385,12 +1390,14 @@ callable_method_entry_or_negative(VALUE klass, ID mid, VALUE *defined_class_ptr)
 // This is exposed for YJIT so that we can make assumptions that methods are
 // not defined.
 const rb_callable_method_entry_t *
-rb_callable_method_entry_or_negative(VALUE klass, ID mid) {
+rb_callable_method_entry_or_negative(VALUE klass, ID mid)
+{
     return callable_method_entry_or_negative(klass, mid, NULL);
 }
 
 static const rb_callable_method_entry_t *
-callable_method_entry(VALUE klass, ID mid, VALUE *defined_class_ptr) {
+callable_method_entry(VALUE klass, ID mid, VALUE *defined_class_ptr)
+{
     const rb_callable_method_entry_t *cme;
     cme = callable_method_entry_or_negative(klass, mid, defined_class_ptr);
     return !UNDEFINED_METHOD_ENTRY_P(cme) ? cme : NULL;
@@ -1541,8 +1548,8 @@ remove_method(VALUE klass, ID mid)
     rb_method_entry_t *me = 0;
     VALUE self = klass;
 
-    klass = RCLASS_ORIGIN(klass);
     rb_class_modify_check(klass);
+    klass = RCLASS_ORIGIN(klass);
     if (mid == object_id || mid == id__send__ || mid == idInitialize) {
         rb_warn("removing `%s' may cause serious problems", rb_id2name(mid));
     }

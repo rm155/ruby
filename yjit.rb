@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# This module allows for introspection of YJIT, CRuby's experimental in-process
+# This module allows for introspection of YJIT, CRuby's in-process
 # just-in-time compiler. This module exists only to help develop YJIT, as such,
 # everything in the module is highly implementation specific and comes with no
 # API stability guarantee whatsoever.
@@ -14,6 +14,7 @@ module RubyVM::YJIT
     Primitive.cexpr! 'RBOOL(rb_yjit_enabled_p())'
   end
 
+  # Check if --yjit-stats is used.
   def self.stats_enabled?
     Primitive.rb_yjit_stats_enabled_p
   end
@@ -209,7 +210,7 @@ module RubyVM::YJIT
     Primitive.rb_yjit_code_gc
   end
 
-  def self.simulate_oom!
+  def self.simulate_oom! # :nodoc:
     Primitive.rb_yjit_simulate_oom_bang
   end
 
@@ -224,7 +225,7 @@ module RubyVM::YJIT
   class << self
     private
 
-    def _dump_locations
+    def _dump_locations # :nodoc:
       return unless trace_exit_locations_enabled?
 
       filename = "yjit_exit_locations.dump"
@@ -234,7 +235,7 @@ module RubyVM::YJIT
     end
 
     # Format and print out counters
-    def _print_stats
+    def _print_stats # :nodoc:
       stats = runtime_stats
       return unless stats
 
@@ -261,6 +262,8 @@ module RubyVM::YJIT
       $stderr.puts "compiled_iseq_count:   " + ("%10d" % stats[:compiled_iseq_count])
       $stderr.puts "compiled_block_count:  " + ("%10d" % stats[:compiled_block_count])
       $stderr.puts "compiled_branch_count: " + ("%10d" % stats[:compiled_branch_count])
+      $stderr.puts "block_next_count:      " + ("%10d" % stats[:block_next_count])
+      $stderr.puts "defer_count:           " + ("%10d" % stats[:defer_count])
       $stderr.puts "freed_iseq_count:      " + ("%10d" % stats[:freed_iseq_count])
       $stderr.puts "invalidation_count:    " + ("%10d" % stats[:invalidation_count])
       $stderr.puts "constant_state_bumps:  " + ("%10d" % stats[:constant_state_bumps])
@@ -289,7 +292,7 @@ module RubyVM::YJIT
       print_sorted_exit_counts(stats, prefix: "exit_")
     end
 
-    def print_sorted_exit_counts(stats, prefix:, how_many: 20, left_pad: 4)
+    def print_sorted_exit_counts(stats, prefix:, how_many: 20, left_pad: 4) # :nodoc:
       exits = []
       stats.each do |k, v|
         if k.start_with?(prefix)
@@ -297,14 +300,14 @@ module RubyVM::YJIT
         end
       end
 
-      exits = exits.sort_by { |name, count| -count }[0...how_many]
+      exits = exits.select { |_name, count| count > 0 }.sort_by { |_name, count| -count }.first(how_many)
       total_exits = total_exit_count(stats)
 
       if total_exits > 0
-        top_n_total = exits.map { |name, count| count }.sum
+        top_n_total = exits.sum { |name, count| count }
         top_n_exit_pct = 100.0 * top_n_total / total_exits
 
-        $stderr.puts "Top-#{how_many} most frequent exit ops (#{"%.1f" % top_n_exit_pct}% of exits):"
+        $stderr.puts "Top-#{exits.size} most frequent exit ops (#{"%.1f" % top_n_exit_pct}% of exits):"
 
         longest_insn_name_len = exits.map { |name, count| name.length }.max
         exits.each do |name, count|
@@ -320,7 +323,7 @@ module RubyVM::YJIT
       end
     end
 
-    def total_exit_count(stats, prefix: "exit_")
+    def total_exit_count(stats, prefix: "exit_") # :nodoc:
       total = 0
       stats.each do |k,v|
         total += v if k.start_with?(prefix)
@@ -328,7 +331,7 @@ module RubyVM::YJIT
       total
     end
 
-    def print_counters(counters, prefix:, prompt:)
+    def print_counters(counters, prefix:, prompt:) # :nodoc:
       $stderr.puts(prompt)
       counters = counters.filter { |key, _| key.start_with?(prefix) }
       counters.filter! { |_, value| value != 0 }

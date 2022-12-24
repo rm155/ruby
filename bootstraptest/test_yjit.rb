@@ -2173,7 +2173,7 @@ assert_equal '[[:c_return, :String, :string_alias, "events_to_str"]]', %q{
   events.compiled(events)
 
   events
-}
+} unless defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled? # MJIT calls extra Ruby methods
 
 # test enabling a TracePoint that targets a particular line in a C method call
 assert_equal '[true]', %q{
@@ -2255,7 +2255,7 @@ assert_equal '[[:c_call, :itself]]', %q{
   tp.enable { shouldnt_compile }
 
   events
-}
+} unless defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled? # MJIT calls extra Ruby methods
 
 # test enabling c_return tracing before compiling
 assert_equal '[[:c_return, :itself, main]]', %q{
@@ -2270,7 +2270,7 @@ assert_equal '[[:c_return, :itself, main]]', %q{
   tp.enable { shouldnt_compile }
 
   events
-}
+} unless defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled? # MJIT calls extra Ruby methods
 
 # test c_call invalidation
 assert_equal '[[:c_call, :itself]]', %q{
@@ -3422,4 +3422,37 @@ assert_equal '1', %q{
 
   bar { }
   bar { }
+}
+
+# test for return stub lifetime issue
+assert_equal '1', %q{
+  def foo(n)
+    if n == 2
+      return 1.times { Object.define_method(:foo) {} }
+    end
+
+    foo(n + 1)
+  end
+
+  foo(1)
+}
+
+# case-when with redefined ===
+assert_equal 'ok', %q{
+  class Symbol
+    def ===(a)
+      true
+    end
+  end
+
+  def cw(arg)
+    case arg
+    when :b
+      :ok
+    when 4
+      :ng
+    end
+  end
+
+  cw(4)
 }

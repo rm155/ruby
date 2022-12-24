@@ -16,6 +16,7 @@
 #include "encindex.h"
 #include "hrtime.h"
 #include "internal.h"
+#include "internal/encoding.h"
 #include "internal/hash.h"
 #include "internal/imemo.h"
 #include "internal/re.h"
@@ -1739,6 +1740,13 @@ rb_reg_search_set_match(VALUE re, VALUE str, long pos, int reverse, int set_back
     if (set_backref_str) {
         RMATCH(match)->str = rb_str_new4(str);
     }
+    else {
+        /* Note that a MatchData object with RMATCH(match)->str == 0 is incomplete!
+         * We need to hide the object from ObjectSpace.each_object.
+         * https://bugs.ruby-lang.org/issues/19159
+         */
+        rb_obj_hide(match);
+    }
 
     RMATCH(match)->regexp = re;
     rb_backref_set(match);
@@ -2859,7 +2867,7 @@ unescape_nonascii(const char *p, const char *end, rb_encoding *enc,
               case 'C': /* \C-X, \C-\M-X */
               case 'M': /* \M-X, \M-\C-X, \M-\cX */
                 p = p-2;
-                if (enc == rb_usascii_encoding()) {
+                if (rb_is_usascii_enc(enc)) {
                     const char *pbeg = p;
                     int byte = read_escaped_byte(&p, end, err);
                     if (byte == -1) return -1;
@@ -3742,9 +3750,20 @@ set_timeout(rb_hrtime_t *hrt, VALUE timeout)
     double2hrtime(hrt, timeout_d);
 }
 
+struct reg_init_args {
+    VALUE str;
+    VALUE timeout;
+    rb_encoding *enc;
+    int flags;
+};
+
+static VALUE reg_extract_args(int argc, VALUE *argv, struct reg_init_args *args);
+static VALUE reg_init_args(VALUE self, VALUE str, rb_encoding *enc, int flags);
+void rb_warn_deprecated_to_remove(const char *removal, const char *fmt, const char *suggest, ...);
+
 /*
  *  call-seq:
- *    Regexp.new(string, options = 0, n_flag = nil, timeout: nil) -> regexp
+ *    Regexp.new(string, options = 0, timeout: nil) -> regexp
  *    Regexp.new(regexp, timeout: nil) -> regexp
  *
  *  With argument +string+ given, returns a new regexp with the given string
@@ -3762,23 +3781,17 @@ set_timeout(rb_hrtime_t *hrt, VALUE timeout)
  *      Regexp.new('foo', 'im') # => /foo/im
  *
  *  - The logical OR of one or more of the constants
- *    Regexp::EXTENDED, Regexp::IGNORECASE, and Regexp::MULTILINE:
+ *    Regexp::EXTENDED, Regexp::IGNORECASE, Regexp::MULTILINE, and
+ *    Regexp::NOENCODING:
  *
  *      Regexp.new('foo', Regexp::IGNORECASE) # => /foo/i
  *      Regexp.new('foo', Regexp::EXTENDED)   # => /foo/x
  *      Regexp.new('foo', Regexp::MULTILINE)  # => /foo/m
+ *      Regexp.new('foo', Regexp::NOENCODING)  # => /foo/n
  *      flags = Regexp::IGNORECASE | Regexp::EXTENDED |  Regexp::MULTILINE
  *      Regexp.new('foo', flags)              # => /foo/mix
  *
  *  - +nil+ or +false+, which is ignored.
- *
- *  If optional argument +n_flag+ if it is a string starts with
- *  <code>'n'</code> or <code>'N'</code>, the encoding of +string+ is
- *  ignored and the new regexp encoding is fixed to +ASCII-8BIT+ or
- *  +US-ASCII+, by its content.
- *
- *      Regexp.new('foo', nil, 'n')     # => /foo/n
- *      Regexp.new("\u3042", nil, 'n')  # => /\xE3\x81\x82/n
  *
  *  If optional keyword argument +timeout+ is given,
  *  its float value overrides the timeout interval for the class,
@@ -3805,26 +3818,43 @@ set_timeout(rb_hrtime_t *hrt, VALUE timeout)
 static VALUE
 rb_reg_initialize_m(int argc, VALUE *argv, VALUE self)
 {
+    struct reg_init_args args;
+
+    reg_extract_args(argc, argv, &args);
+    reg_init_args(self, args.str, args.enc, args.flags);
+
+    set_timeout(&RREGEXP_PTR(self)->timelimit, args.timeout);
+
+    return self;
+}
+
+static VALUE
+reg_extract_args(int argc, VALUE *argv, struct reg_init_args *args)
+{
     int flags = 0;
-    VALUE str;
     rb_encoding *enc = 0;
+    VALUE str, src, opts = Qundef, n_flag = Qundef, kwargs;
+    VALUE re = Qnil;
 
-    VALUE src, opts = Qundef, n_flag = Qundef, kwargs, timeout = Qnil;
+    argc = rb_scan_args(argc, argv, "12:", &src, &opts, &n_flag, &kwargs);
 
-    rb_scan_args(argc, argv, "12:", &src, &opts, &n_flag, &kwargs);
-
+    args->timeout = Qnil;
     if (!NIL_P(kwargs)) {
         static ID keywords[1];
         if (!keywords[0]) {
             keywords[0] = rb_intern_const("timeout");
         }
-        rb_get_kwargs(kwargs, keywords, 0, 1, &timeout);
+        rb_get_kwargs(kwargs, keywords, 0, 1, &args->timeout);
+    }
+
+    if (argc == 3) {
+        rb_warn_deprecated_to_remove("3.3", "3rd argument to Regexp.new", "2nd argument");
     }
 
     if (RB_TYPE_P(src, T_REGEXP)) {
-        VALUE re = src;
+        re = src;
 
-        if (opts != Qnil) {
+        if (!NIL_P(opts)) {
             rb_warn("flags ignored");
         }
         rb_reg_check(re);
@@ -3839,27 +3869,28 @@ rb_reg_initialize_m(int argc, VALUE *argv, VALUE self)
             else if (!NIL_P(opts) && rb_bool_expected(opts, "ignorecase", FALSE))
                 flags = ONIG_OPTION_IGNORECASE;
         }
-        if (!UNDEF_P(n_flag) && !NIL_P(n_flag)) {
+        if (!NIL_OR_UNDEF_P(n_flag)) {
             char *kcode = StringValuePtr(n_flag);
             if (kcode[0] == 'n' || kcode[0] == 'N') {
                 enc = rb_ascii8bit_encoding();
                 flags |= ARG_ENCODING_NONE;
             }
-            else {
-                rb_category_warn(RB_WARN_CATEGORY_DEPRECATED, "encoding option is ignored - %s", kcode);
-            }
         }
         str = StringValue(src);
     }
+    args->str = str;
+    args->enc = enc;
+    args->flags = flags;
+    return re;
+}
+
+static VALUE
+reg_init_args(VALUE self, VALUE str, rb_encoding *enc, int flags)
+{
     if (enc && rb_enc_get(str) != enc)
         rb_reg_init_str_enc(self, str, enc, flags);
     else
         rb_reg_init_str(self, str, flags);
-
-    regex_t *reg = RREGEXP_PTR(self);
-
-    set_timeout(&reg->timelimit, timeout);
-
     return self;
 }
 
@@ -4184,6 +4215,40 @@ rb_reg_s_union_m(VALUE self, VALUE args)
         return rb_reg_s_union(self, v);
     }
     return rb_reg_s_union(self, args);
+}
+
+/*
+ *  call-seq:
+ *    Regexp.linear_time?(re)
+ *    Regexp.linear_time?(string, options = 0)
+ *
+ *  Returns +true+ if matching against <tt>re</tt> can be
+ *  done in linear time to the input string.
+ *
+ *    Regexp.linear_time?(/re/) # => true
+ *
+ *  Note that this is a property of the ruby interpreter, not of the argument
+ *  regular expression.  Identical regexp can or cannot run in linear time
+ *  depending on your ruby binary.  Neither forward nor backward compatibility
+ *  is guaranteed about the return value of this method.  Our current algorithm
+ *  is (*1) but this is subject to change in the future.  Alternative
+ *  implementations can also behave differently.  They might always return
+ *  false for everything.
+ *
+ *  (*1): https://doi.org/10.1109/SP40001.2021.00032
+ *
+ */
+static VALUE
+rb_reg_s_linear_time_p(int argc, VALUE *argv, VALUE self)
+{
+    struct reg_init_args args;
+    VALUE re = reg_extract_args(argc, argv, &args);
+
+    if (NIL_P(re)) {
+        re = reg_init_args(rb_reg_alloc(), args.str, args.enc, args.flags);
+    }
+
+    return RBOOL(onig_check_linear_time(RREGEXP_PTR(re)));
 }
 
 /* :nodoc: */
@@ -4563,6 +4628,7 @@ Init_Regexp(void)
     rb_define_singleton_method(rb_cRegexp, "union", rb_reg_s_union_m, -2);
     rb_define_singleton_method(rb_cRegexp, "last_match", rb_reg_s_last_match, -1);
     rb_define_singleton_method(rb_cRegexp, "try_convert", rb_reg_s_try_convert, 1);
+    rb_define_singleton_method(rb_cRegexp, "linear_time?", rb_reg_s_linear_time_p, -1);
 
     rb_define_method(rb_cRegexp, "initialize", rb_reg_initialize_m, -1);
     rb_define_method(rb_cRegexp, "initialize_copy", rb_reg_init_copy, 1);

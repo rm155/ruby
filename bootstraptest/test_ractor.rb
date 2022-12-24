@@ -284,7 +284,8 @@ assert_equal 30.times.map { 'ok' }.to_s, %q{
     test i
   }
 } unless ENV['RUN_OPTS'] =~ /--mjit-call-threshold=5/ || # This always fails with --mjit-wait --mjit-call-threshold=5
-  (ENV.key?('TRAVIS') && ENV['TRAVIS_CPU_ARCH'] == 'arm64') # https://bugs.ruby-lang.org/issues/17878
+  (ENV.key?('TRAVIS') && ENV['TRAVIS_CPU_ARCH'] == 'arm64') || # https://bugs.ruby-lang.org/issues/17878
+  true # too flaky everywhere http://ci.rvm.jp/results/trunk@ruby-sp1/4321096
 
 # Exception for empty select
 assert_match /specify at least one ractor/, %q{
@@ -501,7 +502,7 @@ assert_equal '[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]', %q{
     rs.delete r
     n
   }.sort
-}
+} unless /mswin/ =~ RUBY_PLATFORM # randomly hangs on mswin https://github.com/ruby/ruby/actions/runs/3753871445/jobs/6377551069#step:20:131
 
 # Ractor.select also support multiple take, receive and yield
 assert_equal '[true, true, true]', %q{
@@ -1472,7 +1473,7 @@ assert_equal "#{N}#{N}", %Q{
 }
 
 # enc_table
-assert_equal "#{N/10}", %Q{
+assert_equal "100", %Q{
   Ractor.new do
     loop do
       Encoding.find("test-enc-#{rand(5_000)}").inspect
@@ -1481,7 +1482,7 @@ assert_equal "#{N/10}", %Q{
   end
 
   src = Encoding.find("UTF-8")
-  #{N/10}.times{|i|
+  100.times{|i|
     src.replicate("test-enc-\#{i}")
   }
 }

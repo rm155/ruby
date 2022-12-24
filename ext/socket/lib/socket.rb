@@ -1,7 +1,11 @@
 # frozen_string_literal: true
 
 require 'socket.so'
-require 'io/wait'
+
+unless IO.method_defined?(:wait_writable, false)
+  # It's only required on older Rubies < v3.2:
+  require 'io/wait'
+end
 
 class Addrinfo
   # creates an Addrinfo object from the arguments.
@@ -606,7 +610,6 @@ class Socket < BasicSocket
   # _opts_ may have following options:
   #
   # [:connect_timeout] specify the timeout in seconds.
-  # [:resolv_timeout] specify the name resolution timeout in seconds.
   #
   # If a block is given, the block is called with the socket.
   # The value of the block is returned.
