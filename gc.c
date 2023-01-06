@@ -7122,6 +7122,17 @@ mark_const_entry_i(VALUE value, void *data)
     return ID_TABLE_CONTINUE;
 }
 
+static enum rb_id_table_iterator_result
+mark_and_pin_const_entry_i(VALUE value, void *data)
+{
+    const rb_const_entry_t *ce = (const rb_const_entry_t *)value;
+    rb_objspace_t *objspace = data;
+
+    gc_mark_and_pin(objspace, ce->value);
+    gc_mark_and_pin(objspace, ce->file);
+    return ID_TABLE_CONTINUE;
+}
+
 static void
 mark_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
 {
@@ -7129,11 +7140,26 @@ mark_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
     rb_id_table_foreach_values(tbl, mark_const_entry_i, objspace);
 }
 
+static void
+mark_and_pin_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
+{
+    if (!tbl) return;
+    rb_id_table_foreach_values(tbl, mark_and_pin_const_entry_i, objspace);
+}
+
 static int
 mark_const_tbl_of_key(st_data_t key, st_data_t value, st_data_t data)
 {
     rb_objspace_t *objspace = (rb_objspace_t *)data;
     mark_const_tbl(objspace, RCLASS_CONST_TBL((VALUE)key));
+    return ST_CONTINUE;
+}
+
+static int
+mark_and_pin_const_tbl_of_key(st_data_t key, st_data_t value, st_data_t data)
+{
+    rb_objspace_t *objspace = (rb_objspace_t *)data;
+    mark_and_pin_const_tbl(objspace, RCLASS_CONST_TBL((VALUE)key));
     return ST_CONTINUE;
 }
 
@@ -7988,7 +8014,12 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     if (objspace == GET_VM()->objspace && !objspace->flags.during_global_gc) {
 	MARK_CHECKPOINT("constants_of_external_classes");
 	rb_native_mutex_lock(&global_space->external_class_tbl_lock);
-	st_foreach(global_space->external_class_tbl, mark_const_tbl_of_key, (st_data_t)objspace);
+	if (objspace->flags.during_global_gc) {
+	    st_foreach(global_space->external_class_tbl, mark_const_tbl_of_key, (st_data_t)objspace);
+	}
+	else {
+	    st_foreach(global_space->external_class_tbl, mark_and_pin_const_tbl_of_key, (st_data_t)objspace);
+	}
 	rb_native_mutex_unlock(&global_space->external_class_tbl_lock);
     }
 
