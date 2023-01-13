@@ -722,6 +722,9 @@ typedef struct rb_vm_struct {
     struct ccan_list_head objspace_set; //TODO: Remove once Ractors handle their own objspace upon ending
     struct rb_global_space *global_space;
 
+    rb_nativethread_lock_t global_gc_status_lock;
+    int global_gc_count;
+
     rb_at_exit_list *at_exit;
 
     st_table *frozen_strings;

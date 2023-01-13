@@ -737,7 +737,6 @@ typedef struct rb_global_space {
     rb_nativethread_lock_t exemption_tbl_lock;
     rb_nativethread_lock_t exemption_tbl_counter_lock;
     int exemption_tbl_counter;
-    bool global_gc_running;
     st_table *external_class_tbl;
     rb_nativethread_lock_t external_class_tbl_lock;
 } rb_global_space_t;
@@ -4062,7 +4061,6 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->exemption_tbl_counter_lock);
     rb_nativethread_lock_initialize(&global_space->external_class_tbl_lock);
     global_space->exemption_tbl_counter = 0;
-    global_space->global_gc_running = false;
     return global_space;
 }
 
@@ -9943,24 +9941,28 @@ gc_reset_malloc_info(rb_objspace_t *objspace, bool full_mark)
 void
 block_local_gc(void)
 {
+    rb_vm_t *vm = GET_VM();
+    rb_native_mutex_lock(&vm->global_gc_status_lock);
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
 	rb_native_mutex_lock(&os->gc_lock);
     }
 
-    rb_global_space_t *global_space = &rb_global_space;
-    global_space->global_gc_running = true;
+    vm->global_gc_count++;
 
     ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
 	rb_native_mutex_unlock(&os->gc_lock);
     }
+    rb_native_mutex_unlock(&vm->global_gc_status_lock);
 }
 
 void
 unblock_local_gc(void)
 {
-    rb_global_space_t *global_space = &rb_global_space;
-    global_space->global_gc_running = false;
+    rb_vm_t *vm = GET_VM();
+    rb_native_mutex_lock(&vm->global_gc_status_lock);
+    GET_VM()->global_gc_count--;
+    rb_native_mutex_unlock(&vm->global_gc_status_lock);
 }
 
 void
@@ -9980,9 +9982,9 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
 {
     int ret;
 
+    block_local_gc();
     RB_VM_LOCK_ENTER();
     {
-	block_local_gc();
 #if GC_PROFILE_MORE_DETAIL
         objspace->profile.prepare_time = getrusage_time();
 #endif
@@ -9994,9 +9996,9 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
 #endif
 
         ret = gc_start(objspace, reason);
-	unblock_local_gc();
     }
     RB_VM_LOCK_LEAVE();
+    unblock_local_gc();
 
     return ret;
 }
@@ -10004,10 +10006,10 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
 void
 begin_local_gc(rb_objspace_t *objspace)
 {
-    rb_global_space_t *global_space = &rb_global_space;
-    if(objspace->gc_lock_level == 0) {
+    rb_vm_t *vm = GET_VM();
+    if (objspace->gc_lock_level == 0) {
 	rb_native_mutex_lock(&objspace->gc_lock);
-	while(global_space->global_gc_running) {
+	while (vm->global_gc_count) {
 	    rb_native_mutex_unlock(&objspace->gc_lock);
 	    RB_VM_LOCK_ENTER();
 	    RB_VM_LOCK_LEAVE();
@@ -10021,7 +10023,7 @@ void
 end_local_gc(rb_objspace_t *objspace)
 {
     objspace->gc_lock_level--;
-    if(objspace->gc_lock_level == 0) {
+    if (objspace->gc_lock_level == 0) {
 	rb_native_mutex_unlock(&objspace->gc_lock);
     }
 }
@@ -10428,8 +10430,7 @@ gc_exit_clock(rb_objspace_t *objspace, enum gc_enter_event event)
 static inline void
 gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier)
 {
-    rb_global_space_t *global_space = &rb_global_space;
-    if(event != gc_enter_event_start && !global_space->global_gc_running) begin_local_gc(objspace);
+    if(event != gc_enter_event_start && !GET_VM()->global_gc_count) begin_local_gc(objspace);
 
     gc_enter_clock(objspace, event);
 
@@ -10462,8 +10463,8 @@ gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier
 static inline void
 gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
 {
-    RB_VM_LOCK_ENTER_LEV(lock_lev);
     if (event != gc_enter_event_start) block_local_gc();
+    RB_VM_LOCK_ENTER_LEV(lock_lev);
     gc_enter(objspace, event, true);
 
     rb_objspace_t *os = NULL;
@@ -10487,8 +10488,7 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event)
 
     gc_exit_clock(objspace, event);
 
-    rb_global_space_t *global_space = &rb_global_space;
-    if (event != gc_enter_event_start && !global_space->global_gc_running) {
+    if (event != gc_enter_event_start && !GET_VM()->global_gc_count) {
 	end_local_gc(objspace);
 #if RGENGC_CHECK_MODE >= 2
 	if (event == gc_enter_event_sweep_continue && gc_mode(objspace) == gc_mode_none) {

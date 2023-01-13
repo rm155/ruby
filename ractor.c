@@ -1434,8 +1434,10 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     RUBY_DEBUG_LOG("r:%u ractor.cnt:%u++", r->pub.id, vm->ractor.cnt);
     VM_ASSERT(single_ractor_mode || RB_VM_LOCKED_P());
 
+    rb_native_mutex_lock(&vm->global_gc_status_lock);
     ccan_list_add_tail(&vm->ractor.set, &r->vmlr_node);
     vm->ractor.cnt++;
+    rb_native_mutex_unlock(&vm->global_gc_status_lock);
 }
 
 static void
@@ -1493,6 +1495,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 
     RB_VM_LOCK();
     {
+	rb_native_mutex_lock(&vm->global_gc_status_lock);
         RUBY_DEBUG_LOG("ractor.cnt:%u-- terminate_waiting:%d",
                        vm->ractor.cnt,  vm->ractor.sync.terminate_waiting);
 
@@ -1508,6 +1511,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         rb_gc_ractor_newobj_cache_clear(&cr->newobj_cache);
 
         ractor_status_set(cr, ractor_terminated);
+	rb_native_mutex_unlock(&vm->global_gc_status_lock);
     }
     RB_VM_UNLOCK();
 }
