@@ -179,7 +179,7 @@ ractor_queue_mark(struct rb_ractor_queue *rq)
     for (int i=0; i<rq->cnt; i++) {
         struct rb_ractor_basket *b = ractor_queue_at(rq, i);
         rb_gc_mark(b->v);
-        rb_gc_mark(b->sender);
+        rb_gc_mark(b->sender->pub.self);
     }
 }
 
@@ -191,9 +191,9 @@ rb_ractor_related_objects_mark(rb_ractor_t *r)
 {
     ractor_queue_mark(&r->sync.incoming_queue);
     rb_gc_mark(r->sync.wait.taken_basket.v);
-    rb_gc_mark(r->sync.wait.taken_basket.sender);
+    if (r->sync.wait.taken_basket.sender) rb_gc_mark(r->sync.wait.taken_basket.sender->pub.self);
     rb_gc_mark(r->sync.wait.yielded_basket.v);
-    rb_gc_mark(r->sync.wait.yielded_basket.sender);
+    if (r->sync.wait.yielded_basket.sender) rb_gc_mark(r->sync.wait.yielded_basket.sender->pub.self);
     rb_gc_mark(r->receiving_mutex);
 
     rb_gc_mark(r->r_stdin);
@@ -225,6 +225,7 @@ ractor_mark(void *ptr)
     rb_ractor_t *r = (rb_ractor_t *)ptr;
     rb_gc_mark(r->loc);
     rb_gc_mark(r->name);
+    if (r->dropped_main_thread) rb_gc_mark_if_global_gc(r->dropped_main_thread->self);
 }
 
 static void
@@ -244,6 +245,7 @@ ractor_free(void *ptr)
 {
     rb_ractor_t *r = (rb_ractor_t *)ptr;
     rb_native_mutex_destroy(&r->sync.lock);
+    rb_native_mutex_destroy(&r->sync.running_lock);
     rb_native_cond_destroy(&r->sync.cond);
     ractor_queue_free(&r->sync.incoming_queue);
     ractor_waiting_list_free(&r->sync.taking_ractors);
@@ -438,7 +440,7 @@ ractor_basket_clear(struct rb_ractor_basket *b)
 {
     b->type = basket_type_none;
     b->v = Qfalse;
-    b->sender = Qfalse;
+    b->sender = NULL;
 }
 
 static VALUE ractor_reset_belonging(VALUE obj); // in this file
@@ -463,14 +465,15 @@ ractor_basket_value(struct rb_ractor_basket *b)
 }
 
 static VALUE
-ractor_basket_accept(struct rb_ractor_basket *b)
+ractor_basket_accept(struct rb_ractor_basket *b, rb_ractor_t *receiver)
 {
+    if (b->type == basket_type_will) rb_absorb_objspace_of_closing_ractor(receiver, b->sender);
     VALUE v = ractor_basket_value(b);
 
     if (b->exception) {
         VALUE cause = v;
         VALUE err = rb_exc_new_cstr(rb_eRactorRemoteError, "thrown by remote Ractor.");
-        rb_ivar_set(err, rb_intern("@ractor"), b->sender);
+        rb_ivar_set(err, rb_intern("@ractor"), b->sender->pub.self);
         ractor_basket_clear(b);
         rb_ec_setup_exception(NULL, err, cause);
         rb_exc_raise(err);
@@ -505,7 +508,8 @@ ractor_try_receive(rb_execution_context_t *ec, rb_ractor_t *r)
         }
     }
 
-    return ractor_basket_accept(&basket);
+    rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
+    return ractor_basket_accept(&basket, cr);
 }
 
 static bool
@@ -940,7 +944,7 @@ static void traverse_and_add_to_exemption_tbl(VALUE obj);
 static void
 ractor_basket_setup(rb_execution_context_t *ec, struct rb_ractor_basket *basket, VALUE obj, VALUE move, bool exc, bool is_will, bool is_yield)
 {
-    basket->sender = rb_ec_ractor_ptr(ec)->pub.self;
+    basket->sender = rb_ec_ractor_ptr(ec);
     basket->exception = exc;
 
     if (is_will) {
@@ -1016,7 +1020,8 @@ ractor_try_take(rb_execution_context_t *ec, rb_ractor_t *r)
         }
     }
     else {
-        return ractor_basket_accept(&basket);
+	rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
+        return ractor_basket_accept(&basket, cr);
     }
 }
 
@@ -1303,9 +1308,9 @@ ractor_select(rb_execution_context_t *ec, const VALUE *rs, const int rs_len, VAL
             // take was succeeded!
             // cr.wait.taken_basket contains passed block
             VM_ASSERT(cr->sync.wait.taken_basket.type != basket_type_none);
-            *ret_r = cr->sync.wait.taken_basket.sender;
+            *ret_r = cr->sync.wait.taken_basket.sender->pub.self;
             VM_ASSERT(rb_ractor_p(*ret_r));
-            ret = ractor_basket_accept(&cr->sync.wait.taken_basket);
+            ret = ractor_basket_accept(&cr->sync.wait.taken_basket, cr);
             goto cleanup;
           case wakeup_by_take:
             *ret_r = ID2SYM(rb_intern("yield"));
@@ -1578,6 +1583,9 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 {
     ractor_queue_setup(&r->sync.incoming_queue);
     rb_native_mutex_initialize(&r->sync.lock);
+    rb_native_mutex_initialize(&r->sync.running_lock);
+    rb_native_mutex_lock(&r->sync.running_lock);
+
     rb_native_cond_initialize(&r->sync.cond);
     rb_native_cond_initialize(&r->barrier_wait_cond);
 
@@ -1686,13 +1694,17 @@ rb_ractor_teardown(rb_execution_context_t *ec)
 
     rb_gc_ractor_teardown_cleanup();
 
+    rb_thread_t *th = NULL;
     // sync with rb_ractor_terminate_interrupt_main_thread()
     RB_VM_LOCK_ENTER();
     {
         VM_ASSERT(cr->threads.main != NULL);
+	th = cr->threads.main;
+	cr->dropped_main_thread = cr->threads.main;
         cr->threads.main = NULL;
     }
     RB_VM_LOCK_LEAVE();
+    rb_native_mutex_unlock(&cr->sync.running_lock);
 }
 
 void
@@ -1875,6 +1887,9 @@ rb_ractor_living_threads_remove(rb_ractor_t *cr, rb_thread_t *th)
 	cr->threads.cnt--;
     }
     RACTOR_UNLOCK(cr);
+    if (th == cr->dropped_main_thread) {
+	    cr->dropped_main_thread = NULL;
+    }
 }
 
 void

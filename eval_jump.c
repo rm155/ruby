@@ -52,7 +52,7 @@ struct end_proc_data {
     void (*func) (VALUE);
     VALUE data;
     struct end_proc_data *next;
-    struct rb_objspace *objspace;
+    struct rb_objspace **objspace;
 };
 
 static struct end_proc_data *end_procs, *ephemeral_end_procs;
@@ -73,7 +73,7 @@ rb_set_end_proc(void (*func)(VALUE), VALUE data)
     link->next = *list;
     link->func = func;
     link->data = data;
-    link->objspace = get_objspace_of_value(data);
+    link->objspace = get_objspace_ptr_of_value(data);
     *list = link;
 }
 
@@ -84,7 +84,7 @@ rb_mark_end_proc(struct rb_objspace *objspace)
 
     link = end_procs;
     while (link) {
-        if (objspace == link->objspace) rb_gc_mark(link->data);
+        if (objspace == *link->objspace) rb_gc_mark(link->data);
         link = link->next;
     }
     link = ephemeral_end_procs;

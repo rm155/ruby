@@ -22,7 +22,7 @@ struct rb_ractor_basket {
     bool exception;
     enum rb_ractor_basket_type type;
     VALUE v;
-    VALUE sender;
+    rb_ractor_t *sender;
 };
 
 struct rb_ractor_queue {
@@ -61,6 +61,8 @@ enum rb_ractor_wakeup_status {
 struct rb_ractor_sync {
     // ractor lock
     rb_nativethread_lock_t lock;
+
+    rb_nativethread_lock_t running_lock;
 #if RACTOR_CHECK_MODE > 0
     VALUE locked_by;
 #endif
@@ -127,6 +129,7 @@ struct rb_ractor_struct {
         rb_thread_t *main;
     } threads;
     VALUE thgroup_default;
+    rb_thread_t *dropped_main_thread;
 
     VALUE name;
     VALUE loc;

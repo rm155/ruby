@@ -1,6 +1,7 @@
 #ifndef RUBY_GC_H
 #define RUBY_GC_H 1
 #include "ruby/ruby.h"
+#include "vm_core.h"
 
 #if defined(__x86_64__) && !defined(_ILP32) && defined(__GNUC__)
 #define SET_MACHINE_STACK_END(p) __asm__ __volatile__ ("movq\t%%rsp, %0" : "=r" (*(p)))
@@ -123,6 +124,7 @@ void rb_add_to_external_class_tbl(VALUE obj);
 
 void rb_add_to_shareable_tbl(VALUE obj);
 VALUE rb_gc_ractor_teardown_cleanup();
+void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);
 
 VALUE rb_gc_disable_no_rest(void);
 
@@ -139,6 +141,8 @@ void rb_objspace_reachable_objects_from_root(void (func)(const char *category, V
 int rb_objspace_markable_object_p(VALUE obj);
 int rb_objspace_internal_object_p(VALUE obj);
 int rb_objspace_marked_object_p(VALUE obj);
+
+struct rb_objspace **get_objspace_ptr_of_value(VALUE v);
 
 void rb_objspace_each_objects(
     int (*callback)(void *start, void *end, size_t stride, void *data),

@@ -229,7 +229,8 @@ class_alloc(VALUE flags, VALUE klass)
     if ( (flags & T_CLASS) || (flags & T_MODULE) ) {
 	FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
 	rb_add_to_shareable_tbl(class_obj);
-	rb_add_to_external_class_tbl(class_obj);
+	rb_ractor_t *main_ractor = GET_VM()->ractor.main_ractor;
+	if (main_ractor && GET_RACTOR() != main_ractor) rb_add_to_external_class_tbl(class_obj);
     }
 
     return class_obj;

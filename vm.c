@@ -2897,7 +2897,7 @@ ruby_vm_destruct(rb_vm_t *vm)
 	rb_objspace_free_all_non_main(vm);
         if (objspace) {
             rb_objspace_free(objspace);
-	}
+        }
 	rb_native_mutex_destroy(&vm->global_gc_status_lock);
         rb_native_mutex_destroy(&vm->waitpid_lock);
         rb_native_mutex_destroy(&vm->workqueue_lock);
