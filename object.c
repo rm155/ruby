@@ -448,8 +448,7 @@ mutable_obj_clone(VALUE obj, VALUE kwfreeze)
             rb_shape_transition_shape_frozen(clone);
         }
         break;
-      case Qtrue:
-        {
+      case Qtrue: {
         static VALUE freeze_true_hash;
         if (!freeze_true_hash) {
             freeze_true_hash = rb_hash_new();
@@ -464,9 +463,8 @@ mutable_obj_clone(VALUE obj, VALUE kwfreeze)
         RBASIC(clone)->flags |= FL_FREEZE;
         rb_shape_transition_shape_frozen(clone);
         break;
-        }
-      case Qfalse:
-        {
+      }
+      case Qfalse: {
         static VALUE freeze_false_hash;
         if (!freeze_false_hash) {
             freeze_false_hash = rb_hash_new();
@@ -479,7 +477,7 @@ mutable_obj_clone(VALUE obj, VALUE kwfreeze)
         argv[1] = freeze_false_hash;
         rb_funcallv_kw(clone, id_init_clone, 2, argv, RB_PASS_KEYWORDS);
         break;
-        }
+      }
       default:
         rb_bug("invalid kwfreeze passed to mutable_obj_clone");
     }
@@ -569,12 +567,6 @@ VALUE
 rb_obj_size(VALUE self, VALUE args, VALUE obj)
 {
     return LONG2FIX(1);
-}
-
-static VALUE
-block_given_p(rb_execution_context_t *ec, VALUE self)
-{
-    return RBOOL(rb_block_given_p());
 }
 
 /**
@@ -1595,7 +1587,7 @@ rb_mod_to_s(VALUE klass)
 
     if (FL_TEST(klass, FL_SINGLETON)) {
         VALUE s = rb_usascii_str_new2("#<Class:");
-        VALUE v = rb_ivar_get(klass, id__attached__);
+        VALUE v = RCLASS_ATTACHED_OBJECT(klass);
 
         if (CLASS_OR_MODULE_P(v)) {
             rb_str_append(s, rb_inspect(v));
@@ -3245,7 +3237,7 @@ rb_opts_exception_p(VALUE opts, int default_value)
  *    Integer(-1)               # => -1
  *
  *  With floating-point argument +object+ given,
- *  returns +object+ truncated to an intger:
+ *  returns +object+ truncated to an integer:
  *
  *    Integer(1.9)              # => 1  # Rounds toward zero.
  *    Integer(-1.9)             # => -1 # Rounds toward zero.
@@ -3929,9 +3921,6 @@ rb_obj_dig(int argc, VALUE *argv, VALUE obj, VALUE notfound)
  *
  *  For details on +format_string+, see
  *  {Format Specifications}[rdoc-ref:format_specifications.rdoc].
- *
- *  Kernel#format is an alias for Kernel#sprintf.
- *
  */
 
 static VALUE
@@ -4171,27 +4160,6 @@ f_sprintf(int c, const VALUE *v, VALUE _)
  *  - #send: Calls the given method in +self+ with the given argument.
  *  - #to_s: Returns a string representation of +self+.
  *
- */
-
-/*!
- *--
- * \private
- * Initializes the world of objects and classes.
- *
- * At first, the function bootstraps the class hierarchy.
- * It initializes the most fundamental classes and their metaclasses.
- * - \c BasicObject
- * - \c Object
- * - \c Module
- * - \c Class
- * After the bootstrap step, the class hierarchy becomes as the following
- * diagram.
- *
- * \image html boottime-classes.png
- *
- * Then, the function defines classes, modules and methods as usual.
- * \ingroup class
- *++
  */
 
 void

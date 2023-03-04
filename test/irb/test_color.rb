@@ -18,6 +18,20 @@ module TestIRB
     MAGENTA   = "\e[35m"
     CYAN      = "\e[36m"
 
+    def setup
+      super
+      if IRB.respond_to?(:conf)
+        @colorize, IRB.conf[:USE_COLORIZE] = IRB.conf[:USE_COLORIZE], true
+      end
+    end
+
+    def teardown
+      if instance_variable_defined?(:@colorize)
+        IRB.conf[:USE_COLORIZE] = @colorize
+      end
+      super
+    end
+
     def test_colorize
       text = "text"
       {
@@ -76,6 +90,7 @@ module TestIRB
         ":class" => "#{YELLOW}:#{CLEAR}#{YELLOW}class#{CLEAR}",
         "[:end, 2]" => "[#{YELLOW}:#{CLEAR}#{YELLOW}end#{CLEAR}, #{BLUE}#{BOLD}2#{CLEAR}]",
         "[:>, 3]" => "[#{YELLOW}:#{CLEAR}#{YELLOW}>#{CLEAR}, #{BLUE}#{BOLD}3#{CLEAR}]",
+        "[:`, 4]" => "[#{YELLOW}:#{CLEAR}#{YELLOW}`#{CLEAR}, #{BLUE}#{BOLD}4#{CLEAR}]",
         ":Hello ? world : nil" => "#{YELLOW}:#{CLEAR}#{YELLOW}Hello#{CLEAR} ? world : #{CYAN}#{BOLD}nil#{CLEAR}",
         'raise "foo#{bar}baz"' => "raise #{RED}#{BOLD}\"#{CLEAR}#{RED}foo#{CLEAR}#{RED}\#{#{CLEAR}bar#{RED}}#{CLEAR}#{RED}baz#{CLEAR}#{RED}#{BOLD}\"#{CLEAR}",
         '["#{obj.inspect}"]' => "[#{RED}#{BOLD}\"#{CLEAR}#{RED}\#{#{CLEAR}obj.inspect#{RED}}#{CLEAR}#{RED}#{BOLD}\"#{CLEAR}]",

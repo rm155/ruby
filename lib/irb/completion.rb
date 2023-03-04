@@ -1,8 +1,6 @@
 # frozen_string_literal: false
 #
 #   irb/completion.rb -
-#   	$Release Version: 0.9$
-#   	$Revision$
 #   	by Keiju ISHITSUKA(keiju@ishitsuka.com)
 #       From Original Idea of shugo@ruby-lang.org
 #
@@ -217,7 +215,7 @@ module IRB
           select_message(receiver, message, proc_candidates | hash_candidates)
         end
 
-      when /^(:[^:.]*)$/
+      when /^(:[^:.]+)$/
         # Symbol
         if doc_namespace
           nil
@@ -358,14 +356,6 @@ module IRB
         else
           # func1.func2
           candidates = []
-          to_ignore = ignored_modules
-          ObjectSpace.each_object(Module){|m|
-            next if (to_ignore.include?(m) rescue true)
-            next unless m.respond_to?(:instance_methods) # JRuby has modules that represent java packages. They don't include many common ruby methods
-            candidates.concat m.instance_methods(false).collect{|x| x.to_s}
-          }
-          candidates.sort!
-          candidates.uniq!
         end
 
         if doc_namespace

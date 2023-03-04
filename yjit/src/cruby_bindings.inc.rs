@@ -225,6 +225,9 @@ pub const RUBY_FL_USER19: ruby_fl_type = -2147483648;
 pub const RUBY_ELTS_SHARED: ruby_fl_type = 16384;
 pub const RUBY_FL_SINGLETON: ruby_fl_type = 4096;
 pub type ruby_fl_type = i32;
+pub const RSTRING_NOEMBED: ruby_rstring_flags = 8192;
+pub const RSTRING_FSTR: ruby_rstring_flags = 536870912;
+pub type ruby_rstring_flags = u32;
 pub type st_data_t = ::std::os::raw::c_ulong;
 pub type st_index_t = st_data_t;
 pub const ST_CONTINUE: st_retval = 0;
@@ -374,66 +377,65 @@ pub const tProc: ruby_method_ids = 190;
 pub const tLambda: ruby_method_ids = 191;
 pub const tSend: ruby_method_ids = 192;
 pub const t__send__: ruby_method_ids = 193;
-pub const t__attached__: ruby_method_ids = 194;
-pub const t__recursive_key__: ruby_method_ids = 195;
-pub const tInitialize: ruby_method_ids = 196;
-pub const tInitialize_copy: ruby_method_ids = 197;
-pub const tInitialize_clone: ruby_method_ids = 198;
-pub const tInitialize_dup: ruby_method_ids = 199;
-pub const tTo_int: ruby_method_ids = 200;
-pub const tTo_ary: ruby_method_ids = 201;
-pub const tTo_str: ruby_method_ids = 202;
-pub const tTo_sym: ruby_method_ids = 203;
-pub const tTo_hash: ruby_method_ids = 204;
-pub const tTo_proc: ruby_method_ids = 205;
-pub const tTo_io: ruby_method_ids = 206;
-pub const tTo_a: ruby_method_ids = 207;
-pub const tTo_s: ruby_method_ids = 208;
-pub const tTo_i: ruby_method_ids = 209;
-pub const tTo_f: ruby_method_ids = 210;
-pub const tTo_r: ruby_method_ids = 211;
-pub const tBt: ruby_method_ids = 212;
-pub const tBt_locations: ruby_method_ids = 213;
-pub const tCall: ruby_method_ids = 214;
-pub const tMesg: ruby_method_ids = 215;
-pub const tException: ruby_method_ids = 216;
-pub const tLocals: ruby_method_ids = 217;
-pub const tNOT: ruby_method_ids = 218;
-pub const tAND: ruby_method_ids = 219;
-pub const tOR: ruby_method_ids = 220;
-pub const tDiv: ruby_method_ids = 221;
-pub const tDivmod: ruby_method_ids = 222;
-pub const tFdiv: ruby_method_ids = 223;
-pub const tQuo: ruby_method_ids = 224;
-pub const tName: ruby_method_ids = 225;
-pub const tNil: ruby_method_ids = 226;
-pub const tPath: ruby_method_ids = 227;
-pub const tUScore: ruby_method_ids = 228;
-pub const tNUMPARAM_1: ruby_method_ids = 229;
-pub const tNUMPARAM_2: ruby_method_ids = 230;
-pub const tNUMPARAM_3: ruby_method_ids = 231;
-pub const tNUMPARAM_4: ruby_method_ids = 232;
-pub const tNUMPARAM_5: ruby_method_ids = 233;
-pub const tNUMPARAM_6: ruby_method_ids = 234;
-pub const tNUMPARAM_7: ruby_method_ids = 235;
-pub const tNUMPARAM_8: ruby_method_ids = 236;
-pub const tNUMPARAM_9: ruby_method_ids = 237;
-pub const tDefault: ruby_method_ids = 238;
-pub const tTOKEN_LOCAL_END: ruby_method_ids = 239;
-pub const tTOKEN_INSTANCE_BEGIN: ruby_method_ids = 238;
-pub const tTOKEN_INSTANCE_END: ruby_method_ids = 239;
-pub const tTOKEN_GLOBAL_BEGIN: ruby_method_ids = 238;
-pub const tLASTLINE: ruby_method_ids = 239;
-pub const tBACKREF: ruby_method_ids = 240;
-pub const tERROR_INFO: ruby_method_ids = 241;
-pub const tTOKEN_GLOBAL_END: ruby_method_ids = 242;
-pub const tTOKEN_CONST_BEGIN: ruby_method_ids = 241;
-pub const tTOKEN_CONST_END: ruby_method_ids = 242;
-pub const tTOKEN_CLASS_BEGIN: ruby_method_ids = 241;
-pub const tTOKEN_CLASS_END: ruby_method_ids = 242;
-pub const tTOKEN_ATTRSET_BEGIN: ruby_method_ids = 241;
-pub const tTOKEN_ATTRSET_END: ruby_method_ids = 242;
-pub const tNEXT_ID: ruby_method_ids = 242;
+pub const t__recursive_key__: ruby_method_ids = 194;
+pub const tInitialize: ruby_method_ids = 195;
+pub const tInitialize_copy: ruby_method_ids = 196;
+pub const tInitialize_clone: ruby_method_ids = 197;
+pub const tInitialize_dup: ruby_method_ids = 198;
+pub const tTo_int: ruby_method_ids = 199;
+pub const tTo_ary: ruby_method_ids = 200;
+pub const tTo_str: ruby_method_ids = 201;
+pub const tTo_sym: ruby_method_ids = 202;
+pub const tTo_hash: ruby_method_ids = 203;
+pub const tTo_proc: ruby_method_ids = 204;
+pub const tTo_io: ruby_method_ids = 205;
+pub const tTo_a: ruby_method_ids = 206;
+pub const tTo_s: ruby_method_ids = 207;
+pub const tTo_i: ruby_method_ids = 208;
+pub const tTo_f: ruby_method_ids = 209;
+pub const tTo_r: ruby_method_ids = 210;
+pub const tBt: ruby_method_ids = 211;
+pub const tBt_locations: ruby_method_ids = 212;
+pub const tCall: ruby_method_ids = 213;
+pub const tMesg: ruby_method_ids = 214;
+pub const tException: ruby_method_ids = 215;
+pub const tLocals: ruby_method_ids = 216;
+pub const tNOT: ruby_method_ids = 217;
+pub const tAND: ruby_method_ids = 218;
+pub const tOR: ruby_method_ids = 219;
+pub const tDiv: ruby_method_ids = 220;
+pub const tDivmod: ruby_method_ids = 221;
+pub const tFdiv: ruby_method_ids = 222;
+pub const tQuo: ruby_method_ids = 223;
+pub const tName: ruby_method_ids = 224;
+pub const tNil: ruby_method_ids = 225;
+pub const tPath: ruby_method_ids = 226;
+pub const tUScore: ruby_method_ids = 227;
+pub const tNUMPARAM_1: ruby_method_ids = 228;
+pub const tNUMPARAM_2: ruby_method_ids = 229;
+pub const tNUMPARAM_3: ruby_method_ids = 230;
+pub const tNUMPARAM_4: ruby_method_ids = 231;
+pub const tNUMPARAM_5: ruby_method_ids = 232;
+pub const tNUMPARAM_6: ruby_method_ids = 233;
+pub const tNUMPARAM_7: ruby_method_ids = 234;
+pub const tNUMPARAM_8: ruby_method_ids = 235;
+pub const tNUMPARAM_9: ruby_method_ids = 236;
+pub const tDefault: ruby_method_ids = 237;
+pub const tTOKEN_LOCAL_END: ruby_method_ids = 238;
+pub const tTOKEN_INSTANCE_BEGIN: ruby_method_ids = 237;
+pub const tTOKEN_INSTANCE_END: ruby_method_ids = 238;
+pub const tTOKEN_GLOBAL_BEGIN: ruby_method_ids = 237;
+pub const tLASTLINE: ruby_method_ids = 238;
+pub const tBACKREF: ruby_method_ids = 239;
+pub const tERROR_INFO: ruby_method_ids = 240;
+pub const tTOKEN_GLOBAL_END: ruby_method_ids = 241;
+pub const tTOKEN_CONST_BEGIN: ruby_method_ids = 240;
+pub const tTOKEN_CONST_END: ruby_method_ids = 241;
+pub const tTOKEN_CLASS_BEGIN: ruby_method_ids = 240;
+pub const tTOKEN_CLASS_END: ruby_method_ids = 241;
+pub const tTOKEN_ATTRSET_BEGIN: ruby_method_ids = 240;
+pub const tTOKEN_ATTRSET_END: ruby_method_ids = 241;
+pub const tNEXT_ID: ruby_method_ids = 241;
 pub const idMax: ruby_method_ids = 2721;
 pub const idMin: ruby_method_ids = 2737;
 pub const idFreeze: ruby_method_ids = 2753;
@@ -458,54 +460,53 @@ pub const idProc: ruby_method_ids = 3041;
 pub const idLambda: ruby_method_ids = 3057;
 pub const idSend: ruby_method_ids = 3073;
 pub const id__send__: ruby_method_ids = 3089;
-pub const id__attached__: ruby_method_ids = 3105;
-pub const id__recursive_key__: ruby_method_ids = 3121;
-pub const idInitialize: ruby_method_ids = 3137;
-pub const idInitialize_copy: ruby_method_ids = 3153;
-pub const idInitialize_clone: ruby_method_ids = 3169;
-pub const idInitialize_dup: ruby_method_ids = 3185;
-pub const idTo_int: ruby_method_ids = 3201;
-pub const idTo_ary: ruby_method_ids = 3217;
-pub const idTo_str: ruby_method_ids = 3233;
-pub const idTo_sym: ruby_method_ids = 3249;
-pub const idTo_hash: ruby_method_ids = 3265;
-pub const idTo_proc: ruby_method_ids = 3281;
-pub const idTo_io: ruby_method_ids = 3297;
-pub const idTo_a: ruby_method_ids = 3313;
-pub const idTo_s: ruby_method_ids = 3329;
-pub const idTo_i: ruby_method_ids = 3345;
-pub const idTo_f: ruby_method_ids = 3361;
-pub const idTo_r: ruby_method_ids = 3377;
-pub const idBt: ruby_method_ids = 3393;
-pub const idBt_locations: ruby_method_ids = 3409;
-pub const idCall: ruby_method_ids = 3425;
-pub const idMesg: ruby_method_ids = 3441;
-pub const idException: ruby_method_ids = 3457;
-pub const idLocals: ruby_method_ids = 3473;
-pub const idNOT: ruby_method_ids = 3489;
-pub const idAND: ruby_method_ids = 3505;
-pub const idOR: ruby_method_ids = 3521;
-pub const idDiv: ruby_method_ids = 3537;
-pub const idDivmod: ruby_method_ids = 3553;
-pub const idFdiv: ruby_method_ids = 3569;
-pub const idQuo: ruby_method_ids = 3585;
-pub const idName: ruby_method_ids = 3601;
-pub const idNil: ruby_method_ids = 3617;
-pub const idPath: ruby_method_ids = 3633;
-pub const idUScore: ruby_method_ids = 3649;
-pub const idNUMPARAM_1: ruby_method_ids = 3665;
-pub const idNUMPARAM_2: ruby_method_ids = 3681;
-pub const idNUMPARAM_3: ruby_method_ids = 3697;
-pub const idNUMPARAM_4: ruby_method_ids = 3713;
-pub const idNUMPARAM_5: ruby_method_ids = 3729;
-pub const idNUMPARAM_6: ruby_method_ids = 3745;
-pub const idNUMPARAM_7: ruby_method_ids = 3761;
-pub const idNUMPARAM_8: ruby_method_ids = 3777;
-pub const idNUMPARAM_9: ruby_method_ids = 3793;
-pub const idDefault: ruby_method_ids = 3809;
-pub const idLASTLINE: ruby_method_ids = 3831;
-pub const idBACKREF: ruby_method_ids = 3847;
-pub const idERROR_INFO: ruby_method_ids = 3863;
+pub const id__recursive_key__: ruby_method_ids = 3105;
+pub const idInitialize: ruby_method_ids = 3121;
+pub const idInitialize_copy: ruby_method_ids = 3137;
+pub const idInitialize_clone: ruby_method_ids = 3153;
+pub const idInitialize_dup: ruby_method_ids = 3169;
+pub const idTo_int: ruby_method_ids = 3185;
+pub const idTo_ary: ruby_method_ids = 3201;
+pub const idTo_str: ruby_method_ids = 3217;
+pub const idTo_sym: ruby_method_ids = 3233;
+pub const idTo_hash: ruby_method_ids = 3249;
+pub const idTo_proc: ruby_method_ids = 3265;
+pub const idTo_io: ruby_method_ids = 3281;
+pub const idTo_a: ruby_method_ids = 3297;
+pub const idTo_s: ruby_method_ids = 3313;
+pub const idTo_i: ruby_method_ids = 3329;
+pub const idTo_f: ruby_method_ids = 3345;
+pub const idTo_r: ruby_method_ids = 3361;
+pub const idBt: ruby_method_ids = 3377;
+pub const idBt_locations: ruby_method_ids = 3393;
+pub const idCall: ruby_method_ids = 3409;
+pub const idMesg: ruby_method_ids = 3425;
+pub const idException: ruby_method_ids = 3441;
+pub const idLocals: ruby_method_ids = 3457;
+pub const idNOT: ruby_method_ids = 3473;
+pub const idAND: ruby_method_ids = 3489;
+pub const idOR: ruby_method_ids = 3505;
+pub const idDiv: ruby_method_ids = 3521;
+pub const idDivmod: ruby_method_ids = 3537;
+pub const idFdiv: ruby_method_ids = 3553;
+pub const idQuo: ruby_method_ids = 3569;
+pub const idName: ruby_method_ids = 3585;
+pub const idNil: ruby_method_ids = 3601;
+pub const idPath: ruby_method_ids = 3617;
+pub const idUScore: ruby_method_ids = 3633;
+pub const idNUMPARAM_1: ruby_method_ids = 3649;
+pub const idNUMPARAM_2: ruby_method_ids = 3665;
+pub const idNUMPARAM_3: ruby_method_ids = 3681;
+pub const idNUMPARAM_4: ruby_method_ids = 3697;
+pub const idNUMPARAM_5: ruby_method_ids = 3713;
+pub const idNUMPARAM_6: ruby_method_ids = 3729;
+pub const idNUMPARAM_7: ruby_method_ids = 3745;
+pub const idNUMPARAM_8: ruby_method_ids = 3761;
+pub const idNUMPARAM_9: ruby_method_ids = 3777;
+pub const idDefault: ruby_method_ids = 3793;
+pub const idLASTLINE: ruby_method_ids = 3815;
+pub const idBACKREF: ruby_method_ids = 3831;
+pub const idERROR_INFO: ruby_method_ids = 3847;
 pub const tLAST_OP_ID: ruby_method_ids = 169;
 pub const idLAST_OP_ID: ruby_method_ids = 10;
 pub type ruby_method_ids = u32;
@@ -567,7 +568,7 @@ pub struct vm_ifunc_argc {
 #[repr(C)]
 pub struct vm_ifunc {
     pub flags: VALUE,
-    pub reserved: VALUE,
+    pub svar_lep: *mut VALUE,
     pub func: rb_block_call_func_t,
     pub data: *const ::std::os::raw::c_void,
     pub argc: vm_ifunc_argc,
@@ -829,6 +830,17 @@ pub struct rb_call_data {
     pub ci: *const rb_callinfo,
     pub cc: *const rb_callcache,
 }
+pub const RHASH_PASS_AS_KEYWORDS: ruby_rhash_flags = 8192;
+pub const RHASH_PROC_DEFAULT: ruby_rhash_flags = 16384;
+pub const RHASH_ST_TABLE_FLAG: ruby_rhash_flags = 32768;
+pub const RHASH_AR_TABLE_SIZE_MASK: ruby_rhash_flags = 983040;
+pub const RHASH_AR_TABLE_SIZE_SHIFT: ruby_rhash_flags = 16;
+pub const RHASH_AR_TABLE_BOUND_MASK: ruby_rhash_flags = 15728640;
+pub const RHASH_AR_TABLE_BOUND_SHIFT: ruby_rhash_flags = 20;
+pub const RHASH_TRANSIENT_FLAG: ruby_rhash_flags = 16777216;
+pub const RHASH_LEV_SHIFT: ruby_rhash_flags = 25;
+pub const RHASH_LEV_MAX: ruby_rhash_flags = 127;
+pub type ruby_rhash_flags = u32;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct rb_builtin_function {
@@ -1052,11 +1064,19 @@ pub type ruby_vminsn_type = u32;
 pub type rb_iseq_callback = ::std::option::Option<
     unsafe extern "C" fn(arg1: *const rb_iseq_t, arg2: *mut ::std::os::raw::c_void),
 >;
+pub const RUBY_OFFSET_RSTRING_AS_HEAP_LEN: rstring_offsets = 16;
+pub const RUBY_OFFSET_RSTRING_EMBED_LEN: rstring_offsets = 16;
+pub type rstring_offsets = u32;
 pub type rb_seq_param_keyword_struct = rb_iseq_constant_body__bindgen_ty_1_rb_iseq_param_keyword;
 extern "C" {
+    pub fn rb_class_attached_object(klass: VALUE) -> VALUE;
     pub fn rb_singleton_class(obj: VALUE) -> VALUE;
     pub fn rb_get_alloc_func(klass: VALUE) -> rb_alloc_func_t;
     pub fn rb_method_basic_definition_p(klass: VALUE, mid: ID) -> ::std::os::raw::c_int;
+    pub fn rb_bug(fmt: *const ::std::os::raw::c_char, ...) -> !;
+    pub fn rb_gc_mark(obj: VALUE);
+    pub fn rb_gc_mark_movable(obj: VALUE);
+    pub fn rb_gc_location(obj: VALUE) -> VALUE;
     pub fn rb_gc_writebarrier(old: VALUE, young: VALUE);
     pub fn rb_class_get_superclass(klass: VALUE) -> VALUE;
     pub static mut rb_mKernel: VALUE;
@@ -1072,6 +1092,7 @@ extern "C" {
     pub static mut rb_cSymbol: VALUE;
     pub static mut rb_cThread: VALUE;
     pub static mut rb_cTrueClass: VALUE;
+    pub fn rb_obj_class(obj: VALUE) -> VALUE;
     pub fn rb_ary_new_capa(capa: ::std::os::raw::c_long) -> VALUE;
     pub fn rb_ary_store(ary: VALUE, key: ::std::os::raw::c_long, val: VALUE);
     pub fn rb_ary_resurrect(ary: VALUE) -> VALUE;
@@ -1083,9 +1104,8 @@ extern "C" {
     pub fn rb_sym2id(obj: VALUE) -> ID;
     pub fn rb_id2sym(id: ID) -> VALUE;
     pub fn rb_intern(name: *const ::std::os::raw::c_char) -> ID;
-    pub fn rb_gc_mark(obj: VALUE);
-    pub fn rb_gc_mark_movable(obj: VALUE);
-    pub fn rb_gc_location(obj: VALUE) -> VALUE;
+    pub fn rb_id2name(id: ID) -> *const ::std::os::raw::c_char;
+    pub fn rb_class2name(klass: VALUE) -> *const ::std::os::raw::c_char;
     pub fn rb_obj_is_kind_of(obj: VALUE, klass: VALUE) -> VALUE;
     pub fn rb_obj_frozen_p(obj: VALUE) -> VALUE;
     pub fn rb_backref_get() -> VALUE;
@@ -1106,8 +1126,8 @@ extern "C" {
     pub fn rb_attr_get(obj: VALUE, name: ID) -> VALUE;
     pub fn rb_obj_info_dump(obj: VALUE);
     pub fn rb_reg_new_ary(ary: VALUE, options: ::std::os::raw::c_int) -> VALUE;
-    pub fn rb_class_allocate_instance(klass: VALUE) -> VALUE;
     pub fn rb_obj_info(obj: VALUE) -> *const ::std::os::raw::c_char;
+    pub fn rb_class_allocate_instance(klass: VALUE) -> VALUE;
     pub fn rb_shape_id_offset() -> i32;
     pub fn rb_shape_get_shape_by_id(shape_id: shape_id_t) -> *mut rb_shape_t;
     pub fn rb_shape_get_shape_id(obj: VALUE) -> shape_id_t;
@@ -1143,6 +1163,9 @@ extern "C" {
     pub fn rb_vm_frame_method_entry(
         cfp: *const rb_control_frame_t,
     ) -> *const rb_callable_method_entry_t;
+    pub fn rb_gvar_get(arg1: ID) -> VALUE;
+    pub fn rb_gvar_set(arg1: ID, arg2: VALUE) -> VALUE;
+    pub fn rb_ensure_iv_list_size(obj: VALUE, len: u32, newsize: u32);
     pub fn rb_obj_as_string_result(str_: VALUE, obj: VALUE) -> VALUE;
     pub fn rb_str_concat_literals(num: usize, strary: *const VALUE) -> VALUE;
     pub fn rb_ec_str_resurrect(ec: *mut rb_execution_context_struct, str_: VALUE) -> VALUE;
@@ -1158,13 +1181,12 @@ extern "C" {
         key: st_data_t,
         pval: *mut st_data_t,
     ) -> ::std::os::raw::c_int;
-    pub fn rb_gvar_get(arg1: ID) -> VALUE;
-    pub fn rb_gvar_set(arg1: ID, arg2: VALUE) -> VALUE;
-    pub fn rb_ensure_iv_list_size(obj: VALUE, len: u32, newsize: u32);
+    pub fn rb_insn_len(insn: VALUE) -> ::std::os::raw::c_int;
     pub fn rb_vm_insn_decode(encoded: VALUE) -> ::std::os::raw::c_int;
     pub fn rb_vm_insn_addr2opcode(addr: *const ::std::os::raw::c_void) -> ::std::os::raw::c_int;
+    pub fn rb_iseq_line_no(iseq: *const rb_iseq_t, pos: usize) -> ::std::os::raw::c_uint;
     pub fn rb_iseqw_to_iseq(iseqw: VALUE) -> *const rb_iseq_t;
-    pub fn rb_iseq_method_name(iseq: *const rb_iseq_t) -> VALUE;
+    pub fn rb_iseq_label(iseq: *const rb_iseq_t) -> VALUE;
     pub fn rb_vm_barrier();
     pub fn rb_profile_frames(
         start: ::std::os::raw::c_int,
@@ -1176,6 +1198,7 @@ extern "C" {
     pub fn rb_yjit_mark_writable(mem_block: *mut ::std::os::raw::c_void, mem_size: u32) -> bool;
     pub fn rb_yjit_mark_executable(mem_block: *mut ::std::os::raw::c_void, mem_size: u32);
     pub fn rb_yjit_mark_unused(mem_block: *mut ::std::os::raw::c_void, mem_size: u32) -> bool;
+    pub fn rb_yjit_array_len(a: VALUE) -> ::std::os::raw::c_long;
     pub fn rb_yjit_icache_invalidate(
         start: *mut ::std::os::raw::c_void,
         end: *mut ::std::os::raw::c_void,
@@ -1199,7 +1222,6 @@ extern "C" {
     pub fn rb_RSTRING_PTR(str_: VALUE) -> *mut ::std::os::raw::c_char;
     pub fn rb_yjit_get_proc_ptr(procv: VALUE) -> *mut rb_proc_t;
     pub fn rb_insn_name(insn: VALUE) -> *const ::std::os::raw::c_char;
-    pub fn rb_insn_len(insn: VALUE) -> ::std::os::raw::c_int;
     pub fn rb_vm_ci_argc(ci: *const rb_callinfo) -> ::std::os::raw::c_uint;
     pub fn rb_vm_ci_mid(ci: *const rb_callinfo) -> ID;
     pub fn rb_vm_ci_flag(ci: *const rb_callinfo) -> ::std::os::raw::c_uint;
@@ -1272,6 +1294,7 @@ extern "C" {
     pub fn rb_get_cfp_ep_level(cfp: *mut rb_control_frame_struct, lv: u32) -> *const VALUE;
     pub fn rb_yarv_class_of(obj: VALUE) -> VALUE;
     pub fn rb_yarv_str_eql_internal(str1: VALUE, str2: VALUE) -> VALUE;
+    pub fn rb_str_neq_internal(str1: VALUE, str2: VALUE) -> VALUE;
     pub fn rb_yarv_ary_entry_internal(ary: VALUE, offset: ::std::os::raw::c_long) -> VALUE;
     pub fn rb_yarv_fix_mod_fix(recv: VALUE, obj: VALUE) -> VALUE;
     pub fn rb_yjit_dump_iseq_loc(iseq: *const rb_iseq_t, insn_idx: u32);

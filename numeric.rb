@@ -116,7 +116,6 @@ class Integer
   #    -12345.abs     #=> 12345
   #    12345.abs      #=> 12345
   #
-  # Integer#magnitude is an alias for Integer#abs.
   def abs
     Primitive.attr! 'inline'
     Primitive.cexpr! 'rb_int_abs(self)'
@@ -186,12 +185,6 @@ class Integer
   end
 
   alias magnitude abs
-=begin
-  def magnitude
-    Primitive.attr! 'inline'
-    Primitive.cexpr! 'rb_int_abs(self)'
-  end
-=end
 
   #  call-seq:
   #     int.odd?  ->  true or false
@@ -241,8 +234,6 @@ class Integer
   #     int.to_i    ->  integer
   #
   #  Since +int+ is already an Integer, returns +self+.
-  #
-  #  #to_int is an alias for #to_i.
   def to_i
     self
   end
@@ -278,7 +269,7 @@ class Integer
   #
   #    3.ceildiv(1.2) # => 3
   def ceildiv(other)
-    -div(-other)
+    -div(0 - other)
   end
 
   #
@@ -302,28 +293,6 @@ class Integer
   end
 end
 
-#  call-seq:
-#    Integer.try_convert(object) -> object, integer, or nil
-#
-#  If +object+ is an \Integer object, returns +object+.
-#    Integer.try_convert(1) # => 1
-#
-#  Otherwise if +object+ responds to <tt>:to_int</tt>,
-#  calls <tt>object.to_int</tt> and returns the result.
-#    Integer.try_convert(1.25) # => 1
-#
-#  Returns +nil+ if +object+ does not respond to <tt>:to_int</tt>
-#    Integer.try_convert([]) # => nil
-#
-#  Raises an exception unless <tt>object.to_int</tt> returns an \Integer object.
-#
-def Integer.try_convert(num)
-=begin
-  Primitive.attr! 'inline'
-  Primitive.cexpr! 'rb_check_integer_type(num)'
-=end
-end if false
-
 class Float
   #
   # call-seq:
@@ -345,8 +314,6 @@ class Float
   #     (-34.56).abs   #=> 34.56
   #     -34.56.abs     #=> 34.56
   #     34.56.abs      #=> 34.56
-  #
-  #  Float#magnitude is an alias for Float#abs.
   #
   def abs
     Primitive.attr! 'inline'

@@ -42,10 +42,10 @@ jobs:
         run: |
           git config --global advice.detachedHead 0
           git config --global init.defaultBranch garbage
-      - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c # v3.3.0
         with:
           path: src
-      - uses: actions/cache@c17f4bf4666a8001b1a45c09eb7a485c41aa64c3 # v3.2.0
+      - uses: actions/cache@69d9d449aced6a2ede0bc19182fadc3a0a42d2b0 # v3.2.6
         with:
           path: src/.downloaded-cache
           key: downloaded-cache
@@ -58,10 +58,14 @@ jobs:
         run: |
           echo "MAKEFLAGS=-j$((1 + $(sysctl -n hw.activecpu)))" >> $GITHUB_ENV
           echo "PATH="/usr/local/opt/bison/bin:$PATH"" >> $GITHUB_ENV
+          for lib in openssl@1.1 readline; do
+            CONFIGURE_ARGS="${CONFIGURE_ARGS:+$CONFIGURE_ARGS }--with-${lib%@*}-dir=$(brew --prefix $lib)"
+          done
+          echo CONFIGURE_ARGS="${CONFIGURE_ARGS}" >> $GITHUB_ENV
       - run: ./autogen.sh
         working-directory: src
       - name: Run configure
-        run: ../src/configure -C --disable-install-doc --with-openssl-dir=$(brew --prefix openssl@1.1) --with-readline-dir=$(brew --prefix readline)
+        run: ../src/configure -C --disable-install-doc
       - run: make incs
       - run: make prepare-gems
         if: ${{ matrix.test_task == 'test-bundled-gems' }}

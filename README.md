@@ -25,14 +25,19 @@ It is simple, straightforward, and extensible.
 * Dynamic Loading of Object Files (on some architectures)
 * Highly Portable (works on many Unix-like/POSIX compatible platforms as
   well as Windows, macOS, etc.) cf.
-  https://github.com/ruby/ruby/blob/master/doc/maintainers.rdoc#label-Platform+Maintainers
+  https://github.com/ruby/ruby/blob/master/doc/maintainers.md#platform-maintainers
 
-## How to get Ruby with Git
+## How to get Ruby
 
 For a complete list of ways to install Ruby, including using third-party tools
 like rvm, see:
 
 https://www.ruby-lang.org/en/downloads/
+
+You can download release packages and the snapshot of the repository. If you want to
+download whole versions of Ruby, please visit https://www.ruby-lang.org/en/downloads/releases/.
+
+### Download with Git
 
 The mirror of the Ruby source tree can be checked out with the following command:
 

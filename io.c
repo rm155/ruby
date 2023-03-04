@@ -852,8 +852,11 @@ rb_io_timeout(VALUE self)
  *    timeout = duration -> duration
  *    timeout = nil -> nil
  *
- *  Set the internal timeout to the specified duration or nil. The timeout
+ *  \Set the internal timeout to the specified duration or nil. The timeout
  *  applies to all blocking operations where possible.
+ *
+ *  When the operation performs longer than the timeout set, IO::TimeoutError
+ *  is raised.
  *
  *  This affects the following methods (but is not limited to): #gets, #puts,
  *  #read, #write, #wait_readable and #wait_writable. This also affects
@@ -1148,7 +1151,8 @@ io_internal_wait(VALUE thread, rb_io_t *fptr, int error, int events, struct time
 
     if (ready > 0) {
         return ready;
-    } else if (ready == 0) {
+    }
+    else if (ready == 0) {
         errno = ETIMEDOUT;
         return -1;
     }
@@ -1176,7 +1180,8 @@ internal_read_func(void *ptr)
         if (io_again_p(errno)) {
             if (io_internal_wait(iis->th, iis->fptr, errno, RB_WAITFD_IN, iis->timeout) == -1) {
                 return -1;
-            } else {
+            }
+            else {
                 goto retry;
             }
         }
@@ -1211,7 +1216,8 @@ internal_write_func(void *ptr)
         if (io_again_p(e)) {
             if (io_internal_wait(iis->th, iis->fptr, errno, RB_WAITFD_OUT, iis->timeout) == -1) {
                 return -1;
-            } else {
+            }
+            else {
                 goto retry;
             }
         }
@@ -1240,7 +1246,8 @@ internal_writev_func(void *ptr)
         if (io_again_p(errno)) {
             if (io_internal_wait(iis->th, iis->fptr, errno, RB_WAITFD_OUT, iis->timeout) == -1) {
                 return -1;
-            } else {
+            }
+            else {
                 goto retry;
             }
         }
@@ -1831,7 +1838,7 @@ io_allocate_write_buffer(rb_io_t *fptr, int sync)
 static inline int
 io_binwrite_requires_flush_write(rb_io_t *fptr, long len, int nosync)
 {
-    // If the requested operation was synchronous and the output mode is synchronus or a TTY:
+    // If the requested operation was synchronous and the output mode is synchronous or a TTY:
     if (!nosync && (fptr->mode & (FMODE_SYNC|FMODE_TTY)))
         return 1;
 
@@ -2384,9 +2391,6 @@ rb_io_flush(VALUE io)
  *    f.close
  *
  *  Related: IO#pos=, IO#seek.
- *
- *  IO#pos is an alias for IO#tell.
- *
  */
 
 static VALUE
@@ -2654,9 +2658,6 @@ io_fillbuf(rb_io_t *fptr)
  *  Note that this method reads data to the input byte buffer.  So
  *  IO#sysread may not behave as you intend with IO#eof?, unless you
  *  call IO#rewind first (which is not available for some streams).
- *
- *  IO#eof? is an alias for IO#eof.
- *
  */
 
 VALUE
@@ -2846,8 +2847,6 @@ rb_io_fdatasync(VALUE io)
  *    $stderr.fileno            # => 2
  *    File.open('t.txt').fileno # => 10
  *    f.close
- *
- *  IO#to_i is an alias for IO#fileno.
  *
  */
 
@@ -4571,9 +4570,6 @@ io_readlines(const struct getline_arg *arg, VALUE io)
  *    "Fifth line"
  *
  *  Returns an Enumerator if no block is given.
- *
- *  IO#each is an alias for IO#each_line.
- *
  */
 
 static VALUE
@@ -5196,8 +5192,6 @@ rb_io_ungetc(VALUE io, VALUE c)
  *    f.close
  *    f = File.new('/dev/tty').isatty #=> true
  *    f.close
- *
- *  IO#tty? is an alias for IO#isatty.
  *
  */
 
@@ -9555,7 +9549,7 @@ rb_io_s_for_fd(int argc, VALUE *argv, VALUE klass)
  *     ios.autoclose?   -> true or false
  *
  *  Returns +true+ if the underlying file descriptor of _ios_ will be
- *  closed automatically at its finalization, otherwise +false+.
+ *  closed at its finalization or at calling #close, otherwise +false+.
  */
 
 static VALUE
@@ -9573,13 +9567,13 @@ rb_io_autoclose_p(VALUE io)
  *  Sets auto-close flag.
  *
  *     f = open("/dev/null")
- *     IO.for_fd(f.fileno)
- *     # ...
- *     f.gets # may cause Errno::EBADF
+ *     IO.for_fd(f.fileno).close
+ *     f.gets # raises Errno::EBADF
  *
  *     f = open("/dev/null")
- *     IO.for_fd(f.fileno).autoclose = false
- *     # ...
+ *     g = IO.for_fd(f.fileno)
+ *     g.autoclose = false
+ *     g.close
  *     f.gets # won't cause Errno::EBADF
  */
 
@@ -11573,6 +11567,11 @@ io_encoding_set(rb_io_t *fptr, VALUE v1, VALUE v2, VALUE opt)
                 enc2 = NULL;
             }
         }
+        if (enc2 == rb_ascii8bit_encoding()) {
+            /* If external is ASCII-8BIT, no transcoding */
+            enc = enc2;
+            enc2 = NULL;
+        }
         SET_UNIVERSAL_NEWLINE_DECORATOR_IF_ENC2(enc2, ecflags);
         ecflags = rb_econv_prepare_options(opt, &ecopts, ecflags);
     }
@@ -13393,16 +13392,22 @@ rb_io_internal_encoding(VALUE io)
  *
  *  See {Encodings}[rdoc-ref:File@Encodings].
  *
- *  Argument +ext_enc+, if given, must be an Encoding object;
+ *  Argument +ext_enc+, if given, must be an Encoding object
+ *  or a String with the encoding name;
  *  it is assigned as the encoding for the stream.
  *
- *  Argument +int_enc+, if given, must be an Encoding object;
+ *  Argument +int_enc+, if given, must be an Encoding object
+ *  or a String with the encoding name;
  *  it is assigned as the encoding for the internal string.
  *
  *  Argument <tt>'ext_enc:int_enc'</tt>, if given, is a string
  *  containing two colon-separated encoding names;
  *  corresponding Encoding objects are assigned as the external
  *  and internal encodings for the stream.
+ *
+ *  If the external encoding of a string is binary/ASCII-8BIT,
+ *  the internal encoding of the string is set to nil, since no
+ *  transcoding is needed.
  *
  *  Optional keyword arguments +enc_opts+ specify
  *  {Encoding options}[rdoc-ref:encodings.rdoc@Encoding+Options].
@@ -15305,6 +15310,7 @@ Init_IO(void)
     rb_cIO = rb_define_class("IO", rb_cObject);
     rb_include_module(rb_cIO, rb_mEnumerable);
 
+    /* Can be raised by IO operations when IO#timeout= is set. */
     rb_eIOTimeoutError = rb_define_class_under(rb_cIO, "TimeoutError", rb_eIOError);
 
     rb_define_const(rb_cIO, "READABLE", INT2NUM(RUBY_IO_READABLE));

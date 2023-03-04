@@ -17,7 +17,6 @@
 #endif
 
 #include "encindex.h"
-#include "gc.h"
 #include "id_table.h"
 #include "internal.h"
 #include "internal/array.h"
@@ -25,6 +24,7 @@
 #include "internal/complex.h"
 #include "internal/encoding.h"
 #include "internal/error.h"
+#include "internal/gc.h"
 #include "internal/hash.h"
 #include "internal/numeric.h"
 #include "internal/object.h"
@@ -3319,7 +3319,7 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
                 previ == BIN(getlocal) ||
                 previ == BIN(getblockparam) ||
                 previ == BIN(getblockparamproxy) ||
-                /* getinstancevariable may issue a warning */
+                previ == BIN(getinstancevariable) ||
                 previ == BIN(duparray)) {
                 /* just push operand or static value and pop soon, no
                  * side effects */
@@ -4847,7 +4847,7 @@ when_vals(rb_iseq_t *iseq, LINK_ANCHOR *const cond_seq, const NODE *vals,
             if (!COMPILE(cond_seq, "when cond", val)) return -1;
         }
 
-        // Emit patern === target
+        // Emit pattern === target
         ADD_INSN1(cond_seq, vals, topn, INT2FIX(1));
         ADD_CALL(cond_seq, vals, idEqq, INT2FIX(1));
         ADD_INSNL(cond_seq, val, branchif, l1);
@@ -8276,12 +8276,12 @@ compile_builtin_function_call(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NOD
     NODE *args_node = node->nd_args;
 
     if (parent_block != NULL) {
-        COMPILE_ERROR(iseq, nd_line(line_node), "should not call builtins here.");
+        COMPILE_ERROR(ERROR_ARGS_AT(line_node) "should not call builtins here.");
         return COMPILE_NG;
     }
     else {
 # define BUILTIN_INLINE_PREFIX "_bi"
-        char inline_func[DECIMAL_SIZE_OF_BITS(sizeof(int) * CHAR_BIT) + sizeof(BUILTIN_INLINE_PREFIX)];
+        char inline_func[sizeof(BUILTIN_INLINE_PREFIX) + DECIMAL_SIZE_OF(int)];
         bool cconst = false;
       retry:;
         const struct rb_builtin_function *bf = iseq_builtin_function_lookup(iseq, builtin_func);
@@ -10270,6 +10270,18 @@ dump_disasm_list_with_cursor(const LINK_ELEMENT *link, const LINK_ELEMENT *curr,
     fflush(stdout);
 }
 
+bool
+rb_insns_leaf_p(int i)
+{
+    return insn_leaf_p(i);
+}
+
+int
+rb_insn_len(VALUE insn)
+{
+    return insn_len(insn);
+}
+
 const char *
 rb_insns_name(int i)
 {
@@ -10742,7 +10754,7 @@ iseq_build_kw(rb_iseq_t *iseq, VALUE params, VALUE keywords)
 }
 
 void
-rb_iseq_mark_insn_storage(struct iseq_compile_data_storage *storage)
+rb_iseq_mark_and_move_insn_storage(struct iseq_compile_data_storage *storage)
 {
     INSN *iobj = 0;
     size_t size = sizeof(INSN);
@@ -10778,13 +10790,7 @@ rb_iseq_mark_insn_storage(struct iseq_compile_data_storage *storage)
                       case TS_VALUE:
                       case TS_IC: // constant path array
                       case TS_CALLDATA: // ci is stored.
-                        {
-                            VALUE op = OPERAND_AT(iobj, j);
-
-                            if (!SPECIAL_CONST_P(op)) {
-                                rb_gc_mark(op);
-                            }
-                        }
+                        rb_gc_mark_and_move(&OPERAND_AT(iobj, j));
                         break;
                       default:
                         break;
@@ -12317,7 +12323,7 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     verify_call_cache(iseq);
 
     RB_GC_GUARD(dummy_frame);
-    rb_vm_pop_frame(ec);
+    rb_vm_pop_frame_no_int(ec);
 }
 
 struct ibf_dump_iseq_list_arg
@@ -13068,7 +13074,7 @@ ibf_dump_memsize(const void *ptr)
 static const rb_data_type_t ibf_dump_type = {
     "ibf_dump",
     {ibf_dump_mark, ibf_dump_free, ibf_dump_memsize,},
-    0, 0, RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_FREE_IMMEDIATELY
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static void

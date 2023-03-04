@@ -374,6 +374,45 @@ assert_equal 'false', %q{
   less_than 2
 }
 
+# BOP redefinition works on Integer#<=
+assert_equal 'false', %q{
+  def le(x, y) = x <= y
+
+  le(2, 2)
+
+  class Integer
+    def <=(_) = false
+  end
+
+  le(2, 2)
+}
+
+# BOP redefinition works on Integer#>
+assert_equal 'false', %q{
+  def gt(x, y) = x > y
+
+  gt(3, 2)
+
+  class Integer
+    def >(_) = false
+  end
+
+  gt(3, 2)
+}
+
+# BOP redefinition works on Integer#>=
+assert_equal 'false', %q{
+  def ge(x, y) = x >= y
+
+  ge(2, 2)
+
+  class Integer
+    def >=(_) = false
+  end
+
+  ge(2, 2)
+}
+
 # Putobject, less-than operator, fixnums
 assert_equal '2', %q{
     def check_index(index)
@@ -1940,6 +1979,38 @@ assert_equal '[:A, :Btwo]', %q{
   ins.foo
 }
 
+# invokesuper with a block
+assert_equal 'true', %q{
+  class A
+    def foo = block_given?
+  end
+
+  class B < A
+    def foo = super()
+  end
+
+  B.new.foo { }
+  B.new.foo { }
+}
+
+# invokesuper in a block
+assert_equal '[0, 2]', %q{
+  class A
+    def foo(x) = x * 2
+  end
+
+  class B < A
+    def foo
+      2.times.map do |x|
+        super(x)
+      end
+    end
+  end
+
+  B.new.foo
+  B.new.foo
+}
+
 # Call to fixnum
 assert_equal '[true, false]', %q{
   def is_odd(obj)
@@ -3455,4 +3526,109 @@ assert_equal 'ok', %q{
   end
 
   cw(4)
+}
+
+assert_equal 'threw', %q{
+  def foo(args)
+    wrap(*args)
+  rescue ArgumentError
+    'threw'
+  end
+
+  def wrap(a)
+    [a]
+  end
+
+  foo([Hash.ruby2_keywords_hash({})])
+}
+
+assert_equal 'threw', %q{
+  # C call
+  def bar(args)
+    Array(*args)
+  rescue ArgumentError
+    'threw'
+  end
+
+  bar([Hash.ruby2_keywords_hash({})])
+}
+
+# Test instance_of? and is_a?
+assert_equal 'true', %q{
+  1.instance_of?(Integer) && 1.is_a?(Integer)
+}
+
+# Test instance_of? and is_a? for singleton classes
+assert_equal 'true', %q{
+  a = []
+  def a.test = :test
+  a.instance_of?(Array) && a.is_a?(Array)
+}
+
+# Test instance_of? for singleton_class
+# Yes this does really return false
+assert_equal 'false', %q{
+  a = []
+  def a.test = :test
+  a.instance_of?(a.singleton_class)
+}
+
+# Test is_a? for singleton_class
+assert_equal 'true', %q{
+  a = []
+  def a.test = :test
+  a.is_a?(a.singleton_class)
+}
+
+# Test send with splat to a cfunc
+assert_equal 'true', %q{
+  1.send(:==, 1, *[])
+}
+
+# Test empty splat with cfunc
+assert_equal '2', %q{
+  def foo
+    Integer.sqrt(4, *[])
+  end
+  # call twice to deal with constant exiting
+  foo
+  foo
+}
+
+# Test non-empty splat with cfunc
+assert_equal 'Hello World', %q{
+  def bar
+    args = ["Hello "]
+    greeting = "World"
+    greeting.insert(0, *args)
+    greeting
+  end
+  bar
+}
+
+# Regression: this creates a temp stack with > 127 elements
+assert_normal_exit %q{
+  def foo(a)
+    [
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a, a, a,
+      a, a, a, a, a, a, a, a,
+    ]
+  end
+
+  def entry
+    foo(1)
+  end
+
+  entry
 }

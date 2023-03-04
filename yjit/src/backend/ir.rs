@@ -7,7 +7,7 @@ use std::fmt;
 use std::convert::From;
 use std::io::Write;
 use std::mem::take;
-use crate::cruby::{VALUE};
+use crate::cruby::{VALUE, SIZEOF_VALUE_I32};
 use crate::virtualmem::{CodePtr};
 use crate::asm::{CodeBlock, uimm_num_bits, imm_num_bits};
 use crate::core::{Context, Type, TempMapping};
@@ -72,6 +72,9 @@ pub enum Opnd
     // Output of a preceding instruction in this block
     InsnOut{ idx: usize, num_bits: u8 },
 
+    // Pointer to a slot on the VM stack
+    Stack { idx: i32, sp_offset: i8, num_bits: u8 },
+
     // Low-level operands, for lowering
     Imm(i64),           // Raw signed immediate
     UImm(u64),          // Raw unsigned immediate
@@ -85,6 +88,7 @@ impl fmt::Debug for Opnd {
         match self {
             Self::None => write!(fmt, "None"),
             Value(val) => write!(fmt, "Value({val:?})"),
+            Stack { idx, sp_offset, .. } => write!(fmt, "SP[{}]", *sp_offset as i32 - idx - 1),
             InsnOut { idx, num_bits } => write!(fmt, "Out{num_bits}({idx})"),
             Imm(signed) => write!(fmt, "{signed:x}_i64"),
             UImm(unsigned) => write!(fmt, "{unsigned:x}_u64"),
@@ -158,6 +162,7 @@ impl Opnd
             Opnd::Reg(reg) => Some(Opnd::Reg(reg.with_num_bits(num_bits))),
             Opnd::Mem(Mem { base, disp, .. }) => Some(Opnd::Mem(Mem { base, disp, num_bits })),
             Opnd::InsnOut { idx, .. } => Some(Opnd::InsnOut { idx, num_bits }),
+            Opnd::Stack { idx, sp_offset, .. } => Some(Opnd::Stack { idx, sp_offset, num_bits }),
             _ => None,
         }
     }
@@ -271,6 +276,7 @@ impl Target
     pub fn unwrap_code_ptr(&self) -> CodePtr {
         match self {
             Target::CodePtr(ptr) => *ptr,
+            Target::SideExitPtr(ptr) => *ptr,
             _ => unreachable!("trying to unwrap {:?} into code ptr", self)
         }
     }
@@ -427,7 +433,7 @@ pub enum Insn {
     // binary OR operation.
     Or { left: Opnd, right: Opnd, out: Opnd },
 
-    /// Pad nop instructions to accomodate Op::Jmp in case the block or the insn
+    /// Pad nop instructions to accommodate Op::Jmp in case the block or the insn
     /// is invalidated.
     PadInvalPatch,
 
@@ -913,6 +919,25 @@ impl Assembler
         Target::Label(label_idx)
     }
 
+    /// Convert Stack operands to memory operands
+    pub fn lower_stack(mut self) -> Assembler
+    {
+        let mut asm = Assembler::new_with_label_names(take(&mut self.label_names));
+        let mut iterator = self.into_draining_iter();
+
+        while let Some((index, mut insn)) = iterator.next_unmapped() {
+            let mut opnd_iter = insn.opnd_iter_mut();
+            while let Some(opnd) = opnd_iter.next() {
+                if let Opnd::Stack { idx, sp_offset, num_bits } = *opnd {
+                    *opnd = Opnd::mem(num_bits, SP, (sp_offset as i32 - idx - 1) * SIZEOF_VALUE_I32);
+                }
+            }
+            asm.push_insn(insn);
+        }
+
+        asm
+    }
+
     /// Sets the out field on the various instructions that require allocated
     /// registers because their output is used as the operand on a subsequent
     /// instruction. This is our implementation of the linear scan algorithm.
@@ -973,11 +998,11 @@ impl Assembler
 
             // Dump insns along with live registers
             for (insn_idx, insn) in insns.iter().enumerate() {
-                print!("{:3} ", if spill_index == insn_idx { "==>" } else { "" });
+                eprint!("{:3} ", if spill_index == insn_idx { "==>" } else { "" });
                 for reg in 0..=num_regs {
-                    print!("{:1}", if reg < live_regs[insn_idx] { "|" } else { "" });
+                    eprint!("{:1}", if reg < live_regs[insn_idx] { "|" } else { "" });
                 }
-                println!(" [{:3}] {:?}", insn_idx, insn);
+                eprintln!(" [{:3}] {:?}", insn_idx, insn);
             }
         }
 

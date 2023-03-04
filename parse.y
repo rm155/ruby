@@ -150,7 +150,7 @@ enum lex_state_bits {
     EXPR_CMDARG_bit,		/* newline significant, +/- is an operator. */
     EXPR_MID_bit,		/* newline significant, +/- is an operator. */
     EXPR_FNAME_bit,		/* ignore newline, no reserved words. */
-    EXPR_DOT_bit,		/* right after `.' or `::', no reserved words. */
+    EXPR_DOT_bit,		/* right after `.', `&.' or `::', no reserved words. */
     EXPR_CLASS_bit,		/* immediate after `class', no here document. */
     EXPR_LABEL_bit,		/* flag bit, label is allowed. */
     EXPR_LABELED_bit,		/* flag bit, just after a label. */
@@ -1242,7 +1242,15 @@ endless_method_name(struct parser_params *p, NODE *defn, const YYLTYPE *loc)
     token_info_drop(p, "def", loc->beg_pos);
 }
 
-#define debug_token_line(p, name, line) if (p->debug) rb_parser_printf(p, name ":%d (%d: %ld|%ld|%ld)\n", line, p->ruby_sourceline, p->lex.ptok - p->lex.pbeg, p->lex.pcur - p->lex.ptok, p->lex.pend - p->lex.pcur)
+#define debug_token_line(p, name, line) do { \
+	if (p->debug) { \
+	    const char *const pcur = p->lex.pcur; \
+	    const char *const ptok = p->lex.ptok; \
+	    rb_parser_printf(p, name ":%d (%d: %"PRIdPTRDIFF"|%"PRIdPTRDIFF"|%"PRIdPTRDIFF")\n", \
+			     line, p->ruby_sourceline, \
+			     ptok - p->lex.pbeg, pcur - ptok, p->lex.pend - pcur); \
+	} \
+    } while (0)
 
 #ifndef RIPPER
 # define Qnone 0
@@ -1456,7 +1464,7 @@ static int looking_at_eol_p(struct parser_params *p);
 %type <node> string_contents xstring_contents regexp_contents string_content
 %type <node> words symbols symbol_list qwords qsymbols word_list qword_list qsym_list word
 %type <node> literal numeric simple_numeric ssym dsym symbol cpath def_name defn_head defs_head
-%type <node> top_compstmt top_stmts top_stmt begin_block
+%type <node> top_compstmt top_stmts top_stmt begin_block endless_arg endless_command
 %type <node> bodystmt compstmt stmts stmt_or_begin stmt expr arg primary command command_call method_call
 %type <node> expr_value expr_value_do arg_value primary_value fcall rel_expr
 %type <node> if_tail opt_else case_body case_args cases opt_rescue exc_list exc_var opt_ensure
@@ -1853,6 +1861,7 @@ stmt		: keyword_alias fitem {SET_LEX_STATE(EXPR_FNAME|EXPR_FITEM);} fitem
 		| expr
 		| error
 		    {
+			(void)yynerrs;
 		    /*%%%*/
 			$$ = NEW_ERROR(&@$);
 		    /*% %*/
@@ -1910,30 +1919,17 @@ command_asgn	: lhs '=' lex_ctxt command_rhs
 		    /*% %*/
 		    /*% ripper: opassign!(field!($1, ID2VAL(idCOLON2), $3), $4, $6) %*/
 		    }
-		| defn_head f_opt_paren_args '=' command
+		| defn_head f_opt_paren_args '=' endless_command
 		    {
 			endless_method_name(p, $<node>1, &@1);
 			restore_defun(p, $<node>1->nd_defn);
 		    /*%%%*/
 			$$ = set_defun_body(p, $1, $2, $4, &@$);
 		    /*% %*/
-		    /*% ripper[$4]: bodystmt!($4, Qnil, Qnil, Qnil) %*/
-		    /*% ripper: def!(get_value($1), $2, $4) %*/
+		    /*% ripper: def!(get_value($1), $2, bodystmt!($4, Qnil, Qnil, Qnil)) %*/
 			local_pop(p);
 		    }
-		| defn_head f_opt_paren_args '=' command modifier_rescue arg
-		    {
-			endless_method_name(p, $<node>1, &@1);
-			restore_defun(p, $<node>1->nd_defn);
-		    /*%%%*/
-			$4 = rescued_expr(p, $4, $6, &@4, &@5, &@6);
-			$$ = set_defun_body(p, $1, $2, $4, &@$);
-		    /*% %*/
-		    /*% ripper[$4]: bodystmt!(rescue_mod!($4, $6), Qnil, Qnil, Qnil) %*/
-		    /*% ripper: def!(get_value($1), $2, $4) %*/
-			local_pop(p);
-		    }
-		| defs_head f_opt_paren_args '=' command
+		| defs_head f_opt_paren_args '=' endless_command
 		    {
 			endless_method_name(p, $<node>1, &@1);
 			restore_defun(p, $<node>1->nd_defn);
@@ -1942,22 +1938,7 @@ command_asgn	: lhs '=' lex_ctxt command_rhs
 		    /*%
 			$1 = get_value($1);
 		    %*/
-		    /*% ripper[$4]: bodystmt!($4, Qnil, Qnil, Qnil) %*/
-		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, $4) %*/
-			local_pop(p);
-		    }
-		| defs_head f_opt_paren_args '=' command modifier_rescue arg
-		    {
-			endless_method_name(p, $<node>1, &@1);
-			restore_defun(p, $<node>1->nd_defn);
-		    /*%%%*/
-			$4 = rescued_expr(p, $4, $6, &@4, &@5, &@6);
-			$$ = set_defun_body(p, $1, $2, $4, &@$);
-		    /*%
-			$1 = get_value($1);
-		    %*/
-		    /*% ripper[$4]: bodystmt!(rescue_mod!($4, $6), Qnil, Qnil, Qnil) %*/
-		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, $4) %*/
+		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, bodystmt!($4, Qnil, Qnil, Qnil)) %*/
 			local_pop(p);
 		    }
 		| backref tOP_ASGN lex_ctxt command_rhs
@@ -1967,6 +1948,20 @@ command_asgn	: lhs '=' lex_ctxt command_rhs
 			$$ = NEW_BEGIN(0, &@$);
 		    /*% %*/
 		    /*% ripper[error]: backref_error(p, RNODE($1), assign!(var_field(p, $1), $4)) %*/
+		    }
+		;
+
+endless_command : command
+		| endless_command modifier_rescue arg
+		    {
+		    /*%%%*/
+			$$ = rescued_expr(p, $1, $3, &@1, &@2, &@3);
+		    /*% %*/
+		    /*% ripper: rescue_mod!($1, $3) %*/
+		    }
+		| keyword_not opt_nl endless_command
+		    {
+			$$ = call_uni_op(p, method_cond(p, $3, &@3), METHOD_NOT, &@1, &@$);
 		    }
 		;
 
@@ -2853,30 +2848,17 @@ arg		: lhs '=' lex_ctxt arg_rhs
 		    /*% %*/
 		    /*% ripper: ifop!($1, $3, $6) %*/
 		    }
-		| defn_head f_opt_paren_args '=' arg
+		| defn_head f_opt_paren_args '=' endless_arg
 		    {
 			endless_method_name(p, $<node>1, &@1);
 			restore_defun(p, $<node>1->nd_defn);
 		    /*%%%*/
 			$$ = set_defun_body(p, $1, $2, $4, &@$);
 		    /*% %*/
-		    /*% ripper[$4]: bodystmt!($4, Qnil, Qnil, Qnil) %*/
-		    /*% ripper: def!(get_value($1), $2, $4) %*/
+		    /*% ripper: def!(get_value($1), $2, bodystmt!($4, Qnil, Qnil, Qnil)) %*/
 			local_pop(p);
 		    }
-		| defn_head f_opt_paren_args '=' arg modifier_rescue arg
-		    {
-			endless_method_name(p, $<node>1, &@1);
-			restore_defun(p, $<node>1->nd_defn);
-		    /*%%%*/
-			$4 = rescued_expr(p, $4, $6, &@4, &@5, &@6);
-			$$ = set_defun_body(p, $1, $2, $4, &@$);
-		    /*% %*/
-		    /*% ripper[$4]: bodystmt!(rescue_mod!($4, $6), Qnil, Qnil, Qnil) %*/
-		    /*% ripper: def!(get_value($1), $2, $4) %*/
-			local_pop(p);
-		    }
-		| defs_head f_opt_paren_args '=' arg
+		| defs_head f_opt_paren_args '=' endless_arg
 		    {
 			endless_method_name(p, $<node>1, &@1);
 			restore_defun(p, $<node>1->nd_defn);
@@ -2885,27 +2867,26 @@ arg		: lhs '=' lex_ctxt arg_rhs
 		    /*%
 			$1 = get_value($1);
 		    %*/
-		    /*% ripper[$4]: bodystmt!($4, Qnil, Qnil, Qnil) %*/
-		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, $4) %*/
-			local_pop(p);
-		    }
-		| defs_head f_opt_paren_args '=' arg modifier_rescue arg
-		    {
-			endless_method_name(p, $<node>1, &@1);
-			restore_defun(p, $<node>1->nd_defn);
-		    /*%%%*/
-			$4 = rescued_expr(p, $4, $6, &@4, &@5, &@6);
-			$$ = set_defun_body(p, $1, $2, $4, &@$);
-		    /*%
-			$1 = get_value($1);
-		    %*/
-		    /*% ripper[$4]: bodystmt!(rescue_mod!($4, $6), Qnil, Qnil, Qnil) %*/
-		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, $4) %*/
+		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, bodystmt!($4, Qnil, Qnil, Qnil)) %*/
 			local_pop(p);
 		    }
 		| primary
 		    {
 			$$ = $1;
+		    }
+		;
+
+endless_arg	: arg %prec modifier_rescue
+		| endless_arg modifier_rescue arg
+		    {
+		    /*%%%*/
+			$$ = rescued_expr(p, $1, $3, &@1, &@2, &@3);
+		    /*% %*/
+		    /*% ripper: rescue_mod!($1, $3) %*/
+		    }
+		| keyword_not opt_nl endless_arg
+		    {
+			$$ = call_uni_op(p, method_cond(p, $3, &@3), METHOD_NOT, &@1, &@$);
 		    }
 		;
 
@@ -6186,8 +6167,13 @@ ripper_yylval_id(struct parser_params *p, ID x)
 static bool
 parser_has_token(struct parser_params *p)
 {
-    if (p->keep_tokens && (p->lex.pcur < p->lex.ptok)) rb_bug("lex.pcur < lex.ptok. (line: %d) %ld|%ld|%ld", p->ruby_sourceline, p->lex.ptok - p->lex.pbeg, p->lex.pcur - p->lex.ptok, p->lex.pend - p->lex.pcur);
-    return p->lex.pcur > p->lex.ptok;
+    const char *const pcur = p->lex.pcur;
+    const char *const ptok = p->lex.ptok;
+    if (p->keep_tokens && (pcur < ptok)) {
+	rb_bug("lex.pcur < lex.ptok. (line: %d) %"PRIdPTRDIFF"|%"PRIdPTRDIFF"|%"PRIdPTRDIFF"",
+	       p->ruby_sourceline, ptok - p->lex.pbeg, pcur - ptok, p->lex.pend - pcur);
+    }
+    return pcur > ptok;
 }
 
 static VALUE
@@ -7028,6 +7014,14 @@ add_delayed_token(struct parser_params *p, const char *tok, const char *end, int
     }
 }
 
+static void
+set_lastline(struct parser_params *p, VALUE v)
+{
+    p->lex.pbeg = p->lex.pcur = RSTRING_PTR(v);
+    p->lex.pend = p->lex.pcur + RSTRING_LEN(v);
+    p->lex.lastline = v;
+}
+
 static int
 nextline(struct parser_params *p, int set_encoding)
 {
@@ -7065,10 +7059,8 @@ nextline(struct parser_params *p, int set_encoding)
 	p->heredoc_end = 0;
     }
     p->ruby_sourceline++;
-    p->lex.pbeg = p->lex.pcur = RSTRING_PTR(v);
-    p->lex.pend = p->lex.pcur + RSTRING_LEN(v);
+    set_lastline(p, v);
     token_flush(p);
-    p->lex.lastline = v;
     return 0;
 }
 
@@ -9414,7 +9406,7 @@ tokadd_ident(struct parser_params *p, int c)
 }
 
 static ID
-tokenize_ident(struct parser_params *p, const enum lex_state_e last_state)
+tokenize_ident(struct parser_params *p)
 {
     ID ident = TOK_INTERN();
 
@@ -9549,7 +9541,7 @@ parse_gvar(struct parser_params *p, const enum lex_state_e last_state)
 
     if (tokadd_ident(p, c)) return 0;
     SET_LEX_STATE(EXPR_END);
-    tokenize_ident(p, last_state);
+    tokenize_ident(p);
     return tGVAR;
 }
 
@@ -9624,7 +9616,7 @@ parse_atmark(struct parser_params *p, const enum lex_state_e last_state)
     }
 
     if (tokadd_ident(p, c)) return 0;
-    tokenize_ident(p, last_state);
+    tokenize_ident(p);
     return result;
 }
 
@@ -9743,7 +9735,7 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
 	SET_LEX_STATE(EXPR_END);
     }
 
-    ident = tokenize_ident(p, last_state);
+    ident = tokenize_ident(p);
     if (result == tCONSTANT && is_local_id(ident)) result = tIDENTIFIER;
     if (!IS_lex_state_for(last_state, EXPR_DOT|EXPR_FNAME) &&
 	(result == tIDENTIFIER) && /* not EXPR_FNAME, not attrasgn */
@@ -9807,7 +9799,7 @@ parser_yylex(struct parser_params *p)
 #endif
 	/* Set location for end-of-input because dispatch_scan_event is not called. */
 	RUBY_SET_YYLLOC(*p->yylloc);
-	return 0;
+	return END_OF_INPUT;
 
 	/* white spaces */
       case '\r':
@@ -9850,6 +9842,7 @@ parser_yylex(struct parser_params *p)
 	/* fall through */
       case '\n':
 	p->token_seen = token_seen;
+	VALUE prevline = p->lex.lastline;
 	c = (IS_lex_state(EXPR_BEG|EXPR_CLASS|EXPR_FNAME|EXPR_DOT) &&
 	     !IS_lex_state(EXPR_LABELED));
 	if (c || IS_lex_state_all(EXPR_ARG|EXPR_LABELED)) {
@@ -9887,10 +9880,12 @@ parser_yylex(struct parser_params *p)
 	      default:
 		p->ruby_sourceline--;
 		p->lex.nextline = p->lex.lastline;
+		set_lastline(p, prevline);
 	      case -1:		/* EOF no decrement*/
 		lex_goto_eol(p);
 		if (c != -1) {
-		    p->lex.ptok = p->lex.pcur;
+		    token_flush(p);
+		    RUBY_SET_YYLLOC(*p->yylloc);
 		}
 		goto normal_newline;
 	    }
@@ -9977,7 +9972,7 @@ parser_yylex(struct parser_params *p)
 		    c = nextc(p);
 		    if (c == -1) {
 			compile_error(p, "embedded document meets end of file");
-			return 0;
+			return END_OF_INPUT;
 		    }
 		    if (c == '=' && word_match_p(p, "end", 3)) {
 			break;
@@ -10457,13 +10452,11 @@ parser_yylex(struct parser_params *p)
 	if (was_bol(p) && whole_match_p(p, "__END__", 7, 0)) {
 	    p->ruby__end__seen = 1;
 	    p->eofp = 1;
-#ifndef RIPPER
-	    return -1;
-#else
+#ifdef RIPPER
             lex_goto_eol(p);
             dispatch_scan_event(p, k__END__);
-            return 0;
 #endif
+            return END_OF_INPUT;
 	}
 	newtok(p);
 	break;
@@ -10495,7 +10488,7 @@ yylex(YYSTYPE *lval, YYLTYPE *yylloc, struct parser_params *p)
 
     if (has_delayed_token(p))
 	dispatch_delayed_token(p, t);
-    else if (t != 0)
+    else if (t != END_OF_INPUT)
 	dispatch_scan_event(p, t);
 
     return t;

@@ -14,13 +14,13 @@ jobs:
       contents: write  # for Git to git push
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c # v3.3.0
       - name: Check if C-sources are US-ASCII
         run: |
           ! grep -r -n '[^	 -~]' -- *.[chy] include internal win32/*.[ch]
       - name: Check for trailing spaces
         run: |
-          ! git grep -n '[	 ]$' -- '*.rb' '*.[chy]'
+          ! git grep -n '[	 ]$' -- '*.rb' '*.[chy]' '*.rs'
           ! git grep -n '^[	 ][	 ]*$' -- '*.md'
       - name: Check for bash specific substitution in configure.ac
         run: |
@@ -32,7 +32,7 @@ jobs:
           done | grep -F .
         working-directory: include
 
-      - uses: actions/cache@c17f4bf4666a8001b1a45c09eb7a485c41aa64c3 # v3.2.0
+      - uses: actions/cache@69d9d449aced6a2ede0bc19182fadc3a0a42d2b0 # v3.2.6
         with:
           path: .downloaded-cache
           key: downloaded-cache-${{ github.sha }}
@@ -66,30 +66,7 @@ jobs:
 
       - name: Maintain updated gems list in NEWS
         run: |
-          #!ruby
-          require 'json'
-          news = File.read("NEWS.md")
-          prev = news[/since the \*+(\d+\.\d+\.\d+)\*+/, 1]
-          prevs = [prev, prev.sub(/\.\d+\z/, '')]
-          %W[default].each do |type|
-            last = JSON.parse(File.read("#{type}_gems.json"))['gems'].filter_map do |g|
-              v = g['versions'].values_at(*prevs).compact.first
-              g = g['gem']
-              g = 'RubyGems' if g == 'rubygems'
-              [g, v] if v
-            end.to_h
-            changed = File.foreach("gems/#{type}_gems").filter_map do |l|
-              next if l.start_with?("#")
-              g, v = l.split(" ", 3)
-              [g, v] unless last[g] == v
-            end
-            news.sub!(/^\*( +)The following #{type} gems? are updated\.\n+\K(?: \1\* .*\n)*/) do
-              mark = "#{$1} * "
-              changed.map {|g, v|"#{mark}#{g} #{v}\n"}.join("")
-            end or next
-            File.write("NEWS.md", news)
-          end
-        shell: ruby {0}
+          ruby tool/update-NEWS-gemlist.rb default
 
       - name: Check diffs
         id: diff

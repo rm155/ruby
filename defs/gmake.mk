@@ -26,7 +26,7 @@ TEST_TARGETS := $(filter $(CHECK_TARGETS),$(MAKECMDGOALS))
 TEST_DEPENDS := $(filter-out commit $(TEST_TARGETS),$(MAKECMDGOALS))
 TEST_TARGETS := $(patsubst great,exam,$(TEST_TARGETS))
 TEST_DEPENDS := $(filter-out great $(TEST_TARGETS),$(TEST_DEPENDS))
-TEST_TARGETS := $(patsubst exam,check,$(TEST_TARGETS))
+TEST_TARGETS := $(patsubst exam,test-bundled-gems yes-test-bundler-parallel check,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst check,test-syntax-suggest test-spec test-all test-tool test-short,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-rubyspec,test-spec,$(TEST_TARGETS))
 TEST_DEPENDS := $(filter-out exam check test-spec $(TEST_TARGETS),$(TEST_DEPENDS))
@@ -40,6 +40,7 @@ TEST_TARGETS := $(patsubst test-short,btest-ruby test-knownbug test-basic,$(TEST
 TEST_TARGETS := $(patsubst test-bundled-gems,test-bundled-gems-run,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-bundled-gems-run,test-bundled-gems-run $(PREPARE_BUNDLED_GEMS),$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-bundled-gems-prepare,test-bundled-gems-prepare $(PRECHECK_BUNDLED_GEMS) test-bundled-gems-fetch,$(TEST_TARGETS))
+TEST_TARGETS := $(patsubst test-bundler-parallel,test-bundler-parallel $(PREPARE_BUNDLER),$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-syntax-suggest,test-syntax-suggest $(PREPARE_SYNTAX_SUGGEST),$(TEST_TARGETS))
 TEST_DEPENDS := $(filter-out test-short $(TEST_TARGETS),$(TEST_DEPENDS))
 TEST_DEPENDS += $(if $(filter great exam love check,$(MAKECMDGOALS)),all exts)
@@ -53,6 +54,13 @@ ifeq ($(if $(filter all main exts enc trans libencs libenc libtrans \
 		    miniruby$(EXEEXT) mini,\
 	     $(MAKECMDGOALS)),,$(MAKECMDGOALS)),)
 -include $(SHOWFLAGS)
+endif
+
+ifeq ($(HAVE_BASERUBY):$(HAVE_GIT),yes:yes)
+override modified := $(shell $(BASERUBY) -C $(srcdir) tool/file2lastrev.rb --modified='%Y %m %d')
+override RUBY_RELEASE_YEAR := $(word 1,$(modified))
+override RUBY_RELEASE_MONTH := $(word 2,$(modified))
+override RUBY_RELEASE_DAY := $(word 3,$(modified))
 endif
 
 ifneq ($(filter universal-%,$(arch)),)
@@ -268,6 +276,7 @@ HELP_EXTRA_TASKS = \
 	"  checkout-github:       checkout GitHub Pull Request [PR=1234]" \
 	"  pull-github:           rebase GitHub Pull Request to new worktree [PR=1234]" \
 	"  update-github:         merge master branch and push it to Pull Request [PR=1234]" \
+	"  tags:                  generate TAGS file" \
 	""
 
 # 1. squeeze spaces
@@ -292,12 +301,12 @@ foreach-bundled-gems-rev = \
 foreach-bundled-gems-rev-0 = \
     $(call $(1),$(word 1,$(2)),$(word 2,$(2)),$(word 3,$(2)),$(word 4,$(2)))
 bundled-gem-gemfile = $(srcdir)/gems/$(1)-$(2).gem
-bundled-gem-srcdir = $(srcdir)/gems/src/$(1)
+bundled-gem-gemspec = $(srcdir)/gems/src/$(1)/$(1).gemspec
 bundled-gem-extracted = $(srcdir)/.bundle/gems/$(1)-$(2)
 
 update-gems: | $(patsubst %,$(srcdir)/gems/%.gem,$(bundled-gems))
 update-gems: | $(call foreach-bundled-gems-rev,bundled-gem-gemfile)
-update-gems: | $(call foreach-bundled-gems-rev,bundled-gem-srcdir)
+update-gems: | $(call foreach-bundled-gems-rev,bundled-gem-gemspec)
 
 test-bundler-precheck: | $(srcdir)/.bundle/cache
 
@@ -325,33 +334,53 @@ $(srcdir)/.bundle/gems/%: $(srcdir)/gems/%.gem | .bundle/gems
 	    -Itool/lib -rbundled_gem \
 	    -e 'BundledGem.unpack("gems/$(@F).gem", ".bundle")'
 
-define copy-gem
-$(srcdir)/gems/src/$(1): | $(srcdir)/gems/src
-	$(ECHO) Cloning $(4)
-	$(Q) $(GIT) clone $(4) $$(@)
+$(srcdir)/.bundle/.timestamp:
+	$(MAKEDIRS) $@
 
-$(srcdir)/.bundle/gems/$(1)-$(2): | $(srcdir)/gems/src/$(1) .bundle/gems
-	$(ECHO) Copying $(1)@$(3) to $$(@F)
+define build-gem
+$(srcdir)/gems/src/$(1)/.git: | $(srcdir)/gems/src
+	$(ECHO) Cloning $(4)
+	$(Q) $(GIT) clone $(4) $$(@D)
+
+$(srcdir)/.bundle/.timestamp/$(1).revision: \
+	$(if $(if $(wildcard $$(@)),$(filter $(3),$(shell cat $$(@)))),,PHONY) \
+	| $(srcdir)/.bundle/.timestamp $(srcdir)/gems/src/$(1)/.git
+	$(ECHO) Update $(1) to $(3)
 	$(Q) $(CHDIR) "$(srcdir)/gems/src/$(1)" && \
 	    $(GIT) fetch origin $(3) && \
 	    $(GIT) checkout --detach $(3) && \
 	:
+	echo $(3) | $(IFCHANGE) $$(@) -
+
+# The repository of minitest does not include minitest.gemspec because it uses hoe.
+# This creates a dummy gemspec.
+$(srcdir)/gems/src/$(1)/$(1).gemspec: \
+	| $(srcdir)/gems/src/$(1)/.git
+	$(Q) $(BASERUBY) -I$(tooldir)/lib -rbundled_gem -e 'BundledGem.dummy_gemspec(*ARGV)' $$(@)
+
+$(srcdir)/gems/$(1)-$(2).gem: $(srcdir)/gems/src/$(1)/$(1).gemspec \
+		$(srcdir)/.bundle/.timestamp/$(1).revision
+	$(ECHO) Building $(1)@$(3) to $$(@)
 	$(Q) $(BASERUBY) -C "$(srcdir)" \
 	    -Itool/lib -rbundled_gem \
-	    -e 'BundledGem.copy("gems/src/$(1)/$(1).gemspec", ".bundle")'
+	    -e 'BundledGem.build("gems/src/$(1)/$(1).gemspec", "$(2)", "gems", validation: false)'
 
 endef
-define copy-gem-0
-$(eval $(call copy-gem,$(1),$(2),$(3),$(4)))
+define build-gem-0
+$(eval $(call build-gem,$(1),$(2),$(3),$(4)))
 endef
 
-$(call foreach-bundled-gems-rev,copy-gem-0)
+$(call foreach-bundled-gems-rev,build-gem-0)
 
 $(srcdir)/gems/src:
 	$(MAKEDIRS) $@
 
 $(srcdir)/.bundle/gems:
 	$(MAKEDIRS) $@
+
+ifneq ($(DOT_WAIT),)
+up:: $(DOT_WAIT) after-update
+endif
 
 ifneq ($(filter update-bundled_gems refresh-gems,$(MAKECMDGOALS)),)
 update-gems: update-bundled_gems
@@ -395,7 +424,7 @@ REVISION_LATEST := $(shell $(CHDIR) $(srcdir) && $(GIT) log -1 --format=%H 2>/de
 else
 REVISION_LATEST := update
 endif
-REVISION_IN_HEADER := $(shell sed -n 's/^\#define RUBY_FULL_REVISION "\(.*\)"/\1/p' $(wildcard $(srcdir)/revision.h revision.h) /dev/null 2>/dev/null)
+REVISION_IN_HEADER := $(shell sed '/^\#define RUBY_FULL_REVISION "\(.*\)"/!d;s//\1/;q' $(wildcard $(srcdir)/revision.h revision.h) /dev/null 2>/dev/null)
 ifeq ($(REVISION_IN_HEADER),)
 REVISION_IN_HEADER := none
 endif
@@ -466,7 +495,7 @@ update-deps:
 $(RUBYSPEC_CAPIEXT)/%.$(DLEXT): $(srcdir)/$(RUBYSPEC_CAPIEXT)/%.c $(srcdir)/$(RUBYSPEC_CAPIEXT)/rubyspec.h $(RUBY_H_INCLUDES) $(LIBRUBY)
 	$(ECHO) building $@
 	$(Q) $(MAKEDIRS) $(@D)
-	$(Q) $(DLDSHARED) $(XDLDFLAGS) $(XLDFLAGS) $(LDFLAGS) $(INCFLAGS) $(CPPFLAGS) $(OUTFLAG)$@ $< $(LIBRUBYARG)
+	$(Q) $(DLDSHARED) -L. $(XDLDFLAGS) $(XLDFLAGS) $(LDFLAGS) $(INCFLAGS) $(CPPFLAGS) $(OUTFLAG)$@ $< $(LIBRUBYARG)
 	$(Q) $(RMALL) $@.*
 
 rubyspec-capiext: $(patsubst %.c,$(RUBYSPEC_CAPIEXT)/%.$(DLEXT),$(notdir $(wildcard $(srcdir)/$(RUBYSPEC_CAPIEXT)/*.c)))
@@ -480,3 +509,16 @@ spec/%/ spec/%_spec.rb: programs exts PHONY
 	+$(RUNRUBY) -r./$(arch)-fake $(srcdir)/spec/mspec/bin/mspec-run -B $(srcdir)/spec/default.mspec $(SPECOPTS) $(patsubst %,$(srcdir)/%,$@)
 
 ruby.pc: $(filter-out ruby.pc,$(ruby_pc))
+
+matz: up
+	$(eval MINOR := $(shell expr $(MINOR) + 1))
+	$(eval message := Development of $(MAJOR).$(MINOR).0 started.)
+	$(eval files := include/ruby/version.h include/ruby/internal/abi.h)
+	sed -i~ \
+	-e "s/^\(#define RUBY_API_VERSION_MINOR\) .*/\1 $(MINOR)/" \
+	-e "s/^\(#define RUBY_ABI_VERSION\) .*/\1 0/" \
+	 $(files:%=$(srcdir)/%)
+	$(GIT) -C $(srcdir) commit -m "$(message)" $(files)
+
+tags:
+	$(MAKE) GIT="$(GIT)" -C "$(srcdir)" -f defs/tags.mk

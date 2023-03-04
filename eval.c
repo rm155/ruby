@@ -18,12 +18,12 @@
 #endif
 
 #include "eval_intern.h"
-#include "gc.h"
 #include "internal.h"
 #include "internal/class.h"
 #include "internal/cont.h"
 #include "internal/error.h"
 #include "internal/eval.h"
+#include "internal/gc.h"
 #include "internal/hash.h"
 #include "internal/inits.h"
 #include "internal/io.h"
@@ -441,7 +441,7 @@ rb_class_modify_check(VALUE klass)
 
         if (FL_TEST(klass, FL_SINGLETON)) {
             desc = "object";
-            klass = rb_ivar_get(klass, id__attached__);
+            klass = RCLASS_ATTACHED_OBJECT(klass);
             if (!SPECIAL_CONST_P(klass)) {
                 switch (BUILTIN_TYPE(klass)) {
                   case T_MODULE:

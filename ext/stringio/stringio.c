@@ -12,7 +12,7 @@
 
 **********************************************************************/
 
-#define STRINGIO_VERSION "3.0.4"
+#define STRINGIO_VERSION "3.0.6"
 
 #include "ruby.h"
 #include "ruby/io.h"
@@ -171,7 +171,7 @@ static const rb_data_type_t strio_data_type = {
 	strio_free,
 	strio_memsize,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
 };
 
 #define check_strio(self) ((struct StringIO*)rb_check_typeddata((self), &strio_data_type))
@@ -379,7 +379,7 @@ strio_init(int argc, VALUE *argv, struct StringIO *ptr, VALUE self)
     if (ptr->flags & FMODE_TRUNC) {
 	rb_str_resize(string, 0);
     }
-    ptr->string = string;
+    RB_OBJ_WRITE(self, &ptr->string, string);
     if (argc == 1) {
 	ptr->enc = rb_enc_get(string);
     }
@@ -397,7 +397,7 @@ static VALUE
 strio_finalize(VALUE self)
 {
     struct StringIO *ptr = StringIO(self);
-    ptr->string = Qnil;
+    RB_OBJ_WRITE(self, &ptr->string, Qnil);
     ptr->flags &= ~FMODE_READWRITE;
     return self;
 }
@@ -563,7 +563,8 @@ strio_set_string(VALUE self, VALUE string)
     ptr->flags = OBJ_FROZEN(string) ? FMODE_READABLE : FMODE_READWRITE;
     ptr->pos = 0;
     ptr->lineno = 0;
-    return ptr->string = string;
+    RB_OBJ_WRITE(self, &ptr->string, string);
+    return string;
 }
 
 /*
@@ -685,8 +686,6 @@ strio_to_read(VALUE self)
  * see {Position}[rdoc-ref:File@Position].
  *
  * Raises IOError if the stream is not opened for reading.
- *
- * StreamIO#eof is an alias for StreamIO#eof?.
  */
 static VALUE
 strio_eof(VALUE self)
@@ -808,8 +807,6 @@ strio_reopen(int argc, VALUE *argv, VALUE self)
  *
  * Returns the current position (in bytes);
  * see {Position}[rdoc-ref:IO@Position].
- *
- * StringIO#tell is an alias for StringIO#pos.
  */
 static VALUE
 strio_get_pos(VALUE self)
@@ -1340,8 +1337,9 @@ strio_getline(struct getline_arg *arg, struct StringIO *ptr)
 	str = strio_substr(ptr, ptr->pos, e - s - w, enc);
     }
     else {
-	if (n < e - s) {
-	    if (e - s < 1024) {
+	if (n < e - s + arg->chomp) {
+	    /* unless chomping, RS at the end does not matter */
+	    if (e - s < 1024 || n == e - s) {
 		for (p = s; p + n <= e; ++p) {
 		    if (MEMCMP(p, RSTRING_PTR(str), char, n) == 0) {
 			e = p + n;
@@ -1419,8 +1417,6 @@ strio_readline(int argc, VALUE *argv, VALUE self)
  * does nothing if already at end-of-file;
  * returns +self+.
  * See {Line IO}[rdoc-ref:IO@Line+IO].
- *
- * StringIO#each is an alias for StringIO#each_line.
  */
 static VALUE
 strio_each(int argc, VALUE *argv, VALUE self)

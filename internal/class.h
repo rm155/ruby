@@ -8,9 +8,11 @@
  *             file COPYING are met.  Consult the file for details.
  * @brief      Internal header for Class.
  */
+#include "id.h"
 #include "id_table.h"           /* for struct rb_id_table */
-#include "internal/gc.h"        /* for RB_OBJ_WRITE */
 #include "internal/serial.h"    /* for rb_serial_t */
+#include "internal/static_assert.h"
+#include "internal/variable.h"  /* for rb_class_ivar_set */
 #include "ruby/internal/stdbool.h"     /* for bool */
 #include "ruby/intern.h"        /* for rb_alloc_func_t */
 #include "ruby/ruby.h"          /* for struct RBasic */
@@ -25,6 +27,7 @@ struct rb_subclass_entry {
     struct rb_subclass_entry *next;
     struct rb_subclass_entry *prev;
 };
+typedef struct rb_subclass_entry rb_subclass_entry_t;
 
 struct rb_cvar_class_tbl_entry {
     uint32_t index;
@@ -50,26 +53,40 @@ struct rb_classext_struct {
     struct rb_subclass_entry *module_subclass_entry;
     const VALUE origin_;
     const VALUE refined_class;
-    rb_alloc_func_t allocator;
+    union {
+        struct {
+            rb_alloc_func_t allocator;
+        } class;
+        struct {
+            VALUE attached_object;
+        } singleton_class;
+    } as;
     const VALUE includer;
-    uint32_t max_iv_count;
-    uint32_t variation_count;
 #if !SHAPE_IN_BASIC_FLAGS
     shape_id_t shape_id;
 #endif
+    uint32_t max_iv_count;
+    unsigned char variation_count;
+    bool permanent_classpath;
+    VALUE classpath;
 };
+typedef struct rb_classext_struct rb_classext_t;
+
+STATIC_ASSERT(shape_max_variations, SHAPE_MAX_VARIATIONS < (1 << (sizeof(((rb_classext_t *)0)->variation_count) * CHAR_BIT)));
 
 struct RClass {
     struct RBasic basic;
     VALUE super;
     struct rb_id_table *m_tbl;
-#if SIZE_POOL_COUNT == 1
+#if !RCLASS_EXT_EMBEDDED
     struct rb_classext_struct *ptr;
 #endif
 };
 
-typedef struct rb_subclass_entry rb_subclass_entry_t;
-typedef struct rb_classext_struct rb_classext_t;
+#if RCLASS_EXT_EMBEDDED
+// Assert that classes can be embedded in size_pools[2] (which has 160B slot size)
+STATIC_ASSERT(sizeof_rb_classext_t, sizeof(struct RClass) + sizeof(rb_classext_t) <= 4 * RVALUE_SIZE);
+#endif
 
 #if RCLASS_EXT_EMBEDDED
 #  define RCLASS_EXT(c) ((rb_classext_t *)((char *)(c) + sizeof(struct RClass)))
@@ -87,10 +104,10 @@ typedef struct rb_classext_struct rb_classext_t;
 #define RCLASS_INCLUDER(c) (RCLASS_EXT(c)->includer)
 #define RCLASS_SUBCLASS_ENTRY(c) (RCLASS_EXT(c)->subclass_entry)
 #define RCLASS_MODULE_SUBCLASS_ENTRY(c) (RCLASS_EXT(c)->module_subclass_entry)
-#define RCLASS_ALLOCATOR(c) (RCLASS_EXT(c)->allocator)
 #define RCLASS_SUBCLASSES(c) (RCLASS_EXT(c)->subclasses)
 #define RCLASS_SUPERCLASS_DEPTH(c) (RCLASS_EXT(c)->superclass_depth)
 #define RCLASS_SUPERCLASSES(c) (RCLASS_EXT(c)->superclasses)
+#define RCLASS_ATTACHED_OBJECT(c) (RCLASS_EXT(c)->as.singleton_class.attached_object)
 
 #define RICLASS_IS_ORIGIN FL_USER0
 #define RCLASS_CLONED     FL_USER1
@@ -136,6 +153,22 @@ VALUE rb_class_inherited(VALUE, VALUE);
 VALUE rb_keyword_error_new(const char *, VALUE);
 MJIT_SYMBOL_EXPORT_END
 
+static inline rb_alloc_func_t
+RCLASS_ALLOCATOR(VALUE klass)
+{
+    if (FL_TEST_RAW(klass, FL_SINGLETON)) {
+        return NULL;
+    }
+    return RCLASS_EXT(klass)->as.class.allocator;
+}
+
+static inline void
+RCLASS_SET_ALLOCATOR(VALUE klass, rb_alloc_func_t allocator)
+{
+    assert(!FL_TEST(klass, FL_SINGLETON));
+    RCLASS_EXT(klass)->as.class.allocator = allocator;
+}
+
 static inline void
 RCLASS_SET_ORIGIN(VALUE klass, VALUE origin)
 {
@@ -177,6 +210,26 @@ RCLASS_SET_SUPER(VALUE klass, VALUE super)
     RB_OBJ_WRITE(klass, &RCLASS(klass)->super, super);
     rb_class_update_superclasses(klass);
     return super;
+}
+
+static inline void
+RCLASS_SET_CLASSPATH(VALUE klass, VALUE classpath, bool permanent)
+{
+    assert(BUILTIN_TYPE(klass) == T_CLASS || BUILTIN_TYPE(klass) == T_MODULE);
+    assert(classpath == 0 || BUILTIN_TYPE(classpath) == T_STRING);
+
+    RB_OBJ_WRITE(klass, &(RCLASS_EXT(klass)->classpath), classpath);
+    RCLASS_EXT(klass)->permanent_classpath = permanent;
+}
+
+static inline VALUE
+RCLASS_SET_ATTACHED_OBJECT(VALUE klass, VALUE attached_object)
+{
+    assert(BUILTIN_TYPE(klass) == T_CLASS);
+    assert(FL_TEST_RAW(klass, FL_SINGLETON));
+
+    RB_OBJ_WRITE(klass, &RCLASS_EXT(klass)->as.singleton_class.attached_object, attached_object);
+    return attached_object;
 }
 
 #endif /* INTERNAL_CLASS_H */

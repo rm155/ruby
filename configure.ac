@@ -70,7 +70,7 @@ AS_IF([test "$HAVE_BASERUBY" != no -a "`RUBYOPT=- $BASERUBY --disable=gems -e 'p
         # Can MSys shell run a command with a drive letter?
         RUBYOPT=- `cygpath -ma "$BASERUBY"` --disable=gems -e exit 2>/dev/null || HAVE_BASERUBY=no
     ])
-    BASERUBY="$BASERUBY --disable=gems"
+    RUBY_APPEND_OPTION(BASERUBY, "--disable=gems")
     BASERUBY_VERSION=`$BASERUBY -v`
     $BASERUBY -C "$srcdir" tool/downloader.rb -d tool -e gnu config.guess config.sub >&AS_MESSAGE_FD
 ], [
@@ -214,7 +214,7 @@ AS_CASE(["/${rb_CC} "],
 [*clang*],            [
     # Ditto for LLVM.  Note however that llvm-as is a LLVM-IR to LLVM bitcode
     # assembler that does not target your machine native binary.
-    : ${LD:="${CC}"}         # ... try -fuse-ld=lld ?
+    RUBY_CHECK_PROG_FOR_CC([LD],      [s/clang/ld/]) # ... maybe try lld ?
     RUBY_CHECK_PROG_FOR_CC([AR],      [s/clang/llvm-ar/])
 #   RUBY_CHECK_PROG_FOR_CC([AS],      [s/clang/llvm-as/])
     RUBY_CHECK_PROG_FOR_CC([CXX],     [s/clang/clang++/])
@@ -235,7 +235,7 @@ AS_CASE(["${build_os}"],
     AC_PATH_TOOL([NM], [nm], [/usr/ccs/bin/nm], [/usr/ccs/bin:$PATH])
 ])
 AS_CASE(["${target_os}"],
-[cygwin*|msys*|mingw*], [
+[cygwin*|msys*|mingw*|darwin*], [
     ac_cv_prog_ac_ct_OBJCOPY=":"
 ])
 
@@ -254,7 +254,7 @@ AC_CHECK_TOOLS([AR],      [gar ar])
 AC_CHECK_TOOLS([AS],      [gas as])
 AC_CHECK_TOOLS([LD],      [gld ld]) # ... try gold ?
 AC_CHECK_TOOLS([NM],      [gnm nm])
-AC_CHECK_TOOLS([OBJCOPY], [gobjcopy objcopy])
+AC_CHECK_TOOLS([OBJCOPY], [gobjcopy objcopy], [:])
 AC_CHECK_TOOLS([OBJDUMP], [gobjdump objdump])
 AC_CHECK_TOOLS([STRIP],   [gstrip strip], [:])
 
@@ -505,6 +505,7 @@ AS_CASE(["$target_os"],
     : ${enable_shared=yes}
     ],
 [hiuxmpp*], [AC_DEFINE(__HIUX_MPP__)])    # by TOYODA Eizi <toyoda@npd.kishou.go.jp>
+
 
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
@@ -901,7 +902,6 @@ AS_IF([test "$GCC" = yes], [
     ], [
 	RUBY_TRY_LDFLAGS([-Wl,-unexported_symbol,_Init_*], [visibility_option=ld], [visibility_option=no])
     ])
-    test "$visibility_option" = no || OBJCOPY=:
 ])
 
 AS_IF([test "$GCC" = yes], [
@@ -1485,10 +1485,9 @@ AC_CACHE_CHECK(packed struct attribute, rb_cv_packed_struct,
 		[rb_cv_packed_struct=$mac; break])
     done])
 AS_IF([test "$rb_cv_packed_struct" != no], [
-    AC_DEFINE_UNQUOTED([PACKED_STRUCT(x)], [$rb_cv_packed_struct])
+    AC_DEFINE_UNQUOTED([RBIMPL_ATTR_PACKED_STRUCT_BEGIN()], [`echo " $rb_cv_packed_struct " | sed 's/ x .*//;s/^ *//'`])
+    AC_DEFINE_UNQUOTED([RBIMPL_ATTR_PACKED_STRUCT_END()], [`echo " $rb_cv_packed_struct " | sed 's/.* x //;s/ *$//'`])
     RUBY_TRY_CFLAGS(-Wno-address-of-packed-member, [AC_DEFINE(USE_UNALIGNED_MEMBER_ACCESS)])
-], [
-    AC_DEFINE_UNQUOTED([PACKED_STRUCT(x)], x)
 ])
 
 AS_IF([test "x$ac_cv_type_long_long" = xyes], [
@@ -2624,6 +2623,9 @@ AS_CASE([$coroutine_type], [yes|''], [
         [riscv64-linux*], [
             coroutine_type=riscv64
         ],
+        [loongarch64-linux*], [
+            coroutine_type=loongarch64
+        ],
         [x86_64-freebsd*], [
             coroutine_type=amd64
         ],
@@ -2647,6 +2649,9 @@ AS_CASE([$coroutine_type], [yes|''], [
         ],
         [i386-openbsd*], [
             coroutine_type=x86
+        ],
+        [aarch64-openbsd*], [
+            coroutine_type=arm64
         ],
         [*-openbsd*], [
             coroutine_type=pthread

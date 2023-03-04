@@ -23,7 +23,6 @@
 
 #include "debug_counter.h"
 #include "encindex.h"
-#include "gc.h"
 #include "id.h"
 #include "internal.h"
 #include "internal/array.h"
@@ -312,14 +311,18 @@ rb_str_make_embedded(VALUE str)
     RUBY_ASSERT(rb_str_reembeddable_p(str));
     RUBY_ASSERT(!STR_EMBED_P(str));
 
-    char *buf = RSTRING_PTR(str);
-    long len = RSTRING_LEN(str);
+    char *buf = RSTRING(str)->as.heap.ptr;
+    long len = RSTRING(str)->as.heap.len;
 
     STR_SET_EMBED(str);
     STR_SET_EMBED_LEN(str, len);
 
-    memmove(RSTRING_PTR(str), buf, len);
-    ruby_xfree(buf);
+    if (len > 0) {
+        memcpy(RSTRING_PTR(str), buf, len);
+        ruby_xfree(buf);
+    }
+
+    TERM_FILL(RSTRING(str)->as.embed.ary + len, TERM_LEN(str));
 }
 
 void
@@ -330,7 +333,7 @@ rb_str_update_shared_ary(VALUE str, VALUE old_root, VALUE new_root)
         return;
     }
 
-    // if the root string isn't embedded, we don't need to touch the ponter.
+    // if the root string isn't embedded, we don't need to touch the pointer.
     // it already points to the shame shared buffer
     if (!STR_EMBED_P(new_root)) {
         return;
@@ -773,6 +776,20 @@ static inline void
 str_enc_copy(VALUE str1, VALUE str2)
 {
     rb_enc_set_index(str1, ENCODING_GET(str2));
+}
+
+/* Like str_enc_copy, but does not check frozen status of str1.
+ * You should use this only if you're certain that str1 is not frozen. */
+static inline void
+str_enc_copy_direct(VALUE str1, VALUE str2)
+{
+    int inlined_encoding = RB_ENCODING_GET_INLINED(str2);
+    if (inlined_encoding == ENCODING_INLINE_MAX) {
+        rb_enc_set_index(str1, rb_enc_get_index(str2));
+    }
+    else {
+        ENCODING_SET_INLINED(str1, inlined_encoding);
+    }
 }
 
 static void
@@ -1794,6 +1811,7 @@ str_duplicate_setup(VALUE klass, VALUE str, VALUE dup)
         else {
             RSTRING(dup)->as.heap.len = RSTRING_LEN(str);
             RSTRING(dup)->as.heap.ptr = RSTRING_PTR(str);
+            FL_SET(root, STR_SHARED_ROOT);
             RB_OBJ_WRITE(dup, &RSTRING(dup)->as.heap.aux.shared, root);
             flags |= RSTRING_NOEMBED | STR_SHARED;
         }
@@ -2466,6 +2484,7 @@ rb_str_modify_expand(VALUE str, long expand)
     else if (expand > 0) {
         RESIZE_CAPA_TERM(str, len + expand, termlen);
     }
+    ENC_CODERANGE_CLEAR(str);
 }
 
 /* As rb_str_modify(), but don't clear coderange */
@@ -2943,6 +2962,7 @@ str_substr(VALUE str, long beg, long len, int empty)
     return str2;
 }
 
+/* :nodoc: */
 VALUE
 rb_str_freeze(VALUE str)
 {
@@ -2974,13 +2994,23 @@ str_uplus(VALUE str)
 /*
  * call-seq:
  *   -string -> frozen_string
+ *   dedup -> frozen_string
  *
  * Returns a frozen, possibly pre-existing copy of the string.
  *
  * The returned \String will be deduplicated as long as it does not have
  * any instance variables set on it and is not a String subclass.
  *
- * String#dedup is an alias for String#-@.
+ * Note that <tt>-string</tt> variant is more convenient for defining
+ * constants:
+ *
+ *    FILENAME = -'config/database.yml'
+ *
+ * while +dedup+ is better suitable for using the method in chains
+ * of calculations:
+ *
+ *    @url_list.concat(urls.map(&:dedup))
+ *
  */
 static VALUE
 str_uminus(VALUE str)
@@ -3332,28 +3362,19 @@ rb_str_append(VALUE str, VALUE str2)
     return rb_str_buf_append(str, str2);
 }
 
-#define MIN_PRE_ALLOC_SIZE 48
-
 MJIT_FUNC_EXPORTED VALUE
 rb_str_concat_literals(size_t num, const VALUE *strary)
 {
     VALUE str;
-    size_t i, s;
-    long len = 1;
+    size_t i, s = 0;
+    unsigned long len = 1;
 
     if (UNLIKELY(!num)) return rb_str_new(0, 0);
     if (UNLIKELY(num == 1)) return rb_str_resurrect(strary[0]);
 
     for (i = 0; i < num; ++i) { len += RSTRING_LEN(strary[i]); }
-    if (LIKELY(len < MIN_PRE_ALLOC_SIZE)) {
-        str = rb_str_resurrect(strary[0]);
-        s = 1;
-    }
-    else {
-        str = rb_str_buf_new(len);
-        rb_enc_copy(str, strary[0]);
-        s = 0;
-    }
+    str = rb_str_buf_new(len);
+    str_enc_copy_direct(str, strary[0]);
 
     for (i = s; i < num; ++i) {
         const VALUE v = strary[i];
@@ -4792,7 +4813,6 @@ static VALUE str_succ(VALUE str);
  *
  *    ''.succ # => ""
  *
- *  String#next is an alias for String#succ.
  */
 
 VALUE
@@ -4897,8 +4917,6 @@ str_succ(VALUE str)
  *    succ! -> self
  *
  *  Equivalent to String#succ, but modifies +self+ in place; returns +self+.
- *
- *  String#next! is an alias for String#succ!.
  */
 
 static VALUE
@@ -5258,10 +5276,10 @@ rb_str_drop_bytes(VALUE str, long len)
 }
 
 static void
-rb_str_splice_0(VALUE str, long beg, long len, VALUE val)
+rb_str_update_1(VALUE str, long beg, long len, VALUE val, long vbeg, long vlen)
 {
     char *sptr;
-    long slen, vlen = RSTRING_LEN(val);
+    long slen;
     int cr;
 
     if (beg == 0 && vlen == 0) {
@@ -5291,12 +5309,18 @@ rb_str_splice_0(VALUE str, long beg, long len, VALUE val)
         MEMZERO(sptr + slen, char, -len);
     }
     if (vlen > 0) {
-        memmove(sptr + beg, RSTRING_PTR(val), vlen);
+        memmove(sptr + beg, RSTRING_PTR(val) + vbeg, vlen);
     }
     slen += vlen - len;
     STR_SET_LEN(str, slen);
     TERM_FILL(&sptr[slen], TERM_LEN(str));
     ENC_CODERANGE_SET(str, cr);
+}
+
+static inline void
+rb_str_update_0(VALUE str, long beg, long len, VALUE val)
+{
+    rb_str_update_1(str, beg, len, val, 0, RSTRING_LEN(val));
 }
 
 void
@@ -5332,14 +5356,12 @@ rb_str_update(VALUE str, long beg, long len, VALUE val)
     /* error check */
     beg = p - RSTRING_PTR(str);	/* physical position */
     len = e - p;		/* physical length */
-    rb_str_splice_0(str, beg, len, val);
+    rb_str_update_0(str, beg, len, val);
     rb_enc_associate(str, enc);
     cr = ENC_CODERANGE_AND(ENC_CODERANGE(str), ENC_CODERANGE(val));
     if (cr != ENC_CODERANGE_BROKEN)
         ENC_CODERANGE_SET(str, cr);
 }
-
-#define rb_str_splice(str, beg, len, val) rb_str_update(str, beg, len, val)
 
 static void
 rb_str_subpat_set(VALUE str, VALUE re, VALUE backref, VALUE val)
@@ -5371,7 +5393,7 @@ rb_str_subpat_set(VALUE str, VALUE re, VALUE backref, VALUE val)
     len = end - start;
     StringValue(val);
     enc = rb_enc_check_str(str, val);
-    rb_str_splice_0(str, start, len, val);
+    rb_str_update_0(str, start, len, val);
     rb_enc_associate(str, enc);
 }
 
@@ -5391,7 +5413,7 @@ rb_str_aset(VALUE str, VALUE indx, VALUE val)
             rb_raise(rb_eIndexError, "string not matched");
         }
         beg = rb_str_sublen(str, beg);
-        rb_str_splice(str, beg, str_strlen(indx, NULL), val);
+        rb_str_update(str, beg, str_strlen(indx, NULL), val);
         return val;
 
       default:
@@ -5399,7 +5421,7 @@ rb_str_aset(VALUE str, VALUE indx, VALUE val)
         {
             long beg, len;
             if (rb_range_beg_len(indx, &beg, &len, str_strlen(str, NULL), 2)) {
-                rb_str_splice(str, beg, len, val);
+                rb_str_update(str, beg, len, val);
                 return val;
             }
         }
@@ -5407,7 +5429,7 @@ rb_str_aset(VALUE str, VALUE indx, VALUE val)
 
       case T_FIXNUM:
         idx = NUM2LONG(indx);
-        rb_str_splice(str, idx, 1, val);
+        rb_str_update(str, idx, 1, val);
         return val;
     }
 }
@@ -5437,8 +5459,6 @@ rb_str_aset(VALUE str, VALUE indx, VALUE val)
  *    s['lly'] = 'ncial' # => "ncial"
  *    s                  # => "financial"
  *
- *  String#slice is an alias for String#[].
- *
  */
 
 static VALUE
@@ -5449,7 +5469,7 @@ rb_str_aset_m(int argc, VALUE *argv, VALUE str)
             rb_str_subpat_set(str, argv[0], argv[1], argv[2]);
         }
         else {
-            rb_str_splice(str, NUM2LONG(argv[0]), NUM2LONG(argv[1]), argv[2]);
+            rb_str_update(str, NUM2LONG(argv[0]), NUM2LONG(argv[1]), argv[2]);
         }
         return argv[2];
     }
@@ -5486,7 +5506,7 @@ rb_str_insert(VALUE str, VALUE idx, VALUE str2)
     else if (pos < 0) {
         pos++;
     }
-    rb_str_splice(str, pos, 0, str2);
+    rb_str_update(str, pos, 0, str2);
     return str;
 }
 
@@ -6162,7 +6182,7 @@ str_byte_substr(VALUE str, long beg, long len, int empty)
 
     VALUE str2 = str_subseq(str, beg, len);
 
-    str_enc_copy(str2, str);
+    str_enc_copy_direct(str2, str);
 
     if (RSTRING_LEN(str2) == 0) {
         if (!rb_enc_asciicompat(STR_ENC_GET(str)))
@@ -6264,16 +6284,49 @@ rb_str_byteslice(int argc, VALUE *argv, VALUE str)
     return str_byte_aref(str, argv[0]);
 }
 
+static void
+str_check_beg_len(VALUE str, long *beg, long *len)
+{
+    long end, slen = RSTRING_LEN(str);
+
+    if (*len < 0) rb_raise(rb_eIndexError, "negative length %ld", *len);
+    if ((slen < *beg) || ((*beg < 0) && (*beg + slen < 0))) {
+        rb_raise(rb_eIndexError, "index %ld out of string", *beg);
+    }
+    if (*beg < 0) {
+        *beg += slen;
+    }
+    assert(*beg >= 0);
+    assert(*beg <= slen);
+    if (*len > slen - *beg) {
+        *len = slen - *beg;
+    }
+    end = *beg + *len;
+    if (!str_check_byte_pos(str, *beg)) {
+        rb_raise(rb_eIndexError,
+                 "offset %ld does not land on character boundary", *beg);
+    }
+    if (!str_check_byte_pos(str, end)) {
+        rb_raise(rb_eIndexError,
+                 "offset %ld does not land on character boundary", end);
+    }
+}
+
 /*
  *  call-seq:
  *    bytesplice(index, length, str) -> string
- *    bytesplice(range, str)         -> string
+ *    bytesplice(index, length, str, str_index, str_length) -> string
+ *    bytesplice(range, str) -> string
+ *    bytesplice(range, str, str_range) -> string
  *
- *  Replaces some or all of the content of +self+ with +str+, and returns +str+.
+ *  Replaces some or all of the content of +self+ with +str+, and returns +self+.
  *  The portion of the string affected is determined using
  *  the same criteria as String#byteslice, except that +length+ cannot be omitted.
  *  If the replacement string is not the same length as the text it is replacing,
  *  the string will be adjusted accordingly.
+ *
+ *  If +str_index+ and +str_length+, or +str_range+ are given, the content of +self+ is replaced by str.byteslice(str_index, str_length) or str.byteslice(str_range); however the substring of +str+ is not allocated as a new string.
+ *
  *  The form that take an Integer will raise an IndexError if the value is out
  *  of range; the Range form will raise a RangeError.
  *  If the beginning or ending offset does not land on character (codepoint)
@@ -6283,55 +6336,61 @@ rb_str_byteslice(int argc, VALUE *argv, VALUE str)
 static VALUE
 rb_str_bytesplice(int argc, VALUE *argv, VALUE str)
 {
-    long beg, end, len, slen;
+    long beg, len, vbeg, vlen;
     VALUE val;
     rb_encoding *enc;
     int cr;
 
-    rb_check_arity(argc, 2, 3);
-    if (argc == 2) {
+    rb_check_arity(argc, 2, 5);
+    if (!(argc == 2 || argc == 3 || argc == 5)) {
+        rb_raise(rb_eArgError, "wrong number of arguments (given %d, expected 2, 3, or 5)", argc);
+    }
+    if (argc == 2 || (argc == 3 && !RB_INTEGER_TYPE_P(argv[0]))) {
         if (!rb_range_beg_len(argv[0], &beg, &len, RSTRING_LEN(str), 2)) {
             rb_raise(rb_eTypeError, "wrong argument type %s (expected Range)",
                      rb_builtin_class_name(argv[0]));
         }
         val = argv[1];
+        StringValue(val);
+        if (argc == 2) {
+            /* bytesplice(range, str) */
+            vbeg = 0;
+            vlen = RSTRING_LEN(val);
+        }
+        else {
+            /* bytesplice(range, str, str_range) */
+            if (!rb_range_beg_len(argv[2], &vbeg, &vlen, RSTRING_LEN(val), 2)) {
+                rb_raise(rb_eTypeError, "wrong argument type %s (expected Range)",
+                         rb_builtin_class_name(argv[2]));
+            }
+        }
     }
     else {
         beg = NUM2LONG(argv[0]);
         len = NUM2LONG(argv[1]);
         val = argv[2];
+        StringValue(val);
+        if (argc == 3) {
+            /* bytesplice(index, length, str) */
+            vbeg = 0;
+            vlen = RSTRING_LEN(val);
+        }
+        else {
+            /* bytesplice(index, length, str, str_index, str_length) */
+            vbeg = NUM2LONG(argv[3]);
+            vlen = NUM2LONG(argv[4]);
+        }
     }
-    if (len < 0) rb_raise(rb_eIndexError, "negative length %ld", len);
-    slen = RSTRING_LEN(str);
-    if ((slen < beg) || ((beg < 0) && (beg + slen < 0))) {
-        rb_raise(rb_eIndexError, "index %ld out of string", beg);
-    }
-    if (beg < 0) {
-        beg += slen;
-    }
-    assert(beg >= 0);
-    assert(beg <= slen);
-    if (len > slen - beg) {
-        len = slen - beg;
-    }
-    end = beg + len;
-    if (!str_check_byte_pos(str, beg)) {
-        rb_raise(rb_eIndexError,
-                 "offset %ld does not land on character boundary", beg);
-    }
-    if (!str_check_byte_pos(str, end)) {
-        rb_raise(rb_eIndexError,
-                 "offset %ld does not land on character boundary", end);
-    }
-    StringValue(val);
+    str_check_beg_len(str, &beg, &len);
+    str_check_beg_len(val, &vbeg, &vlen);
     enc = rb_enc_check(str, val);
     str_modify_keep_cr(str);
-    rb_str_splice_0(str, beg, len, val);
+    rb_str_update_1(str, beg, len, val, vbeg, vlen);
     rb_enc_associate(str, enc);
     cr = ENC_CODERANGE_AND(ENC_CODERANGE(str), ENC_CODERANGE(val));
     if (cr != ENC_CODERANGE_BROKEN)
         ENC_CODERANGE_SET(str, cr);
-    return val;
+    return str;
 }
 
 /*
@@ -6388,7 +6447,7 @@ rb_str_reverse(VALUE str)
         }
     }
     STR_SET_LEN(rev, RSTRING_LEN(str));
-    str_enc_copy(rev, str);
+    str_enc_copy_direct(rev, str);
     ENC_CODERANGE_SET(rev, cr);
 
     return rev;
@@ -6535,9 +6594,6 @@ rb_str_to_f(VALUE str)
  *
  *  Returns +self+ if +self+ is a \String,
  *  or +self+ converted to a \String if +self+ is a subclass of \String.
- *
- *  String#to_str is an alias for String#to_s.
- *
  */
 
 static VALUE
@@ -7270,7 +7326,8 @@ mapping_buffer_free(void *p)
 
 static const rb_data_type_t mapping_buffer_type = {
     "mapping_buffer",
-    {0, mapping_buffer_free,}
+    {0, mapping_buffer_free,},
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
 };
 
 static VALUE
@@ -7340,8 +7397,10 @@ rb_str_casemap(VALUE source, OnigCaseFoldType *flags, rb_encoding *enc)
     DATA_PTR(buffer_anchor) = 0;
     mapping_buffer_free(current_buffer);
 
+    RB_GC_GUARD(buffer_anchor);
+
     /* TODO: check about string terminator character */
-    str_enc_copy(target, source);
+    str_enc_copy_direct(target, source);
     /*ENC_CODERANGE_SET(mapped, cr);*/
 
     return target;
@@ -7472,7 +7531,7 @@ rb_str_upcase(int argc, VALUE *argv, VALUE str)
     enc = str_true_enc(str);
     if (case_option_single_p(flags, enc, str)) {
         ret = rb_str_new(RSTRING_PTR(str), RSTRING_LEN(str));
-        str_enc_copy(ret, str);
+        str_enc_copy_direct(ret, str);
         upcase_single(ret);
     }
     else if (flags&ONIGENC_CASE_ASCII_ONLY) {
@@ -7574,7 +7633,7 @@ rb_str_downcase(int argc, VALUE *argv, VALUE str)
     enc = str_true_enc(str);
     if (case_option_single_p(flags, enc, str)) {
         ret = rb_str_new(RSTRING_PTR(str), RSTRING_LEN(str));
-        str_enc_copy(ret, str);
+        str_enc_copy_direct(ret, str);
         downcase_single(ret);
     }
     else if (flags&ONIGENC_CASE_ASCII_ONLY) {
@@ -11408,9 +11467,6 @@ rb_str_unicode_normalized_p(int argc, VALUE *argv, VALUE str)
  *    symbol == object -> true or false
  *
  *  Returns +true+ if +object+ is the same object as +self+, +false+ otherwise.
- *
- *  Symbol#=== is an alias for Symbol#==.
- *
  */
 
 #define sym_equal rb_obj_equal
@@ -11527,8 +11583,6 @@ sym_inspect(VALUE sym)
  *
  *    :foo.to_s # => "foo"
  *
- *  Symbol#id2name is an alias for Symbol#to_s.
- *
  *  Related: Symbol#inspect, Symbol#name.
  */
 
@@ -11557,8 +11611,6 @@ rb_sym_proc_call(ID mid, int argc, const VALUE *argv, int kw_splat, VALUE passed
  *  Equivalent to <tt>self.to_s.succ.to_sym</tt>:
  *
  *    :foo.succ # => :fop
- *
- *  Symbol#next is an alias for Symbol#succ.
  *
  *  Related: String#succ.
  */
@@ -11701,9 +11753,6 @@ sym_aref(int argc, VALUE *argv, VALUE sym)
  *    length -> integer
  *
  *  Equivalent to <tt>self.to_s.length</tt>; see String#length.
- *
- *  Symbol#size is an alias for Symbol#length.
- *
  */
 
 static VALUE
@@ -11808,7 +11857,7 @@ sym_start_with(int argc, VALUE *argv, VALUE sym)
 
 /*
  *  call-seq:
- *    end_with?(*string_or_regexp) -> true or false
+ *    end_with?(*strings) -> true or false
  *
  *
  *  Equivalent to <tt>self.to_s.end_with?</tt>; see String#end_with?.

@@ -396,8 +396,7 @@ cc_new(VALUE klass, ID mid, int argc, const rb_callable_method_entry_t *cme)
             ccs = (struct rb_class_cc_entries *)ccs_data;
         }
         else {
-            ccs = vm_ccs_create(klass, cme);
-            rb_id_table_insert(cc_tbl, mid, (VALUE)ccs);
+            ccs = vm_ccs_create(klass, cc_tbl, mid, cme);
         }
 
         for (int i=0; i<ccs->len; i++) {
@@ -935,7 +934,7 @@ rb_make_no_method_exception(VALUE exc, VALUE format, VALUE obj,
     VALUE name = argv[0];
 
     if (!format) {
-        format = rb_fstring_lit("undefined method `%s' for %s%s%s");
+        format = rb_fstring_lit("undefined method `%1$s' for %3$s%4$s");
     }
     if (exc == rb_eNoMethodError) {
         VALUE args = rb_ary_new4(argc - 1, argv + 1);
@@ -967,17 +966,17 @@ raise_method_missing(rb_execution_context_t *ec, int argc, const VALUE *argv, VA
     stack_check(ec);
 
     if (last_call_status & MISSING_PRIVATE) {
-        format = rb_fstring_lit("private method `%s' called for %s%s%s");
+        format = rb_fstring_lit("private method `%1$s' called for %3$s%4$s");
     }
     else if (last_call_status & MISSING_PROTECTED) {
-        format = rb_fstring_lit("protected method `%s' called for %s%s%s");
+        format = rb_fstring_lit("protected method `%1$s' called for %3$s%4$s");
     }
     else if (last_call_status & MISSING_VCALL) {
-        format = rb_fstring_lit("undefined local variable or method `%s' for %s%s%s");
+        format = rb_fstring_lit("undefined local variable or method `%1$s' for %3$s%4$s");
         exc = rb_eNameError;
     }
     else if (last_call_status & MISSING_SUPER) {
-        format = rb_fstring_lit("super: no superclass method `%s' for %s%s%s");
+        format = rb_fstring_lit("super: no superclass method `%1$s' for %3$s%4$s");
     }
 
     {
@@ -1439,64 +1438,6 @@ rb_yield_block(RB_BLOCK_CALL_FUNC_ARGLIST(val, arg))
     return vm_yield_with_block(GET_EC(), argc, argv,
                                NIL_P(blockarg) ? VM_BLOCK_HANDLER_NONE : blockarg,
                                rb_keyword_given_p());
-}
-
-static VALUE
-loop_i(VALUE _)
-{
-    for (;;) {
-        rb_yield_0(0, 0);
-    }
-    return Qnil;
-}
-
-static VALUE
-loop_stop(VALUE dummy, VALUE exc)
-{
-    return rb_attr_get(exc, id_result);
-}
-
-static VALUE
-rb_f_loop_size(VALUE self, VALUE args, VALUE eobj)
-{
-    return DBL2NUM(HUGE_VAL);
-}
-
-/*
- *  call-seq:
- *     loop { block }
- *     loop            -> an_enumerator
- *
- *  Repeatedly executes the block.
- *
- *  If no block is given, an enumerator is returned instead.
- *
- *     loop do
- *       print "Input: "
- *       line = gets
- *       break if !line or line =~ /^q/i
- *       # ...
- *     end
- *
- *  StopIteration raised in the block breaks the loop.  In this case,
- *  loop returns the "result" value stored in the exception.
- *
- *     enum = Enumerator.new { |y|
- *       y << "one"
- *       y << "two"
- *       :ok
- *     }
- *
- *     result = loop {
- *       puts enum.next
- *     } #=> :ok
- */
-
-static VALUE
-rb_f_loop(VALUE self)
-{
-    RETURN_SIZED_ENUMERATOR(self, 0, 0, rb_f_loop_size);
-    return rb_rescue2(loop_i, (VALUE)0, loop_stop, (VALUE)0, rb_eStopIteration, (VALUE)0);
 }
 
 #if VMDEBUG
@@ -2580,8 +2521,6 @@ Init_vm_eval(void)
 
     rb_define_global_function("catch", rb_f_catch, -1);
     rb_define_global_function("throw", rb_f_throw, -1);
-
-    rb_define_global_function("loop", rb_f_loop, 0);
 
     rb_define_method(rb_cBasicObject, "instance_eval", rb_obj_instance_eval_internal, -1);
     rb_define_method(rb_cBasicObject, "instance_exec", rb_obj_instance_exec_internal, -1);

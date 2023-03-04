@@ -23,6 +23,7 @@
 
 #include "eval_intern.h"
 #include "internal.h"
+#include "internal/class.h"
 #include "internal/hash.h"
 #include "internal/symbol.h"
 #include "iseq.h"
@@ -62,6 +63,17 @@ rb_hook_list_mark(rb_hook_list_t *hooks)
 
     while (hook) {
         rb_gc_mark(hook->data);
+        hook = hook->next;
+    }
+}
+
+void
+rb_hook_list_mark_and_update(rb_hook_list_t *hooks)
+{
+    rb_event_hook_t *hook = hooks->hooks;
+
+    while (hook) {
+        rb_gc_mark_and_move(&hook->data);
         hook = hook->next;
     }
 }
@@ -713,7 +725,7 @@ call_trace_func(rb_event_flag_t event, VALUE proc, VALUE self, ID id, VALUE klas
             klass = RBASIC(klass)->klass;
         }
         else if (FL_TEST(klass, FL_SINGLETON)) {
-            klass = rb_ivar_get(klass, id__attached__);
+            klass = RCLASS_ATTACHED_OBJECT(klass);
         }
     }
 
@@ -915,7 +927,7 @@ rb_tracearg_parameters(rb_trace_arg_t *trace_arg)
         if (trace_arg->klass && trace_arg->id) {
             const rb_method_entry_t *me;
             VALUE iclass = Qnil;
-            me = rb_method_entry_without_refinements(trace_arg->klass, trace_arg->id, &iclass);
+            me = rb_method_entry_without_refinements(trace_arg->klass, trace_arg->called_id, &iclass);
             return rb_unnamed_parameters(rb_method_entry_arity(me));
         }
         break;

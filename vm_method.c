@@ -19,7 +19,6 @@ static inline rb_method_entry_t *lookup_method_table(VALUE klass, ID id);
 #define singleton_removed   idSingleton_method_removed
 #define undefined           idMethod_undefined
 #define singleton_undefined idSingleton_method_undefined
-#define attached            id__attached__
 
 #define ruby_running (GET_VM()->running)
 /* int ruby_running = 0; */
@@ -1086,7 +1085,7 @@ check_overloaded_cme(const rb_callable_method_entry_t *cme, const struct rb_call
         VALUE recv_class = (klass);			\
         ID hook_id = (hook);				\
         if (FL_TEST((klass), FL_SINGLETON)) {		\
-            recv_class = rb_ivar_get((klass), attached);	\
+            recv_class = RCLASS_ATTACHED_OBJECT((klass));	\
             hook_id = singleton_##hook;			\
         }						\
         rb_funcallv(recv_class, hook_id, 1, &arg);	\
@@ -1152,7 +1151,10 @@ void
 rb_define_alloc_func(VALUE klass, VALUE (*func)(VALUE))
 {
     Check_Type(klass, T_CLASS);
-    RCLASS_ALLOCATOR(klass) = func;
+    if (FL_TEST_RAW(klass, FL_SINGLETON)) {
+        rb_raise(rb_eTypeError, "can't define an allocator for a singleton class");
+    }
+    RCLASS_SET_ALLOCATOR(klass, func);
 }
 
 void
@@ -1318,7 +1320,6 @@ cache_callable_method_entry(VALUE klass, ID mid, const rb_callable_method_entry_
     VM_ASSERT(cme != NULL);
 
     struct rb_id_table *cc_tbl = RCLASS_CC_TBL(klass);
-    struct rb_class_cc_entries *ccs;
     VALUE ccs_data;
 
     if (!cc_tbl) {
@@ -1326,12 +1327,13 @@ cache_callable_method_entry(VALUE klass, ID mid, const rb_callable_method_entry_
     }
 
     if (rb_id_table_lookup(cc_tbl, mid, &ccs_data)) {
-        ccs = (struct rb_class_cc_entries *)ccs_data;
+#if VM_CHECK_MODE > 0
+        struct rb_class_cc_entries *ccs = (struct rb_class_cc_entries *)ccs_data;
         VM_ASSERT(ccs->cme == cme);
+#endif
     }
     else {
-        ccs = vm_ccs_create(klass, cme);
-        rb_id_table_insert(cc_tbl, mid, (VALUE)ccs);
+        vm_ccs_create(klass, cc_tbl, mid, cme);
     }
 }
 

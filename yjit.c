@@ -14,7 +14,7 @@
 #include "internal/compile.h"
 #include "internal/class.h"
 #include "internal/fixnum.h"
-#include "gc.h"
+#include "internal/gc.h"
 #include "vm_core.h"
 #include "vm_callinfo.h"
 #include "builtin.h"
@@ -36,6 +36,12 @@
 #endif
 
 #include <errno.h>
+
+// Field offsets for the RString struct
+enum rstring_offsets {
+    RUBY_OFFSET_RSTRING_AS_HEAP_LEN = offsetof(struct RString, as.heap.len),
+    RUBY_OFFSET_RSTRING_EMBED_LEN = offsetof(struct RString, as.embed.len),
+};
 
 // We need size_t to have a known size to simplify code generation and FFI.
 // TODO(alan): check this in configure.ac to fail fast on 32 bit platforms.
@@ -95,6 +101,12 @@ rb_yjit_mark_unused(void *mem_block, uint32_t mem_size)
     // On macOS, mprotect PROT_NONE seems to reduce RSS.
     // We also call this on Linux to avoid executing unused pages.
     return mprotect(mem_block, mem_size, PROT_NONE) == 0;
+}
+
+long
+rb_yjit_array_len(VALUE a)
+{
+    return rb_array_len(a);
 }
 
 // `start` is inclusive and `end` is exclusive.
@@ -468,13 +480,6 @@ rb_insn_name(VALUE insn)
     return insn_name(insn);
 }
 
-// Query the instruction length in bytes for YARV opcode insn
-int
-rb_insn_len(VALUE insn)
-{
-    return insn_len(insn);
-}
-
 unsigned int
 rb_vm_ci_argc(const struct rb_callinfo *ci)
 {
@@ -522,7 +527,8 @@ rb_get_cme_def_type(const rb_callable_method_entry_t *cme)
 {
     if (UNDEFINED_METHOD_ENTRY_P(cme)) {
         return VM_METHOD_TYPE_UNDEF;
-    } else {
+    }
+    else {
         return cme->def->type;
     }
 }
@@ -828,6 +834,12 @@ rb_yarv_str_eql_internal(VALUE str1, VALUE str2)
     return rb_str_eql_internal(str1, str2);
 }
 
+VALUE
+rb_str_neq_internal(VALUE str1, VALUE str2)
+{
+    return rb_str_eql_internal(str1, str2) == Qtrue ? Qfalse : Qtrue;
+}
+
 // YJIT needs this function to never allocate and never raise
 VALUE
 rb_yarv_ary_entry_internal(VALUE ary, long offset)
@@ -1082,7 +1094,7 @@ object_shape_count(rb_execution_context_t *ec, VALUE self)
 // Primitives used by yjit.rb
 VALUE rb_yjit_stats_enabled_p(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_trace_exit_locations_enabled_p(rb_execution_context_t *ec, VALUE self);
-VALUE rb_yjit_get_stats(rb_execution_context_t *ec, VALUE self);
+VALUE rb_yjit_get_stats(rb_execution_context_t *ec, VALUE self, VALUE context);
 VALUE rb_yjit_reset_stats_bang(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_disasm_iseq(rb_execution_context_t *ec, VALUE self, VALUE iseq);
 VALUE rb_yjit_insns_compiled(rb_execution_context_t *ec, VALUE self, VALUE iseq);

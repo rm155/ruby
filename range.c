@@ -532,7 +532,11 @@ range_step(int argc, VALUE *argv, VALUE range)
                 rb_raise(rb_eTypeError, "can't iterate from %s",
                          rb_obj_classname(b));
             }
-            range_each_func(range, step_i, (VALUE)iter);
+            if (!NIL_P(e))
+                range_each_func(range, step_i, (VALUE)iter);
+            else
+                for (;; b = rb_funcallv(b, id_succ, 0, 0))
+                    step_i(b, (VALUE)iter);
         }
     }
     return range;
@@ -835,7 +839,6 @@ range_size(VALUE range)
  *    (1...4).to_a    # => [1, 2, 3]
  *    ('a'..'d').to_a # => ["a", "b", "c", "d"]
  *
- *  Range#entries is an alias for Range#to_a.
  */
 
 static VALUE
@@ -1756,8 +1759,6 @@ range_eqq(VALUE range, VALUE val)
  *    ('a'..'d').cover?('cc')   # => true
  *
  *  Related: Range#cover?.
- *
- *  Range#member? is an alias for Range#include?.
  */
 
 static VALUE

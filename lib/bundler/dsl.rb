@@ -41,7 +41,7 @@ module Bundler
     end
 
     def eval_gemfile(gemfile, contents = nil)
-      expanded_gemfile_path = Pathname.new(gemfile).expand_path(@gemfile && @gemfile.parent)
+      expanded_gemfile_path = Pathname.new(gemfile).expand_path(@gemfile&.parent)
       original_gemfile = @gemfile
       @gemfile = expanded_gemfile_path
       @gemfiles << expanded_gemfile_path
@@ -277,8 +277,8 @@ module Bundler
         if repo_name =~ GITHUB_PULL_REQUEST_URL
           {
             "git" => "https://github.com/#{$1}.git",
-            "branch" => "refs/pull/#{$2}/head",
-            "ref" => nil,
+            "branch" => nil,
+            "ref" => "refs/pull/#{$2}/head",
             "tag" => nil,
           }
         else

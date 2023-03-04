@@ -1,14 +1,9 @@
 # frozen_string_literal: false
 #
 #   irb.rb - irb main module
-#       $Release Version: 0.9.6 $
-#       $Revision$
 #       by Keiju ISHITSUKA(keiju@ruby-lang.org)
 #
-# --
-#
-#
-#
+
 require "ripper"
 require "reline"
 
@@ -468,12 +463,16 @@ module IRB
     # be parsed as :assign and echo will be suppressed, but the latter is
     # parsed as a :method_add_arg and the output won't be suppressed
 
+    PROMPT_MAIN_TRUNCATE_LENGTH = 32
+    PROMPT_MAIN_TRUNCATE_OMISSION = '...'.freeze
+    CONTROL_CHARACTERS_PATTERN = "\x00-\x1F".freeze
+
     # Creates a new irb session
     def initialize(workspace = nil, input_method = nil)
       @context = Context.new(self, workspace, input_method)
       @context.main.extend ExtendCommandBundle
       @signal_status = :IN_IRB
-      @scanner = RubyLex.new
+      @scanner = RubyLex.new(@context)
     end
 
     # A hook point for `debug` command's TracePoint after :IRB_EXIT as well as its clean-up
@@ -543,7 +542,7 @@ module IRB
         @context.io.prompt
       end
 
-      @scanner.set_input(@context.io, context: @context) do
+      @scanner.set_input(@context.io) do
         signal_status(:IN_INPUT) do
           if l = @context.io.gets
             print l if @context.verbose?
@@ -561,9 +560,9 @@ module IRB
         end
       end
 
-      @scanner.set_auto_indent(@context) if @context.auto_indent_mode
+      @scanner.set_auto_indent
 
-      @scanner.each_top_level_statement(@context) do |line, line_no|
+      @scanner.each_top_level_statement do |line, line_no|
         signal_status(:IN_EVAL) do
           begin
             line.untaint if RUBY_VERSION < '2.7'
@@ -780,6 +779,15 @@ module IRB
       end
     end
 
+    def truncate_prompt_main(str) # :nodoc:
+      str = str.tr(CONTROL_CHARACTERS_PATTERN, ' ')
+      if str.size <= PROMPT_MAIN_TRUNCATE_LENGTH
+        str
+      else
+        str[0, PROMPT_MAIN_TRUNCATE_LENGTH - PROMPT_MAIN_TRUNCATE_OMISSION.size] + PROMPT_MAIN_TRUNCATE_OMISSION
+      end
+    end
+
     def prompt(prompt, ltype, indent, line_no) # :nodoc:
       p = prompt.dup
       p.gsub!(/%([0-9]+)?([a-zA-Z])/) do
@@ -787,9 +795,9 @@ module IRB
         when "N"
           @context.irb_name
         when "m"
-          @context.main.to_s
+          truncate_prompt_main(@context.main.to_s)
         when "M"
-          @context.main.inspect
+          truncate_prompt_main(@context.main.inspect)
         when "l"
           ltype
         when "i"

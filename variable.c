@@ -46,7 +46,7 @@ RUBY_EXTERN rb_serial_t ruby_vm_global_cvar_state;
 typedef void rb_gvar_compact_t(void *var);
 
 static struct rb_id_table *rb_global_tbl;
-static ID autoload, classpath, tmp_classpath;
+static ID autoload;
 
 // This hash table maps file paths to loadable features. We use this to track
 // autoload state until it's no longer needed.
@@ -66,7 +66,10 @@ static st_table *generic_iv_tbl_;
 struct ivar_update {
     struct gen_ivtbl *ivtbl;
     uint32_t iv_index;
-    rb_shape_t* shape;
+    uint32_t max_index;
+#if !SHAPE_IN_BASIC_FLAGS
+    rb_shape_t *shape;
+#endif
 };
 
 void
@@ -75,10 +78,6 @@ Init_var_tables(void)
     rb_global_tbl = rb_id_table_create(0);
     generic_iv_tbl_ = st_init_numtable();
     autoload = rb_intern_const("__autoload__");
-    /* __classpath__: fully qualified class path */
-    classpath = rb_intern_const("__classpath__");
-    /* __tmp_classpath__: temporary class path which contains anonymous names */
-    tmp_classpath = rb_intern_const("__tmp_classpath__");
 
     autoload_mutex = rb_mutex_new();
     rb_obj_hide(autoload_mutex);
@@ -109,18 +108,16 @@ rb_namespace_p(VALUE obj)
  * Ruby level APIs that can change a permanent +classpath+.
  */
 static VALUE
-classname(VALUE klass, int *permanent)
+classname(VALUE klass, bool *permanent)
 {
-    *permanent = 0;
-    if (!RCLASS_EXT(klass)) return Qnil;
+    *permanent = false;
 
-    VALUE classpathv = rb_ivar_lookup(klass, classpath, Qnil);
-    if (RTEST(classpathv)) {
-        *permanent = 1;
-        return classpathv;
-    }
+    VALUE classpath = RCLASS_EXT(klass)->classpath;
+    if (classpath == 0) return Qnil;
 
-    return rb_ivar_lookup(klass, tmp_classpath, Qnil);;
+    *permanent = RCLASS_EXT(klass)->permanent_classpath;
+
+    return classpath;
 }
 
 /*
@@ -133,7 +130,7 @@ classname(VALUE klass, int *permanent)
 VALUE
 rb_mod_name(VALUE mod)
 {
-    int permanent;
+    bool permanent;
     return classname(mod, &permanent);
 }
 
@@ -159,7 +156,7 @@ make_temporary_path(VALUE obj, VALUE klass)
 typedef VALUE (*fallback_func)(VALUE obj, VALUE name);
 
 static VALUE
-rb_tmp_class_path(VALUE klass, int *permanent, fallback_func fallback)
+rb_tmp_class_path(VALUE klass, bool *permanent, fallback_func fallback)
 {
     VALUE path = classname(klass, permanent);
 
@@ -172,11 +169,11 @@ rb_tmp_class_path(VALUE klass, int *permanent, fallback_func fallback)
                 path = Qfalse;
             }
             else {
-                int perm;
+                bool perm;
                 path = rb_tmp_class_path(RBASIC(klass)->klass, &perm, fallback);
             }
         }
-        *permanent = 0;
+        *permanent = false;
         return fallback(klass, path);
     }
 }
@@ -184,7 +181,7 @@ rb_tmp_class_path(VALUE klass, int *permanent, fallback_func fallback)
 VALUE
 rb_class_path(VALUE klass)
 {
-    int permanent;
+    bool permanent;
     VALUE path = rb_tmp_class_path(klass, &permanent, make_temporary_path);
     if (!NIL_P(path)) path = rb_str_dup(path);
     return path;
@@ -205,7 +202,7 @@ no_fallback(VALUE obj, VALUE name)
 VALUE
 rb_search_class_path(VALUE klass)
 {
-    int permanent;
+    bool permanent;
     return rb_tmp_class_path(klass, &permanent, no_fallback);
 }
 
@@ -227,21 +224,18 @@ build_const_path(VALUE head, ID tail)
 void
 rb_set_class_path_string(VALUE klass, VALUE under, VALUE name)
 {
-    VALUE str;
-    ID pathid = classpath;
+    bool permanent = true;
 
+    VALUE str;
     if (under == rb_cObject) {
         str = rb_str_new_frozen(name);
     }
     else {
-        int permanent;
         str = rb_tmp_class_path(under, &permanent, make_temporary_path);
         str = build_const_pathname(str, name);
-        if (!permanent) {
-            pathid = tmp_classpath;
-        }
     }
-    rb_ivar_set(klass, pathid, str);
+
+    RCLASS_SET_CLASSPATH(klass, str, permanent);
 }
 
 void
@@ -312,7 +306,7 @@ rb_class_name(VALUE klass)
 const char *
 rb_class2name(VALUE klass)
 {
-    int permanent;
+    bool permanent;
     VALUE path = rb_tmp_class_path(rb_class_real(klass), &permanent, make_temporary_path);
     if (NIL_P(path)) return NULL;
     return RSTRING_PTR(path);
@@ -1019,7 +1013,7 @@ generic_ivar_update(st_data_t *k, st_data_t *v, st_data_t u, int existing)
         }
     }
     FL_SET((VALUE)*k, FL_EXIVAR);
-    ivtbl = gen_ivtbl_resize(ivtbl, ivup->shape->next_iv_index);
+    ivtbl = gen_ivtbl_resize(ivtbl, ivup->max_index);
     // Reinsert in to the hash table because ivtbl might be a newly resized chunk of memory
     *v = (st_data_t)ivtbl;
     ivup->ivtbl = ivtbl;
@@ -1030,22 +1024,22 @@ generic_ivar_update(st_data_t *k, st_data_t *v, st_data_t u, int existing)
 }
 
 static void
-gen_ivtbl_mark(const struct gen_ivtbl *ivtbl)
+gen_ivtbl_mark_and_update(struct gen_ivtbl *ivtbl)
 {
     uint32_t i;
 
     for (i = 0; i < ivtbl->numiv; i++) {
-        rb_gc_mark(ivtbl->ivptr[i]);
+        rb_gc_mark_and_move(&ivtbl->ivptr[i]);
     }
 }
 
 void
-rb_mark_generic_ivar(VALUE obj)
+rb_mark_and_update_generic_ivar(VALUE obj)
 {
     struct gen_ivtbl *ivtbl;
 
     if (rb_gen_ivtbl_get(obj, 0, &ivtbl)) {
-        gen_ivtbl_mark(ivtbl);
+        gen_ivtbl_mark_and_update(ivtbl);
     }
 }
 
@@ -1282,7 +1276,10 @@ generic_ivar_set(VALUE obj, ID id, VALUE val)
         RUBY_ASSERT(index == (shape->next_iv_index - 1));
     }
 
+    ivup.max_index = shape->next_iv_index;
+#if !SHAPE_IN_BASIC_FLAGS
     ivup.shape = shape;
+#endif
 
     RB_VM_LOCK_ENTER();
     {
@@ -1383,15 +1380,22 @@ rb_ensure_iv_list_size(VALUE obj, uint32_t current_capacity, uint32_t new_capaci
 }
 
 struct gen_ivtbl *
-rb_ensure_generic_iv_list_size(VALUE obj, uint32_t newsize)
+rb_ensure_generic_iv_list_size(VALUE obj, rb_shape_t *shape, uint32_t newsize)
 {
     struct gen_ivtbl * ivtbl = 0;
 
     RB_VM_LOCK_ENTER();
     {
         if (UNLIKELY(!gen_ivtbl_get_unlocked(obj, 0, &ivtbl) || newsize > ivtbl->numiv)) {
-            ivtbl = gen_ivtbl_resize(ivtbl, newsize);
-            st_insert(generic_ivtbl_no_ractor_check(obj), (st_data_t)obj, (st_data_t)ivtbl);
+            struct ivar_update ivup = {
+                .iv_index = newsize - 1,
+                .max_index = newsize,
+#if !SHAPE_IN_BASIC_FLAGS
+                .shape = shape
+#endif
+            };
+            st_update(generic_ivtbl_no_ractor_check(obj), (st_data_t)obj, generic_ivar_update, (st_data_t)&ivup);
+            ivtbl = ivup.ivtbl;
             FL_SET_RAW(obj, FL_EXIVAR);
         }
     }
@@ -2109,7 +2113,7 @@ autoload_table_compact(void *ptr)
 static const rb_data_type_t autoload_table_type = {
     "autoload_table",
     {autoload_table_mark, autoload_table_free, autoload_table_memsize, autoload_table_compact,},
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
 };
 
 #define check_autoload_table(av) \
@@ -2136,8 +2140,8 @@ autoload_data(VALUE mod, ID id)
 
     // Look up the instance variable table for `autoload`, then index into that table with the given constant name `id`.
 
-    VALUE tbl_value = rb_ivar_lookup(mod, autoload, 0);
-    if (!tbl_value || !(tbl = check_autoload_table(tbl_value)) || !st_lookup(tbl, (st_data_t)id, &val)) {
+    VALUE tbl_value = rb_ivar_lookup(mod, autoload, Qfalse);
+    if (!RTEST(tbl_value) || !(tbl = check_autoload_table(tbl_value)) || !st_lookup(tbl, (st_data_t)id, &val)) {
         return 0;
     }
 
@@ -2222,7 +2226,7 @@ autoload_data_memsize(const void *ptr)
 static const rb_data_type_t autoload_data_type = {
     "autoload_data",
     {autoload_data_mark, autoload_data_free, autoload_data_memsize, autoload_data_compact},
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
 };
 
 static void
@@ -2273,11 +2277,12 @@ get_autoload_data(VALUE autoload_const_value, struct autoload_const **autoload_c
 {
     struct autoload_const *autoload_const = rb_check_typeddata(autoload_const_value, &autoload_const_type);
 
-    struct autoload_data *autoload_data = rb_check_typeddata(autoload_const->autoload_data_value, &autoload_data_type);
+    VALUE autoload_data_value = autoload_const->autoload_data_value;
+    struct autoload_data *autoload_data = rb_check_typeddata(autoload_data_value, &autoload_data_type);
 
     /* do not reach across stack for ->state after forking: */
     if (autoload_data && autoload_data->fork_gen != GET_VM()->fork_gen) {
-        autoload_data->mutex = Qnil;
+        RB_OBJ_WRITE(autoload_data_value, &autoload_data->mutex, Qnil);
         autoload_data->fork_gen = 0;
     }
 
@@ -2316,8 +2321,8 @@ autoload_feature_lookup_or_create(VALUE feature, struct autoload_data **autoload
 
     if (NIL_P(autoload_data_value)) {
         autoload_data_value = TypedData_Make_Struct(0, struct autoload_data, &autoload_data_type, autoload_data);
-        autoload_data->feature = feature;
-        autoload_data->mutex = Qnil;
+        RB_OBJ_WRITE(autoload_data_value, &autoload_data->feature, feature);
+        RB_OBJ_WRITE(autoload_data_value, &autoload_data->mutex, Qnil);
         ccan_list_head_init(&autoload_data->constants);
 
         if (autoload_data_pointer) *autoload_data_pointer = autoload_data;
@@ -2332,17 +2337,18 @@ autoload_feature_lookup_or_create(VALUE feature, struct autoload_data **autoload
     return autoload_data_value;
 }
 
-static struct st_table *
+static VALUE
 autoload_table_lookup_or_create(VALUE module)
 {
-    VALUE autoload_table_value = rb_ivar_lookup(module, autoload, 0);
-    if (autoload_table_value) {
-        return check_autoload_table(autoload_table_value);
+    VALUE autoload_table_value = rb_ivar_lookup(module, autoload, Qfalse);
+    if (RTEST(autoload_table_value)) {
+        return autoload_table_value;
     }
     else {
-        autoload_table_value = TypedData_Wrap_Struct(0, &autoload_table_type, 0);
+        autoload_table_value = TypedData_Wrap_Struct(0, &autoload_table_type, NULL);
         rb_class_ivar_set(module, autoload, autoload_table_value);
-        return (DATA_PTR(autoload_table_value) = st_init_numtable());
+        RTYPEDDATA_DATA(autoload_table_value) = st_init_numtable();
+        return autoload_table_value;
     }
 }
 
@@ -2359,7 +2365,8 @@ autoload_synchronized(VALUE _arguments)
     // Reset any state associated with any previous constant:
     const_set(arguments->module, arguments->name, Qundef);
 
-    struct st_table *autoload_table = autoload_table_lookup_or_create(arguments->module);
+    VALUE autoload_table_value = autoload_table_lookup_or_create(arguments->module);
+    struct st_table *autoload_table = check_autoload_table(autoload_table_value);
 
     // Ensure the string is uniqued since we use an identity lookup:
     VALUE feature = rb_fstring(arguments->feature);
@@ -2377,6 +2384,7 @@ autoload_synchronized(VALUE _arguments)
         autoload_const->autoload_data_value = autoload_data_value;
         ccan_list_add_tail(&autoload_data->constants, &autoload_const->cnode);
         st_insert(autoload_table, (st_data_t)arguments->name, (st_data_t)autoload_const_value);
+        RB_OBJ_WRITTEN(autoload_table_value, Qundef, autoload_const_value);
     }
 
     return Qtrue;
@@ -2416,11 +2424,12 @@ autoload_delete(VALUE module, ID name)
 
     RUBY_ASSERT(RB_TYPE_P(module, T_CLASS) || RB_TYPE_P(module, T_MODULE));
 
-    VALUE table_value = rb_ivar_lookup(module, autoload, 0);
-    if (table_value) {
+    VALUE table_value = rb_ivar_lookup(module, autoload, Qfalse);
+    if (RTEST(table_value)) {
         struct st_table *table = check_autoload_table(table_value);
 
         st_delete(table, &key, &load);
+        RB_OBJ_WRITTEN(table_value, load, Qundef);
 
         /* Qfalse can indicate already deleted */
         if (load != Qfalse) {
@@ -2618,7 +2627,7 @@ autoload_load_needed(VALUE _arguments)
     }
 
     if (NIL_P(autoload_data->mutex)) {
-        autoload_data->mutex = rb_mutex_new();
+        RB_OBJ_WRITE(autoload_const->autoload_data_value, &autoload_data->mutex, rb_mutex_new());
         autoload_data->fork_gen = GET_VM()->fork_gen;
     }
     else if (rb_mutex_owned_p(autoload_data->mutex)) {
@@ -2730,7 +2739,7 @@ rb_autoload_load(VALUE module, ID name)
         rb_raise(rb_eRactorUnsafeError, "require by autoload on non-main Ractor is not supported (%s)", rb_id2name(name));
     }
 
-    // This state is stored on thes stack and is used during the autoload process.
+    // This state is stored on the stack and is used during the autoload process.
     struct autoload_load_arguments arguments = {.module = module, .name = name, .mutex = Qnil};
 
     // Figure out whether we can autoload the named constant:
@@ -3219,17 +3228,21 @@ set_namespace_path_i(ID id, VALUE v, void *payload)
 {
     rb_const_entry_t *ce = (rb_const_entry_t *)v;
     VALUE value = ce->value;
-    int has_permanent_classpath;
     VALUE parental_path = *((VALUE *) payload);
     if (!rb_is_const_id(id) || !rb_namespace_p(value)) {
         return ID_TABLE_CONTINUE;
     }
+
+    bool has_permanent_classpath;
     classname(value, &has_permanent_classpath);
     if (has_permanent_classpath) {
         return ID_TABLE_CONTINUE;
     }
     set_namespace_path(value, build_const_path(parental_path, id));
-    rb_attr_delete(value, tmp_classpath);
+
+    if (!RCLASS_EXT(value)->permanent_classpath) {
+        RCLASS_SET_CLASSPATH(value, 0, false);
+    }
 
     return ID_TABLE_CONTINUE;
 }
@@ -3246,7 +3259,8 @@ set_namespace_path(VALUE named_namespace, VALUE namespace_path)
 
     RB_VM_LOCK_ENTER();
     {
-        rb_class_ivar_set(named_namespace, classpath, namespace_path);
+        RCLASS_SET_CLASSPATH(named_namespace, namespace_path, true);
+
         if (const_table) {
             rb_id_table_foreach(const_table, set_namespace_path_i, &namespace_path);
         }
@@ -3306,24 +3320,24 @@ const_set(VALUE klass, ID id, VALUE val)
      * and avoid order-dependency on const_tbl
      */
     if (rb_cObject && rb_namespace_p(val)) {
-        int val_path_permanent;
+        bool val_path_permanent;
         VALUE val_path = classname(val, &val_path_permanent);
         if (NIL_P(val_path) || !val_path_permanent) {
             if (klass == rb_cObject) {
                 set_namespace_path(val, rb_id2str(id));
             }
             else {
-                int parental_path_permanent;
+                bool parental_path_permanent;
                 VALUE parental_path = classname(klass, &parental_path_permanent);
                 if (NIL_P(parental_path)) {
-                    int throwaway;
+                    bool throwaway;
                     parental_path = rb_tmp_class_path(klass, &throwaway, make_temporary_path);
                 }
                 if (parental_path_permanent && !val_path_permanent) {
                     set_namespace_path(val, build_const_path(parental_path, id));
                 }
                 else if (!parental_path_permanent && NIL_P(val_path)) {
-                    ivar_set(val, tmp_classpath, build_const_path(parental_path, id));
+                    RCLASS_SET_CLASSPATH(val, build_const_path(parental_path, id), false);
                 }
             }
         }
@@ -3587,7 +3601,7 @@ static VALUE
 cvar_front_klass(VALUE klass)
 {
     if (FL_TEST(klass, FL_SINGLETON)) {
-        VALUE obj = rb_ivar_get(klass, id__attached__);
+        VALUE obj = RCLASS_ATTACHED_OBJECT(klass);
         if (rb_namespace_p(obj)) {
             return obj;
         }
@@ -3806,7 +3820,7 @@ mod_cvar_of(VALUE mod, void *data)
 {
     VALUE tmp = mod;
     if (FL_TEST(mod, FL_SINGLETON)) {
-        if (rb_namespace_p(rb_ivar_get(mod, id__attached__))) {
+        if (rb_namespace_p(RCLASS_ATTACHED_OBJECT(mod))) {
             data = mod_cvar_at(tmp, data);
             tmp = cvar_front_klass(tmp);
         }
@@ -3944,6 +3958,7 @@ rb_class_ivar_set(VALUE obj, ID key, VALUE value)
 {
     RUBY_ASSERT(RB_TYPE_P(obj, T_CLASS) || RB_TYPE_P(obj, T_MODULE));
     int found;
+    rb_check_frozen(obj);
 
     RB_VM_LOCK_ENTER();
     {

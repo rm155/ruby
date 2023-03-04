@@ -118,7 +118,7 @@ ruby_debug_printf(const char *format, ...)
     va_end(ap);
 }
 
-#include "gc.h"
+#include "internal/gc.h"
 
 VALUE
 ruby_debug_print_value(int level, int debug_level, const char *header, VALUE obj)
@@ -450,7 +450,7 @@ check_filter(const char *str, const struct debug_log_filter *filter, bool *state
 //   (func_name or file_name) contains baz or boo
 //
 // RUBY_DEBUG_LOG_FILTER=foo,bar,-baz,-boo
-// retunrs true if
+// returns true if
 //   (func_name or file_name) contains foo or bar
 // or
 //   (func_name or file_name) doesn't contain baz and

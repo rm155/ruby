@@ -1221,6 +1221,110 @@ RSpec.describe "the lockfile format" do
       and include("Either installing with `--full-index` or running `bundle update rack_middleware` should fix the problem.")
   end
 
+  it "regenerates a lockfile with no specs" do
+    build_repo4 do
+      build_gem "indirect_dependency", "1.2.3" do |s|
+        s.metadata["funding_uri"] = "https://example.com/donate"
+      end
+
+      build_gem "direct_dependency", "4.5.6" do |s|
+        s.add_dependency "indirect_dependency", ">= 0"
+      end
+    end
+
+    lockfile <<-G
+      GEM
+        remote: #{file_uri_for(gem_repo4)}/
+        specs:
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        direct_dependency
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    G
+
+    install_gemfile <<-G
+      source "#{file_uri_for(gem_repo4)}"
+
+      gem "direct_dependency"
+    G
+
+    expect(lockfile).to eq <<~G
+      GEM
+        remote: #{file_uri_for(gem_repo4)}/
+        specs:
+          direct_dependency (4.5.6)
+            indirect_dependency
+          indirect_dependency (1.2.3)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        direct_dependency
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    G
+  end
+
+  it "auto-heals when the lockfile is missing dependent specs" do
+    build_repo4 do
+      build_gem "minitest-bisect", "1.6.0" do |s|
+        s.add_dependency "path_expander", "~> 1.1"
+      end
+
+      build_gem "path_expander", "1.1.1"
+    end
+
+    gemfile <<~G
+      source "#{file_uri_for(gem_repo4)}"
+      gem "minitest-bisect"
+    G
+
+    # Corrupt lockfile (completely missing path_expander)
+    lockfile <<~L
+      GEM
+        remote: #{file_uri_for(gem_repo4)}/
+        specs:
+          minitest-bisect (1.6.0)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        minitest-bisect
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    L
+
+    cache_gems "minitest-bisect-1.6.0", "path_expander-1.1.1", :gem_repo => gem_repo4
+    bundle :install
+
+    expect(lockfile).to eq <<~L
+      GEM
+        remote: #{file_uri_for(gem_repo4)}/
+        specs:
+          minitest-bisect (1.6.0)
+            path_expander (~> 1.1)
+          path_expander (1.1.1)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        minitest-bisect
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    L
+  end
+
   it "auto-heals when the lockfile is missing specs" do
     build_repo4 do
       build_gem "minitest-bisect", "1.6.0" do |s|

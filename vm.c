@@ -11,8 +11,8 @@
 #define vm_exec rb_vm_exec
 
 #include "eval_intern.h"
-#include "gc.h"
 #include "internal.h"
+#include "internal/class.h"
 #include "internal/compile.h"
 #include "internal/cont.h"
 #include "internal/error.h"
@@ -543,7 +543,7 @@ rb_dtrace_setup(rb_execution_context_t *ec, VALUE klass, ID id,
         klass = RBASIC(klass)->klass;
     }
     else if (FL_TEST(klass, FL_SINGLETON)) {
-        klass = rb_attr_get(klass, id__attached__);
+        klass = RCLASS_ATTACHED_OBJECT(klass);
         if (NIL_P(klass)) return FALSE;
     }
     type = BUILTIN_TYPE(klass);
@@ -1300,17 +1300,41 @@ MJIT_FUNC_EXPORTED VALUE
 rb_vm_make_proc_lambda(const rb_execution_context_t *ec, const struct rb_captured_block *captured, VALUE klass, int8_t is_lambda)
 {
     VALUE procval;
+    enum imemo_type code_type = imemo_type(captured->code.val);
 
     if (!VM_ENV_ESCAPED_P(captured->ep)) {
         rb_control_frame_t *cfp = VM_CAPTURED_BLOCK_TO_CFP(captured);
         vm_make_env_object(ec, cfp);
     }
+
     VM_ASSERT(VM_EP_IN_HEAP_P(ec, captured->ep));
-    VM_ASSERT(imemo_type_p(captured->code.val, imemo_iseq) ||
-              imemo_type_p(captured->code.val, imemo_ifunc));
+    VM_ASSERT(code_type == imemo_iseq || code_type == imemo_ifunc);
 
     procval = vm_proc_create_from_captured(klass, captured,
-                                           imemo_type(captured->code.val) == imemo_iseq ? block_type_iseq : block_type_ifunc, FALSE, is_lambda);
+                                           code_type == imemo_iseq ? block_type_iseq : block_type_ifunc,
+                                           FALSE, is_lambda);
+
+    if (code_type ==  imemo_ifunc) {
+        struct vm_ifunc *ifunc = (struct vm_ifunc *)captured->code.val;
+        if (ifunc->svar_lep) {
+            VALUE ep0 = ifunc->svar_lep[0];
+            if (RB_TYPE_P(ep0, T_IMEMO) && imemo_type_p(ep0, imemo_env)) {
+                // `ep0 == imemo_env` means this ep is escaped to heap (in env object).
+                const rb_env_t *env = (const rb_env_t *)ep0;
+                ifunc->svar_lep = (VALUE *)env->ep;
+            }
+            else {
+                VM_ASSERT(FIXNUM_P(ep0));
+                if (ep0 & VM_ENV_FLAG_ESCAPED) {
+                    // ok. do nothing
+                }
+                else {
+                    ifunc->svar_lep = NULL;
+                }
+            }
+        }
+    }
+
     return procval;
 }
 
@@ -1629,30 +1653,41 @@ rb_vm_invoke_proc_with_self(rb_execution_context_t *ec, rb_proc_t *proc, VALUE s
 
 /* special variable */
 
-static rb_control_frame_t *
-vm_normal_frame(const rb_execution_context_t *ec, rb_control_frame_t *cfp)
+VALUE *
+rb_vm_svar_lep(const rb_execution_context_t *ec, const rb_control_frame_t *cfp)
 {
     while (cfp->pc == 0) {
-        cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp);
+        if (VM_FRAME_TYPE(cfp) ==  VM_FRAME_MAGIC_IFUNC) {
+            struct vm_ifunc *ifunc = (struct vm_ifunc *)cfp->iseq;
+            return ifunc->svar_lep;
+        }
+        else {
+            cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp);
+        }
+
         if (RUBY_VM_CONTROL_FRAME_STACK_OVERFLOW_P(ec, cfp)) {
-            return 0;
+            return NULL;
         }
     }
-    return cfp;
+
+    if (cfp) {
+        return (VALUE *)VM_CF_LEP(cfp);
+    }
+    else {
+        return NULL;
+    }
 }
 
 static VALUE
 vm_cfp_svar_get(const rb_execution_context_t *ec, rb_control_frame_t *cfp, VALUE key)
 {
-    cfp = vm_normal_frame(ec, cfp);
-    return lep_svar_get(ec, cfp ? VM_CF_LEP(cfp) : 0, key);
+    return lep_svar_get(ec, rb_vm_svar_lep(ec, cfp), key);
 }
 
 static void
 vm_cfp_svar_set(const rb_execution_context_t *ec, rb_control_frame_t *cfp, VALUE key, const VALUE val)
 {
-    cfp = vm_normal_frame(ec, cfp);
-    lep_svar_set(ec, cfp ? VM_CF_LEP(cfp) : 0, key, val);
+    lep_svar_set(ec, rb_vm_svar_lep(ec, cfp), key, val);
 }
 
 static VALUE
@@ -2741,7 +2776,7 @@ rb_vm_each_stack_value(void *ptr, void (*cb)(VALUE, void*), void *ctx)
                     if (ec->vm_stack) {
                         VALUE *p = ec->vm_stack;
                         VALUE *sp = ec->cfp->sp;
-                        while (p <= sp) {
+                        while (p < sp) {
                             if (!rb_special_const_p(*p)) {
                                 cb(*p, ctx);
                             }

@@ -651,21 +651,25 @@ rb_mutex_allow_trap(VALUE self, int val)
 /* Queue */
 
 #define queue_waitq(q) UNALIGNED_MEMBER_PTR(q, waitq)
-PACKED_STRUCT_UNALIGNED(struct rb_queue {
+#define queue_list(q) UNALIGNED_MEMBER_PTR(q, que)
+RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_BEGIN()
+struct rb_queue {
     struct ccan_list_head waitq;
     rb_serial_t fork_gen;
     const VALUE que;
     int num_waiting;
-});
+} RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_END();
 
 #define szqueue_waitq(sq) UNALIGNED_MEMBER_PTR(sq, q.waitq)
+#define szqueue_list(sq) UNALIGNED_MEMBER_PTR(sq, q.que)
 #define szqueue_pushq(sq) UNALIGNED_MEMBER_PTR(sq, pushq)
-PACKED_STRUCT_UNALIGNED(struct rb_szqueue {
+RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_BEGIN()
+struct rb_szqueue {
     struct rb_queue q;
     int num_waiting_push;
     struct ccan_list_head pushq;
     long max;
-});
+} RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_END();
 
 static void
 queue_mark(void *ptr)
@@ -905,7 +909,7 @@ rb_queue_initialize(int argc, VALUE *argv, VALUE self)
     if ((argc = rb_scan_args(argc, argv, "01", &initial)) == 1) {
         initial = rb_to_array(initial);
     }
-    RB_OBJ_WRITE(self, &q->que, ary_buf_new());
+    RB_OBJ_WRITE(self, queue_list(q), ary_buf_new());
     ccan_list_head_init(queue_waitq(q));
     if (argc == 1) {
         rb_ary_concat(q->que, initial);
@@ -1178,7 +1182,7 @@ rb_szqueue_initialize(VALUE self, VALUE vmax)
         rb_raise(rb_eArgError, "queue size must be positive");
     }
 
-    RB_OBJ_WRITE(self, &sq->q.que, ary_buf_new());
+    RB_OBJ_WRITE(self, szqueue_list(sq), ary_buf_new());
     ccan_list_head_init(szqueue_waitq(sq));
     ccan_list_head_init(szqueue_pushq(sq));
     sq->max = max;

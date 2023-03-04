@@ -123,15 +123,13 @@ pub fn assume_method_lookup_stable(
     jit_ensure_block_entry_exit(jit, ocb);
 
     let block = jit.get_block();
-    block
-        .borrow_mut()
-        .add_cme_dependency(callee_cme);
+    jit.push_cme_dependency(callee_cme);
 
     Invariants::get_instance()
         .cme_validity
         .entry(callee_cme)
         .or_default()
-        .insert(block.clone());
+        .insert(block);
 }
 
 // Checks rb_method_basic_definition_p and registers the current block for invalidation if method
@@ -327,7 +325,7 @@ pub extern "C" fn rb_yjit_root_mark() {
     // Why not let the GC move the cme keys in this table?
     // Because this is basically a compare_by_identity Hash.
     // If a key moves, we would need to reinsert it into the table so it is rehashed.
-    // That is tricky to do, espcially as it could trigger allocation which could
+    // That is tricky to do, especially as it could trigger allocation which could
     // trigger GC. Not sure if it is okay to trigger GC while the GC is updating
     // references.
     //
@@ -434,7 +432,7 @@ pub extern "C" fn rb_yjit_constant_ic_update(iseq: *const rb_iseq_t, ic: IC, ins
 
         // This should come from a running iseq, so direct threading translation
         // should have been done
-        assert!(unsafe { FL_TEST(iseq.into(), VALUE(ISEQ_TRANSLATED as usize)) } != VALUE(0));
+        assert!(unsafe { FL_TEST(iseq.into(), VALUE(ISEQ_TRANSLATED)) } != VALUE(0));
         assert!(insn_idx < unsafe { get_iseq_encoded_size(iseq) });
 
         // Ensure that the instruction the insn_idx is pointing to is in
@@ -547,17 +545,6 @@ pub extern "C" fn rb_yjit_tracing_invalidate_all() {
         }
         cb.set_pos(old_pos);
         cb.set_dropped_bytes(old_dropped_bytes);
-
-        // Freeze invalidated part of the codepage. We only want to wait for
-        // running instances of the code to exit from now on, so we shouldn't
-        // change the code. There could be other ractors sleeping in
-        // branch_stub_hit(), for example. We could harden this by changing memory
-        // protection on the frozen range.
-        assert!(
-            CodegenGlobals::get_inline_frozen_bytes() <= old_pos,
-            "frozen bytes should increase monotonically"
-        );
-        CodegenGlobals::set_inline_frozen_bytes(old_pos);
 
         CodegenGlobals::get_outlined_cb()
             .unwrap()

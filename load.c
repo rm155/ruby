@@ -367,7 +367,7 @@ get_loaded_features_index(rb_vm_t *vm)
             VALUE entry, as_str;
             as_str = entry = rb_ary_entry(features, i);
             StringValue(as_str);
-            as_str = rb_fstring(rb_str_freeze(as_str));
+            as_str = rb_fstring(as_str);
             if (as_str != entry)
                 rb_ary_store(features, i, as_str);
             features_index_add(vm, as_str, INT2FIX(i));
@@ -655,14 +655,14 @@ rb_provide_feature(rb_vm_t *vm, VALUE feature)
         rb_raise(rb_eRuntimeError,
                  "$LOADED_FEATURES is frozen; cannot append feature");
     }
-    rb_str_freeze(feature);
+    feature = rb_fstring(feature);
 
     get_loaded_features_index(vm);
     // If loaded_features and loaded_features_snapshot share the same backing
     // array, pushing into it would cause the whole array to be copied.
     // To avoid this we first clear loaded_features_snapshot.
     rb_ary_clear(vm->loaded_features_snapshot);
-    rb_ary_push(features, rb_fstring(feature));
+    rb_ary_push(features, feature);
     features_index_add(vm, feature, INT2FIX(RARRAY_LEN(features)-1));
     reset_loaded_features_snapshot(vm);
 }
@@ -850,7 +850,8 @@ load_lock(rb_vm_t *vm, const char *ftptr, bool warn)
         st_insert(loading_tbl, (st_data_t)ftptr, data);
         return (char *)ftptr;
     }
-    if (warn) {
+
+    if (warn && rb_thread_shield_owned((VALUE)data)) {
         VALUE warning = rb_warning_string("loading in progress, circular require considered harmful - %s", ftptr);
         rb_backtrace_each(rb_str_append, warning);
         rb_warning("%"PRIsVALUE, warning);

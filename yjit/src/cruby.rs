@@ -450,7 +450,7 @@ impl VALUE {
 
     pub fn as_usize(self) -> usize {
         let VALUE(us) = self;
-        us as usize
+        us
     }
 
     pub fn as_ptr<T>(self) -> *const T {
@@ -463,7 +463,7 @@ impl VALUE {
         us as *mut T
     }
 
-    /// For working with opague pointers and encoding null check.
+    /// For working with opaque pointers and encoding null check.
     /// Similar to [std::ptr::NonNull], but for `*const T`. `NonNull<T>`
     /// is for `*mut T` while our C functions are setup to use `*const T`.
     /// Casting from `NonNull<T>` to `*const T` is too noisy.
@@ -564,8 +564,21 @@ pub fn rust_str_to_ruby(str: &str) -> VALUE {
 pub fn rust_str_to_sym(str: &str) -> VALUE {
     let c_str = CString::new(str).unwrap();
     let c_ptr: *const c_char = c_str.as_ptr();
-
     unsafe { rb_id2sym(rb_intern(c_ptr)) }
+}
+
+/// Produce an owned Rust String from a C char pointer
+#[cfg(feature = "disasm")]
+pub fn cstr_to_rust_string(c_char_ptr: *const c_char) -> Option<String> {
+    assert!(c_char_ptr != std::ptr::null());
+
+    use std::ffi::CStr;
+    let c_str: &CStr = unsafe { CStr::from_ptr(c_char_ptr) };
+
+    match c_str.to_str() {
+        Ok(rust_str) => Some(rust_str.to_string()),
+        Err(_) => None
+    }
 }
 
 /// A location in Rust code for integrating with debugging facilities defined in C.
@@ -654,6 +667,7 @@ mod manual_defs {
 
     pub const SIZEOF_VALUE: usize = 8;
     pub const SIZEOF_VALUE_I32: i32 = SIZEOF_VALUE as i32;
+    pub const VALUE_BITS: u8 = 8 * SIZEOF_VALUE as u8;
 
     pub const RUBY_LONG_MIN: isize = std::os::raw::c_long::MIN as isize;
     pub const RUBY_LONG_MAX: isize = std::os::raw::c_long::MAX as isize;

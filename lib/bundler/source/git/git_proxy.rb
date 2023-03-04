@@ -28,8 +28,9 @@ module Bundler
         def initialize(command, path, extra_info = nil)
           @command = command
 
-          msg = String.new
-          msg << "Git error: command `#{command}` in directory #{path} has failed."
+          msg = String.new("Git error: command `#{command}`")
+          msg << " in directory #{path}" if path
+          msg << " has failed."
           msg << "\n#{extra_info}" if extra_info
           super msg
         end
@@ -58,6 +59,7 @@ module Bundler
           @explicit_ref = branch || tag || ref
           @revision = revision
           @git      = git
+          @commit_ref = nil
         end
 
         def revision
@@ -116,7 +118,7 @@ module Bundler
             end
           end
 
-          git "fetch", "--force", "--quiet", *extra_fetch_args, :dir => destination
+          git "fetch", "--force", "--quiet", *extra_fetch_args, :dir => destination if @commit_ref
 
           git "reset", "--hard", @revision, :dir => destination
 
@@ -138,8 +140,8 @@ module Bundler
             out, err, status = capture(command, path)
             return out if status.success?
 
-            if err.include?("couldn't find remote ref")
-              raise MissingGitRevisionError.new(command_with_no_credentials, path, explicit_ref, credential_filtered_uri)
+            if err.include?("couldn't find remote ref") || err.include?("not our ref")
+              raise MissingGitRevisionError.new(command_with_no_credentials, path, commit || explicit_ref, credential_filtered_uri)
             else
               raise GitCommandError.new(command_with_no_credentials, path, err)
             end
@@ -152,9 +154,20 @@ module Bundler
           SharedHelpers.filesystem_access(path.dirname) do |p|
             FileUtils.mkdir_p(p)
           end
-          git_retry "clone", "--bare", "--no-hardlinks", "--quiet", *extra_clone_args, "--", configured_uri, path.to_s
 
-          extra_ref
+          command = ["clone", "--bare", "--no-hardlinks", "--quiet", *extra_clone_args, "--", configured_uri, path.to_s]
+          command_with_no_credentials = check_allowed(command)
+
+          Bundler::Retry.new("`#{command_with_no_credentials}`", [MissingGitRevisionError]).attempts do
+            _, err, status = capture(command, nil)
+            return extra_ref if status.success?
+
+            if err.include?("Could not find remote branch")
+              raise MissingGitRevisionError.new(command_with_no_credentials, nil, explicit_ref, credential_filtered_uri)
+            else
+              raise GitCommandError.new(command_with_no_credentials, path, err)
+            end
+          end
         end
 
         def clone_needs_unshallow?
@@ -185,11 +198,14 @@ module Bundler
         end
 
         def refspec
-          return ref if pinned_to_full_sha?
+          if commit
+            @commit_ref = "refs/#{commit}-sha"
+            return "#{commit}:#{@commit_ref}"
+          end
 
-          ref_to_fetch = @revision || fully_qualified_ref
+          reference = fully_qualified_ref
 
-          ref_to_fetch ||= if ref.include?("~")
+          reference ||= if ref.include?("~")
             ref.split("~").first
           elsif ref.start_with?("refs/")
             ref
@@ -197,7 +213,11 @@ module Bundler
             "refs/*"
           end
 
-          "#{ref_to_fetch}:#{ref_to_fetch}"
+          "#{reference}:#{reference}"
+        end
+
+        def commit
+          @commit ||= pinned_to_full_sha? ? ref : @revision
         end
 
         def fully_qualified_ref
@@ -216,10 +236,6 @@ module Bundler
 
         def pinned_to_full_sha?
           ref =~ /\A\h{40}\z/
-        end
-
-        def legacy_locked_revision?
-          !@revision.nil? && @revision =~ /\A\h{7}\z/
         end
 
         def git_null(*command, dir: nil)
@@ -241,9 +257,9 @@ module Bundler
 
           out, err, status = capture(command, dir)
 
-          Bundler.ui.warn err unless err.empty?
+          raise GitCommandError.new(command_with_no_credentials, dir || SharedHelpers.pwd, err) unless status.success?
 
-          raise GitCommandError.new(command_with_no_credentials, dir || SharedHelpers.pwd, out) unless status.success?
+          Bundler.ui.warn err unless err.empty?
 
           out
         end
@@ -344,9 +360,10 @@ module Bundler
         end
 
         def extra_clone_args
-          return [] if full_clone?
+          args = depth_args
+          return [] if args.empty?
 
-          args = ["--depth", depth.to_s, "--single-branch"]
+          args += ["--single-branch"]
           args.unshift("--no-tags") if supports_cloning_with_no_tags?
 
           args += ["--branch", branch || tag] if branch || tag
@@ -361,7 +378,7 @@ module Bundler
 
         def extra_fetch_args
           extra_args = [path.to_s, *depth_args]
-          extra_args.push(revision) unless legacy_locked_revision?
+          extra_args.push(@commit_ref)
           extra_args
         end
 

@@ -338,7 +338,7 @@ class Gem::Specification < Gem::BasicSpecification
   # The simplest way is to specify the standard SPDX ID
   # https://spdx.org/licenses/ for the license.
   # Ideally, you should pick one that is OSI (Open Source Initiative)
-  # http://opensource.org/licenses/alphabetical approved.
+  # https://opensource.org/licenses/ approved.
   #
   # The most commonly used OSI-approved licenses are MIT and Apache-2.0.
   # GitHub also provides a license picker at http://choosealicense.com/.
@@ -1041,7 +1041,7 @@ class Gem::Specification < Gem::BasicSpecification
       next if s.activated?
       s.contains_requirable_file? path
     end
-    stub && stub.to_spec
+    stub&.to_spec
   end
 
   def self.find_active_stub_by_path(path)
@@ -1626,7 +1626,7 @@ class Gem::Specification < Gem::BasicSpecification
         builder.build_extensions
       end
     ensure
-      ui.close if ui
+      ui&.close
       Gem::Specification.unresolved_deps.replace unresolved_deps
     end
   end
