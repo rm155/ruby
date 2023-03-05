@@ -2691,7 +2691,7 @@ static void
 gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
 {
     unsigned int lock_lev;
-    gc_enter(objspace, gc_enter_event_continue, &lock_lev);
+    gc_enter(objspace, gc_enter_event_continue, false);
 
     /* Continue marking if in incremental marking. */
     if (heap->free_pages == NULL && is_incremental_marking(objspace)) {
@@ -2706,7 +2706,7 @@ gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
         gc_sweep_continue(objspace, size_pool, heap);
     }
 
-    gc_exit(objspace, gc_enter_event_continue, &lock_lev);
+    gc_exit(objspace, gc_enter_event_continue);
 }
 
 static void
@@ -9518,7 +9518,7 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
 	objspace->global_gc_current_target = os;
 	gc_prof_mark_timer_start(os);
 	if (!is_incremental_marking(os)) {
-	    gc_marks_rest_without_sweep(os);
+	    gc_marks_rest(os);
 	}
 
 #if RGENGC_PROFILE > 0

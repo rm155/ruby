@@ -188,7 +188,7 @@ ractor_queue_mark(struct rb_ractor_queue *rq)
 {
     for (int i=0; i<rq->cnt; i++) {
         struct rb_ractor_basket *b = ractor_queue_at(NULL, rq, i);
-        rb_gc_mark(b->sender->pub.self);
+        rb_gc_mark(b->sender);
 
         switch (b->type.e) {
           case basket_type_yielding:
@@ -207,7 +207,7 @@ static void ractor_local_storage_mark(rb_ractor_t *r);
 static void ractor_local_storage_free(rb_ractor_t *r);
 
 void
-rb_ractor_related_objects_mark(rb_ractor_t *r)
+rb_ractor_related_objects_mark(void *ptr)
 {
     rb_ractor_t *r = (rb_ractor_t *)ptr;
 
@@ -477,13 +477,13 @@ ractor_basket_value(struct rb_ractor_basket *b)
 static VALUE
 ractor_basket_accept(struct rb_ractor_basket *b, rb_ractor_t *receiver)
 {
-    if (b->type == basket_type_will) rb_absorb_objspace_of_closing_ractor(receiver, b->sender);
+    if (b->type.e == basket_type_will) rb_absorb_objspace_of_closing_ractor(receiver, RACTOR_PTR(b->sender));
     VALUE v = ractor_basket_value(b);
 
     if (b->p.send.exception) {
         VALUE cause = v;
         VALUE err = rb_exc_new_cstr(rb_eRactorRemoteError, "thrown by remote Ractor.");
-        rb_ivar_set(err, rb_intern("@ractor"), b->sender->pub.self);
+        rb_ivar_set(err, rb_intern("@ractor"), b->sender);
         rb_ec_setup_exception(NULL, err, cause);
         rb_exc_raise(err);
     }
@@ -700,7 +700,7 @@ ractor_try_receive(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor
         return Qundef;
     }
     else {
-        return ractor_basket_accept(&basket);
+        return ractor_basket_accept(&basket, cr);
     }
 }
 
@@ -928,6 +928,8 @@ ractor_basket_prepare_contents(VALUE obj, VALUE move, VALUE *pobj, enum rb_racto
     *ptype = type;
 }
 
+static void traverse_and_add_to_exemption_tbl(VALUE obj);
+
 static void
 ractor_basket_fill_(rb_ractor_t *cr, struct rb_ractor_basket *basket, VALUE obj, bool exc)
 {
@@ -1107,7 +1109,7 @@ ractor_try_take(rb_ractor_t *cr, rb_ractor_t *r, struct rb_ractor_basket *take_b
             VM_ASSERT(r->sync.outgoing_port_closed);
             rb_raise(rb_eRactorClosedError, "The outgoing-port is already closed");
         }
-        return ractor_basket_accept(take_basket);
+        return ractor_basket_accept(take_basket, cr);
     }
     else {
         RUBY_DEBUG_LOG("not taken");
@@ -1404,8 +1406,6 @@ ractor_selector_release_i(st_data_t key, st_data_t val, st_data_t data)
     free(config);
     return ST_CONTINUE;
 }
-
-static void traverse_and_add_to_exemption_tbl(VALUE obj);
 
 static void
 ractor_selector_free(void *ptr)
@@ -1734,7 +1734,7 @@ ractor_selector_wait(rb_execution_context_t *ec, VALUE selv, VALUE do_receivev, 
 
     RUBY_DEBUG_LOG("taken_basket:%s", basket_type_name(taken_basket.type.e));
 
-    ret_v = ractor_basket_accept(&taken_basket);
+    ret_v = ractor_basket_accept(&taken_basket, cr);
     ret_r = taken_basket.sender;
   success:
     return rb_ary_new_from_args(2, ret_r, ret_v);

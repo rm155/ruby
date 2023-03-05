@@ -129,12 +129,22 @@ int ruby_get_stack_grow_direction(volatile VALUE *addr);
 const char *rb_obj_info(VALUE obj);
 const char *rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj);
 
+const struct rb_callcache *get_from_global_cc_cache_table(int index);
+void set_in_global_cc_cache_table(int index, const struct rb_callcache *cc);
+
+void rb_add_to_external_class_tbl(VALUE obj);
+
+void rb_add_to_shareable_tbl(VALUE obj);
+VALUE rb_gc_ractor_teardown_cleanup();
 
 struct rb_thread_struct;
 size_t rb_size_pool_slot_size(unsigned char pool_id);
 
 struct rb_execution_context_struct; /* in vm_core.h */
 struct rb_objspace; /* in vm_core.h */
+typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
+
+void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);
 
 #ifdef NEWOBJ_OF
 # undef NEWOBJ_OF
@@ -263,6 +273,8 @@ void rb_objspace_reachable_objects_from_root(void (func)(const char *category, V
 int rb_objspace_markable_object_p(VALUE obj);
 int rb_objspace_internal_object_p(VALUE obj);
 int rb_objspace_marked_object_p(VALUE obj);
+
+struct rb_objspace **get_objspace_ptr_of_value(VALUE v);
 
 void rb_objspace_each_objects(
     int (*callback)(void *start, void *end, size_t stride, void *data),

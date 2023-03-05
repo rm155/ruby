@@ -162,6 +162,14 @@ void rb_gc_mark_maybe(VALUE obj);
 void rb_gc_mark(VALUE obj);
 
 /**
+ * Calls rb_gc_mark(), but only if the current GC is a global GC.
+ *
+ * @param[out]  obj  Arbitrary Ruby object.
+ * @post        `obj` is marked, if the ongoing GC is global.
+ */
+void rb_gc_mark_if_global_gc(VALUE obj);
+
+/**
  * Maybe this  is the only  function provided for  C extensions to  control the
  * pinning of objects, so  let us describe it in detail.   These days Ruby's GC
  * is copying.  As far as an object's physical address is guaranteed unused, it
