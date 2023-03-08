@@ -2482,7 +2482,7 @@ insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int s
 
     heap_add_page(objspace, size_pool, heap, page);
     insert_into_heap_pages_sorted(objspace, page, page->start);
-    heap_pages_expand_sorted_to(objspace, heap_pages_sorted_length+1);
+    size_pool->allocatable_pages--;
     heap_allocated_pages++;
 
     struct heap_page_body *page_body = GET_PAGE_BODY(page->start);
@@ -2502,11 +2502,6 @@ static void
 transfer_size_pool(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx)
 {
     rb_objspace_t *objspace = closing_objspace;
-    size_t allocatable_pages_to_transfer = size_pools[size_pool_idx].allocatable_pages;
-
-    objspace = receiving_objspace;
-    size_pools[size_pool_idx].allocatable_pages += allocatable_pages_to_transfer;
-
     objspace = closing_objspace;
     struct heap_page *page = ccan_list_top(&SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx])->pages, struct heap_page, page_node);
     while (page) {
@@ -2522,6 +2517,22 @@ transfer_all_size_pools(rb_objspace_t *receiving_objspace, rb_objspace_t *closin
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
 	transfer_size_pool(receiving_objspace, closing_objspace, i);
     }
+}
+
+static void
+allocatable_pages_update_for_transfer(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace)
+{
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+	rb_objspace_t *objspace = closing_objspace;
+	size_t allocatable_pages_to_add = size_pools[i].allocatable_pages;
+	size_t incoming_pages = SIZE_POOL_EDEN_HEAP(&size_pools[i])->total_pages;
+
+	objspace = receiving_objspace;
+	size_pools[i].allocatable_pages += allocatable_pages_to_add;
+	size_pools[i].allocatable_pages += incoming_pages;
+    }
+    rb_objspace_t *objspace = receiving_objspace;
+    heap_pages_expand_sorted(objspace);
 }
 
 static void
@@ -2590,6 +2601,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     rb_native_mutex_unlock(&closing_ractor->sync.running_lock);
 
     update_objspace_tables(receiving_objspace, closing_objspace);
+    allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace);
     transfer_all_size_pools(receiving_objspace, closing_objspace);
     merge_deferred_heap_pages(receiving_objspace, closing_objspace);
     update_objspace_counts(receiving_objspace, closing_objspace);
