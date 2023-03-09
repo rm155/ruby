@@ -96,6 +96,7 @@ STATIC_ASSERT(sizeof_rb_classext_t, sizeof(struct RClass) + sizeof(rb_classext_t
 #define RCLASS_CONST_TBL(c) (RCLASS_EXT(c)->const_tbl)
 #define RCLASS_M_TBL(c) (RCLASS(c)->m_tbl)
 #define RCLASS_IVPTR(c) (RCLASS_EXT(c)->iv_ptr)
+#define RCLASS_TABLE_IVPTR(c) (struct rb_id_table *)(RCLASS_EXT(c)->iv_ptr)
 #define RCLASS_CALLABLE_M_TBL(c) (RCLASS_EXT(c)->callable_m_tbl)
 #define RCLASS_CC_TBL(c) (RCLASS_EXT(c)->cc_tbl)
 #define RCLASS_CVC_TBL(c) (RCLASS_EXT(c)->cvc_tbl)
@@ -148,10 +149,8 @@ static inline VALUE RCLASS_SUPER(VALUE klass);
 static inline VALUE RCLASS_SET_SUPER(VALUE klass, VALUE super);
 static inline void RCLASS_SET_INCLUDER(VALUE iclass, VALUE klass);
 
-MJIT_SYMBOL_EXPORT_BEGIN
 VALUE rb_class_inherited(VALUE, VALUE);
 VALUE rb_keyword_error_new(const char *, VALUE);
-MJIT_SYMBOL_EXPORT_END
 
 static inline rb_alloc_func_t
 RCLASS_ALLOCATOR(VALUE klass)

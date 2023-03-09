@@ -119,7 +119,7 @@
 #include "internal/thread.h"
 #include "internal/variable.h"
 #include "internal/warnings.h"
-#include "mjit.h"
+#include "rjit.h"
 #include "probes.h"
 #include "regint.h"
 #include "ruby/debug.h"
@@ -2780,6 +2780,7 @@ rb_objspace_set_event_hook(const rb_event_flag_t event)
 static void
 gc_event_hook_body(rb_execution_context_t *ec, rb_objspace_t *objspace, const rb_event_flag_t event, VALUE data)
 {
+    if (UNLIKELY(!ec->cfp)) return;
     const VALUE *pc = ec->cfp->pc;
     if (pc && VM_FRAME_RUBYFRAME_P(ec->cfp)) {
         int prev_opcode = rb_vm_insn_addr2opcode((void *)*ec->cfp->iseq->body->iseq_encoded);
@@ -3160,6 +3161,12 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
     return obj;
 }
 
+static void
+newobj_zero_slot(VALUE obj)
+{
+    memset((char *)obj + sizeof(struct RBasic), 0, rb_gc_obj_slot_size(obj) - sizeof(struct RBasic));
+}
+
 ALWAYS_INLINE(static VALUE newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, int wb_protected, size_t size_pool_idx));
 
 static inline VALUE
@@ -3190,7 +3197,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *
 #endif
         newobj_init(klass, flags, wb_protected, objspace, obj);
 
-        gc_event_hook_prep(objspace, RUBY_INTERNAL_EVENT_NEWOBJ, obj, newobj_fill(obj, 0, 0, 0));
+        gc_event_hook_prep(objspace, RUBY_INTERNAL_EVENT_NEWOBJ, obj, newobj_zero_slot(obj));
     }
     RB_VM_LOCK_LEAVE_CR_LEV(cr, &lev);
 
@@ -3495,7 +3502,7 @@ rb_imemo_new_debug(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0,
 }
 #endif
 
-MJIT_FUNC_EXPORTED VALUE
+VALUE
 rb_class_allocate_instance(VALUE klass)
 {
     return rb_class_instance_allocate_internal(klass, T_OBJECT | ROBJECT_EMBED, RGENGC_WB_PROTECTED_OBJECT);
@@ -3827,6 +3834,45 @@ obj_free_object_id(rb_objspace_t *objspace, VALUE obj)
     }
 }
 
+static bool
+rb_data_free(rb_objspace_t *objspace, VALUE obj)
+{
+    if (DATA_PTR(obj)) {
+        int free_immediately = false;
+        void (*dfree)(void *);
+        void *data = DATA_PTR(obj);
+
+        if (RTYPEDDATA_P(obj)) {
+            free_immediately = (RANY(obj)->as.typeddata.type->flags & RUBY_TYPED_FREE_IMMEDIATELY) != 0;
+            dfree = RANY(obj)->as.typeddata.type->function.dfree;
+        }
+        else {
+            dfree = RANY(obj)->as.data.dfree;
+        }
+
+        if (dfree) {
+            if (dfree == RUBY_DEFAULT_FREE) {
+                xfree(data);
+                RB_DEBUG_COUNTER_INC(obj_data_xfree);
+            }
+            else if (free_immediately) {
+                (*dfree)(data);
+                RB_DEBUG_COUNTER_INC(obj_data_imm_free);
+            }
+            else {
+                RB_DEBUG_COUNTER_INC(obj_data_zombie);
+                make_zombie(objspace, obj, dfree, data);
+                return false;
+            }
+        }
+        else {
+            RB_DEBUG_COUNTER_INC(obj_data_empty);
+        }
+    }
+
+    return true;
+}
+
 static int
 obj_free(rb_objspace_t *objspace, VALUE obj)
 {
@@ -3904,7 +3950,11 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
       case T_CLASS:
         rb_id_table_free(RCLASS_M_TBL(obj));
         cc_table_free(objspace, obj, FALSE);
-        if (RCLASS_IVPTR(obj)) {
+        if (rb_shape_obj_too_complex(obj)) {
+            RB_DEBUG_COUNTER_INC(obj_obj_too_complex);
+            rb_id_table_free(RCLASS_TABLE_IVPTR(obj));
+        }
+        else if (RCLASS_IVPTR(obj)) {
             xfree(RCLASS_IVPTR(obj));
         }
         if (RCLASS_CONST_TBL(obj)) {
@@ -4000,42 +4050,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         }
         break;
       case T_DATA:
-        if (DATA_PTR(obj)) {
-            int free_immediately = FALSE;
-            void (*dfree)(void *);
-            void *data = DATA_PTR(obj);
-
-            if (RTYPEDDATA_P(obj)) {
-                free_immediately = (RANY(obj)->as.typeddata.type->flags & RUBY_TYPED_FREE_IMMEDIATELY) != 0;
-                dfree = RANY(obj)->as.typeddata.type->function.dfree;
-                if (0 && free_immediately == 0) {
-                    /* to expose non-free-immediate T_DATA */
-                    fprintf(stderr, "not immediate -> %s\n", RANY(obj)->as.typeddata.type->wrap_struct_name);
-                }
-            }
-            else {
-                dfree = RANY(obj)->as.data.dfree;
-            }
-
-            if (dfree) {
-                if (dfree == RUBY_DEFAULT_FREE) {
-                    xfree(data);
-                    RB_DEBUG_COUNTER_INC(obj_data_xfree);
-                }
-                else if (free_immediately) {
-                    (*dfree)(data);
-                    RB_DEBUG_COUNTER_INC(obj_data_imm_free);
-                }
-                else {
-                    make_zombie(objspace, obj, dfree, data);
-                    RB_DEBUG_COUNTER_INC(obj_data_zombie);
-                    return FALSE;
-                }
-            }
-            else {
-                RB_DEBUG_COUNTER_INC(obj_data_empty);
-            }
-        }
+        if (!rb_data_free(objspace, obj)) return false;
         break;
       case T_MATCH:
         if (RANY(obj)->as.match.rmatch) {
@@ -5050,16 +5065,8 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
                 if (rb_obj_is_mutex(vp)) break;
                 if (rb_obj_is_fiber(vp)) break;
                 if (rb_obj_is_main_ractor(vp)) break;
-                if (RTYPEDDATA_P(vp)) {
-                    RDATA(p)->dfree = RANY(p)->as.typeddata.type->function.dfree;
-                }
-                RANY(p)->as.free.flags = 0;
-                if (RANY(p)->as.data.dfree == RUBY_DEFAULT_FREE) {
-                    xfree(DATA_PTR(p));
-                }
-                else if (RANY(p)->as.data.dfree) {
-                    make_zombie(objspace, vp, RANY(p)->as.data.dfree, RANY(p)->as.data.data);
-                }
+
+                rb_data_free(objspace, vp);
                 break;
               case T_FILE:
                 if (RANY(p)->as.file.fptr) {
@@ -7088,7 +7095,7 @@ stack_check(rb_execution_context_t *ec, int water_mark)
 
 #define STACKFRAME_FOR_CALL_CFUNC 2048
 
-MJIT_FUNC_EXPORTED int
+int
 rb_ec_stack_check(rb_execution_context_t *ec)
 {
     return stack_check(ec, STACKFRAME_FOR_CALL_CFUNC);
@@ -9912,7 +9919,7 @@ rb_gc_writebarrier_unprotect(VALUE obj)
 /*
  * remember `obj' if needed.
  */
-MJIT_FUNC_EXPORTED void
+void
 rb_gc_writebarrier_remember(VALUE obj)
 {
     rb_objspace_t *objspace = &rb_objspace;
@@ -13308,18 +13315,23 @@ objspace_malloc_fixup(rb_objspace_t *objspace, void *mem, size_t size)
         }                                                    \
     } while (0)
 
+static void
+check_malloc_not_in_gc(rb_objspace_t *objspace, const char *msg)
+{
+    if (UNLIKELY(malloc_during_gc_p(objspace))) {
+        dont_gc_on();
+        during_gc = false;
+        rb_bug("Cannot %s during GC", msg);
+    }
+}
+
 /* these shouldn't be called directly.
  * objspace_* functions do not check allocation size.
  */
 static void *
 objspace_xmalloc0(rb_objspace_t *objspace, size_t size)
 {
-    if (UNLIKELY(malloc_during_gc_p(objspace))) {
-        rb_warn("malloc during GC detected, this could cause crashes if it triggers another GC");
-#if RGENGC_CHECK_MODE || RUBY_DEBUG
-        rb_bug("Cannot malloc during GC");
-#endif
-    }
+    check_malloc_not_in_gc(objspace, "malloc");
 
     void *mem;
 
@@ -13338,12 +13350,7 @@ xmalloc2_size(const size_t count, const size_t elsize)
 static void *
 objspace_xrealloc(rb_objspace_t *objspace, void *ptr, size_t new_size, size_t old_size)
 {
-    if (UNLIKELY(malloc_during_gc_p(objspace))) {
-        rb_warn("realloc during GC detected, this could cause crashes if it triggers another GC");
-#if RGENGC_CHECK_MODE || RUBY_DEBUG
-        rb_bug("Cannot realloc during GC");
-#endif
-    }
+    check_malloc_not_in_gc(objspace, "realloc");
 
     void *mem;
 
@@ -14555,7 +14562,8 @@ wkmap_has_key(VALUE self, VALUE key)
  *  Removes all map entries; returns +self+.
  */
 static VALUE
-wkmap_clear(VALUE self) {
+wkmap_clear(VALUE self)
+{
     struct weakkeymap *w;
     TypedData_Get_Struct(self, struct weakkeymap, &weakkeymap_type, w);
     if (w->map) {
@@ -15619,7 +15627,7 @@ obj_info(VALUE obj)
 }
 #endif
 
-MJIT_FUNC_EXPORTED const char *
+const char *
 rb_obj_info(VALUE obj)
 {
     return obj_info(obj);
@@ -15632,7 +15640,7 @@ rb_obj_info_dump(VALUE obj)
     fprintf(stderr, "rb_obj_info_dump: %s\n", rb_raw_obj_info(buff, 0x100, obj));
 }
 
-MJIT_FUNC_EXPORTED void
+void
 rb_obj_info_dump_loc(VALUE obj, const char *file, int line, const char *func)
 {
     char buff[0x100];

@@ -44,7 +44,7 @@ rb_shape_each_shape(each_shape_callback callback, void *data)
     }
 }
 
-rb_shape_t*
+RUBY_FUNC_EXPORTED rb_shape_t*
 rb_shape_get_shape_by_id(shape_id_t shape_id)
 {
     RUBY_ASSERT(shape_id != INVALID_SHAPE_ID);
@@ -71,7 +71,7 @@ rb_rclass_shape_id(VALUE obj)
 shape_id_t rb_generic_shape_id(VALUE obj);
 #endif
 
-shape_id_t
+RUBY_FUNC_EXPORTED shape_id_t
 rb_shape_get_shape_id(VALUE obj)
 {
     if (RB_SPECIAL_CONST_P(obj)) {
@@ -172,7 +172,7 @@ get_next_shape_internal(rb_shape_t * shape, ID id, enum shape_type shape_type, b
     return res;
 }
 
-MJIT_FUNC_EXPORTED int
+int
 rb_shape_frozen_shape_p(rb_shape_t* shape)
 {
     return SHAPE_FROZEN == (enum shape_type)shape->type;
@@ -239,7 +239,7 @@ remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
             if (new_parent) {
                 bool dont_care;
                 enum ruby_value_type type = BUILTIN_TYPE(obj);
-                bool new_shape_necessary = type != T_OBJECT;
+                bool new_shape_necessary = type != T_OBJECT && type != T_CLASS && type != T_MODULE;
                 rb_shape_t * new_child = get_next_shape_internal(new_parent, shape->edge_name, shape->type, &dont_care, true, new_shape_necessary);
                 new_child->capacity = shape->capacity;
                 if (new_child->type == SHAPE_IVAR) {
@@ -316,12 +316,10 @@ rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
     }
 
     bool variation_created = false;
-    // For non T_OBJECTS, force a new shape
-    bool new_shape_necessary = BUILTIN_TYPE(obj) != T_OBJECT;
+    bool new_shape_necessary = BUILTIN_TYPE(obj) != T_OBJECT && BUILTIN_TYPE(obj) != T_CLASS && BUILTIN_TYPE(obj) != T_MODULE;
     rb_shape_t * new_shape = get_next_shape_internal(shape, id, SHAPE_IVAR, &variation_created, allow_new_shape, new_shape_necessary);
 
     if (!new_shape) {
-        RUBY_ASSERT(BUILTIN_TYPE(obj) == T_OBJECT);
         new_shape = rb_shape_get_shape_by_id(OBJ_TOO_COMPLEX_SHAPE_ID);
     }
 
@@ -334,6 +332,15 @@ rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
 
         if (variation_created) {
             RCLASS_EXT(klass)->variation_count++;
+        }
+    }
+    else if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
+        if (new_shape->next_iv_index > RCLASS_EXT(obj)->max_iv_count) {
+            RCLASS_EXT(obj)->max_iv_count = new_shape->next_iv_index;
+        }
+
+        if (variation_created) {
+            RCLASS_EXT(obj)->variation_count++;
         }
     }
 
@@ -424,7 +431,7 @@ rb_shape_alloc(ID edge_name, rb_shape_t * parent)
     return rb_shape_alloc_with_size_pool_index(edge_name, parent, parent->size_pool_index);
 }
 
-MJIT_FUNC_EXPORTED void
+void
 rb_shape_set_shape(VALUE obj, rb_shape_t* shape)
 {
     rb_shape_set_shape_id(obj, rb_shape_id(shape));
@@ -514,7 +521,7 @@ rb_shape_rebuild_shape(rb_shape_t * initial_shape, rb_shape_t * dest_shape)
     return midway_shape;
 }
 
-bool
+RUBY_FUNC_EXPORTED bool
 rb_shape_obj_too_complex(VALUE obj)
 {
     return rb_shape_get_shape_id(obj) == OBJ_TOO_COMPLEX_SHAPE_ID;
@@ -523,7 +530,6 @@ rb_shape_obj_too_complex(VALUE obj)
 void
 rb_shape_set_too_complex(VALUE obj)
 {
-    RUBY_ASSERT(BUILTIN_TYPE(obj) == T_OBJECT);
     RUBY_ASSERT(!rb_shape_obj_too_complex(obj));
     rb_shape_set_shape_id(obj, OBJ_TOO_COMPLEX_SHAPE_ID);
 }
