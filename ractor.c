@@ -1987,7 +1987,6 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     ractor_queue_setup(&r->sync.takers_queue);
     rb_native_mutex_initialize(&r->sync.lock);
     rb_native_mutex_initialize(&r->sync.running_lock);
-    rb_native_mutex_lock(&r->sync.running_lock);
 
     rb_native_cond_initialize(&r->sync.cond);
     rb_native_cond_initialize(&r->barrier_wait_cond);
@@ -2045,6 +2044,9 @@ ractor_create(rb_execution_context_t *ec, VALUE self, VALUE loc, VALUE name, VAL
     rb_thread_create_ractor(r, args, block);
 
     RB_GC_GUARD(rv);
+
+    rb_native_mutex_lock(&r->sync.running_lock);
+
     return rv;
 }
 
