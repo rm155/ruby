@@ -5221,8 +5221,11 @@ lookup_id_in_objspace(rb_objspace_t *objspace, VALUE objid)
 bool
 rb_gc_is_ptr_to_obj(void *ptr)
 {
-    rb_objspace_t *objspace = &rb_objspace;
-    return is_pointer_to_heap(objspace, ptr);
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE((VALUE)ptr);
+    rb_native_mutex_lock(&objspace->gc_lock);
+    bool success = is_pointer_to_heap(objspace, ptr);
+    rb_native_mutex_unlock(&objspace->gc_lock);
+    return success;
 }
 
 VALUE

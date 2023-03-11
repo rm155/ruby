@@ -411,6 +411,7 @@ wmap_lookup(VALUE self, VALUE key)
     if (!st_lookup(w->wmap2obj, (st_data_t)key, &data)) return Qundef;
 
     VALUE obj = (VALUE)data;
+    if (SPECIAL_CONST_P(obj)) return obj;
     if (!wmap_live_p(obj)) return Qundef;
     return obj;
 }
