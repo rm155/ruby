@@ -39,19 +39,14 @@ module RubyVM::RJIT
       INSNS.fetch(C.rb_vm_insn_decode(encoded))
     end
 
-    # @param mem_block [Integer] JIT buffer address
-    # @param mem_size  [Integer] JIT buffer size
-    def initialize(mem_block, mem_size)
+    def initialize
+      mem_size = C.rjit_opts.exec_mem_size * 1024 * 1024
+      mem_block = C.mmap(mem_size)
       @cb = CodeBlock.new(mem_block: mem_block, mem_size: mem_size / 2)
       @ocb = CodeBlock.new(mem_block: mem_block + mem_size / 2, mem_size: mem_size / 2, outlined: true)
       @exit_compiler = ExitCompiler.new
       @insn_compiler = InsnCompiler.new(@cb, @ocb, @exit_compiler)
       Invariants.initialize(@cb, @ocb, self, @exit_compiler)
-
-      @leave_exit = Assembler.new.then do |asm|
-        @exit_compiler.compile_leave_exit(asm)
-        @ocb.write(asm)
-      end
     end
 
     # Compile an ISEQ from its entry point.
@@ -144,7 +139,7 @@ module RubyVM::RJIT
     def invalidate_block(block)
       iseq = block.iseq
       # Avoid touching GCed ISEQs. We assume it won't be re-entered.
-      return if C.imemo_type(iseq) != C.imemo_iseq
+      return unless C.imemo_type_p(iseq, C.imemo_iseq)
 
       # Remove this block from the version array
       remove_block(iseq, block)
@@ -208,7 +203,7 @@ module RubyVM::RJIT
       asm.mov(SP, [CFP, C.rb_control_frame_t.offsetof(:sp)]) # rbx = cfp->sp
 
       # Setup cfp->jit_return
-      asm.mov(:rax, @leave_exit)
+      asm.mov(:rax, leave_exit)
       asm.mov([CFP, C.rb_control_frame_t.offsetof(:jit_return)], :rax)
     end
 
@@ -265,6 +260,13 @@ module RubyVM::RJIT
       set_block(iseq, block)
     end
 
+    def leave_exit
+      @leave_exit ||= Assembler.new.then do |asm|
+        @exit_compiler.compile_leave_exit(asm)
+        @ocb.write(asm)
+      end
+    end
+
     def incr_counter(name)
       if C.rjit_opts.stats
         C.rb_rjit_counters[name][0] += 1
@@ -294,7 +296,8 @@ module RubyVM::RJIT
 
     def rjit_blocks(iseq)
       # Guard against ISEQ GC at random moments
-      if C.imemo_type(iseq) != C.imemo_iseq
+
+      unless C.imemo_type_p(iseq, C.imemo_iseq)
         return Hash.new { |h, k| h[k] = {} }
       end
 

@@ -5,24 +5,16 @@ module RubyVM::RJIT # :nodoc: all
   # This `class << C` section is for calling C functions. For importing variables
   # or macros as is, please consider using tool/rjit/bindgen.rb instead.
   class << C = Object.new
-    #========================================================================================
-    #
-    # New stuff
-    #
-    def rjit_mark_writable
-      Primitive.cstmt! %{
-        extern bool rjit_mark_writable(void *mem_block, uint32_t mem_size);
-        rjit_mark_writable(rb_rjit_mem_block, RJIT_CODE_SIZE);
-        return Qnil;
-      }
+    def mmap(mem_size)
+      Primitive.cexpr! 'SIZET2NUM((size_t)rjit_reserve_addr_space(NUM2UINT(mem_size)))'
     end
 
-    def rjit_mark_executable
-      Primitive.cstmt! %{
-        extern void rjit_mark_executable(void *mem_block, uint32_t mem_size);
-        rjit_mark_executable(rb_rjit_mem_block, RJIT_CODE_SIZE);
-        return Qnil;
-      }
+    def mprotect_write(mem_block, mem_size)
+      Primitive.mprotect_write(mem_block, mem_size)
+    end
+
+    def mprotect_exec(mem_block, mem_size)
+      Primitive.mprotect_exec(mem_block, mem_size)
     end
 
     def rjit_insn_exits
@@ -259,9 +251,9 @@ module RubyVM::RJIT # :nodoc: all
       }
     end
 
-    def imemo_type(ptr)
+    def imemo_type_p(ptr, type)
       _ptr = ptr.to_i
-      Primitive.cexpr! 'UINT2NUM(imemo_type((VALUE)NUM2SIZET(_ptr)))'
+      Primitive.cexpr! 'RBOOL(imemo_type_p((VALUE)NUM2SIZET(_ptr), NUM2UINT(type)))'
     end
 
     def rb_iseq_only_optparam_p(iseq)
@@ -427,25 +419,6 @@ module RubyVM::RJIT # :nodoc: all
       }
     end
 
-    #========================================================================================
-    #
-    # Old stuff
-    #
-    def rb_hash_values(cdhash_addr)
-      Primitive.cexpr! 'rb_hash_values((VALUE)NUM2PTR(cdhash_addr))'
-    end
-
-    def has_cache_for_send(cc_ptr, insn)
-      _cc_addr = cc_ptr.to_i
-      Primitive.cstmt! %{
-        extern bool rb_vm_opt_cfunc_p(CALL_CACHE cc, int insn);
-        CALL_CACHE cc = (CALL_CACHE)NUM2PTR(_cc_addr);
-        bool has_cache = vm_cc_cme(cc) != NULL &&
-            !(vm_cc_cme(cc)->def->type == VM_METHOD_TYPE_CFUNC && rb_vm_opt_cfunc_p(cc, NUM2INT(insn)));
-        return RBOOL(has_cache);
-      }
-    end
-
     def rb_shape_get_shape_by_id(shape_id)
       _shape_id = shape_id.to_i
       shape_addr = Primitive.cexpr! 'PTR2NUM((VALUE)rb_shape_get_shape_by_id((shape_id_t)NUM2UINT(_shape_id)))'
@@ -463,11 +436,6 @@ module RubyVM::RJIT # :nodoc: all
       Primitive.cexpr! 'rb_iseq_path((rb_iseq_t *)NUM2PTR(_iseq_addr))'
     end
 
-    def rb_iseq_first_lineno(iseq)
-      _iseq_addr = iseq.to_i
-      Primitive.cexpr! 'rb_iseq_first_lineno((rb_iseq_t *)NUM2PTR(_iseq_addr))'
-    end
-
     def vm_ci_argc(ci)
       _ci_addr = ci.to_i
       Primitive.cexpr! 'UINT2NUM(vm_ci_argc((CALL_INFO)NUM2PTR(_ci_addr)))'
@@ -481,33 +449,6 @@ module RubyVM::RJIT # :nodoc: all
     def vm_ci_mid(ci)
       _ci_addr = ci.to_i
       Primitive.cexpr! 'SIZET2NUM((size_t)vm_ci_mid((CALL_INFO)NUM2PTR(_ci_addr)))'
-    end
-
-    def rb_splat_or_kwargs_p(ci)
-      _ci_addr = ci.to_i
-      Primitive.cstmt! %{
-        extern bool rb_splat_or_kwargs_p(const struct rb_callinfo *restrict ci);
-        return RBOOL(rb_splat_or_kwargs_p((CALL_INFO)NUM2PTR(_ci_addr)));
-      }
-    end
-
-    # Returns true if iseq can use fastpath for setup, otherwise NULL. This becomes true in the same condition
-    # as CC_SET_FASTPATH (in vm_callee_setup_arg) is called from vm_call_iseq_setup.
-    def fastpath_applied_iseq_p(ci_ptr, cc_ptr, iseq_ptr)
-      _ci_addr = ci_ptr.to_i
-      _cc_addr = cc_ptr.to_i
-      _iseq_addr = iseq_ptr.to_i
-      Primitive.cstmt! %q{
-        CALL_INFO ci = (CALL_INFO)NUM2PTR(_ci_addr);
-        CALL_CACHE cc = (CALL_CACHE)NUM2PTR(_cc_addr);
-        const rb_iseq_t *iseq = (rb_iseq_t *)NUM2PTR(_iseq_addr);
-
-        bool result = iseq != NULL
-            && !(vm_ci_flag(ci) & VM_CALL_KW_SPLAT) && rb_simple_iseq_p(iseq) // Top of vm_callee_setup_arg. In this case, opt_pc is 0.
-            && vm_ci_argc(ci) == (unsigned int)ISEQ_BODY(iseq)->param.lead_num // exclude argument_arity_error (assumption: `calling->argc == ci->orig_argc` in send insns)
-            && vm_call_iseq_optimizable_p(ci, cc); // CC_SET_FASTPATH condition
-        return RBOOL(result);
-      }
     end
 
     def rjit_opts
@@ -528,22 +469,31 @@ module RubyVM::RJIT # :nodoc: all
       Primitive.cexpr! 'INT2NUM(rb_vm_insn_addr2opcode((void *)NUM2PTR(encoded)))'
     end
 
-    # Convert insn BINs to encoded VM pointers. This one is not used by the compiler, but useful for debugging.
-    def rb_vm_insn_encode(bin)
-      Primitive.cexpr! 'PTR2NUM((VALUE)rb_vm_get_insns_address_table()[NUM2INT(bin)])'
-    end
-
-    def insn_may_depend_on_sp_or_pc(insn, opes)
-      _opes_addr = opes.to_i
-      Primitive.cexpr! 'RBOOL(insn_may_depend_on_sp_or_pc(NUM2INT(insn), (VALUE *)NUM2PTR(_opes_addr)))'
-    end
-
     # Convert Integer VALUE to an actual Ruby object
     def to_ruby(value)
       Primitive.cexpr! '(VALUE)NUM2PTR(value)'
     end
 
-    # Convert RubyVM::InstructionSequence to C.rb_iseq_t. Not used by the compiler, but useful for debugging.
+    def HAVE_LIBCAPSTONE
+      Primitive.cstmt! %{
+        #ifdef HAVE_LIBCAPSTONE
+          return Qtrue;
+        #else
+          return Qfalse;
+        #endif
+      }
+    end
+
+    #
+    # Utilities: Not used by RJIT, but useful for debugging
+    #
+
+    # Convert insn BINs to encoded VM pointers.
+    def rb_vm_insn_encode(bin)
+      Primitive.cexpr! 'PTR2NUM((VALUE)rb_vm_get_insns_address_table()[NUM2INT(bin)])'
+    end
+
+    # Convert RubyVM::InstructionSequence to C.rb_iseq_t.
     def rb_iseqw_to_iseq(iseqw)
       iseq_addr = Primitive.cexpr! 'PTR2NUM((VALUE)rb_iseqw_to_iseq(iseqw))'
       rb_iseq_t.new(iseq_addr)
@@ -554,10 +504,6 @@ module RubyVM::RJIT # :nodoc: all
 
   def C.USE_LAZY_LOAD
     Primitive.cexpr! %q{ RBOOL(USE_LAZY_LOAD != 0) }
-  end
-
-  def C.NOT_COMPILED_STACK_SIZE
-    Primitive.cexpr! %q{ INT2NUM(NOT_COMPILED_STACK_SIZE) }
   end
 
   def C.VM_ENV_DATA_INDEX_ME_CREF
@@ -1049,39 +995,6 @@ module RubyVM::RJIT # :nodoc: all
     @attr_index_t ||= CType::Immediate.parse("uint32_t")
   end
 
-  def C.compile_branch
-    @compile_branch ||= CType::Struct.new(
-      "compile_branch", Primitive.cexpr!("SIZEOF(struct compile_branch)"),
-      stack_size: [CType::Immediate.parse("unsigned int"), Primitive.cexpr!("OFFSETOF((*((struct compile_branch *)NULL)), stack_size)")],
-      finish_p: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct compile_branch *)NULL)), finish_p)")],
-    )
-  end
-
-  def C.compile_status
-    @compile_status ||= CType::Struct.new(
-      "compile_status", Primitive.cexpr!("SIZEOF(struct compile_status)"),
-      success: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), success)")],
-      stack_size_for_pos: [CType::Pointer.new { CType::Immediate.parse("int") }, Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), stack_size_for_pos)")],
-      local_stack_p: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), local_stack_p)")],
-      cc_entries_index: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), cc_entries_index)")],
-      compiled_iseq: [CType::Pointer.new { self.rb_iseq_constant_body }, Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), compiled_iseq)")],
-      compiled_id: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), compiled_id)")],
-      compile_info: [CType::Pointer.new { self.rb_rjit_compile_info }, Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), compile_info)")],
-      inlined_iseqs: [CType::Pointer.new { CType::Pointer.new { self.rb_iseq_constant_body } }, Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), inlined_iseqs)")],
-      inline_context: [self.inlined_call_context, Primitive.cexpr!("OFFSETOF((*((struct compile_status *)NULL)), inline_context)")],
-    )
-  end
-
-  def C.inlined_call_context
-    @inlined_call_context ||= CType::Struct.new(
-      "inlined_call_context", Primitive.cexpr!("SIZEOF(struct inlined_call_context)"),
-      orig_argc: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct inlined_call_context *)NULL)), orig_argc)")],
-      me: [self.VALUE, Primitive.cexpr!("OFFSETOF((*((struct inlined_call_context *)NULL)), me)")],
-      param_size: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct inlined_call_context *)NULL)), param_size)")],
-      local_size: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct inlined_call_context *)NULL)), local_size)")],
-    )
-  end
-
   def C.iseq_inline_constant_cache
     @iseq_inline_constant_cache ||= CType::Struct.new(
       "iseq_inline_constant_cache", Primitive.cexpr!("SIZEOF(struct iseq_inline_constant_cache)"),
@@ -1483,17 +1396,6 @@ module RubyVM::RJIT # :nodoc: all
     )
   end
 
-  def C.rb_rjit_compile_info
-    @rb_rjit_compile_info ||= CType::Struct.new(
-      "rb_rjit_compile_info", Primitive.cexpr!("SIZEOF(struct rb_rjit_compile_info)"),
-      disable_ivar_cache: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_compile_info *)NULL)), disable_ivar_cache)")],
-      disable_exivar_cache: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_compile_info *)NULL)), disable_exivar_cache)")],
-      disable_send_cache: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_compile_info *)NULL)), disable_send_cache)")],
-      disable_inlining: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_compile_info *)NULL)), disable_inlining)")],
-      disable_const_cache: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_compile_info *)NULL)), disable_const_cache)")],
-    )
-  end
-
   def C.rb_rjit_runtime_counters
     @rb_rjit_runtime_counters ||= CType::Struct.new(
       "rb_rjit_runtime_counters", Primitive.cexpr!("SIZEOF(struct rb_rjit_runtime_counters)"),
@@ -1581,22 +1483,6 @@ module RubyVM::RJIT # :nodoc: all
     )
   end
 
-  def C.rb_rjit_unit
-    @rb_rjit_unit ||= CType::Struct.new(
-      "rb_rjit_unit", Primitive.cexpr!("SIZEOF(struct rb_rjit_unit)"),
-      unode: [self.ccan_list_node, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), unode)")],
-      id: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), id)")],
-      type: [self.rb_rjit_unit_type, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), type)")],
-      iseq: [CType::Pointer.new { self.rb_iseq_t }, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), iseq)")],
-      used_code_p: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), used_code_p)")],
-      compile_info: [self.rb_rjit_compile_info, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), compile_info)")],
-      cc_entries: [CType::Pointer.new { CType::Pointer.new { self.rb_callcache } }, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), cc_entries)")],
-      cc_entries_size: [CType::Immediate.parse("unsigned int"), Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), cc_entries_size)")],
-      handle: [CType::Pointer.new { CType::Immediate.parse("void") }, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), handle)")],
-      units: [self.rb_rjit_unit_list, Primitive.cexpr!("OFFSETOF((*((struct rb_rjit_unit *)NULL)), units)")],
-    )
-  end
-
   def C.rb_serial_t
     @rb_serial_t ||= CType::Immediate.parse("unsigned long long")
   end
@@ -1673,18 +1559,11 @@ module RubyVM::RJIT # :nodoc: all
     @rjit_options ||= CType::Struct.new(
       "rjit_options", Primitive.cexpr!("SIZEOF(struct rjit_options)"),
       on: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), on)")],
-      save_temps: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), save_temps)")],
-      warnings: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), warnings)")],
-      debug: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), debug)")],
-      debug_flags: [CType::Pointer.new { CType::Immediate.parse("char") }, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), debug_flags)")],
-      wait: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), wait)")],
       call_threshold: [CType::Immediate.parse("unsigned int"), Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), call_threshold)")],
+      exec_mem_size: [CType::Immediate.parse("unsigned int"), Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), exec_mem_size)")],
       stats: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), stats)")],
-      verbose: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), verbose)")],
-      max_cache_size: [CType::Immediate.parse("int"), Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), max_cache_size)")],
-      pause: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), pause)")],
-      custom: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), custom)")],
       dump_disasm: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), dump_disasm)")],
+      pause: [self._Bool, Primitive.cexpr!("OFFSETOF((*((struct rjit_options *)NULL)), pause)")],
     )
   end
 
@@ -1698,10 +1577,6 @@ module RubyVM::RJIT # :nodoc: all
 
   def C.rb_id_table
     CType::Stub.new(:rb_id_table)
-  end
-
-  def C._Bool
-    CType::Bool.new
   end
 
   def C.vm_call_handler
@@ -1768,6 +1643,10 @@ module RubyVM::RJIT # :nodoc: all
     CType::Stub.new(:rb_snum_t)
   end
 
+  def C._Bool
+    CType::Bool.new
+  end
+
   def C.iseq_bits_t
     CType::Stub.new(:iseq_bits_t)
   end
@@ -1798,14 +1677,6 @@ module RubyVM::RJIT # :nodoc: all
 
   def C.ccan_list_node
     CType::Stub.new(:ccan_list_node)
-  end
-
-  def C.rb_rjit_unit_type
-    CType::Stub.new(:rb_rjit_unit_type)
-  end
-
-  def C.rb_rjit_unit_list
-    CType::Stub.new(:rb_rjit_unit_list)
   end
 
   def C.rb_ractor_t
