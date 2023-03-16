@@ -469,9 +469,6 @@ int ruby_rgengc_debug;
 #ifndef GC_PROFILE_DETAIL_MEMORY
 #define GC_PROFILE_DETAIL_MEMORY 0
 #endif
-#ifndef GC_ENABLE_INCREMENTAL_MARK
-#define GC_ENABLE_INCREMENTAL_MARK USE_RINCGC
-#endif
 #ifndef GC_ENABLE_LAZY_SWEEP
 #define GC_ENABLE_LAZY_SWEEP   1
 #endif
@@ -695,9 +692,7 @@ typedef struct rb_heap_struct {
     struct heap_page *sweeping_page; /* iterator for .pages */
     struct heap_page *compact_cursor;
     uintptr_t compact_cursor_index;
-#if GC_ENABLE_INCREMENTAL_MARK
     struct heap_page *pooled_pages;
-#endif
     size_t total_pages;      /* total page count in a heap */
     size_t total_slots;      /* total slot count (about total_pages * HEAP_PAGE_OBJ_LIMIT) */
 } rb_heap_t;
@@ -764,9 +759,7 @@ typedef struct rb_objspace {
         unsigned int during_minor_gc : 1;
         unsigned int during_global_gc : 1;
 	unsigned int marking_unsorted_root : 1; //TODO: Remove once all roots are sorted
-#if GC_ENABLE_INCREMENTAL_MARK
         unsigned int during_incremental_marking : 1;
-#endif
         unsigned int measure_gc : 1;
     } flags;
 
@@ -879,12 +872,10 @@ typedef struct rb_objspace {
         size_t total_moved;
     } rcompactor;
 
-#if GC_ENABLE_INCREMENTAL_MARK
     struct {
         size_t pooled_slots;
         size_t step_slots;
     } rincgc;
-#endif
 
     st_table *id_to_obj_tbl;
     st_table *obj_to_id_tbl;
@@ -973,7 +964,7 @@ enum {
 #define HEAP_PAGE_ALIGN (1 << HEAP_PAGE_ALIGN_LOG)
 #define HEAP_PAGE_SIZE HEAP_PAGE_ALIGN
 
-#if GC_ENABLE_INCREMENTAL_MARK && !defined(INCREMENTAL_MARK_STEP_ALLOCATIONS)
+#if !defined(INCREMENTAL_MARK_STEP_ALLOCATIONS)
 # define INCREMENTAL_MARK_STEP_ALLOCATIONS 500
 #endif
 
@@ -1269,19 +1260,9 @@ total_freed_pages(rb_objspace_t *objspace)
 #define is_marking(objspace)             (gc_mode(objspace) == gc_mode_marking)
 #define is_sweeping(objspace)            (gc_mode(objspace) == gc_mode_sweeping)
 #define is_full_marking(objspace)        ((objspace)->flags.during_minor_gc == FALSE)
-#if GC_ENABLE_INCREMENTAL_MARK
 #define is_incremental_marking(objspace) ((objspace)->flags.during_incremental_marking != FALSE)
-#else
-#define is_incremental_marking(objspace) FALSE
-#endif
-#if GC_ENABLE_INCREMENTAL_MARK
 #define will_be_incremental_marking(objspace) ((objspace)->rgengc.need_major_gc != GPR_FLAG_NONE)
-#else
-#define will_be_incremental_marking(objspace) FALSE
-#endif
-#if GC_ENABLE_INCREMENTAL_MARK
 #define GC_INCREMENTAL_SWEEP_SLOT_COUNT 2048
-#endif
 #define is_lazy_sweeping(objspace)           (GC_ENABLE_LAZY_SWEEP && has_sweeping_pages(objspace))
 
 #if SIZEOF_LONG == SIZEOF_VOIDP
@@ -1464,7 +1445,7 @@ tick(void)
     return ((unsigned long long)lo)|( ((unsigned long long)hi)<<32);
 }
 
-#elif defined(__powerpc64__) && GCC_VERSION_SINCE(4,8,0)
+#elif defined(__powerpc64__) && (GCC_VERSION_SINCE(4,8,0) || defined(__clang__))
 typedef unsigned long long tick_t;
 #define PRItick "llu"
 
@@ -2145,7 +2126,6 @@ heap_add_freepage(rb_heap_t *heap, struct heap_page *page)
     asan_lock_freelist(page);
 }
 
-#if GC_ENABLE_INCREMENTAL_MARK
 static inline void
 heap_add_poolpage(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
 {
@@ -2159,7 +2139,6 @@ heap_add_poolpage(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *pa
 
     asan_lock_freelist(page);
 }
-#endif
 
 static void
 heap_unlink_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
@@ -2960,7 +2939,6 @@ ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *ca
     rb_ractor_newobj_size_pool_cache_t *size_pool_cache = &cache->size_pool_caches[size_pool_idx];
     RVALUE *p = size_pool_cache->freelist;
 
-#if GC_ENABLE_INCREMENTAL_MARK
     if (is_incremental_marking(objspace)) {
         // Not allowed to allocate without running an incremental marking step
         if (cache->incremental_mark_step_allocated_slots >= INCREMENTAL_MARK_STEP_ALLOCATIONS) {
@@ -2971,7 +2949,6 @@ ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *ca
             cache->incremental_mark_step_allocated_slots++;
         }
     }
-#endif
 
     if (p) {
         VALUE obj = (VALUE)p;
@@ -3128,7 +3105,6 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
         {
             ASSERT_vm_locking();
 
-#if GC_ENABLE_INCREMENTAL_MARK
             if (is_incremental_marking(objspace)) {
                 gc_continue(objspace, size_pool, heap);
                 cache->incremental_mark_step_allocated_slots = 0;
@@ -3136,7 +3112,6 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
                 // Retry allocation after resetting incremental_mark_step_allocated_slots
                 obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
             }
-#endif
 
             if (obj == Qfalse) {
                 // Get next free page (possibly running GC)
@@ -6414,9 +6389,7 @@ gc_sweep_start_heap(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     heap->sweeping_page = ccan_list_top(&heap->pages, struct heap_page, page_node);
     heap->free_pages = NULL;
-#if GC_ENABLE_INCREMENTAL_MARK
     heap->pooled_pages = NULL;
-#endif
     if (!objspace->flags.immediate_sweep) {
         struct heap_page *page = NULL;
 
@@ -6433,10 +6406,7 @@ static void
 gc_sweep_start(rb_objspace_t *objspace)
 {
     gc_mode_transition(objspace, gc_mode_sweeping);
-
-#if GC_ENABLE_INCREMENTAL_MARK
     objspace->rincgc.pooled_slots = 0;
-#endif
 
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
         rb_size_pool_t *size_pool = &size_pools[i];
@@ -6543,7 +6513,6 @@ gc_sweep_finish(rb_objspace_t *objspace)
         size_pool->freed_slots = 0;
         size_pool->empty_slots = 0;
 
-#if GC_ENABLE_INCREMENTAL_MARK
         if (!will_be_incremental_marking(objspace)) {
             rb_heap_t *eden_heap = SIZE_POOL_EDEN_HEAP(size_pool);
             struct heap_page *end_page = eden_heap->free_pages;
@@ -6557,7 +6526,6 @@ gc_sweep_finish(rb_objspace_t *objspace)
             eden_heap->pooled_pages = NULL;
             objspace->rincgc.pooled_slots = 0;
         }
-#endif
 #endif
     }
     heap_pages_expand_sorted(objspace);
@@ -6575,8 +6543,6 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *hea
 {
     struct heap_page *sweep_page = heap->sweeping_page;
     int unlink_limit = GC_SWEEP_PAGES_FREEABLE_PER_STEP;
-
-#if GC_ENABLE_INCREMENTAL_MARK
     int swept_slots = 0;
 #if USE_RVARGC
     bool need_pool = TRUE;
@@ -6585,9 +6551,6 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *hea
 #endif
 
     gc_report(2, objspace, "gc_sweep_step (need_pool: %d)\n", need_pool);
-#else
-    gc_report(2, objspace, "gc_sweep_step\n");
-#endif
 
     if (sweep_page == NULL) return FALSE;
 
@@ -6624,7 +6587,6 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *hea
             size_pool->empty_slots += ctx.empty_slots;
 #endif
 
-#if GC_ENABLE_INCREMENTAL_MARK
             if (need_pool) {
                 heap_add_poolpage(objspace, heap, sweep_page);
                 need_pool = FALSE;
@@ -6636,10 +6598,6 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *hea
                     break;
                 }
             }
-#else
-            heap_add_freepage(heap, sweep_page);
-            break;
-#endif
         }
         else {
             sweep_page->free_next = NULL;
@@ -7689,11 +7647,9 @@ gc_grey(rb_objspace_t *objspace, VALUE obj)
     if (RVALUE_MARKING(obj) == TRUE) rb_bug("gc_grey: %s is marking/remembered.", obj_info(obj));
 #endif
 
-#if GC_ENABLE_INCREMENTAL_MARK
     if (is_incremental_marking(objspace)) {
         MARK_IN_BITMAP(GET_HEAP_MARKING_BITS(obj), obj);
     }
-#endif
 
     push_mark_stack(&objspace->mark_stack, obj);
 }
@@ -8149,10 +8105,8 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
 {
     mark_stack_t *mstack = &objspace->mark_stack;
     VALUE obj;
-#if GC_ENABLE_INCREMENTAL_MARK
     size_t marked_slots_at_the_beginning = objspace->marked_slots;
     size_t popped_count = 0;
-#endif
 
     while (pop_mark_stack(mstack, &obj)) {
         if (UNDEF_P(obj)) continue; /* skip */
@@ -8162,7 +8116,6 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
         }
         gc_mark_children(objspace, obj);
 
-#if GC_ENABLE_INCREMENTAL_MARK
         if (incremental) {
             if (RGENGC_CHECK_MODE && !RVALUE_MARKING(obj)) {
                 rb_bug("gc_mark_stacked_objects: incremental, but marking bit is 0");
@@ -8177,7 +8130,6 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
         else {
             /* just ignore marking bits */
         }
-#endif
     }
 
     if (RGENGC_CHECK_MODE >= 3) gc_verify_internal_consistency(objspace);
@@ -8962,7 +8914,6 @@ gc_verify_transient_heap_internal_consistency(VALUE dmy)
 static void
 heap_move_pooled_pages_to_free_pages(rb_heap_t *heap)
 {
-#if GC_ENABLE_INCREMENTAL_MARK
     if (heap->pooled_pages) {
         if (heap->free_pages) {
             struct heap_page *free_pages_tail = heap->free_pages;
@@ -8977,7 +8928,6 @@ heap_move_pooled_pages_to_free_pages(rb_heap_t *heap)
 
         heap->pooled_pages = NULL;
     }
-#endif
 }
 
 /* marks */
@@ -8990,7 +8940,6 @@ gc_marks_start(rb_objspace_t *objspace, int full_mark)
     gc_mode_transition(objspace, gc_mode_marking);
 
     if (full_mark) {
-#if GC_ENABLE_INCREMENTAL_MARK
         size_t incremental_marking_steps = (objspace->rincgc.pooled_slots / INCREMENTAL_MARK_STEP_ALLOCATIONS) + 1;
         objspace->rincgc.step_slots = (objspace->marked_slots * 2) / incremental_marking_steps;
 
@@ -8998,7 +8947,6 @@ gc_marks_start(rb_objspace_t *objspace, int full_mark)
                        "objspace->rincgc.pooled_page_num: %"PRIdSIZE", "
                        "objspace->rincgc.step_slots: %"PRIdSIZE", \n",
                        objspace->marked_slots, objspace->rincgc.pooled_slots, objspace->rincgc.step_slots);
-#endif
         objspace->flags.during_minor_gc = FALSE;
         if (ruby_enable_autocompact) {
             objspace->flags.during_compacting |= TRUE;
@@ -9033,7 +8981,6 @@ gc_marks_start(rb_objspace_t *objspace, int full_mark)
               full_mark ? "full" : "minor", mark_stack_size(&objspace->mark_stack));
 }
 
-#if GC_ENABLE_INCREMENTAL_MARK
 static inline void
 gc_marks_wb_unprotected_objects_plane(rb_objspace_t *objspace, uintptr_t p, bits_t bits)
 {
@@ -9077,12 +9024,10 @@ gc_marks_wb_unprotected_objects(rb_objspace_t *objspace, rb_heap_t *heap)
 
     gc_mark_stacked_objects_all(objspace);
 }
-#endif
 
 static void
 gc_marks_finish(rb_objspace_t *objspace)
 {
-#if GC_ENABLE_INCREMENTAL_MARK
     /* finish incremental GC */
     if (is_incremental_marking(objspace)) {
         if (RGENGC_CHECK_MODE && is_mark_stack_empty(&objspace->mark_stack) == 0) {
@@ -9105,7 +9050,6 @@ gc_marks_finish(rb_objspace_t *objspace)
             gc_marks_wb_unprotected_objects(objspace, SIZE_POOL_EDEN_HEAP(&size_pools[i]));
         }
     }
-#endif /* GC_ENABLE_INCREMENTAL_MARK */
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
@@ -9427,11 +9371,9 @@ gc_marks_rest(rb_objspace_t *objspace)
 {
     gc_report(1, objspace, "gc_marks_rest\n");
 
-#if GC_ENABLE_INCREMENTAL_MARK
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
         SIZE_POOL_EDEN_HEAP(&size_pools[i])->pooled_pages = NULL;
     }
-#endif
 
     if (is_incremental_marking(objspace)) {
         while (gc_mark_stacked_objects_incremental(objspace, INT_MAX) == FALSE);
@@ -9443,7 +9385,6 @@ gc_marks_rest(rb_objspace_t *objspace)
     gc_marks_finish(objspace);
 }
 
-#if GC_ENABLE_INCREMENTAL_MARK
 static bool
 gc_marks_step(rb_objspace_t *objspace, size_t slots)
 {
@@ -9458,7 +9399,6 @@ gc_marks_step(rb_objspace_t *objspace, size_t slots)
 
     return marking_finished;
 }
-#endif
 
 static bool
 gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
@@ -9468,7 +9408,6 @@ gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t 
 
     gc_marking_enter(objspace);
 
-#if GC_ENABLE_INCREMENTAL_MARK
     if (heap->free_pages) {
         gc_report(2, objspace, "gc_marks_continue: has pooled pages");
 
@@ -9479,7 +9418,6 @@ gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t 
                   mark_stack_size(&objspace->mark_stack));
         gc_marks_rest(objspace);
     }
-#endif
 
     gc_marking_exit(objspace);
 
@@ -9788,7 +9726,6 @@ gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
     check_rvalue_consistency(b);
 }
 
-#if GC_ENABLE_INCREMENTAL_MARK
 static void
 gc_mark_from(rb_objspace_t *objspace, VALUE obj, VALUE parent)
 {
@@ -9833,9 +9770,6 @@ gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t *objspace)
         }
     }
 }
-#else
-#define gc_writebarrier_incremental(a, b, objspace)
-#endif
 
 void
 rb_gc_writebarrier(VALUE a, VALUE b)
@@ -9999,9 +9933,7 @@ rb_obj_gc_flags(VALUE obj, ID* flags, size_t max)
 void
 rb_gc_ractor_newobj_cache_clear(rb_ractor_newobj_cache_t *newobj_cache)
 {
-#if GC_ENABLE_INCREMENTAL_MARK
     newobj_cache->incremental_mark_step_allocated_slots = 0;
-#endif
 
     for (size_t size_pool_idx = 0; size_pool_idx < SIZE_POOL_COUNT; size_pool_idx++) {
         rb_ractor_newobj_size_pool_cache_t *cache = &newobj_cache->size_pool_caches[size_pool_idx];
@@ -10340,14 +10272,12 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
         reason |= GPR_FLAG_MAJOR_BY_FORCE; /* GC by CAPI, METHOD, and so on. */
     }
 
-#if GC_ENABLE_INCREMENTAL_MARK
-    if (!GC_ENABLE_INCREMENTAL_MARK || objspace->flags.dont_incremental || *immediate_mark) {
+    if (objspace->flags.dont_incremental || *immediate_mark) {
         objspace->flags.during_incremental_marking = FALSE;
     }
     else {
         objspace->flags.during_incremental_marking = *do_full_mark;
     }
-#endif
 
     if (!GC_ENABLE_LAZY_SWEEP || objspace->flags.dont_incremental) {
         objspace->flags.immediate_sweep = TRUE;
@@ -10396,9 +10326,7 @@ static int
 gc_start(rb_objspace_t *objspace, unsigned int reason)
 {
     unsigned int do_full_mark = !!(reason & GPR_FLAG_FULL_MARK);
-#if GC_ENABLE_INCREMENTAL_MARK
     unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
-#endif
     unsigned int global_gc = !!(reason & GPR_FLAG_GLOBAL);
     if (global_gc) {
 	do_full_mark = 1;
@@ -10514,9 +10442,7 @@ gc_current_status_fill(rb_objspace_t *objspace, char *buff)
     if (is_marking(objspace)) {
         buff[i++] = 'M';
         if (is_full_marking(objspace))        buff[i++] = 'F';
-#if GC_ENABLE_INCREMENTAL_MARK
         if (is_incremental_marking(objspace)) buff[i++] = 'I';
-#endif
     }
     else if (is_sweeping(objspace)) {
         buff[i++] = 'S';
