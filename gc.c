@@ -736,8 +736,6 @@ typedef struct rb_global_space {
     rb_nativethread_lock_t next_object_id_lock;
     st_table *local_gc_exemption_tbl; //TODO: Remove once all the cases are handled individually
     rb_nativethread_lock_t exemption_tbl_lock;
-    rb_nativethread_lock_t exemption_tbl_counter_lock;
-    int exemption_tbl_counter;
     st_table *external_class_tbl;
     rb_nativethread_lock_t external_class_tbl_lock;
 } rb_global_space_t;
@@ -4319,9 +4317,7 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->id_search_lock);
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->exemption_tbl_lock);
-    rb_nativethread_lock_initialize(&global_space->exemption_tbl_counter_lock);
     rb_nativethread_lock_initialize(&global_space->external_class_tbl_lock);
-    global_space->exemption_tbl_counter = 0;
     return global_space;
 }
 
@@ -4337,7 +4333,6 @@ rb_global_space_free(rb_global_space_t *global_space)
 	st_free_table(global_space->external_class_tbl);
     }
     rb_nativethread_lock_destroy(&global_space->exemption_tbl_lock);
-    rb_nativethread_lock_destroy(&global_space->exemption_tbl_counter_lock);
     rb_nativethread_lock_destroy(&global_space->external_class_tbl_lock);
 }
 
@@ -8346,23 +8341,13 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	{
 
 	    if(during_gc) {
-		rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
-		global_space->exemption_tbl_counter++;
-		if (global_space->exemption_tbl_counter == 1) {
-		    rb_native_mutex_lock(&global_space->exemption_tbl_lock);
-		}
-		rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
+		rb_native_mutex_lock(&global_space->exemption_tbl_lock);
 	    }
 
 	    mark_set_no_pin(objspace, global_space->local_gc_exemption_tbl);
 
 	    if(during_gc) {
-		rb_native_mutex_lock(&global_space->exemption_tbl_counter_lock);
-		global_space->exemption_tbl_counter--;
-		if (global_space->exemption_tbl_counter == 0) {
-		    rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
-		}
-		rb_native_mutex_unlock(&global_space->exemption_tbl_counter_lock);
+		rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
 	    }
 
 	}
