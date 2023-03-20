@@ -1900,9 +1900,9 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
     VM_ASSERT(vm->ractor.cnt > 1);
     VM_ASSERT(cr->threads.cnt == 1);
 
-    rb_native_mutex_lock(&vm->global_gc_status_lock);
     RB_VM_LOCK();
     {
+	rb_native_mutex_lock(&vm->global_gc_status_lock);
         RUBY_DEBUG_LOG("ractor.cnt:%u-- terminate_waiting:%d",
                        vm->ractor.cnt,  vm->ractor.sync.terminate_waiting);
 
@@ -1918,9 +1918,9 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         rb_gc_ractor_newobj_cache_clear(&cr->newobj_cache);
 
         ractor_status_set(cr, ractor_terminated);
+	rb_native_mutex_unlock(&vm->global_gc_status_lock);
     }
     RB_VM_UNLOCK();
-    rb_native_mutex_unlock(&vm->global_gc_status_lock);
 }
 
 static VALUE
