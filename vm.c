@@ -2889,7 +2889,6 @@ ruby_vm_destruct(rb_vm_t *vm)
         if (objspace) {
             rb_objspace_free(objspace);
         }
-	rb_native_mutex_destroy(&vm->global_gc_status_lock);
         rb_native_mutex_destroy(&vm->workqueue_lock);
         /* after freeing objspace, you *can't* use ruby_xfree() */
         ruby_mimfree(vm);
@@ -4011,7 +4010,7 @@ Init_BareVM(void)
 
     vm->global_space = rb_global_space_init();
     vm->objspace = rb_objspace_alloc();
-    vm->global_gc_count = 0;
+    vm->global_gc_underway = false;
 
     ruby_current_vm_ptr = vm;
     vm->negative_cme_table = rb_id_table_create(16);
@@ -4029,7 +4028,8 @@ Init_BareVM(void)
     ruby_thread_init_stack(th);
 
     // setup ractor system
-    rb_native_mutex_initialize(&vm->global_gc_status_lock);
+    rb_native_mutex_initialize(&vm->ractor.ractor_set_lock);
+    rb_native_mutex_initialize(&vm->gc_waiter_cnt_lock);
     rb_native_mutex_initialize(&vm->ractor.sync.lock);
     rb_native_cond_initialize(&vm->ractor.sync.barrier_cond);
     rb_native_cond_initialize(&vm->ractor.sync.terminate_cond);

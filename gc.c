@@ -733,6 +733,8 @@ typedef struct rb_global_space {
     rb_nativethread_lock_t exemption_tbl_lock;
     st_table *external_class_tbl;
     rb_nativethread_lock_t external_class_tbl_lock;
+    st_table *absorbed_thread_tbl;
+    rb_nativethread_lock_t absorbed_thread_tbl_lock;
 } rb_global_space_t;
 
 typedef struct rb_objspace {
@@ -890,11 +892,12 @@ typedef struct rb_objspace {
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
 
+    rb_nativethread_lock_t local_gc_lock;
+    int local_gc_level;
+    bool running_global_gc;
+
     rb_ractor_t *alloc_target_ractor;
     struct rb_objspace *global_gc_current_target;
-
-    rb_nativethread_lock_t gc_lock;
-    int gc_lock_level; 
 
     struct rb_objspace **objspace_ptr;
 } rb_objspace_t;
@@ -903,11 +906,11 @@ static rb_objspace_t *
 current_ractor_objspace(rb_vm_t *vm)
 {
     rb_objspace_t *objspace;
-    if (vm->ractor.cnt <= 1) {
-	objspace = vm->objspace;
+    if (vm->multi_objspace) {
+	objspace = GET_RACTOR()->local_objspace;
     }
     else {
-	objspace = GET_RACTOR()->local_objspace;
+	objspace = vm->objspace;
     }
     if(objspace->global_gc_current_target) {
 	objspace = objspace->global_gc_current_target;
@@ -1321,6 +1324,46 @@ enum gc_enter_event {
     gc_enter_event_finalizer,
     gc_enter_event_rb_memerror,
 };
+
+static void lock_local_gc(rb_objspace_t *objspace);
+static void unlock_local_gc(rb_objspace_t *objspace);
+static void acquire_local_gc_locks(rb_vm_t *vm);
+static void release_local_gc_locks(rb_vm_t *vm);
+
+#define LOCAL_GC_BEGIN(objspace) \
+{ \
+    if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
+	if (objspace->local_gc_level == 0) { \
+	    lock_local_gc(objspace); \
+	} \
+	objspace->local_gc_level++; \
+    }
+
+#define LOCAL_GC_END(objspace) \
+    if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
+	objspace->local_gc_level--; \
+	if (objspace->local_gc_level == 0) { \
+	    unlock_local_gc(objspace); \
+	} \
+    } \
+}
+
+#define GLOBAL_GC_BEGIN(vm, objspace) \
+{ \
+    lock_ractor_set(); \
+    acquire_local_gc_locks(vm); \
+    objspace->running_global_gc = true; \
+    vm->global_gc_underway = true; \
+    RB_VM_LOCK_ENTER();
+
+#define GLOBAL_GC_END(vm, objspace) \
+    RB_VM_LOCK_LEAVE(); \
+    objspace->running_global_gc = false; \
+    vm->global_gc_underway = false; \
+    release_local_gc_locks(vm); \
+    unlock_ractor_set(); \
+}
+
 
 static inline void gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier);
 static inline void gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
@@ -2007,7 +2050,7 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
 
-    rb_nativethread_lock_destroy(&objspace->gc_lock);
+    rb_nativethread_lock_destroy(&objspace->local_gc_lock);
 
     st_free_table(objspace->shareable_tbl);
 
@@ -2423,31 +2466,6 @@ heap_add_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *hea
     heap->total_slots += page->total_slots;
 }
 
-void
-begin_local_gc(rb_objspace_t *objspace)
-{
-    rb_vm_t *vm = GET_VM();
-    if(objspace->gc_lock_level == 0) {
-	rb_native_mutex_lock(&objspace->gc_lock);
-	while(vm->global_gc_count) {
-	    rb_native_mutex_unlock(&objspace->gc_lock);
-	    RB_VM_LOCK_ENTER();
-	    RB_VM_LOCK_LEAVE();
-	    rb_native_mutex_lock(&objspace->gc_lock);
-	}
-    }
-    objspace->gc_lock_level++;
-}
-
-void
-end_local_gc(rb_objspace_t *objspace)
-{
-    objspace->gc_lock_level--;
-    if(objspace->gc_lock_level == 0) {
-	rb_native_mutex_unlock(&objspace->gc_lock);
-    }
-}
-
 static void
 insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int size_pool_idx)
 {
@@ -2557,9 +2575,12 @@ close_objspace(rb_objspace_t *objspace)
 {
     free(heap_pages_sorted);
     heap_pages_sorted = NULL;
+
+    lock_local_gc(objspace);
+    RB_VM_LOCK();
     ccan_list_del(&objspace->objspace_node);
-    rb_native_mutex_lock(&objspace->gc_lock);
-    rb_native_mutex_unlock(&objspace->gc_lock);
+    RB_VM_UNLOCK();
+    unlock_local_gc(objspace);
     rb_objspace_free(objspace);
 }
 
@@ -2571,10 +2592,13 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     gc_rest(receiving_objspace);
 
-    begin_local_gc(receiving_objspace);
+    lock_ractor_set();
 
-    rb_native_mutex_lock(&closing_ractor->sync.running_lock);
-    rb_native_mutex_unlock(&closing_ractor->sync.running_lock);
+    rb_native_mutex_lock(&closing_ractor->sync.close_lock);
+    while (!closing_ractor->sync.ready_to_close) {
+	rb_native_cond_wait(&closing_ractor->sync.close_cond, &closing_ractor->sync.close_lock);
+    }
+    rb_native_mutex_unlock(&closing_ractor->sync.close_lock);
 
     update_objspace_tables(receiving_objspace, closing_objspace);
     allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace);
@@ -2587,7 +2611,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     close_objspace(closing_objspace);
 
-    end_local_gc(receiving_objspace);
+    unlock_ractor_set();
 }
 
 static void
@@ -2679,22 +2703,26 @@ static void
 gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
 {
     unsigned int lock_lev;
-    gc_enter(objspace, gc_enter_event_continue, false);
+    LOCAL_GC_BEGIN(objspace);
+    {
+	gc_enter(objspace, gc_enter_event_continue, false);
 
-    /* Continue marking if in incremental marking. */
-    if (heap->free_pages == NULL && is_incremental_marking(objspace)) {
-        if (gc_marks_continue(objspace, size_pool, heap)) {
-            gc_sweep(objspace);
-        }
+	/* Continue marking if in incremental marking. */
+	if (heap->free_pages == NULL && is_incremental_marking(objspace)) {
+	    if (gc_marks_continue(objspace, size_pool, heap)) {
+		gc_sweep(objspace);
+	    }
+	}
+
+	/* Continue sweeping if in lazy sweeping or the previous incremental
+	 * marking finished and did not yield a free page. */
+	if (heap->free_pages == NULL && is_lazy_sweeping(objspace)) {
+	    gc_sweep_continue(objspace, size_pool, heap);
+	}
+
+	gc_exit(objspace, gc_enter_event_continue);
     }
-
-    /* Continue sweeping if in lazy sweeping or the previous incremental
-     * marking finished and did not yield a free page. */
-    if (heap->free_pages == NULL && is_lazy_sweeping(objspace)) {
-        gc_sweep_continue(objspace, size_pool, heap);
-    }
-
-    gc_exit(objspace, gc_enter_event_continue);
+    LOCAL_GC_END(objspace);
 }
 
 static void
@@ -4225,8 +4253,8 @@ Init_heap(rb_objspace_t *objspace)
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
 
-    rb_nativethread_lock_initialize(&objspace->gc_lock);
-    objspace->gc_lock_level = 0;
+    rb_nativethread_lock_initialize(&objspace->local_gc_lock);
+    objspace->local_gc_level = 0;
 
 #if RGENGC_ESTIMATE_OLDMALLOC
     objspace->rgengc.oldmalloc_increase_limit = gc_params.oldmalloc_limit_min;
@@ -4247,7 +4275,10 @@ Init_heap(rb_objspace_t *objspace)
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
+
+    lock_ractor_set();
     ccan_list_add_tail(&GET_VM()->objspace_set, &objspace->objspace_node);
+    unlock_ractor_set();
 }
 
 void
@@ -4293,6 +4324,7 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->exemption_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->external_class_tbl_lock);
+    rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     return global_space;
 }
 
@@ -4309,6 +4341,10 @@ rb_global_space_free(rb_global_space_t *global_space)
     }
     rb_nativethread_lock_destroy(&global_space->exemption_tbl_lock);
     rb_nativethread_lock_destroy(&global_space->external_class_tbl_lock);
+    if (global_space->absorbed_thread_tbl) {
+	st_free_table(global_space->absorbed_thread_tbl);
+    }
+    rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
 }
 
 void
@@ -5013,50 +5049,54 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
     dont_gc_on();
 
     /* running data/file finalizers are part of garbage collection */
-    gc_enter(objspace, gc_enter_event_finalizer, false);
+    LOCAL_GC_BEGIN(objspace);
+    {
+	gc_enter(objspace, gc_enter_event_finalizer, false);
 
-    /* run data/file object's finalizers */
-    for (i = 0; i < heap_allocated_pages; i++) {
-        struct heap_page *page = heap_pages_sorted[i];
-        short stride = page->slot_size;
+	/* run data/file object's finalizers */
+	for (i = 0; i < heap_allocated_pages; i++) {
+	    struct heap_page *page = heap_pages_sorted[i];
+	    short stride = page->slot_size;
 
-        uintptr_t p = (uintptr_t)page->start;
-        uintptr_t pend = p + page->total_slots * stride;
-        for (; p < pend; p += stride) {
-            VALUE vp = (VALUE)p;
-            void *poisoned = asan_unpoison_object_temporary(vp);
-            switch (BUILTIN_TYPE(vp)) {
-              case T_DATA:
-                if (!DATA_PTR(p) || !RANY(p)->as.data.dfree) break;
-                if (rb_obj_is_thread(vp)) break;
-                if (rb_obj_is_mutex(vp)) break;
-                if (rb_obj_is_fiber(vp)) break;
-                if (rb_obj_is_main_ractor(vp)) break;
+	    uintptr_t p = (uintptr_t)page->start;
+	    uintptr_t pend = p + page->total_slots * stride;
+	    for (; p < pend; p += stride) {
+		VALUE vp = (VALUE)p;
+		void *poisoned = asan_unpoison_object_temporary(vp);
+		switch (BUILTIN_TYPE(vp)) {
+		    case T_DATA:
+			if (!DATA_PTR(p) || !RANY(p)->as.data.dfree) break;
+			if (rb_obj_is_thread(vp)) break;
+			if (rb_obj_is_mutex(vp)) break;
+			if (rb_obj_is_fiber(vp)) break;
+			if (rb_obj_is_main_ractor(vp)) break;
 
-                rb_data_free(objspace, vp);
-                break;
-              case T_FILE:
-                if (RANY(p)->as.file.fptr) {
-                    make_io_zombie(objspace, vp);
-                }
-                break;
-              default:
-                break;
-            }
-            if (poisoned) {
-                GC_ASSERT(BUILTIN_TYPE(vp) == T_NONE);
-                asan_poison_object(vp);
-            }
-        }
+			rb_data_free(objspace, vp);
+			break;
+		    case T_FILE:
+			if (RANY(p)->as.file.fptr) {
+			    make_io_zombie(objspace, vp);
+			}
+			break;
+		    default:
+			break;
+		}
+		if (poisoned) {
+		    GC_ASSERT(BUILTIN_TYPE(vp) == T_NONE);
+		    asan_poison_object(vp);
+		}
+	    }
+	}
+
+	gc_exit(objspace, gc_enter_event_finalizer);
+
+	finalize_deferred_heap_pages(objspace);
+
+	st_free_table(finalizer_table);
+	finalizer_table = 0;
+	ATOMIC_SET(finalizing, 0);
     }
-
-    gc_exit(objspace, gc_enter_event_finalizer);
-
-    finalize_deferred_heap_pages(objspace);
-
-    st_free_table(finalizer_table);
-    finalizer_table = 0;
-    ATOMIC_SET(finalizing, 0);
+    LOCAL_GC_END(objspace);
 }
 
 void
@@ -5069,6 +5109,27 @@ rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm)
 	}
     }
     rb_objspace_call_finalizer(vm->objspace);
+}
+
+void
+rb_add_to_absorbed_threads_tbl(rb_thread_t *th)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->absorbed_thread_tbl_lock);
+    if (!global_space->absorbed_thread_tbl) {
+	global_space->absorbed_thread_tbl = st_init_numtable();
+    }
+    st_insert(global_space->absorbed_thread_tbl, (st_data_t)th, INT2FIX(0));
+    rb_native_mutex_unlock(&global_space->absorbed_thread_tbl_lock);
+}
+
+void
+rb_remove_from_absorbed_threads_tbl(rb_thread_t *th)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->absorbed_thread_tbl_lock);
+    st_delete(global_space->absorbed_thread_tbl, (st_data_t *)th, NULL);
+    rb_native_mutex_unlock(&global_space->absorbed_thread_tbl_lock);
 }
 
 void
@@ -5197,9 +5258,9 @@ bool
 rb_gc_is_ptr_to_obj(void *ptr)
 {
     rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE((VALUE)ptr);
-    rb_native_mutex_lock(&objspace->gc_lock);
+    lock_local_gc(objspace);
     bool success = is_pointer_to_heap(objspace, ptr);
-    rb_native_mutex_unlock(&objspace->gc_lock);
+    unlock_local_gc(objspace);
     return success;
 }
 
@@ -5213,7 +5274,7 @@ rb_gc_id2ref_obj_tbl(VALUE objid)
 	return result;
     }
 
-    rb_native_mutex_lock(&objspace->gc_lock);
+    lock_local_gc(objspace);
     rb_ractor_t *r = NULL;
     rb_vm_t *vm = GET_VM();
     ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
@@ -5224,10 +5285,10 @@ rb_gc_id2ref_obj_tbl(VALUE objid)
 	    }
 	}
     }
-    rb_native_mutex_unlock(&objspace->gc_lock);
+    unlock_local_gc(objspace);
     if (result != Qundef) return result;
 
-    rb_native_mutex_lock(&objspace->gc_lock);
+    lock_local_gc(objspace);
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	result = lookup_id_in_objspace(os, objid);
@@ -5235,7 +5296,7 @@ rb_gc_id2ref_obj_tbl(VALUE objid)
 	    break;
 	}
     }
-    rb_native_mutex_unlock(&objspace->gc_lock);
+    unlock_local_gc(objspace);
     return Qundef;
 }
 
@@ -7214,6 +7275,28 @@ mark_finalizer_tbl(rb_objspace_t *objspace, st_table *tbl)
     st_foreach(tbl, pin_value, (st_data_t)objspace);
 }
 
+static int
+mark_thread_if_in_objspace(st_data_t key, st_data_t value, st_data_t data)
+{
+    rb_objspace_t *objspace = (rb_objspace_t *)data;
+    VALUE th = ((rb_thread_t *) key)->self;
+    if (objspace == GET_OBJSPACE_OF_VALUE(th)) {
+	gc_mark(objspace, th);
+    }
+    return ST_CONTINUE;
+}
+
+static void
+mark_absorbed_threads_tbl(rb_objspace_t *objspace)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->absorbed_thread_tbl_lock);
+    if (global_space->absorbed_thread_tbl) {
+	st_foreach(global_space->absorbed_thread_tbl, mark_thread_if_in_objspace, (st_data_t)objspace);
+    }
+    rb_native_mutex_unlock(&global_space->absorbed_thread_tbl_lock);
+}
+
 void
 rb_mark_set(st_table *tbl)
 {
@@ -8233,6 +8316,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	    rb_gc_mark(os->ractor->pub.self);
 	}
     }
+    mark_absorbed_threads_tbl(objspace);
 
     MARK_CHECKPOINT("cache_table");
     mark_global_cc_cache_table();
@@ -10128,33 +10212,6 @@ gc_reset_malloc_info(rb_objspace_t *objspace, bool full_mark)
 }
 
 void
-block_local_gc(void)
-{
-    rb_vm_t *vm = GET_VM();
-    rb_native_mutex_lock(&vm->global_gc_status_lock);
-    rb_objspace_t *os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
-	rb_native_mutex_lock(&os->gc_lock);
-    }
-
-    vm->global_gc_count++;
-
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
-	rb_native_mutex_unlock(&os->gc_lock);
-    }
-    rb_native_mutex_unlock(&vm->global_gc_status_lock);
-}
-
-void
-unblock_local_gc(void)
-{
-    rb_vm_t *vm = GET_VM();
-    rb_native_mutex_lock(&vm->global_gc_status_lock);
-    GET_VM()->global_gc_count--;
-    rb_native_mutex_unlock(&vm->global_gc_status_lock);
-}
-
-void
 gc_rest_global(rb_objspace_t *objspace) {
     rb_objspace_t *old_target;
     rb_objspace_t *os;
@@ -10166,13 +10223,63 @@ gc_rest_global(rb_objspace_t *objspace) {
     objspace->global_gc_current_target = old_target;
 }
 
+void
+begin_wait_for_global_gc(void)
+{
+    rb_vm_t *vm = GET_VM();
+    rb_native_mutex_lock(&vm->gc_waiter_cnt_lock);
+    vm->gc_waiter_cnt++;
+    rb_native_mutex_unlock(&vm->gc_waiter_cnt_lock);
+    rb_signal_at_gc_barrier(GET_RACTOR());
+}
+
+void
+end_wait_for_global_gc(void)
+{
+    rb_vm_t *vm = GET_VM();
+    rb_native_mutex_lock(&vm->gc_waiter_cnt_lock);
+    vm->gc_waiter_cnt--;
+    rb_native_mutex_unlock(&vm->gc_waiter_cnt_lock);
+}
+
+static void
+acquire_local_gc_locks(rb_vm_t *vm)
+{
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	rb_native_mutex_lock(&os->local_gc_lock);
+    }
+}
+
+static void
+release_local_gc_locks(rb_vm_t *vm)
+{
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	rb_native_mutex_unlock(&os->local_gc_lock);
+    }
+}
+
+static void
+lock_local_gc(rb_objspace_t *objspace) {
+    rb_vm_t *vm = GET_VM();
+    begin_wait_for_global_gc();
+    rb_native_mutex_lock(&objspace->local_gc_lock);
+    end_wait_for_global_gc();
+}
+
+static void
+unlock_local_gc(rb_objspace_t *objspace) {
+    rb_native_mutex_unlock(&objspace->local_gc_lock);
+}
+
 static int
 garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
 {
     int ret;
+    rb_vm_t *vm = GET_VM();
 
-    block_local_gc();
-    RB_VM_LOCK_ENTER();
+    GLOBAL_GC_BEGIN(vm, objspace);
     {
 #if GC_PROFILE_MORE_DETAIL
         objspace->profile.prepare_time = getrusage_time();
@@ -10186,8 +10293,7 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
 
         ret = gc_start(objspace, reason);
     }
-    RB_VM_LOCK_LEAVE();
-    unblock_local_gc();
+    GLOBAL_GC_END(vm, objspace);
 
     return ret;
 }
@@ -10196,21 +10302,22 @@ static int
 garbage_collect_local(rb_objspace_t *objspace, unsigned int reason)
 {
     int ret;
-
-    begin_local_gc(objspace);
-#if GC_PROFILE_MORE_DETAIL
-    objspace->profile.prepare_time = getrusage_time();
-#endif
-
-    gc_rest(objspace);
-
-#if GC_PROFILE_MORE_DETAIL
-    objspace->profile.prepare_time = getrusage_time() - objspace->profile.prepare_time;
-#endif
-
-    ret = gc_start(objspace, reason);
-    end_local_gc(objspace);
     
+    LOCAL_GC_BEGIN(objspace);
+    {
+#if GC_PROFILE_MORE_DETAIL
+	objspace->profile.prepare_time = getrusage_time();
+#endif
+
+	gc_rest(objspace);
+
+#if GC_PROFILE_MORE_DETAIL
+	objspace->profile.prepare_time = getrusage_time() - objspace->profile.prepare_time;
+#endif
+
+	ret = gc_start(objspace, reason);
+    }
+    LOCAL_GC_END(objspace);
 
     return ret;
 }
@@ -10360,44 +10467,36 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
     unsigned int lock_lev;
     if (global_gc) {
 	gc_global_enter(objspace, gc_enter_event_start, &lock_lev);
-    }
-    else {
-	gc_enter(objspace, gc_enter_event_start, false);
-    }
-
 #if RGENGC_CHECK_MODE >= 2
-    gc_verify_internal_consistency(objspace);
+	gc_verify_internal_consistency(objspace);
 #endif
-
-    if (global_gc) {
 	rb_objspace_t *os = NULL;
 	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
 	    gc_set_flags_finish(os, reason, &do_full_mark, &immediate_mark);
 	}
-    }
-    else {
-	gc_set_flags_finish(objspace, reason, &do_full_mark, &immediate_mark);
-    }
-
-    if (global_gc) {
 	gc_marks_global(objspace, do_full_mark);
-    }
-    else {
-	gc_prof_timer_start(objspace);
-	{
-	    if (gc_marks(objspace, do_full_mark)) {
-		gc_sweep(objspace);
-	    }
-	}
-	gc_prof_timer_stop(objspace);
-    }
-
-    if (global_gc) {
 	gc_global_exit(objspace, gc_enter_event_start, &lock_lev);
     }
     else {
-	gc_exit(objspace, gc_enter_event_start);
+	LOCAL_GC_BEGIN(objspace);
+	{
+	    gc_enter(objspace, gc_enter_event_start, false);
+#if RGENGC_CHECK_MODE >= 2
+	    gc_verify_internal_consistency(objspace);
+#endif
+	    gc_set_flags_finish(objspace, reason, &do_full_mark, &immediate_mark);
+	    gc_prof_timer_start(objspace);
+	    {
+		if (gc_marks(objspace, do_full_mark)) {
+		    gc_sweep(objspace);
+		}
+	    }
+	    gc_prof_timer_stop(objspace);
+	    gc_exit(objspace, gc_enter_event_start);
+	}
+	LOCAL_GC_END(objspace);
     }
+
     return TRUE;
 }
 
@@ -10408,25 +10507,29 @@ gc_rest(rb_objspace_t *objspace)
     int sweeping = is_lazy_sweeping(objspace);
 
     if (marking || sweeping) {
-        gc_enter(objspace, gc_enter_event_rest, false);
+	LOCAL_GC_BEGIN(objspace);
+	{
+	    gc_enter(objspace, gc_enter_event_rest, false);
 
-        if (RGENGC_CHECK_MODE >= 2) gc_verify_internal_consistency(objspace);
+	    if (RGENGC_CHECK_MODE >= 2) gc_verify_internal_consistency(objspace);
 
-        if (is_incremental_marking(objspace)) {
-            gc_marking_enter(objspace);
-            gc_marks_rest(objspace);
-            gc_marking_exit(objspace);
+	    if (is_incremental_marking(objspace)) {
+		gc_marking_enter(objspace);
+		gc_marks_rest(objspace);
+		gc_marking_exit(objspace);
 
-            gc_sweep(objspace);
-        }
+		gc_sweep(objspace);
+	    }
 
-        if (is_lazy_sweeping(objspace)) {
-            gc_sweeping_enter(objspace);
-            gc_sweep_rest(objspace);
-            gc_sweeping_exit(objspace);
-        }
+	    if (is_lazy_sweeping(objspace)) {
+		gc_sweeping_enter(objspace);
+		gc_sweep_rest(objspace);
+		gc_sweeping_exit(objspace);
+	    }
 
-        gc_exit(objspace, gc_enter_event_rest);
+	    gc_exit(objspace, gc_enter_event_rest);
+	}
+	LOCAL_GC_END(objspace);
     }
 }
 
@@ -10567,9 +10670,6 @@ gc_clock_end(struct timespec *ts)
 static inline void
 gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier)
 {
-    if (event != gc_enter_event_start && !GET_VM()->global_gc_count) begin_local_gc(objspace);
-
-
     if (use_vm_barrier) {
 	switch (event) {
 	    case gc_enter_event_rest:
@@ -10599,7 +10699,6 @@ gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier
 static inline void
 gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
 {
-    if (event != gc_enter_event_start) block_local_gc();
     RB_VM_LOCK_ENTER_LEV(lock_lev);
     gc_enter(objspace, event, true);
 
@@ -10623,16 +10722,13 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event)
     during_gc = FALSE;
 
 
-    if (event != gc_enter_event_start && !GET_VM()->global_gc_count) {
-	end_local_gc(objspace);
 #if RGENGC_CHECK_MODE >= 2
-	if (event == gc_enter_event_sweep_continue && gc_mode(objspace) == gc_mode_none) {
-	    GC_ASSERT(!during_gc);
-	    // sweep finished
-	    gc_verify_internal_consistency(objspace);
-	}
-#endif
+    if (event == gc_enter_event_sweep_continue && gc_mode(objspace) == gc_mode_none) {
+	GC_ASSERT(!during_gc);
+	// sweep finished
+	gc_verify_internal_consistency(objspace);
     }
+#endif
 }
 
 static inline void
@@ -10647,7 +10743,6 @@ gc_global_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int 
 
     gc_exit(objspace, event);
     RB_VM_LOCK_LEAVE_LEV(lock_lev);
-    if (event != gc_enter_event_start) unblock_local_gc();
 }
 
 static void
@@ -10734,12 +10829,20 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
     }
     if (!RTEST(global)) reason &= ~GPR_FLAG_GLOBAL;
 
-    if (!RTEST(global)) begin_local_gc(objspace);
     if(!GET_VM()->gc_deactivated) {
-	garbage_collect(objspace, reason);
-	gc_finalize_deferred(objspace->objspace_ptr);
+	if (RTEST(global)) {
+	    garbage_collect(objspace, reason);
+	    gc_finalize_deferred(objspace->objspace_ptr);
+	}
+	else {
+	    LOCAL_GC_BEGIN(objspace);
+	    {
+		garbage_collect(objspace, reason);
+		gc_finalize_deferred(objspace->objspace_ptr);
+	    }
+	    LOCAL_GC_END(objspace);
+	}
     }
-    if (!RTEST(global)) end_local_gc(objspace);
 
     return Qnil;
 }
@@ -11904,14 +12007,17 @@ VALUE
 rb_gc_ractor_teardown_cleanup()
 {
     rb_ractor_t *cr = GET_RACTOR();
-    begin_local_gc(cr->local_objspace);
-    if(!GET_VM()->gc_deactivated) {
-	cr->during_teardown_cleanup = true;
-	rb_gc();
-	cr->during_teardown_cleanup = false;
-	gc_finalize_deferred(cr->local_objspace->objspace_ptr);
+    rb_objspace_t *objspace = cr->local_objspace;
+    LOCAL_GC_BEGIN(objspace);
+    {
+	if (!GET_VM()->gc_deactivated) {
+	    cr->during_teardown_cleanup = true;
+	    rb_gc();
+	    cr->during_teardown_cleanup = false;
+	    gc_finalize_deferred(cr->local_objspace->objspace_ptr);
+	}
     }
-    end_local_gc(cr->local_objspace);
+    LOCAL_GC_END(objspace);
     return Qnil;
 }
 

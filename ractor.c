@@ -232,8 +232,8 @@ rb_ractor_related_objects_mark(void *ptr)
     }
 
     if (r->threads.main) {
-	    rb_gc_mark(r->threads.main->self);
-	    if (r->threads.main->thgroup) rb_gc_mark(r->threads.main->thgroup);
+	rb_gc_mark(r->threads.main->self);
+	if (r->threads.main->thgroup) rb_gc_mark(r->threads.main->thgroup);
     }
 
     ractor_local_storage_mark(r);
@@ -245,7 +245,6 @@ ractor_mark(void *ptr)
     rb_ractor_t *r = (rb_ractor_t *)ptr;
     rb_gc_mark(r->loc);
     rb_gc_mark(r->name);
-    if (r->dropped_main_thread) rb_gc_mark_if_global_gc(r->dropped_main_thread->self);
 }
 
 static void
@@ -260,7 +259,8 @@ ractor_free(void *ptr)
     rb_ractor_t *r = (rb_ractor_t *)ptr;
     RUBY_DEBUG_LOG("free r:%d", rb_ractor_id(r));
     rb_native_mutex_destroy(&r->sync.lock);
-    rb_native_mutex_destroy(&r->sync.running_lock);
+    rb_native_mutex_destroy(&r->sync.close_lock);
+    rb_native_cond_destroy(&r->sync.close_cond);
     rb_native_cond_destroy(&r->sync.cond);
     ractor_queue_free(&r->sync.recv_queue);
     ractor_queue_free(&r->sync.takers_queue);
@@ -1841,10 +1841,8 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     RUBY_DEBUG_LOG("r:%u ractor.cnt:%u++", r->pub.id, vm->ractor.cnt);
     VM_ASSERT(single_ractor_mode || RB_VM_LOCKED_P());
 
-    rb_native_mutex_lock(&vm->global_gc_status_lock);
     ccan_list_add_tail(&vm->ractor.set, &r->vmlr_node);
     vm->ractor.cnt++;
-    rb_native_mutex_unlock(&vm->global_gc_status_lock);
 }
 
 static void
@@ -1862,6 +1860,7 @@ cancel_single_ractor_mode(void)
         rb_gc_disable();
     }
 
+    GET_VM()->multi_objspace = true;
     ruby_single_main_ractor = NULL;
 }
 
@@ -1902,7 +1901,6 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 
     RB_VM_LOCK();
     {
-	rb_native_mutex_lock(&vm->global_gc_status_lock);
         RUBY_DEBUG_LOG("ractor.cnt:%u-- terminate_waiting:%d",
                        vm->ractor.cnt,  vm->ractor.sync.terminate_waiting);
 
@@ -1918,7 +1916,6 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         rb_gc_ractor_newobj_cache_clear(&cr->newobj_cache);
 
         ractor_status_set(cr, ractor_terminated);
-	rb_native_mutex_unlock(&vm->global_gc_status_lock);
     }
     RB_VM_UNLOCK();
 }
@@ -1986,7 +1983,10 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     ractor_queue_setup(&r->sync.recv_queue);
     ractor_queue_setup(&r->sync.takers_queue);
     rb_native_mutex_initialize(&r->sync.lock);
-    rb_native_mutex_initialize(&r->sync.running_lock);
+
+    r->sync.ready_to_close = false;
+    rb_native_cond_initialize(&r->sync.close_cond);
+    rb_native_mutex_initialize(&r->sync.close_lock);
 
     rb_native_cond_initialize(&r->sync.cond);
     rb_native_cond_initialize(&r->barrier_wait_cond);
@@ -2044,8 +2044,6 @@ ractor_create(rb_execution_context_t *ec, VALUE self, VALUE loc, VALUE name, VAL
     rb_thread_create_ractor(r, args, block);
 
     RB_GC_GUARD(rv);
-
-    rb_native_mutex_lock(&r->sync.running_lock);
 
     return rv;
 }
@@ -2114,11 +2112,15 @@ rb_ractor_teardown(rb_execution_context_t *ec)
     {
         VM_ASSERT(cr->threads.main != NULL);
 	th = cr->threads.main;
+	rb_add_to_absorbed_threads_tbl(cr->threads.main);
 	cr->dropped_main_thread = cr->threads.main;
         cr->threads.main = NULL;
     }
     RB_VM_LOCK_LEAVE();
-    rb_native_mutex_unlock(&cr->sync.running_lock);
+    rb_native_mutex_lock(&cr->sync.close_lock);
+    cr->sync.ready_to_close = true;
+    rb_native_cond_signal(&cr->sync.close_cond);
+    rb_native_mutex_unlock(&cr->sync.close_lock);
 }
 
 void
@@ -2194,6 +2196,22 @@ rb_ractor_thread_list(rb_ractor_t *r)
 }
 
 void
+lock_ractor_set(void)
+{
+    rb_vm_t *vm = GET_VM();
+    begin_wait_for_global_gc();
+    rb_native_mutex_lock(&vm->ractor.ractor_set_lock);
+    end_wait_for_global_gc();
+}
+
+void
+unlock_ractor_set(void)
+{
+    rb_vm_t *vm = GET_VM();
+    rb_native_mutex_unlock(&vm->ractor.ractor_set_lock);
+}
+
+void
 rb_ractor_living_threads_insert(rb_ractor_t *r, rb_thread_t *th)
 {
     VM_ASSERT(th != NULL);
@@ -2209,7 +2227,9 @@ rb_ractor_living_threads_insert(rb_ractor_t *r, rb_thread_t *th)
     // first thread for a ractor
     if (r->threads.cnt == 1) {
         VM_ASSERT(ractor_status_p(r, ractor_created));
-        vm_insert_ractor(th->vm, r);
+	lock_ractor_set();
+	vm_insert_ractor(th->vm, r);
+	unlock_ractor_set();
     }
 }
 
@@ -2274,22 +2294,29 @@ ractor_check_blocking(rb_ractor_t *cr, unsigned int remained_thread_cnt, const c
 void
 rb_ractor_living_threads_remove(rb_ractor_t *cr, rb_thread_t *th)
 {
+    bool last_thread = (cr->threads.cnt == 1);
+    if (last_thread) lock_ractor_set();
+
     VM_ASSERT(cr == GET_RACTOR());
     RUBY_DEBUG_LOG("r->threads.cnt:%d--", cr->threads.cnt);
     ractor_check_blocking(cr, cr->threads.cnt - 1, __FILE__, __LINE__);
 
-    if (cr->threads.cnt == 1) {
+    if (last_thread) {
         vm_remove_ractor(th->vm, cr);
     }
+
     RACTOR_LOCK(cr);
     {
 	ccan_list_del(&th->lt_node);
 	cr->threads.cnt--;
+	if (th == cr->dropped_main_thread) {
+	    rb_remove_from_absorbed_threads_tbl(cr->dropped_main_thread);
+	    cr->dropped_main_thread = NULL;
+	}
     }
     RACTOR_UNLOCK(cr);
-    if (th == cr->dropped_main_thread) {
-	    cr->dropped_main_thread = NULL;
-    }
+
+    if (last_thread) unlock_ractor_set();
 }
 
 void
@@ -2380,20 +2407,13 @@ ractor_terminal_interrupt_all(rb_vm_t *vm)
     }
 }
 
-void block_local_gc(void);
-void unblock_local_gc(void);
 struct rb_objspace;
 void gc_rest_global(struct rb_objspace *objspace);
 void
 deactivate_gc(rb_vm_t *vm)
 {
-    {
-	block_local_gc();
-
-	gc_rest_global(vm->objspace);
-	vm->gc_deactivated = true;
-	unblock_local_gc();
-    }
+    gc_rest_global(vm->objspace);
+    vm->gc_deactivated = true;
 }
 
 void

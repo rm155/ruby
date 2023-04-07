@@ -629,6 +629,7 @@ typedef struct rb_vm_struct {
 
     struct {
         struct ccan_list_head set;
+	rb_nativethread_lock_t ractor_set_lock;
         unsigned int cnt;
         unsigned int blocking_cnt;
 
@@ -645,6 +646,7 @@ typedef struct rb_vm_struct {
             bool barrier_waiting;
             unsigned int barrier_cnt;
             rb_nativethread_cond_t barrier_cond;
+	    bool gc_barrier;
 
             // join at exit
             rb_nativethread_cond_t terminate_cond;
@@ -718,11 +720,14 @@ typedef struct rb_vm_struct {
     st_table * defined_module_hash;
 
     struct rb_objspace *objspace;
+    bool multi_objspace;
     struct ccan_list_head objspace_set; //TODO: Remove once Ractors handle their own objspace upon ending
     struct rb_global_space *global_space;
 
-    rb_nativethread_lock_t global_gc_status_lock;
-    int global_gc_count;
+    bool global_gc_underway;
+
+    unsigned int gc_waiter_cnt;
+    rb_nativethread_lock_t gc_waiter_cnt_lock;
 
     rb_at_exit_list *at_exit;
 

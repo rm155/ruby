@@ -100,7 +100,9 @@ struct rb_ractor_sync {
     // ractor lock
     rb_nativethread_lock_t lock;
 
-    rb_nativethread_lock_t running_lock;
+    rb_nativethread_cond_t close_cond;
+    bool ready_to_close;
+    rb_nativethread_lock_t close_lock;
 #if RACTOR_CHECK_MODE > 0
     VALUE locked_by;
 #endif
@@ -230,6 +232,9 @@ void rb_ractor_living_threads_insert(rb_ractor_t *r, rb_thread_t *th);
 void rb_ractor_living_threads_remove(rb_ractor_t *r, rb_thread_t *th);
 void rb_ractor_blocking_threads_inc(rb_ractor_t *r, const char *file, int line); // TODO: file, line only for RUBY_DEBUG_LOG
 void rb_ractor_blocking_threads_dec(rb_ractor_t *r, const char *file, int line); // TODO: file, line only for RUBY_DEBUG_LOG
+
+void lock_ractor_set(void);
+void unlock_ractor_set(void);
 
 void rb_ractor_vm_barrier_interrupt_running_thread(rb_ractor_t *r);
 void rb_ractor_terminate_interrupt_main_thread(rb_ractor_t *r);
