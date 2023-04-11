@@ -7176,13 +7176,6 @@ mark_key_pin(st_data_t key, st_data_t value, st_data_t data)
 }
 
 static void
-mark_set_no_pin(rb_objspace_t *objspace, st_table *tbl)
-{
-    if (!tbl) return;
-    st_foreach(tbl, mark_key_pin, (st_data_t)objspace);
-}
-
-static void
 mark_set(rb_objspace_t *objspace, st_table *tbl)
 {
     if (!tbl) return;
@@ -8338,7 +8331,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 
     if (!objspace->flags.during_global_gc || !during_gc) {
 	MARK_CHECKPOINT("shareable_tbl");
-	mark_set_no_pin(objspace, objspace->shareable_tbl);
+	mark_set(objspace, objspace->shareable_tbl);
 
 	MARK_CHECKPOINT("local_gc_exemption_tbl");
 	objspace->flags.marking_unsorted_root = TRUE;
@@ -8348,7 +8341,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 		rb_native_mutex_lock(&global_space->exemption_tbl_lock);
 	    }
 
-	    mark_set_no_pin(objspace, global_space->local_gc_exemption_tbl);
+	    mark_set(objspace, global_space->local_gc_exemption_tbl);
 
 	    if(during_gc) {
 		rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
