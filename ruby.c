@@ -549,12 +549,8 @@ static VALUE
 runtime_libruby_path(void)
 {
 #if defined _WIN32 || defined __CYGWIN__
-    DWORD len, ret;
-#if USE_RVARGC
-    len = 32;
-#else
-    len = RSTRING_EMBED_LEN_MAX;
-#endif
+    DWORD ret;
+    DWORD len = 32;
     VALUE path;
     VALUE wsopath = rb_str_new(0, len*sizeof(WCHAR));
     WCHAR *wlibpath;
@@ -645,8 +641,8 @@ ruby_init_loadpath(void)
 #   endif
     rb_obj_hide(selfpath);
     OBJ_FREEZE_RAW(selfpath);
-    rb_libruby_selfpath = selfpath;
     rb_gc_register_address(&rb_libruby_selfpath);
+    rb_libruby_selfpath = selfpath;
 # endif
 #endif
 
@@ -1494,7 +1490,7 @@ proc_options(long argc, char **argv, ruby_cmdline_options_t *opt, int envopt)
             }
             else if (is_option_with_optarg("rjit", '-', true, false, false)) {
 #if USE_RJIT
-                extern void rb_rjit_setup_options(const char *s, struct rjit_options *rjit_opt);
+                extern void rb_rjit_setup_options(const char *s, struct rb_rjit_options *rjit_opt);
                 FEATURE_SET(opt->features, FEATURE_BIT(rjit));
                 rb_rjit_setup_options(s, &opt->rjit);
 #else

@@ -53,6 +53,8 @@
 
 #include "ruby_assert.h"
 
+#define RVALUE_SIZE (sizeof(struct RBasic) + sizeof(VALUE[RBIMPL_RVALUE_EMBED_LEN_MAX]))
+
 #if VM_CHECK_MODE > 0
 #define VM_ASSERT(expr) RUBY_ASSERT_MESG_WHEN(VM_CHECK_MODE > 0, expr, #expr)
 #define VM_UNREACHABLE(func) rb_bug(#func ": unreachable")
@@ -100,7 +102,6 @@ extern int ruby_assert_critical_section_entered;
 #include "ruby/st.h"
 #include "ruby_atomic.h"
 #include "vm_opts.h"
-#include "shape.h"
 
 #include "ruby/thread_native.h"
 
@@ -371,7 +372,11 @@ enum rb_builtin_attr {
     BUILTIN_ATTR_LEAF = 0x01,
     // The iseq does not allocate objects.
     BUILTIN_ATTR_NO_GC = 0x02,
+    // This iseq only contains single `opt_invokebuiltin_delegate_leave` instruction with 0 arguments.
+    BUILTIN_ATTR_SINGLE_NOARG_INLINE = 0x04,
 };
+
+typedef VALUE (*rb_jit_func_t)(struct rb_execution_context_struct *, struct rb_control_frame_struct *);
 
 struct rb_iseq_constant_body {
     enum rb_iseq_type type;
@@ -491,7 +496,6 @@ struct rb_iseq_constant_body {
     unsigned int ci_size;
     unsigned int stack_max; /* for stack overflow check */
 
-    bool catch_except_p; // If a frame of this ISeq may catch exception, set true.
     unsigned int builtin_attrs; // Union of rb_builtin_attr
 
     union {
@@ -505,7 +509,7 @@ struct rb_iseq_constant_body {
 
 #if USE_RJIT || USE_YJIT
     // Function pointer for JIT code
-    VALUE (*jit_func)(struct rb_execution_context_struct *, struct rb_control_frame_struct *);
+    rb_jit_func_t jit_func;
     // Number of total calls with jit_exec()
     long unsigned total_calls;
 #endif
@@ -520,8 +524,6 @@ struct rb_iseq_constant_body {
     void *yjit_payload;
 #endif
 };
-
-typedef VALUE (*jit_func_t)(struct rb_execution_context_struct *, struct rb_control_frame_struct *);
 
 /* T_IMEMO/iseq */
 /* typedef rb_iseq_t is in method.h */
@@ -672,11 +674,6 @@ typedef struct rb_vm_struct {
     /* object management */
     VALUE mark_object_ary;
     const VALUE special_exceptions[ruby_special_error_count];
-
-    /* object shapes */
-    rb_shape_t *shape_list;
-    rb_shape_t *root_shape;
-    shape_id_t next_shape_id;
 
     /* load */
     VALUE top_self;
@@ -1025,7 +1022,7 @@ typedef struct rb_thread_struct {
 
     BITFIELD(enum rb_thread_status, status, 2);
     /* bit flags */
-    unsigned int locking_native_thread : 1;
+    unsigned int has_dedicated_nt : 1;
     unsigned int to_kill : 1;
     unsigned int abort_on_exception: 1;
     unsigned int report_on_exception: 1;
@@ -1092,7 +1089,7 @@ typedef struct rb_thread_struct {
 static inline unsigned int
 rb_th_serial(const rb_thread_t *th)
 {
-    return (unsigned int)th->serial;
+    return th ? (unsigned int)th->serial : 0;
 }
 
 typedef enum {
@@ -1141,7 +1138,6 @@ rb_iseq_t *rb_iseq_new_with_callback(const struct rb_iseq_new_with_callback_call
 
 VALUE rb_iseq_disasm(const rb_iseq_t *iseq);
 int rb_iseq_disasm_insn(VALUE str, const VALUE *iseqval, size_t pos, const rb_iseq_t *iseq, VALUE child);
-attr_index_t rb_estimate_iv_count(VALUE klass, const rb_iseq_t * initialize_iseq);
 
 VALUE rb_iseq_coverage(const rb_iseq_t *iseq);
 
@@ -1897,15 +1893,21 @@ rb_current_thread(void)
 }
 
 static inline rb_ractor_t *
-rb_current_ractor(void)
+rb_current_ractor_raw(bool expect)
 {
     if (ruby_single_main_ractor) {
         return ruby_single_main_ractor;
     }
     else {
-        const rb_execution_context_t *ec = GET_EC();
-        return rb_ec_ractor_ptr(ec);
+        const rb_execution_context_t *ec = rb_current_execution_context(expect);
+        return (expect || ec) ? rb_ec_ractor_ptr(ec) : NULL;
     }
+}
+
+static inline rb_ractor_t *
+rb_current_ractor(void)
+{
+    return rb_current_ractor_raw(true);
 }
 
 static inline rb_vm_t *

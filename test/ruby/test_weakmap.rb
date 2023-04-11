@@ -178,6 +178,8 @@ class TestWeakMap < Test::Unit::TestCase
   end
 
   def test_compaction_bug_19529
+    omit "compaction is not supported on this platform" unless GC.respond_to?(:compact)
+
     obj = Object.new
     100.times do |i|
       GC.compact
@@ -193,5 +195,22 @@ class TestWeakMap < Test::Unit::TestCase
       end
       GC.compact
     end;
+  end
+
+  def test_replaced_values_bug_19531
+    a = "A".dup
+    b = "B".dup
+
+    @wm[1] = a
+    @wm[1] = a
+    @wm[1] = a
+
+    @wm[1] = b
+    assert_equal b, @wm[1]
+
+    a = nil
+    GC.start
+
+    assert_equal b, @wm[1]
   end
 end
