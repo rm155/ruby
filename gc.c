@@ -3387,8 +3387,6 @@ rb_shareable_imemo_type(enum imemo_type type)
 
 #undef rb_imemo_new
 
-void rb_add_to_shareable_tbl(VALUE obj);
-
 VALUE
 rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
 {
