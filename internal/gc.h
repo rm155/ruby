@@ -142,6 +142,8 @@ void rb_add_to_absorbed_threads_tbl(rb_thread_t *th);
 void rb_remove_from_absorbed_threads_tbl(rb_thread_t *th);
 void rb_add_to_external_class_tbl(VALUE obj);
 
+void rb_global_tables_init(void);
+
 void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);
 
 #ifdef NEWOBJ_OF

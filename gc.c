@@ -4279,6 +4279,15 @@ rb_create_ractor_local_objspace(rb_ractor_t *ractor)
     rb_objspace_gc_enable(ractor->local_objspace);
 }
 
+void
+rb_global_tables_init(void)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    global_space->local_gc_exemption_tbl = st_init_numtable();
+    global_space->external_class_tbl = st_init_numtable();
+    global_space->absorbed_thread_tbl = st_init_numtable();
+}
+
 rb_global_space_t *
 rb_global_space_init(void)
 {
@@ -4298,17 +4307,11 @@ rb_global_space_free(rb_global_space_t *global_space)
 {
     rb_nativethread_lock_destroy(&global_space->id_search_lock);
     rb_nativethread_lock_destroy(&global_space->next_object_id_lock);
-    if (global_space->local_gc_exemption_tbl) {
-	st_free_table(global_space->local_gc_exemption_tbl);
-    }
-    if (global_space->external_class_tbl) {
-	st_free_table(global_space->external_class_tbl);
-    }
+    st_free_table(global_space->local_gc_exemption_tbl);
+    st_free_table(global_space->external_class_tbl);
     rb_nativethread_lock_destroy(&global_space->exemption_tbl_lock);
     rb_nativethread_lock_destroy(&global_space->external_class_tbl_lock);
-    if (global_space->absorbed_thread_tbl) {
-	st_free_table(global_space->absorbed_thread_tbl);
-    }
+    st_free_table(global_space->absorbed_thread_tbl);
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
 }
 
@@ -5081,9 +5084,6 @@ rb_add_to_absorbed_threads_tbl(rb_thread_t *th)
 {
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->absorbed_thread_tbl_lock);
-    if (!global_space->absorbed_thread_tbl) {
-	global_space->absorbed_thread_tbl = st_init_numtable();
-    }
     st_insert(global_space->absorbed_thread_tbl, (st_data_t)th, INT2FIX(0));
     rb_native_mutex_unlock(&global_space->absorbed_thread_tbl_lock);
 }
@@ -5115,9 +5115,6 @@ rb_add_to_external_class_tbl(VALUE obj)
 {
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->external_class_tbl_lock);
-    if (!global_space->external_class_tbl) {
-	global_space->external_class_tbl = st_init_numtable();
-    }
     VALUE already_disabled = gc_disable_no_rest(&rb_objspace);
     rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
     st_insert(global_space->external_class_tbl, (st_data_t)obj, (st_data_t)&objspace->ractor);
@@ -5130,9 +5127,6 @@ rb_add_to_exemption_tbl(VALUE obj)
 {
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->exemption_tbl_lock);
-    if (!global_space->local_gc_exemption_tbl) {
-	global_space->local_gc_exemption_tbl = st_init_numtable();
-    }
     VALUE already_disabled = gc_disable_no_rest(&rb_objspace);
     st_insert(global_space->local_gc_exemption_tbl, (st_data_t)obj, INT2FIX(0));
     if (already_disabled == Qfalse) rb_objspace_gc_enable(&rb_objspace);

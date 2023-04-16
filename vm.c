@@ -4031,6 +4031,8 @@ Init_BareVM(void)
     rb_ractor_set_current_ec(th->ractor, th->ec);
     ruby_thread_init_stack(th);
 
+    rb_global_tables_init();
+
     // setup ractor system
     rb_native_mutex_initialize(&vm->ractor.ractor_set_lock);
     rb_native_mutex_initialize(&vm->gc_waiter_cnt_lock);
