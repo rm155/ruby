@@ -271,7 +271,14 @@ int rb_objspace_markable_object_p(VALUE obj);
 int rb_objspace_internal_object_p(VALUE obj);
 int rb_objspace_marked_object_p(VALUE obj);
 
-struct rb_objspace **get_objspace_ptr_of_value(VALUE v);
+typedef struct rb_objspace_link {
+    struct rb_objspace *linked_objspace;
+    bool link_changed;
+    struct ccan_list_node objspace_link_node;
+} rb_objspace_link_t;
+
+rb_objspace_link_t *get_objspace_link_of_value(VALUE v);
+rb_objspace_link_t *get_updated_objspace_link(rb_objspace_link_t *os_link);
 
 void rb_objspace_each_objects(
     int (*callback)(void *start, void *end, size_t stride, void *data),

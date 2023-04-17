@@ -52,10 +52,55 @@ struct end_proc_data {
     void (*func) (VALUE);
     VALUE data;
     struct end_proc_data *next;
-    struct rb_objspace **objspace;
+    rb_objspace_link_t *objspace_link;
 };
 
 static struct end_proc_data *end_procs, *ephemeral_end_procs;
+
+static void
+regular_end_procs_foreach(void (*func) (struct end_proc_data *, void *), void *data)
+{
+    struct end_proc_data *link;
+
+    link = end_procs;
+    while (link) {
+        func(link, data);
+        link = link->next;
+    }
+}
+
+static void
+ephemeral_end_procs_foreach(void (*func) (struct end_proc_data *, void *), void *data)
+{
+    struct end_proc_data *link;
+
+    link = ephemeral_end_procs;
+    while (link) {
+        func(link, data);
+        link = link->next;
+    }
+}
+
+static void
+end_procs_foreach(void (*func) (struct end_proc_data *, void *), void *data)
+{
+    regular_end_procs_foreach(func, data);
+    ephemeral_end_procs_foreach(func, data);
+}
+
+void
+update_end_proc_objspace_link(struct end_proc_data *end_proc, void *dmy)
+{
+    if (end_proc->objspace_link->link_changed) {
+	end_proc->objspace_link = get_updated_objspace_link(end_proc->objspace_link);
+    }
+}
+
+void
+rb_update_all_end_proc_objspace_links(void)
+{
+    end_procs_foreach(update_end_proc_objspace_link, NULL);
+}
 
 void
 rb_set_end_proc(void (*func)(VALUE), VALUE data)
@@ -73,25 +118,21 @@ rb_set_end_proc(void (*func)(VALUE), VALUE data)
     link->next = *list;
     link->func = func;
     link->data = data;
-    link->objspace = get_objspace_ptr_of_value(data);
+    link->objspace_link = get_objspace_link_of_value(data);
     *list = link;
+}
+
+static void
+mark_end_proc_if_in_objspace(struct end_proc_data *end_proc, void *arg)
+{
+    struct rb_objspace *objspace = arg;
+    if (objspace == end_proc->objspace_link->linked_objspace) rb_gc_mark(end_proc->data);
 }
 
 void
 rb_mark_end_proc(struct rb_objspace *objspace)
 {
-    struct end_proc_data *link;
-
-    link = end_procs;
-    while (link) {
-        if (objspace == *link->objspace) rb_gc_mark(link->data);
-        link = link->next;
-    }
-    link = ephemeral_end_procs;
-    while (link) {
-        rb_gc_mark(link->data);
-        link = link->next;
-    }
+    end_procs_foreach(mark_end_proc_if_in_objspace, objspace);
 }
 
 static void
