@@ -4971,12 +4971,12 @@ gc_finalize_deferred(void *dmy)
     ATOMIC_SET(finalizing, 0);
 }
 
-int rb_postponed_job_register_general(unsigned int flags, rb_postponed_job_func_t func, void *data, bool data_is_os_link, bool limit_to_one);
+int rb_postponed_job_register_general(rb_ractor_t *r, unsigned int flags, rb_postponed_job_func_t func, void *data, bool data_is_os_link, bool limit_to_one);
 
 static void
 gc_finalize_deferred_register(rb_objspace_t *objspace)
 {
-    if (rb_postponed_job_register_general(0, gc_finalize_deferred, objspace->self_link, true, true) == 0) {
+    if (rb_postponed_job_register_general(objspace->ractor, 0, gc_finalize_deferred, objspace->self_link, true, true) == 0) {
         rb_bug("gc_finalize_deferred_register: can't register finalizer.");
     }
 }
@@ -10422,16 +10422,21 @@ gc_delete_outdated_objspace_links(void)
 }
 
 static void
-gc_update_objspace_links(void)
+gc_update_objspace_links(rb_vm_t *vm)
 {
     rb_update_all_end_proc_objspace_links();
-    rb_update_postponed_job_objspace_links();
+    rb_ractor_t *r = NULL;
+    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
+	rb_update_postponed_job_objspace_links(r);
+    }
     gc_delete_outdated_objspace_links();
 }
 
 static int
 gc_start(rb_objspace_t *objspace, unsigned int reason)
 {
+    rb_vm_t *vm = GET_VM();
+
     unsigned int do_full_mark = !!(reason & GPR_FLAG_FULL_MARK);
     unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
     unsigned int global_gc = !!(reason & GPR_FLAG_GLOBAL);
@@ -10442,7 +10447,7 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 
     if (global_gc) {
 	rb_objspace_t *os = NULL;
-	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	    gc_set_flags_start(os, reason, &do_full_mark);
 
 	    if (!heap_allocated_pages) return FALSE; /* heap is not ready */
@@ -10471,10 +10476,10 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	gc_verify_internal_consistency(objspace);
 #endif
 	rb_objspace_t *os = NULL;
-	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	    gc_set_flags_finish(os, reason, &do_full_mark, &immediate_mark);
 	}
-	gc_update_objspace_links();
+	gc_update_objspace_links(vm);
 	gc_marks_global(objspace, do_full_mark);
 	gc_global_exit(objspace, gc_enter_event_start, &lock_lev);
     }

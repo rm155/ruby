@@ -27,6 +27,7 @@
 #include "internal/hash.h"
 #include "internal/symbol.h"
 #include "iseq.h"
+#include "ractor_core.h"
 #include "rjit.h"
 #include "ruby/debug.h"
 #include "vm_core.h"
@@ -1621,14 +1622,13 @@ typedef struct rb_postponed_job_struct {
 } rb_postponed_job_t;
 
 void
-rb_update_postponed_job_objspace_links(void)
+rb_update_postponed_job_objspace_links(rb_ractor_t *r)
 {
-    rb_vm_t *vm = GET_VM();
     rb_postponed_job_t *pjob;
     rb_atomic_t i, index;
-    index = vm->postponed_job_index;
+    index = r->postponed_job_index;
     for (i=0; i<index; i++) {
-	pjob = &vm->postponed_job_buffer[i];
+	pjob = &r->postponed_job_buffer[i];
 	if (pjob->data_is_objspace_link) {
 	    rb_objspace_link_t *os_link = (rb_objspace_link_t *)pjob->data;
 	    if (os_link->link_changed) {
@@ -1670,13 +1670,12 @@ rb_vm_memsize_postponed_job_buffer(void)
 }
 
 void
-Init_vm_postponed_job(void)
+rb_ractor_postponed_job_initialize(rb_ractor_t *r)
 {
-    rb_vm_t *vm = GET_VM();
-    vm->postponed_job_buffer = ALLOC_N(rb_postponed_job_t, MAX_POSTPONED_JOB);
-    vm->postponed_job_index = 0;
-    /* workqueue is initialized when VM locks are initialized */
+    r->postponed_job_buffer = ALLOC_N(rb_postponed_job_t, MAX_POSTPONED_JOB);
+    r->postponed_job_index = 0;
 }
+
 
 enum postponed_job_register_result {
     PJRR_SUCCESS     = 0,
@@ -1686,15 +1685,15 @@ enum postponed_job_register_result {
 
 /* Async-signal-safe */
 static enum postponed_job_register_result
-postponed_job_register_general(rb_execution_context_t *ec, rb_vm_t *vm,
+postponed_job_register_general(rb_execution_context_t *ec, rb_ractor_t *r,
                        unsigned int flags, rb_postponed_job_func_t func, void *data, rb_atomic_t max, rb_atomic_t expected_index, bool data_is_objspace_link)
 {
     rb_postponed_job_t *pjob;
 
     if (expected_index >= max) return PJRR_FULL; /* failed */
 
-    if (ATOMIC_CAS(vm->postponed_job_index, expected_index, expected_index+1) == expected_index) {
-        pjob = &vm->postponed_job_buffer[expected_index];
+    if (ATOMIC_CAS(r->postponed_job_index, expected_index, expected_index+1) == expected_index) {
+        pjob = &r->postponed_job_buffer[expected_index];
     }
     else {
         return PJRR_INTERRUPTED;
@@ -1723,19 +1722,19 @@ get_valid_ec(rb_vm_t *vm)
  * Async-signal-safe
  */
 int
-rb_postponed_job_register_general(unsigned int flags, rb_postponed_job_func_t func, void *data, bool data_is_objspace_link, bool limit_to_one)
+rb_postponed_job_register_general(rb_ractor_t *r, unsigned int flags, rb_postponed_job_func_t func, void *data, bool data_is_objspace_link, bool limit_to_one)
 {
     rb_vm_t *vm = GET_VM();
     rb_execution_context_t *ec = get_valid_ec(vm);
     rb_atomic_t index;
 
   begin:
-    index = vm->postponed_job_index;
+    index = r->postponed_job_index;
     if (limit_to_one) {
 	rb_postponed_job_t *pjob;
 	rb_atomic_t i;
 	for (i=0; i<index; i++) {
-	    pjob = &vm->postponed_job_buffer[i];
+	    pjob = &r->postponed_job_buffer[i];
 	    if (pjob->func == func) {
 		RUBY_VM_SET_POSTPONED_JOB_INTERRUPT(ec);
 		return 2;
@@ -1744,7 +1743,7 @@ rb_postponed_job_register_general(unsigned int flags, rb_postponed_job_func_t fu
     }
     
     int special_addition = limit_to_one ? MAX_POSTPONED_JOB_SPECIAL_ADDITION : 0;
-    switch (postponed_job_register_general(ec, vm, flags, func, data, MAX_POSTPONED_JOB + special_addition, index, data_is_objspace_link)) {
+    switch (postponed_job_register_general(ec, r, flags, func, data, MAX_POSTPONED_JOB + special_addition, index, data_is_objspace_link)) {
       case PJRR_SUCCESS    : return 1;
       case PJRR_FULL       : return 0;
       case PJRR_INTERRUPTED: goto begin;
@@ -1759,7 +1758,7 @@ rb_postponed_job_register_general(unsigned int flags, rb_postponed_job_func_t fu
 int
 rb_postponed_job_register(unsigned int flags, rb_postponed_job_func_t func, void *data)
 {
-    rb_postponed_job_register_general(flags, func, data, false, false);
+    rb_postponed_job_register_general(GET_RACTOR(), flags, func, data, false, false);
 }
 
 /*
@@ -1769,7 +1768,7 @@ rb_postponed_job_register(unsigned int flags, rb_postponed_job_func_t func, void
 int
 rb_postponed_job_register_one(unsigned int flags, rb_postponed_job_func_t func, void *data)
 {
-    rb_postponed_job_register_general(flags, func, data, false, true);
+    rb_postponed_job_register_general(GET_RACTOR(), flags, func, data, false, true);
 }
 
 /*
@@ -1799,6 +1798,7 @@ rb_workqueue_register(unsigned flags, rb_postponed_job_func_t func, void *data)
 void
 rb_postponed_job_flush(rb_vm_t *vm)
 {
+    rb_ractor_t *r = GET_RACTOR();
     rb_execution_context_t *ec = GET_EC();
     const rb_atomic_t block_mask = POSTPONED_JOB_INTERRUPT_MASK|TRAP_INTERRUPT_MASK;
     volatile rb_atomic_t saved_mask = ec->interrupt_mask & block_mask;
@@ -1820,9 +1820,9 @@ rb_postponed_job_flush(rb_vm_t *vm)
             rb_atomic_t index;
             struct rb_workqueue_job *wq_job;
 
-            while ((index = vm->postponed_job_index) > 0) {
-                if (ATOMIC_CAS(vm->postponed_job_index, index, index-1) == index) {
-                    rb_postponed_job_t *pjob = &vm->postponed_job_buffer[index-1];
+            while ((index = r->postponed_job_index) > 0) {
+                if (ATOMIC_CAS(r->postponed_job_index, index, index-1) == index) {
+                    rb_postponed_job_t *pjob = &r->postponed_job_buffer[index-1];
                     (*pjob->func)(pjob->data);
                 }
             }

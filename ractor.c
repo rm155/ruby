@@ -2011,6 +2011,8 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->loc = loc;
     r->during_teardown_cleanup = false;
     rb_add_to_shareable_tbl(r->pub.self);
+
+    rb_ractor_postponed_job_initialize(r);
 }
 
 void
