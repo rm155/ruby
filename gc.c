@@ -2616,6 +2616,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace);
     transfer_all_size_pools(receiving_objspace, closing_objspace);
     merge_deferred_heap_pages(receiving_objspace, closing_objspace);
+    rb_transfer_postponed_jobs(receiving_ractor, closing_ractor);
     update_objspace_counts(receiving_objspace, closing_objspace);
 
     //TODO: What if another Ractor tries to access the pointer at this exact moment?

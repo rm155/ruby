@@ -1676,7 +1676,6 @@ rb_ractor_postponed_job_initialize(rb_ractor_t *r)
     r->postponed_job_index = 0;
 }
 
-
 enum postponed_job_register_result {
     PJRR_SUCCESS     = 0,
     PJRR_FULL        = 1,
@@ -1748,6 +1747,27 @@ rb_postponed_job_register_general(rb_ractor_t *r, unsigned int flags, rb_postpon
       case PJRR_FULL       : return 0;
       case PJRR_INTERRUPTED: goto begin;
       default: rb_bug("unreachable\n");
+    }
+}
+
+void
+rb_transfer_postponed_jobs(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor)
+{
+    rb_postponed_job_t *tmp_buffer[MAX_POSTPONED_JOB];
+    int tmp_index = 0;
+    rb_atomic_t index;
+    while ((index = closing_ractor->postponed_job_index) > 0) {
+	if (ATOMIC_CAS(closing_ractor->postponed_job_index, index, index-1) == index) {
+	    rb_postponed_job_t *pjob = &closing_ractor->postponed_job_buffer[index-1];
+	    tmp_buffer[tmp_index] = pjob;
+	    tmp_index++;
+	}
+    }
+    while (tmp_index > 0) {
+	rb_postponed_job_t *pjob = tmp_buffer[tmp_index-1];
+	int success = rb_postponed_job_register_general(receiving_ractor, 0, pjob->func, pjob->data, pjob->data_is_objspace_link, false);
+	if (!success) rb_bug("unable to transfer registered postponed jobs");
+	tmp_index--;
     }
 }
 
