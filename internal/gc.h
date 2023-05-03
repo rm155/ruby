@@ -228,6 +228,7 @@ void ruby_mimfree(void *ptr);
 void rb_objspace_set_event_hook(const rb_event_flag_t event);
 VALUE rb_objspace_gc_enable(struct rb_objspace *);
 VALUE rb_objspace_gc_disable(struct rb_objspace *);
+VALUE rb_gc_deactivate(rb_vm_t *vm);
 struct rb_objspace *get_objspace_of_value(VALUE v);
 void ruby_gc_set_params(void);
 void rb_copy_wb_protected_attribute(VALUE dest, VALUE obj);

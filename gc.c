@@ -12624,6 +12624,27 @@ gc_disable(rb_execution_context_t *ec, VALUE _)
     return rb_gc_disable();
 }
 
+static VALUE
+gc_deactivate_no_rest(rb_vm_t *vm)
+{
+    int old = vm->gc_deactivated;
+    vm->gc_deactivated = true;
+    return RBOOL(old);
+}
+
+VALUE
+rb_gc_deactivate(rb_vm_t *vm)
+{
+    VALUE old;
+    GLOBAL_GC_BEGIN(vm, vm->objspace);
+    {
+	gc_rest_global(vm->objspace);
+	old = gc_deactivate_no_rest(vm);
+    }
+    GLOBAL_GC_END(vm, vm->objspace);
+    return old;
+}
+
 #if GC_CAN_COMPILE_COMPACTION
 /*
  *  call-seq:
