@@ -10497,6 +10497,7 @@ rb_f_backquote(VALUE obj, VALUE str)
     if (NIL_P(port)) return rb_str_new(0,0);
 
     GetOpenFile(port, fptr);
+    rb_obj_hide(port);
     result = read_all(fptr, remain_size(fptr), Qnil);
     rb_io_close(port);
     RFILE(port)->fptr = NULL;
@@ -11654,9 +11655,9 @@ pipe_pair_close(VALUE rw)
  *    IO.pipe(**opts) -> [read_io, write_io]
  *    IO.pipe(enc, **opts) -> [read_io, write_io]
  *    IO.pipe(ext_enc, int_enc, **opts) -> [read_io, write_io]
- *    IO.pipe(**opts) {|read_io, write_io] ...} -> object
- *    IO.pipe(enc, **opts) {|read_io, write_io] ...} -> object
- *    IO.pipe(ext_enc, int_enc, **opts) {|read_io, write_io] ...} -> object
+ *    IO.pipe(**opts) {|read_io, write_io| ...} -> object
+ *    IO.pipe(enc, **opts) {|read_io, write_io| ...} -> object
+ *    IO.pipe(ext_enc, int_enc, **opts) {|read_io, write_io| ...} -> object
  *
  *  Creates a pair of pipe endpoints, +read_io+ and +write_io+,
  *  connected to each other.

@@ -207,9 +207,6 @@ void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ract
 # define SIZE_POOL_COUNT 5
 #endif
 
-// TODO: Make rb_classext_t small enough to fit in 80 bytes on 32 bit
-#define RCLASS_EXT_EMBEDDED (SIZEOF_UINT64_T == SIZEOF_VALUE)
-
 typedef struct ractor_newobj_size_pool_cache {
     struct RVALUE *freelist;
     struct heap_page *using_page;

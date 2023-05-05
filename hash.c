@@ -4887,9 +4887,7 @@ has_env_with_lock(const char *name)
 static const char TZ_ENV[] = "TZ";
 
 static void *
-get_env_cstr(
-    VALUE str,
-    const char *name)
+get_env_cstr(VALUE str, const char *name)
 {
     char *var;
     rb_encoding *enc = rb_enc_get(str);
@@ -7063,7 +7061,7 @@ static const rb_data_type_t env_data_type = {
  *  - #<=: Returns whether +self+ is a subset of a given object.
  *  - #==: Returns whether a given object is equal to +self+.
  *  - #>: Returns whether +self+ is a proper superset of a given object
- *  - #>=: Returns whether +self+ is a proper superset of a given object.
+ *  - #>=: Returns whether +self+ is a superset of a given object.
  *
  *  ==== Methods for Fetching
  *

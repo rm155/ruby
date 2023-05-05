@@ -1240,11 +1240,6 @@ rb_ivar_delete(VALUE obj, ID id, VALUE undef)
         RB_VM_LOCK_LEAVE();
 
         break;
-      case T_OBJECT: {
-        rb_shape_transition_shape_remove_ivar(obj, id, shape, &val);
-
-        break;
-      }
       default: {
         rb_shape_transition_shape_remove_ivar(obj, id, shape, &val);
 
@@ -1528,7 +1523,7 @@ rb_shape_set_shape_id(VALUE obj, shape_id_t shape_id)
         break;
       case T_CLASS:
       case T_MODULE:
-        RCLASS_EXT(obj)->shape_id = shape_id;
+        RCLASS_SET_SHAPE_ID(obj, shape_id);
         break;
       default:
         if (shape_id != SPECIAL_CONST_SHAPE_ID) {
@@ -2074,11 +2069,12 @@ rb_const_missing(VALUE klass, VALUE name)
 VALUE
 rb_mod_const_missing(VALUE klass, VALUE name)
 {
-    VALUE ref = GET_EC()->private_const_reference;
+    rb_execution_context_t *ec = GET_EC();
+    VALUE ref = ec->private_const_reference;
     rb_vm_pop_cfunc_frame();
     if (ref) {
-        rb_name_err_raise("private constant %2$s::%1$s referenced",
-                          ref, name);
+        ec->private_const_reference = 0;
+        rb_name_err_raise("private constant %2$s::%1$s referenced", ref, name);
     }
     uninitialized_constant(klass, name);
 

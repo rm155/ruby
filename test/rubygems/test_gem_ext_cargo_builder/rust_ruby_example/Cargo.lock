@@ -144,18 +144,18 @@ dependencies = [
 
 [[package]]
 name = "rb-sys"
-version = "0.9.71"
+version = "0.9.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "156bfedced1e236600bcaad538477097ff2ed5c6b474e411d15b791e1d24c0f1"
+checksum = "32ffbc5146796cb118f5a68196fabf1bccfff94c4830dea18aac0690cb29bb87"
 dependencies = [
  "rb-sys-build",
 ]
 
 [[package]]
 name = "rb-sys-build"
-version = "0.9.71"
+version = "0.9.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cb2e4a32cbc290b543a74567072ad24b708aff7bb5dde5a68d5690379cd7938"
+checksum = "55edd49608668f9d45b7b1d619e6dab24ce8e591bcb912975936314aad94be40"
 dependencies = [
  "bindgen",
  "lazy_static",

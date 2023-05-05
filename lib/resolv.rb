@@ -37,6 +37,8 @@ end
 
 class Resolv
 
+  VERSION = "0.2.2"
+
   ##
   # Looks up the first IP address for +name+.
 
@@ -196,7 +198,7 @@ class Resolv
               next unless addr
               @addr2name[addr] = [] unless @addr2name.include? addr
               @addr2name[addr] << hostname
-              @addr2name[addr] += aliases
+              @addr2name[addr].concat(aliases)
               @name2addr[hostname] = [] unless @name2addr.include? hostname
               @name2addr[hostname] << addr
               aliases.each {|n|
@@ -965,7 +967,7 @@ class Resolv
             next unless keyword
             case keyword
             when 'nameserver'
-              nameserver += args
+              nameserver.concat(args)
             when 'domain'
               next if args.empty?
               search = [args[0]]

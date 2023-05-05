@@ -1543,10 +1543,12 @@ class TestProcess < Test::Unit::TestCase
       end
       t1 = Time.now
       diff = t1 - t0
-      sec = RUBY_PLATFORM =~ /freebsd/ ? sec * 2 : sec
+      sec *= 3 if RUBY_PLATFORM =~ /freebsd/
       assert_operator(diff, :<, sec,
                   ->{"#{bug11340}: #{diff} seconds to interrupt Process.wait"})
       f.puts
+    rescue Errno::EPIPE
+      omit "child process exited already in #{diff} seconds"
     end
   end
 
@@ -2156,7 +2158,9 @@ EOS
     t3 = Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond)
     assert_operator(t1, :<=, t2)
     assert_operator(t2, :<=, t3)
-    assert_raise(Errno::EINVAL) { Process.clock_gettime(:foo) }
+    assert_raise_with_message(Errno::EINVAL, /:foo/) do
+      Process.clock_gettime(:foo)
+    end
   end
 
   def test_clock_gettime_unit
@@ -2261,7 +2265,9 @@ EOS
   rescue Errno::EINVAL
   else
     assert_kind_of(Integer, r)
-    assert_raise(Errno::EINVAL) { Process.clock_getres(:foo) }
+    assert_raise_with_message(Errno::EINVAL, /:foo/) do
+      Process.clock_getres(:foo)
+    end
   end
 
   def test_clock_getres_constants

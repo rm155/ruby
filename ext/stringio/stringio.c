@@ -12,7 +12,7 @@
 
 **********************************************************************/
 
-#define STRINGIO_VERSION "3.0.6"
+#define STRINGIO_VERSION "3.0.7"
 
 #include "ruby.h"
 #include "ruby/io.h"
@@ -698,15 +698,19 @@ strio_eof(VALUE self)
 static VALUE
 strio_copy(VALUE copy, VALUE orig)
 {
-    struct StringIO *ptr;
+    struct StringIO *ptr, *old_ptr;
+    VALUE old_string = Qundef;
 
     orig = rb_convert_type(orig, T_DATA, "StringIO", "to_strio");
     if (copy == orig) return copy;
     ptr = StringIO(orig);
-    if (check_strio(copy)) {
-	strio_free(DATA_PTR(copy));
+    old_ptr = check_strio(copy);
+    if (old_ptr) {
+	old_string = old_ptr->string;
+	strio_free(old_ptr);
     }
     DATA_PTR(copy) = ptr;
+    RB_OBJ_WRITTEN(copy, old_string, ptr->string);
     RBASIC(copy)->flags &= ~STRIO_READWRITE;
     RBASIC(copy)->flags |= RBASIC(orig)->flags & STRIO_READWRITE;
     ++ptr->count;

@@ -1434,17 +1434,29 @@ invoke_iseq_block_from_c(rb_execution_context_t *ec, const struct rb_captured_bl
     VALUE type = VM_FRAME_MAGIC_BLOCK | (is_lambda ? VM_FRAME_FLAG_LAMBDA : 0);
     rb_control_frame_t *cfp = ec->cfp;
     VALUE *sp = cfp->sp;
+    int flags = (kw_splat ? VM_CALL_KW_SPLAT : 0);
+    VALUE *use_argv = (VALUE *)argv;
+    VALUE av[2];
 
     stack_check(ec);
+
+#if VM_ARGC_STACK_MAX < 1
+    /* Skip ruby array for potential autosplat case */
+    if (UNLIKELY(argc > VM_ARGC_STACK_MAX && (argc != 1 || is_lambda))) {
+#else
+    if (UNLIKELY(argc > VM_ARGC_STACK_MAX)) {
+#endif
+        use_argv = vm_argv_ruby_array(av, argv, &flags, &argc, kw_splat);
+    }
 
     CHECK_VM_STACK_OVERFLOW(cfp, argc);
     vm_check_canary(ec, sp);
     cfp->sp = sp + argc;
     for (i=0; i<argc; i++) {
-        sp[i] = argv[i];
+        sp[i] = use_argv[i];
     }
 
-    opt_pc = vm_yield_setup_args(ec, iseq, argc, sp, kw_splat, passed_block_handler,
+    opt_pc = vm_yield_setup_args(ec, iseq, argc, sp, flags, passed_block_handler,
                                  (is_lambda ? arg_setup_method : arg_setup_block));
     cfp->sp = sp;
 
@@ -2059,6 +2071,7 @@ vm_init_redefined_flag(void)
     OP(UMinus, UMINUS), (C(String));
     OP(Max, MAX), (C(Array));
     OP(Min, MIN), (C(Array));
+    OP(Hash, HASH), (C(Array));
     OP(Call, CALL), (C(Proc));
     OP(And, AND), (C(Integer));
     OP(Or, OR), (C(Integer));
@@ -2299,7 +2312,8 @@ struct rb_vm_exec_context {
 
 static void
 vm_exec_enter_vm_loop(rb_execution_context_t *ec, struct rb_vm_exec_context *ctx,
-                      struct rb_vm_tag *_tag, bool skip_first_ex_handle) {
+                      struct rb_vm_tag *_tag, bool skip_first_ex_handle)
+{
     if (skip_first_ex_handle) {
         goto vm_loop_start;
     }
@@ -2707,6 +2721,7 @@ rb_vm_update_references(void *ptr)
         vm->loaded_features = rb_gc_location(vm->loaded_features);
         vm->loaded_features_snapshot = rb_gc_location(vm->loaded_features_snapshot);
         vm->loaded_features_realpaths = rb_gc_location(vm->loaded_features_realpaths);
+        vm->loaded_features_realpath_map = rb_gc_location(vm->loaded_features_realpath_map);
         vm->top_self = rb_gc_location(vm->top_self);
         vm->orig_progname = rb_gc_location(vm->orig_progname);
 
@@ -2806,6 +2821,7 @@ rb_vm_mark(void *ptr)
         rb_gc_mark_movable(vm->loaded_features);
         rb_gc_mark_movable(vm->loaded_features_snapshot);
         rb_gc_mark_movable(vm->loaded_features_realpaths);
+        rb_gc_mark_movable(vm->loaded_features_realpath_map);
         rb_gc_mark_movable(vm->top_self);
         rb_gc_mark_movable(vm->orig_progname);
         RUBY_MARK_MOVABLE_UNLESS_NULL(vm->coverages);
@@ -4057,9 +4073,6 @@ Init_vm_objects(void)
     vm->mark_object_ary = rb_ary_hidden_new(128);
     vm->loading_table = st_init_strtable();
     vm->frozen_strings = st_init_table_with_size(&rb_fstring_hash_type, 10000);
-#if EXTSTATIC
-    vm->static_ext_inits = st_init_strtable();
-#endif
 }
 
 /* Stub for builtin function when not building YJIT units*/
