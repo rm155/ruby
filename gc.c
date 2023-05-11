@@ -8982,7 +8982,7 @@ heap_move_pooled_pages_to_free_pages(rb_heap_t *heap)
 /* marks */
 
 static void
-gc_marks_start(rb_objspace_t *objspace, int full_mark)
+gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
 {
     /* start marking */
     gc_report(1, objspace, "gc_marks_start: (%s)\n", full_mark ? "full" : "minor");
@@ -9024,6 +9024,11 @@ gc_marks_start(rb_objspace_t *objspace, int full_mark)
         }
     }
 
+}
+
+static void
+gc_marks_start(rb_objspace_t *objspace, int full_mark)
+{
     gc_mark_roots(objspace, NULL);
 
     gc_report(1, objspace, "gc_marks_start: (%s) end, stack in %"PRIdSIZE"\n",
@@ -9472,6 +9477,7 @@ gc_marks(rb_objspace_t *objspace, int full_mark)
 
     /* setup marking */
 
+    gc_marks_prepare(objspace, full_mark);
     gc_marks_start(objspace, full_mark);
     if (!is_incremental_marking(objspace)) {
         gc_marks_rest(objspace);
@@ -9501,8 +9507,13 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
 
 	/* setup marking */
 
+	gc_marks_prepare(os, full_mark);
+    }
+
+    os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	objspace->global_gc_current_target = os;
 	gc_marks_start(os, full_mark);
-	gc_prof_mark_timer_stop(os);
     }
 
     rb_vm_t *vm = GET_VM();
