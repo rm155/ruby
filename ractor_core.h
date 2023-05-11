@@ -194,6 +194,8 @@ struct rb_ractor_struct {
     VALUE debug;
 
     rb_ractor_newobj_cache_t newobj_cache;
+    rb_ractor_newobj_cache_t newobj_borrowing_cache;
+    rb_nativethread_lock_t newobj_borrowing_cache_lock;
 
     /* postponed_job (async-signal-safe, NOT thread-safe) */
     struct rb_postponed_job_struct *postponed_job_buffer;

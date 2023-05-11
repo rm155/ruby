@@ -2981,12 +2981,12 @@ rb_gc_size_allocatable_p(size_t size)
 
 static inline VALUE
 ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
-                           size_t size_pool_idx)
+                           size_t size_pool_idx, bool borrowing)
 {
     rb_ractor_newobj_size_pool_cache_t *size_pool_cache = &cache->size_pool_caches[size_pool_idx];
     RVALUE *p = size_pool_cache->freelist;
 
-    if (is_incremental_marking(objspace)) {
+    if (!borrowing && is_incremental_marking(objspace)) {
         // Not allowed to allocate without running an incremental marking step
         if (cache->incremental_mark_step_allocated_slots >= INCREMENTAL_MARK_STEP_ALLOCATIONS) {
             return Qfalse;
@@ -3091,10 +3091,13 @@ size_pool_idx_for_size(size_t size)
     return size_pool_idx;
 }
 
-void
+rb_ractor_t *
 set_current_alloc_target_ractor(rb_ractor_t *target)
 {
-    GET_RACTOR()->local_objspace->alloc_target_ractor = target;
+    rb_ractor_t *cr = GET_RACTOR();
+    rb_ractor_t *old_target_ractor = cr->local_objspace->alloc_target_ractor;
+    cr->local_objspace->alloc_target_ractor = target;
+    return old_target_ractor;
 }
 
 rb_ractor_t *
@@ -3117,18 +3120,25 @@ static VALUE
 newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked)
 {
     rb_ractor_t *alloc_target_ractor;
-    if (objspace->alloc_target_ractor) {
+    bool borrowing = !!(objspace->alloc_target_ractor);
+    bool gc_locking = false;
+    if (borrowing) {
 	alloc_target_ractor = objspace->alloc_target_ractor;
 	objspace = alloc_target_ractor->local_objspace;
+	if (!vm_locked) {
+	    lock_local_gc(objspace);
+	    gc_locking = true;
+	}
+	rb_native_mutex_lock(&alloc_target_ractor->newobj_borrowing_cache_lock);
     }
     else {
 	alloc_target_ractor = cr;
     }
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
-    rb_ractor_newobj_cache_t *cache = &alloc_target_ractor->newobj_cache;
+    rb_ractor_newobj_cache_t *cache = borrowing ? &alloc_target_ractor->newobj_borrowing_cache : &alloc_target_ractor->newobj_cache;
 
-    VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
+    VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, borrowing);
 
     if (UNLIKELY(obj == Qfalse)) {
         unsigned int lev;
@@ -3143,12 +3153,12 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
         {
             ASSERT_vm_locking();
 
-            if (is_incremental_marking(objspace)) {
+            if (!borrowing && is_incremental_marking(objspace)) {
                 gc_continue(objspace, size_pool, heap);
                 cache->incremental_mark_step_allocated_slots = 0;
 
                 // Retry allocation after resetting incremental_mark_step_allocated_slots
-                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
+                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
             }
 
             if (obj == Qfalse) {
@@ -3157,7 +3167,7 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
                 ractor_cache_set_page(cache, size_pool_idx, page);
 
                 // Retry allocation after moving to new page
-                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
+                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, borrowing);
 
                 GC_ASSERT(obj != Qfalse);
             }
@@ -3166,6 +3176,13 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
         if (unlock_vm) {
             RB_VM_LOCK_LEAVE_CR_LEV(cr, &lev);
         }
+    }
+
+    if (borrowing) {
+	rb_native_mutex_unlock(&alloc_target_ractor->newobj_borrowing_cache_lock);
+	if (gc_locking) {
+	    unlock_local_gc(objspace);
+	}
     }
 
     return obj;
@@ -4256,6 +4273,8 @@ Init_heap(rb_objspace_t *objspace)
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
 
+    objspace->alloc_target_ractor = NULL;
+
     lock_ractor_set();
     ccan_list_add_tail(&GET_VM()->objspace_set, &objspace->objspace_node);
     unlock_ractor_set();
@@ -5278,7 +5297,7 @@ rb_gc_id2ref_obj_tbl(VALUE objid)
 	}
     }
     unlock_local_gc(objspace);
-    return Qundef;
+    return result;
 }
 
 /*
@@ -6445,6 +6464,7 @@ gc_sweep_start(rb_objspace_t *objspace)
     }
 
     rb_gc_ractor_newobj_cache_clear(&objspace->ractor->newobj_cache);
+    rb_gc_ractor_newobj_cache_clear(&objspace->ractor->newobj_borrowing_cache);
 }
 
 static void

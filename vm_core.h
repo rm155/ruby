@@ -1705,8 +1705,11 @@ VALUE rb_binding_alloc(VALUE klass);
 VALUE rb_proc_alloc(VALUE klass);
 VALUE rb_proc_dup(VALUE self);
 
-void set_current_alloc_target_ractor(rb_ractor_t *target);
-rb_ractor_t * get_current_alloc_target_ractor(void);
+rb_ractor_t *set_current_alloc_target_ractor(rb_ractor_t *target);
+rb_ractor_t *get_current_alloc_target_ractor(void);
+
+#define BORROW_PAGE_BEGIN(new_target, old_target) { old_target = set_current_alloc_target_ractor(new_target);
+#define BORROW_PAGE_END(new_target, old_target) set_current_alloc_target_ractor(old_target); }
 
 /* for debug */
 extern void rb_vmdebug_stack_dump_raw(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);

@@ -263,6 +263,7 @@ ractor_free(void *ptr)
     rb_native_mutex_destroy(&r->sync.close_lock);
     rb_native_cond_destroy(&r->sync.close_cond);
     rb_native_cond_destroy(&r->sync.cond);
+    rb_native_mutex_destroy(&r->newobj_borrowing_cache_lock);
     ractor_queue_free(&r->sync.recv_queue);
     ractor_queue_free(&r->sync.takers_queue);
     ractor_local_storage_free(r);
@@ -929,8 +930,6 @@ ractor_basket_prepare_contents(VALUE obj, VALUE move, volatile VALUE *pobj, enum
     *ptype = type;
 }
 
-static void traverse_and_add_to_exemption_tbl(VALUE obj);
-
 static void
 ractor_basket_fill_(rb_ractor_t *cr, struct rb_ractor_basket *basket, VALUE obj, bool exc)
 {
@@ -939,7 +938,6 @@ ractor_basket_fill_(rb_ractor_t *cr, struct rb_ractor_basket *basket, VALUE obj,
     basket->sender = cr->pub.self;
     basket->p.send.exception = exc;
     basket->p.send.v = obj;
-    traverse_and_add_to_exemption_tbl(basket->p.send.v);
 }
 
 static void
@@ -964,8 +962,13 @@ ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
 {
     struct rb_ractor_basket basket;
     // TODO: Ractor local GC
-    ractor_basket_fill(rb_ec_ractor_ptr(ec), &basket, obj, move, false);
-    ractor_send_basket(ec, r, &basket);
+    rb_ractor_t *old_target;
+    BORROW_PAGE_BEGIN(r, old_target);
+    {
+	ractor_basket_fill(rb_ec_ractor_ptr(ec), &basket, obj, move, false);
+	ractor_send_basket(ec, r, &basket);
+    }
+    BORROW_PAGE_END(r, old_target);
     return r->pub.self;
 }
 
@@ -1297,7 +1300,12 @@ ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_q
             EC_PUSH_TAG(ec);
             if ((state = EC_EXEC_TAG()) == TAG_NONE) {
                 // TODO: Ractor local GC
-                ractor_basket_prepare_contents(obj, move, &obj, &type);
+		rb_ractor_t *old_target;
+		BORROW_PAGE_BEGIN(tr, old_target);
+		{
+		    ractor_basket_prepare_contents(obj, move, &obj, &type);
+		}
+		BORROW_PAGE_END(tr, old_target);
             }
             EC_POP_TAG();
             // rescue
@@ -1915,6 +1923,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 
         /* Clear the cached freelist to prevent a memory leak. */
         rb_gc_ractor_newobj_cache_clear(&cr->newobj_cache);
+        rb_gc_ractor_newobj_cache_clear(&cr->newobj_borrowing_cache);
 
         ractor_status_set(cr, ractor_terminated);
     }
@@ -1991,6 +2000,8 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 
     rb_native_cond_initialize(&r->sync.cond);
     rb_native_cond_initialize(&r->barrier_wait_cond);
+
+    rb_native_mutex_initialize(&r->newobj_borrowing_cache_lock);
 
     // thread management
     rb_thread_sched_init(&r->threads.sched);
@@ -3442,32 +3453,6 @@ static const VALUE fl_users = FL_USER1  | FL_USER2  | FL_USER3  |
                               FL_USER12 | FL_USER13 | FL_USER14 | FL_USER15 |
                               FL_USER16 | FL_USER17 | FL_USER18 | FL_USER19;
 
-void rb_add_to_exemption_tbl(VALUE obj);
-
-static enum obj_traverse_iterator_result
-exemption_add_enter(VALUE obj, struct obj_traverse_replace_data *data)
-{
-    if (rb_ractor_shareable_p(obj)) {
-	data->replacement = obj;
-	return traverse_skip;
-    }
-    else {
-	data->replacement = obj;
-	rb_add_to_exemption_tbl(data->replacement);
-	return traverse_cont;
-    }
-}
-
-static enum obj_traverse_iterator_result
-exemption_add_leave(VALUE obj, struct obj_traverse_replace_data *data)
-{
-    return traverse_cont;
-}
-
-static void traverse_and_add_to_exemption_tbl(VALUE obj) {
-    rb_obj_traverse_replace(obj, exemption_add_enter, exemption_add_leave, false);
-}
-
 static void
 ractor_moved_bang(VALUE obj)
 {
@@ -3486,7 +3471,6 @@ ractor_moved_bang(VALUE obj)
 static enum obj_traverse_iterator_result
 move_enter(VALUE obj, struct obj_traverse_replace_data *data)
 {
-    rb_add_to_exemption_tbl(obj);
     if (rb_ractor_shareable_p(obj)) {
         data->replacement = obj;
         return traverse_skip;
@@ -3543,7 +3527,6 @@ copy_enter(VALUE obj, struct obj_traverse_replace_data *data)
     }
     else {
         data->replacement = rb_obj_clone(obj);
-	rb_add_to_exemption_tbl(data->replacement);
         return traverse_cont;
     }
 }

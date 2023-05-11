@@ -1006,12 +1006,14 @@ rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc)
         .proc = proc,
     };
 
-    set_current_alloc_target_ractor(g);
-
-    VALUE allocated_thread = rb_thread_alloc_for_ractor(rb_cThread, g);
-    VALUE th = thread_create_core(allocated_thread, &params);
-
-    set_current_alloc_target_ractor(NULL);
+    rb_ractor_t *old_target;
+    VALUE th;
+    BORROW_PAGE_BEGIN(g, old_target);
+    {
+	VALUE allocated_thread = rb_thread_alloc_for_ractor(rb_cThread, g);
+	th = thread_create_core(allocated_thread, &params);
+    }
+    BORROW_PAGE_END(g, old_target);
 
     return th;
 }
