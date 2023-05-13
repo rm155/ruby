@@ -963,12 +963,12 @@ ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
     struct rb_ractor_basket basket;
     // TODO: Ractor local GC
     rb_ractor_t *old_target;
-    BORROW_PAGE_BEGIN(r, old_target);
+    ALLOCATE_IN_RACTOR_BEGIN(r, old_target);
     {
 	ractor_basket_fill(rb_ec_ractor_ptr(ec), &basket, obj, move, false);
 	ractor_send_basket(ec, r, &basket);
     }
-    BORROW_PAGE_END(r, old_target);
+    ALLOCATE_IN_RACTOR_END(r, old_target);
     return r->pub.self;
 }
 
@@ -1301,11 +1301,11 @@ ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_q
             if ((state = EC_EXEC_TAG()) == TAG_NONE) {
                 // TODO: Ractor local GC
 		rb_ractor_t *old_target;
-		BORROW_PAGE_BEGIN(tr, old_target);
+		ALLOCATE_IN_RACTOR_BEGIN(tr, old_target);
 		{
 		    ractor_basket_prepare_contents(obj, move, &obj, &type);
 		}
-		BORROW_PAGE_END(tr, old_target);
+		ALLOCATE_IN_RACTOR_END(tr, old_target);
             }
             EC_POP_TAG();
             // rescue

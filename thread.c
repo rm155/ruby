@@ -1008,12 +1008,12 @@ rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc)
 
     rb_ractor_t *old_target;
     VALUE th;
-    BORROW_PAGE_BEGIN(g, old_target);
+    ALLOCATE_IN_RACTOR_BEGIN(g, old_target);
     {
 	VALUE allocated_thread = rb_thread_alloc_for_ractor(rb_cThread, g);
 	th = thread_create_core(allocated_thread, &params);
     }
-    BORROW_PAGE_END(g, old_target);
+    ALLOCATE_IN_RACTOR_END(g, old_target);
 
     return th;
 }

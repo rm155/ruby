@@ -729,8 +729,6 @@ typedef struct rb_global_space {
     rb_nativethread_lock_t next_object_id_lock;
     st_table *local_gc_exemption_tbl; //TODO: Remove once all the cases are handled individually
     rb_nativethread_lock_t exemption_tbl_lock;
-    st_table *external_class_tbl;
-    rb_nativethread_lock_t external_class_tbl_lock;
     st_table *absorbed_thread_tbl;
     rb_nativethread_lock_t absorbed_thread_tbl_lock;
     struct ccan_list_head objspace_link_set;
@@ -3092,18 +3090,22 @@ size_pool_idx_for_size(size_t size)
 }
 
 rb_ractor_t *
-set_current_alloc_target_ractor(rb_ractor_t *target)
+set_current_alloc_target_ractor(rb_ractor_t *target_ractor)
 {
-    rb_ractor_t *cr = GET_RACTOR();
-    rb_ractor_t *old_target_ractor = cr->local_objspace->alloc_target_ractor;
-    cr->local_objspace->alloc_target_ractor = target;
+    rb_objspace_t *current_objspace = &rb_objspace;
+    if (target_ractor == current_objspace->ractor) {
+	target_ractor = NULL;
+    }
+    rb_ractor_t *old_target_ractor = current_objspace->alloc_target_ractor;
+    current_objspace->alloc_target_ractor = target_ractor;
     return old_target_ractor;
 }
 
 rb_ractor_t *
 get_current_alloc_target_ractor(void)
 {
-    return GET_RACTOR()->local_objspace->alloc_target_ractor;
+    rb_objspace_t *current_objspace = &rb_objspace;
+    return current_objspace->alloc_target_ractor;
 }
 
 static rb_ractor_t *
@@ -3904,12 +3906,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
     }
 
-    if (global_space->external_class_tbl) {
-	rb_native_mutex_lock(&global_space->external_class_tbl_lock);
-	st_delete(global_space->external_class_tbl, &obj, NULL);
-	rb_native_mutex_unlock(&global_space->external_class_tbl_lock);
-    }
-
     if (FL_TEST(obj, FL_SHAREABLE)) {
 	st_delete(objspace->shareable_tbl, &obj, NULL);
     }
@@ -4320,7 +4316,6 @@ rb_global_tables_init(void)
 {
     rb_global_space_t *global_space = &rb_global_space;
     global_space->local_gc_exemption_tbl = st_init_numtable();
-    global_space->external_class_tbl = st_init_numtable();
     global_space->absorbed_thread_tbl = st_init_numtable();
 }
 
@@ -4333,7 +4328,6 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->id_search_lock);
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->exemption_tbl_lock);
-    rb_nativethread_lock_initialize(&global_space->external_class_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     ccan_list_head_init(&global_space->objspace_link_set);
     return global_space;
@@ -4345,9 +4339,7 @@ rb_global_space_free(rb_global_space_t *global_space)
     rb_nativethread_lock_destroy(&global_space->id_search_lock);
     rb_nativethread_lock_destroy(&global_space->next_object_id_lock);
     st_free_table(global_space->local_gc_exemption_tbl);
-    st_free_table(global_space->external_class_tbl);
     rb_nativethread_lock_destroy(&global_space->exemption_tbl_lock);
-    rb_nativethread_lock_destroy(&global_space->external_class_tbl_lock);
     st_free_table(global_space->absorbed_thread_tbl);
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
 }
@@ -5149,18 +5141,6 @@ rb_add_to_shareable_tbl(VALUE obj)
 	objspace = GET_OBJSPACE_OF_VALUE(obj); //TODO: Avoid running this check for every single object
     }
     st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
-}
-
-void
-rb_add_to_external_class_tbl(VALUE obj)
-{
-    rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->external_class_tbl_lock);
-    VALUE already_disabled = gc_disable_no_rest(&rb_objspace);
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
-    st_insert(global_space->external_class_tbl, (st_data_t)obj, (st_data_t)&objspace->ractor);
-    if (already_disabled == Qfalse) rb_objspace_gc_enable(&rb_objspace);
-    rb_native_mutex_unlock(&global_space->external_class_tbl_lock);
 }
 
 void
@@ -7419,22 +7399,6 @@ mark_and_pin_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
     rb_id_table_foreach_values(tbl, mark_and_pin_const_entry_i, objspace);
 }
 
-static int
-mark_const_tbl_of_key(st_data_t key, st_data_t value, st_data_t data)
-{
-    rb_objspace_t *objspace = (rb_objspace_t *)data;
-    mark_const_tbl(objspace, RCLASS_CONST_TBL((VALUE)key));
-    return ST_CONTINUE;
-}
-
-static int
-mark_and_pin_const_tbl_of_key(st_data_t key, st_data_t value, st_data_t data)
-{
-    rb_objspace_t *objspace = (rb_objspace_t *)data;
-    mark_and_pin_const_tbl(objspace, RCLASS_CONST_TBL((VALUE)key));
-    return ST_CONTINUE;
-}
-
 static void
 mark_global_cc_cache_table(void)
 {
@@ -8338,20 +8302,6 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     rb_native_mutex_lock(&objspace->obj_id_lock);
     mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
     rb_native_mutex_unlock(&objspace->obj_id_lock);
-
-    if (objspace == GET_VM()->objspace && (!objspace->flags.during_global_gc || !during_gc)) {
-	MARK_CHECKPOINT("constants_of_external_classes");
-	if (global_space->external_class_tbl) {
-	    rb_native_mutex_lock(&global_space->external_class_tbl_lock);
-	    if (objspace->flags.during_global_gc) {
-		st_foreach(global_space->external_class_tbl, mark_const_tbl_of_key, (st_data_t)objspace);
-	    }
-	    else {
-		st_foreach(global_space->external_class_tbl, mark_and_pin_const_tbl_of_key, (st_data_t)objspace);
-	    }
-	    rb_native_mutex_unlock(&global_space->external_class_tbl_lock);
-	}
-    }
 
     if (!objspace->flags.during_global_gc || !during_gc) {
 	MARK_CHECKPOINT("shareable_tbl");
