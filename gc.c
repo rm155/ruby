@@ -5126,7 +5126,7 @@ rb_remove_from_absorbed_threads_tbl(rb_thread_t *th)
 {
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->absorbed_thread_tbl_lock);
-    st_delete(global_space->absorbed_thread_tbl, (st_data_t *)th, NULL);
+    st_delete(global_space->absorbed_thread_tbl, (st_data_t *) &th, NULL);
     rb_native_mutex_unlock(&global_space->absorbed_thread_tbl_lock);
 }
 
