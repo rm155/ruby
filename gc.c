@@ -1342,6 +1342,7 @@ static void release_local_gc_locks(rb_vm_t *vm);
 { \
     if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
 	if (objspace->local_gc_level == 0) { \
+	    rb_native_mutex_lock(&objspace->ractor->newobj_borrowing_cache_lock); \
 	    lock_local_gc(objspace); \
 	} \
 	objspace->local_gc_level++; \
@@ -1352,6 +1353,7 @@ static void release_local_gc_locks(rb_vm_t *vm);
 	objspace->local_gc_level--; \
 	if (objspace->local_gc_level == 0) { \
 	    unlock_local_gc(objspace); \
+	    rb_native_mutex_unlock(&objspace->ractor->newobj_borrowing_cache_lock); \
 	} \
     } \
 }
@@ -3092,12 +3094,15 @@ size_pool_idx_for_size(size_t size)
 rb_ractor_t *
 set_current_alloc_target_ractor(rb_ractor_t *target_ractor)
 {
+    ASSERT_vm_unlocking();
     rb_objspace_t *current_objspace = &rb_objspace;
     if (target_ractor == current_objspace->ractor) {
 	target_ractor = NULL;
     }
     rb_ractor_t *old_target_ractor = current_objspace->alloc_target_ractor;
     current_objspace->alloc_target_ractor = target_ractor;
+    if (old_target_ractor) rb_native_mutex_unlock(&old_target_ractor->newobj_borrowing_cache_lock);
+    if (target_ractor) rb_native_mutex_lock(&target_ractor->newobj_borrowing_cache_lock);
     return old_target_ractor;
 }
 
@@ -3127,11 +3132,6 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
     if (borrowing) {
 	alloc_target_ractor = objspace->alloc_target_ractor;
 	objspace = alloc_target_ractor->local_objspace;
-	if (!vm_locked) {
-	    lock_local_gc(objspace);
-	    gc_locking = true;
-	}
-	rb_native_mutex_lock(&alloc_target_ractor->newobj_borrowing_cache_lock);
     }
     else {
 	alloc_target_ractor = cr;
@@ -3178,13 +3178,6 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
         if (unlock_vm) {
             RB_VM_LOCK_LEAVE_CR_LEV(cr, &lev);
         }
-    }
-
-    if (borrowing) {
-	rb_native_mutex_unlock(&alloc_target_ractor->newobj_borrowing_cache_lock);
-	if (gc_locking) {
-	    unlock_local_gc(objspace);
-	}
     }
 
     return obj;
@@ -4396,7 +4389,9 @@ objspace_each_objects_try(VALUE arg)
 {
     struct each_obj_data *data = (struct each_obj_data *)arg;
     rb_objspace_t *objspace = data->objspace;
+    rb_ractor_t *r = GET_RACTOR();
 
+    rb_native_mutex_lock(&r->newobj_borrowing_cache_lock);
     /* Copy pages from all size_pools to their respective buffers. */
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
         rb_size_pool_t *size_pool = &size_pools[i];
@@ -4447,6 +4442,7 @@ objspace_each_objects_try(VALUE arg)
             page = ccan_list_next(&SIZE_POOL_EDEN_HEAP(size_pool)->pages, page, page_node);
         }
     }
+    rb_native_mutex_unlock(&r->newobj_borrowing_cache_lock);
 
     return Qnil;
 }
