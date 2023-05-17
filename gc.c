@@ -3404,7 +3404,7 @@ rb_imemo_name(enum imemo_type type)
 }
 
 static int
-rb_shareable_imemo_type(enum imemo_type type)
+inherently_shareable_imemo_type(enum imemo_type type)
 {
     switch (type) {
       case imemo_cref:
@@ -3422,20 +3422,29 @@ rb_shareable_imemo_type(enum imemo_type type)
 
 #undef rb_imemo_new
 
-VALUE
-rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
+static VALUE
+imemo_new_given_shareability(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0, bool shareable)
 {
     size_t size = RVALUE_SIZE;
     VALUE flags = T_IMEMO | (type << FL_USHIFT);
     VALUE obj = newobj_of(GET_RACTOR(), v0, flags, v1, v2, v3, TRUE, size);
-    if (rb_shareable_imemo_type(type)) {
+    if (shareable) {
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
 	rb_add_to_shareable_tbl(obj);
     }
-    if (type == imemo_env) {
-	rb_add_to_exemption_tbl(obj);
-    }
     return obj;
+}
+
+VALUE
+rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
+{
+    return imemo_new_given_shareability(type, v1, v2, v3, v0, inherently_shareable_imemo_type(type));
+}
+
+VALUE
+rb_shareable_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
+{
+    return imemo_new_given_shareability(type, v1, v2, v3, v0, true);
 }
 
 static VALUE
@@ -3497,6 +3506,14 @@ VALUE
 rb_imemo_new_debug(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0, const char *file, int line)
 {
     VALUE memo = rb_imemo_new(type, v1, v2, v3, v0);
+    fprintf(stderr, "memo %p (type: %d) @ %s:%d\n", (void *)memo, imemo_type(memo), file, line);
+    return memo;
+}
+
+VALUE
+rb_shareable_imemo_new_debug(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0, const char *file, int line)
+{
+    VALUE memo = rb_shareable_imemo_new(type, v1, v2, v3, v0);
     fprintf(stderr, "memo %p (type: %d) @ %s:%d\n", (void *)memo, imemo_type(memo), file, line);
     return memo;
 }
