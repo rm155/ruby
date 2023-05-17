@@ -418,8 +418,6 @@ rb_str_symname_type(VALUE name, unsigned int allowed_attrset)
     return type;
 }
 
-void rb_add_to_exemption_tbl(VALUE obj);
-
 static void
 set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
 {
@@ -434,7 +432,6 @@ set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
     idx = (num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
     rb_ary_store(ary, (long)idx + ID_ENTRY_STR, str);
     rb_ary_store(ary, (long)idx + ID_ENTRY_SYM, sym);
-    rb_add_to_exemption_tbl(ary);
 }
 
 static VALUE

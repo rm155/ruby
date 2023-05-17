@@ -727,8 +727,6 @@ typedef struct rb_global_space {
     rb_nativethread_lock_t id_search_lock;
     rb_ractor_t *prev_id_assigner;
     rb_nativethread_lock_t next_object_id_lock;
-    st_table *local_gc_exemption_tbl; //TODO: Remove once all the cases are handled individually
-    rb_nativethread_lock_t exemption_tbl_lock;
     st_table *absorbed_thread_tbl;
     rb_nativethread_lock_t absorbed_thread_tbl_lock;
     struct ccan_list_head objspace_link_set;
@@ -757,7 +755,6 @@ typedef struct rb_objspace {
         unsigned int has_hook: 1;
         unsigned int during_minor_gc : 1;
         unsigned int during_global_gc : 1;
-	unsigned int marking_unsorted_root : 1; //TODO: Remove once all roots are sorted
         unsigned int during_incremental_marking : 1;
         unsigned int measure_gc : 1;
     } flags;
@@ -3282,23 +3279,10 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
     return obj;
 }
 
-void rb_add_to_exemption_tbl(VALUE obj);
-
 static inline VALUE
 newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, int wb_protected, size_t alloc_size)
 {
     VALUE obj = newobj_of0(klass, flags, wb_protected, cr, alloc_size);
-
-    switch (BUILTIN_TYPE(obj)) {
-	case T_ICLASS:
-	case T_CLASS:
-	case T_MODULE:
-	    rb_add_to_exemption_tbl(obj);
-	    break;
-	default:
-	    break;
-    }
-
     return newobj_fill(obj, v1, v2, v3);
 }
 
@@ -3909,13 +3893,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         break;
     }
 
-    rb_global_space_t *global_space = &rb_global_space;
-    if (global_space->local_gc_exemption_tbl) {
-	rb_native_mutex_lock(&global_space->exemption_tbl_lock);
-	st_delete(global_space->local_gc_exemption_tbl, &obj, NULL);
-	rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
-    }
-
     if (FL_TEST(obj, FL_SHAREABLE)) {
 	st_delete(objspace->shareable_tbl, &obj, NULL);
     }
@@ -4325,7 +4302,6 @@ void
 rb_global_tables_init(void)
 {
     rb_global_space_t *global_space = &rb_global_space;
-    global_space->local_gc_exemption_tbl = st_init_numtable();
     global_space->absorbed_thread_tbl = st_init_numtable();
 }
 
@@ -4337,7 +4313,6 @@ rb_global_space_init(void)
     global_space->prev_id_assigner = NULL;
     rb_nativethread_lock_initialize(&global_space->id_search_lock);
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
-    rb_nativethread_lock_initialize(&global_space->exemption_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     ccan_list_head_init(&global_space->objspace_link_set);
     return global_space;
@@ -4348,8 +4323,6 @@ rb_global_space_free(rb_global_space_t *global_space)
 {
     rb_nativethread_lock_destroy(&global_space->id_search_lock);
     rb_nativethread_lock_destroy(&global_space->next_object_id_lock);
-    st_free_table(global_space->local_gc_exemption_tbl);
-    rb_nativethread_lock_destroy(&global_space->exemption_tbl_lock);
     st_free_table(global_space->absorbed_thread_tbl);
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
 }
@@ -5154,17 +5127,6 @@ rb_add_to_shareable_tbl(VALUE obj)
 	objspace = GET_OBJSPACE_OF_VALUE(obj); //TODO: Avoid running this check for every single object
     }
     st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
-}
-
-void
-rb_add_to_exemption_tbl(VALUE obj)
-{
-    rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->exemption_tbl_lock);
-    VALUE already_disabled = gc_disable_no_rest(&rb_objspace);
-    st_insert(global_space->local_gc_exemption_tbl, (st_data_t)obj, INT2FIX(0));
-    if (already_disabled == Qfalse) rb_objspace_gc_enable(&rb_objspace);
-    rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
 }
 
 static inline int
@@ -7694,7 +7656,7 @@ gc_aging(rb_objspace_t *objspace, VALUE obj)
 static bool
 in_marking_range(rb_objspace_t *objspace, VALUE obj)
 {
-    return (!objspace->flags.marking_unsorted_root && !FL_TEST(obj, FL_SHAREABLE)) || GET_OBJSPACE_OF_VALUE(obj) == objspace; //TODO: Apply this only to shareable objects once the roots have been sorted
+    return GET_OBJSPACE_OF_VALUE(obj) == objspace;
 }
 
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
@@ -8236,7 +8198,6 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     struct gc_list *list;
     rb_execution_context_t *ec = GET_EC();
     rb_vm_t *vm = rb_ec_vm_ptr(ec);
-    objspace->flags.marking_unsorted_root = FALSE;
 
 #if PRINT_ROOT_TICKS
     tick_t start_tick = tick();
@@ -8319,23 +8280,6 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     if (!objspace->flags.during_global_gc || !during_gc) {
 	MARK_CHECKPOINT("shareable_tbl");
 	mark_set(objspace, objspace->shareable_tbl);
-
-	MARK_CHECKPOINT("local_gc_exemption_tbl");
-	objspace->flags.marking_unsorted_root = TRUE;
-	{
-
-	    if(during_gc) {
-		rb_native_mutex_lock(&global_space->exemption_tbl_lock);
-	    }
-
-	    mark_set(objspace, global_space->local_gc_exemption_tbl);
-
-	    if(during_gc) {
-		rb_native_mutex_unlock(&global_space->exemption_tbl_lock);
-	    }
-
-	}
-	objspace->flags.marking_unsorted_root = FALSE;
     }
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
