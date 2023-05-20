@@ -1746,7 +1746,7 @@ rb_postponed_job_register_general(rb_ractor_t *r, unsigned int flags, rb_postpon
       case PJRR_SUCCESS    : return 1;
       case PJRR_FULL       : return 0;
       case PJRR_INTERRUPTED: goto begin;
-      default: rb_bug("unreachable\n");
+      default: rb_bug("unreachable");
     }
 }
 

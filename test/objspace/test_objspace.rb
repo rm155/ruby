@@ -221,7 +221,7 @@ class TestObjSpace < Test::Unit::TestCase
       o4 =
         # This line intentionally left blank
         # This line intentionally left blank
-        1.0 / 0.0; line4 = __LINE__; c4 = GC.count
+        1.0 / 0.0; line4 = __LINE__; _c4 = GC.count
       assert_equal(__FILE__, ObjectSpace.allocation_sourcefile(o4))
       assert_equal(line4, ObjectSpace.allocation_sourceline(o4))
 
@@ -287,15 +287,21 @@ class TestObjSpace < Test::Unit::TestCase
     JSON.parse(info) if defined?(JSON)
   end
 
+  class TooComplex; end
+
   if defined?(RubyVM::Shape)
     def test_dump_too_complex_shape
       RubyVM::Shape::SHAPE_MAX_VARIATIONS.times do
-        Object.new.instance_variable_set(:"@a#{_1}", 1)
+        TooComplex.new.instance_variable_set(:"@a#{_1}", 1)
       end
 
-      tc = Object.new
+      tc = TooComplex.new
+      info = ObjectSpace.dump(tc)
+      assert_not_match(/"too_complex_shape"/, info)
       tc.instance_variable_set(:@new_ivar, 1)
       info = ObjectSpace.dump(tc)
+      omit 'flaky with YJIT' if defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled?
+      omit 'flaky with RJIT' if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled?
       assert_match(/"too_complex_shape":true/, info)
       if defined?(JSON)
         assert_true(JSON.parse(info)["too_complex_shape"])
