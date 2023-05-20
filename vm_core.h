@@ -1714,11 +1714,7 @@ VALUE rb_binding_alloc(VALUE klass);
 VALUE rb_proc_alloc(VALUE klass);
 VALUE rb_proc_dup(VALUE self);
 
-rb_ractor_t *set_current_alloc_target_ractor(rb_ractor_t *target);
-rb_ractor_t *get_current_alloc_target_ractor(void);
-
-#define ALLOCATE_IN_RACTOR_BEGIN(new_target, old_target) { old_target = set_current_alloc_target_ractor(new_target);
-#define ALLOCATE_IN_RACTOR_END(new_target, old_target) set_current_alloc_target_ractor(old_target); }
+VALUE rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE args);
 
 /* for debug */
 extern void rb_vmdebug_stack_dump_raw(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);

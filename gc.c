@@ -3088,9 +3088,10 @@ size_pool_idx_for_size(size_t size)
     return size_pool_idx;
 }
 
-rb_ractor_t *
-set_current_alloc_target_ractor(rb_ractor_t *target_ractor)
+static VALUE
+set_current_alloc_target_ractor(VALUE arg)
 {
+    rb_ractor_t *target_ractor = (rb_ractor_t *)arg;
     ASSERT_vm_unlocking();
     rb_objspace_t *current_objspace = &rb_objspace;
     if (target_ractor == current_objspace->ractor) {
@@ -3100,15 +3101,16 @@ set_current_alloc_target_ractor(rb_ractor_t *target_ractor)
     current_objspace->alloc_target_ractor = target_ractor;
     if (old_target_ractor) rb_native_mutex_unlock(&old_target_ractor->newobj_borrowing_cache_lock);
     if (target_ractor) rb_native_mutex_lock(&target_ractor->newobj_borrowing_cache_lock);
-    return old_target_ractor;
+    return (VALUE)old_target_ractor;
 }
 
-rb_ractor_t *
-get_current_alloc_target_ractor(void)
+VALUE
+rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE args)
 {
-    rb_objspace_t *current_objspace = &rb_objspace;
-    return current_objspace->alloc_target_ractor;
+    VALUE old_target = set_current_alloc_target_ractor((VALUE)target_ractor);
+    return rb_ensure(func, args, set_current_alloc_target_ractor, old_target);
 }
+
 
 static rb_ractor_t *
 current_allocating_ractor(void)

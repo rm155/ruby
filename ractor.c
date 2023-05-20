@@ -907,9 +907,18 @@ ractor_send_basket(rb_execution_context_t *ec, rb_ractor_t *r, struct rb_ractor_
 static VALUE ractor_move(VALUE obj); // in this file
 static VALUE ractor_copy(VALUE obj); // in this file
 
-static void
-ractor_basket_prepare_contents(VALUE obj, VALUE move, volatile VALUE *pobj, enum rb_ractor_basket_type *ptype)
+struct basket_preparation_args {
+    VALUE obj;
+    VALUE move;
+    volatile VALUE *pobj;
+    enum rb_ractor_basket_type *ptype;
+};
+
+static VALUE
+ractor_basket_prepare_contents(VALUE args)
 {
+    struct basket_preparation_args *p = (struct basket_preparation_args *)args;
+    VALUE obj = p->obj;
     VALUE v;
     enum rb_ractor_basket_type type;
 
@@ -917,7 +926,7 @@ ractor_basket_prepare_contents(VALUE obj, VALUE move, volatile VALUE *pobj, enum
         type = basket_type_ref;
         v = obj;
     }
-    else if (!RTEST(move)) {
+    else if (!RTEST(p->move)) {
         v = ractor_copy(obj);
         type = basket_type_copy;
     }
@@ -926,8 +935,9 @@ ractor_basket_prepare_contents(VALUE obj, VALUE move, volatile VALUE *pobj, enum
         v = ractor_move(obj);
     }
 
-    *pobj = v;
-    *ptype = type;
+    *p->pobj = v;
+    *p->ptype = type;
+    return Qnil;
 }
 
 static void
@@ -945,7 +955,13 @@ ractor_basket_fill(rb_ractor_t *cr, struct rb_ractor_basket *basket, VALUE obj, 
 {
     VALUE v;
     enum rb_ractor_basket_type type;
-    ractor_basket_prepare_contents(obj, move, &v, &type);
+    struct basket_preparation_args args = {
+	.obj = obj,
+	.move = move,
+	.pobj = &v,
+	.ptype = &type,
+    };
+    ractor_basket_prepare_contents((VALUE)&args);
     ractor_basket_fill_(cr, basket, v, exc);
     basket->type.e = type;
 }
@@ -957,19 +973,35 @@ ractor_basket_fill_will(rb_ractor_t *cr, struct rb_ractor_basket *basket, VALUE 
     basket->type.e = basket_type_will;
 }
 
+struct ractor_send_args {
+    rb_execution_context_t *ec;
+    rb_ractor_t *r;
+    VALUE obj;
+    VALUE move;
+};
+
+static VALUE
+ractor_send_given_redirected_allocation(VALUE args)
+{
+    struct ractor_send_args *p = (struct ractor_send_args *)args;
+    struct rb_ractor_basket basket;
+    ractor_basket_fill(rb_ec_ractor_ptr(p->ec), &basket, p->obj, p->move, false);
+    ractor_send_basket(p->ec, p->r, &basket);
+    return p->r->pub.self;
+}
+
 static VALUE
 ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
 {
-    struct rb_ractor_basket basket;
     // TODO: Ractor local GC
-    rb_ractor_t *old_target;
-    ALLOCATE_IN_RACTOR_BEGIN(r, old_target);
-    {
-	ractor_basket_fill(rb_ec_ractor_ptr(ec), &basket, obj, move, false);
-	ractor_send_basket(ec, r, &basket);
-    }
-    ALLOCATE_IN_RACTOR_END(r, old_target);
-    return r->pub.self;
+    struct ractor_send_args args = {
+	.ec = ec,
+	.r = r,
+	.obj = obj,
+	.move = move,
+    };
+
+    return rb_run_with_redirected_allocation(r, ractor_send_given_redirected_allocation, (VALUE)&args);
 }
 
 // Ractor#take
@@ -1300,12 +1332,13 @@ ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_q
             EC_PUSH_TAG(ec);
             if ((state = EC_EXEC_TAG()) == TAG_NONE) {
                 // TODO: Ractor local GC
-		rb_ractor_t *old_target;
-		ALLOCATE_IN_RACTOR_BEGIN(tr, old_target);
-		{
-		    ractor_basket_prepare_contents(obj, move, &obj, &type);
-		}
-		ALLOCATE_IN_RACTOR_END(tr, old_target);
+		struct basket_preparation_args args = {
+		    .obj = obj,
+		    .move = move,
+		    .pobj = &obj,
+		    .ptype = &type,
+		};
+		rb_run_with_redirected_allocation(tr, ractor_basket_prepare_contents, (VALUE)&args);
             }
             EC_POP_TAG();
             // rescue

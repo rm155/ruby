@@ -215,6 +215,47 @@ rb_class_detach_module_subclasses(VALUE klass)
     rb_class_foreach_subclass(klass, class_detach_module_subclasses, Qnil);
 }
 
+struct class_allocation_args {
+    VALUE flags;
+    VALUE klass;
+};
+
+static VALUE
+class_alloc_given_redirected_allocation(VALUE args)
+{
+    struct class_allocation_args *p = (struct class_allocation_args *)args;
+    VALUE flags = p->flags;
+    VALUE klass = p->klass;
+    size_t alloc_size = sizeof(struct RClass) + sizeof(rb_classext_t);
+
+    flags &= T_MASK;
+    flags |= FL_PROMOTED1 /* start from age == 2 */;
+    if (RGENGC_WB_PROTECTED_CLASS) flags |= FL_WB_PROTECTED;
+    NEWOBJ_OF(obj, struct RClass, klass, flags, alloc_size, 0);
+
+    memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
+
+    /* ZALLOC
+       RCLASS_CONST_TBL(obj) = 0;
+       RCLASS_M_TBL(obj) = 0;
+       RCLASS_IV_INDEX_TBL(obj) = 0;
+       RCLASS_SET_SUPER((VALUE)obj, 0);
+       RCLASS_SUBCLASSES(obj) = NULL;
+       RCLASS_PARENT_SUBCLASSES(obj) = NULL;
+       RCLASS_MODULE_SUBCLASSES(obj) = NULL;
+       */
+    RCLASS_SET_ORIGIN((VALUE)obj, (VALUE)obj);
+    RB_OBJ_WRITE(obj, &RCLASS_REFINED_CLASS(obj), Qnil);
+    RCLASS_SET_ALLOCATOR((VALUE)obj, NULL);
+
+    VALUE class_obj = (VALUE)obj;
+    if ( (flags & T_CLASS) || (flags & T_MODULE) ) {
+	FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
+	rb_add_to_shareable_tbl(class_obj);
+    }
+    return class_obj;
+}
+
 /**
  * Allocates a struct RClass for a new class.
  *
@@ -232,43 +273,13 @@ class_alloc(VALUE flags, VALUE klass)
 {
     rb_vm_t *vm = GET_VM();
     rb_ractor_t *alloc_ractor = vm->ractor.main_ractor->local_objspace ? vm->ractor.main_ractor : NULL;
-    rb_ractor_t *old_ractor;
-    VALUE class_obj;
 
-    ALLOCATE_IN_RACTOR_BEGIN(alloc_ractor, old_ractor);
-    {
-	size_t alloc_size = sizeof(struct RClass) + sizeof(rb_classext_t);
+    struct class_allocation_args args = {
+	.flags = flags,
+	.klass = klass,
+    };
 
-	flags &= T_MASK;
-	flags |= FL_PROMOTED1 /* start from age == 2 */;
-	if (RGENGC_WB_PROTECTED_CLASS) flags |= FL_WB_PROTECTED;
-	NEWOBJ_OF(obj, struct RClass, klass, flags, alloc_size, 0);
-
-	memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
-
-	/* ZALLOC
-	   RCLASS_CONST_TBL(obj) = 0;
-	   RCLASS_M_TBL(obj) = 0;
-	   RCLASS_IV_INDEX_TBL(obj) = 0;
-	   RCLASS_SET_SUPER((VALUE)obj, 0);
-	   RCLASS_SUBCLASSES(obj) = NULL;
-	   RCLASS_PARENT_SUBCLASSES(obj) = NULL;
-	   RCLASS_MODULE_SUBCLASSES(obj) = NULL;
-	   */
-	RCLASS_SET_ORIGIN((VALUE)obj, (VALUE)obj);
-	RB_OBJ_WRITE(obj, &RCLASS_REFINED_CLASS(obj), Qnil);
-	RCLASS_SET_ALLOCATOR((VALUE)obj, NULL);
-
-	class_obj = (VALUE)obj;
-	if ( (flags & T_CLASS) || (flags & T_MODULE) ) {
-	    FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
-	    rb_add_to_shareable_tbl(class_obj);
-	    //if (alloc_ractor && GET_RACTOR() != alloc_ractor) rb_add_to_external_class_tbl(class_obj);
-	}
-    }
-    ALLOCATE_IN_RACTOR_END(alloc_ractor, old_ractor);
-
-    return class_obj;
+    return rb_run_with_redirected_allocation(alloc_ractor, class_alloc_given_redirected_allocation, (VALUE)&args);
 }
 
 static void

@@ -996,26 +996,29 @@ rb_thread_create(VALUE (*fn)(void *), void *arg)
     return thread_create_core(rb_thread_alloc(rb_cThread), &params);
 }
 
+static VALUE
+thread_create_ractor_given_redirected_allocation(VALUE args)
+{
+    struct thread_create_params *p = (struct thread_create_params *)args;
+    VALUE th;
+    VALUE allocated_thread = rb_thread_alloc_for_ractor(rb_cThread, p->g);
+    th = thread_create_core(allocated_thread, p);
+    return th;
+}
+
 VALUE
 rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc)
 {
+    VALUE th;
+
     struct thread_create_params params = {
-        .type = thread_invoke_type_ractor_proc,
-        .g = g,
-        .args = args,
-        .proc = proc,
+	.type = thread_invoke_type_ractor_proc,
+	.g = g,
+	.args = args,
+	.proc = proc,
     };
 
-    rb_ractor_t *old_target;
-    VALUE th;
-    ALLOCATE_IN_RACTOR_BEGIN(g, old_target);
-    {
-	VALUE allocated_thread = rb_thread_alloc_for_ractor(rb_cThread, g);
-	th = thread_create_core(allocated_thread, &params);
-    }
-    ALLOCATE_IN_RACTOR_END(g, old_target);
-
-    return th;
+    return rb_run_with_redirected_allocation(g, thread_create_ractor_given_redirected_allocation, (VALUE)&params);
 }
 
 

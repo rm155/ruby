@@ -1147,8 +1147,6 @@ env_copy(const VALUE *src_ep, VALUE read_only_variables)
         ep[VM_ENV_DATA_INDEX_SPECVAL] = VM_BLOCK_HANDLER_NONE;
     }
 
-    rb_ractor_t *alloc_target_ractor = get_current_alloc_target_ractor();
-
     const rb_env_t *copied_env = vm_shareable_env_new(ep, env_body, src_env->env_size, src_env->iseq);
 
     RB_GC_GUARD(prev_env);
