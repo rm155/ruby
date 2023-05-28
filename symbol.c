@@ -428,6 +428,8 @@ set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
     if (idx >= (size_t)RARRAY_LEN(ids) || NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
         ary = rb_ary_hidden_new(ID_ENTRY_UNIT * ID_ENTRY_SIZE);
         rb_ary_store(ids, (long)idx, ary);
+	FL_SET_RAW(ary, RUBY_FL_SHAREABLE);
+	rb_add_to_shareable_tbl(ary);
     }
     idx = (num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
     rb_ary_store(ary, (long)idx + ID_ENTRY_STR, str);
