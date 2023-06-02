@@ -2744,19 +2744,27 @@ gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
 }
 
 static void
-heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
+heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap, bool borrowing)
 {
     GC_ASSERT(heap->free_pages == NULL);
 
-    /* Continue incremental marking or lazy sweeping, if in any of those steps. */
-    gc_continue(objspace, size_pool, heap);
+    if (!borrowing) {
+	/* Continue incremental marking or lazy sweeping, if in any of those steps. */
+	gc_continue(objspace, size_pool, heap);
+    }
 
     /* If we still don't have a free page and not allowed to create a new page,
      * we should start a new GC cycle. */
     if (heap->free_pages == NULL &&
             (will_be_incremental_marking(objspace) ||
                 (heap_increment(objspace, size_pool, heap) == FALSE))) {
-        if (gc_start(objspace, GPR_FLAG_NEWOBJ) == FALSE) {
+	if (borrowing) {
+            size_pool_allocatable_pages_set(objspace, size_pool, 1);
+            if (!heap_increment(objspace, size_pool, heap)) {
+		rb_bug("cannot create a new borrowing page in target Ractor");
+	    }
+	}
+	else if (gc_start(objspace, GPR_FLAG_NEWOBJ) == FALSE) {
             rb_memerror();
         }
         else {
@@ -3014,14 +3022,14 @@ ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *ca
 }
 
 static struct heap_page *
-heap_next_free_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
+heap_next_free_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap, bool borrowing)
 {
     ASSERT_vm_locking();
 
     struct heap_page *page;
 
     if (heap->free_pages == NULL) {
-        heap_prepare(objspace, size_pool, heap);
+        heap_prepare(objspace, size_pool, heap, borrowing);
     }
 
     page = heap->free_pages;
@@ -3166,7 +3174,7 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
 
             if (obj == Qfalse) {
                 // Get next free page (possibly running GC)
-                struct heap_page *page = heap_next_free_page(objspace, size_pool, heap);
+                struct heap_page *page = heap_next_free_page(objspace, size_pool, heap, borrowing);
                 ractor_cache_set_page(cache, size_pool_idx, page);
 
                 // Retry allocation after moving to new page
