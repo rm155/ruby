@@ -2617,6 +2617,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     update_objspace_tables(receiving_objspace, closing_objspace);
     allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace);
     transfer_all_size_pools(receiving_objspace, closing_objspace);
+    rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_cache);
+    rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_borrowing_cache);
     merge_deferred_heap_pages(receiving_objspace, closing_objspace);
     rb_transfer_postponed_jobs(receiving_ractor, closing_ractor);
     update_objspace_counts(receiving_objspace, closing_objspace);
