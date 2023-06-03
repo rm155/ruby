@@ -54,7 +54,6 @@
 #include "internal/missing.h"
 #include "internal/object.h"
 #include "internal/parse.h"
-#include "internal/process.h"
 #include "internal/variable.h"
 #include "ruby/encoding.h"
 #include "ruby/thread.h"
@@ -254,9 +253,6 @@ show_usage_line(const char *str, unsigned int namelen, unsigned int secondlen, i
 static void
 usage(const char *name, int help, int highlight, int columns)
 {
-    /* This message really ought to be max 23 lines.
-     * Removed -h because the user already knows that option. Others? */
-
 #define M(shortopt, longopt, desc) RUBY_OPT_MESSAGE(shortopt, longopt, desc)
 
 #if USE_YJIT
@@ -264,6 +260,9 @@ usage(const char *name, int help, int highlight, int columns)
 #else
 # define PLATFORM_JIT_OPTION "--rjit (experimental)"
 #endif
+
+    /* This message really ought to be max 23 lines.
+     * Removed -h because the user already knows that option. Others? */
     static const struct ruby_opt_message usage_msg[] = {
         M("-0[octal]",	   "",			   "specify record separator (\\0, if no argument)"),
         M("-a",		   "",			   "autosplit mode with -n or -p (splits $_ into $F)"),
@@ -294,6 +293,8 @@ usage(const char *name, int help, int highlight, int columns)
 #endif
         M("-h",		   "",			   "show this message, --help for more info"),
     };
+    STATIC_ASSERT(usage_msg_size, numberof(usage_msg) < 25);
+
     static const struct ruby_opt_message help_msg[] = {
         M("--copyright",                            "", "print the copyright"),
         M("--dump={insns|parsetree|...}[,...]",     "",
@@ -1824,6 +1825,8 @@ env_var_truthy(const char *name)
 }
 #endif
 
+rb_pid_t rb_fork_ruby(int *status);
+
 static VALUE
 process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 {
@@ -1860,7 +1863,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 #ifdef HAVE_WORKING_FORK
                 int fds[2];
                 if (rb_pipe(fds) == 0) {
-                    rb_pid_t pid = rb_fork();
+                    rb_pid_t pid = rb_fork_ruby(NULL);
                     if (pid > 0) {
                         /* exec PAGER with reading from child */
                         dup2(fds[0], 0);

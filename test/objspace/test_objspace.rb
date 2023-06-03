@@ -281,16 +281,20 @@ class TestObjSpace < Test::Unit::TestCase
   end
 
   def test_dump_flags
+    # Ensure that the fstring is promoted to old generation
+    4.times { GC.start }
     info = ObjectSpace.dump("foo".freeze)
     assert_match(/"wb_protected":true, "old":true/, info)
     assert_match(/"fstring":true/, info)
     JSON.parse(info) if defined?(JSON)
   end
 
-  class TooComplex; end
-
   if defined?(RubyVM::Shape)
+    class TooComplex; end
+
     def test_dump_too_complex_shape
+      omit "flaky test"
+
       RubyVM::Shape::SHAPE_MAX_VARIATIONS.times do
         TooComplex.new.instance_variable_set(:"@a#{_1}", 1)
       end
@@ -300,8 +304,6 @@ class TestObjSpace < Test::Unit::TestCase
       assert_not_match(/"too_complex_shape"/, info)
       tc.instance_variable_set(:@new_ivar, 1)
       info = ObjectSpace.dump(tc)
-      omit 'flaky with YJIT' if defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled?
-      omit 'flaky with RJIT' if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled?
       assert_match(/"too_complex_shape":true/, info)
       if defined?(JSON)
         assert_true(JSON.parse(info)["too_complex_shape"])

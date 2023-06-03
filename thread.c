@@ -156,6 +156,7 @@ struct waiting_fd {
     struct ccan_list_node wfd_node; /* <=> vm.waiting_fds */
     rb_thread_t *th;
     int fd;
+    struct rb_io_close_wait_list *busy;
 };
 
 /********************************************************************************/
@@ -1681,6 +1682,27 @@ rb_thread_call_without_gvl(void *(*func)(void *data), void *data1,
     return rb_nogvl(func, data1, ubf, data2, 0);
 }
 
+static void
+rb_thread_io_wake_pending_closer(struct waiting_fd *wfd)
+{
+    bool has_waiter = wfd->busy && RB_TEST(wfd->busy->wakeup_mutex);
+    if (has_waiter) {
+        rb_mutex_lock(wfd->busy->wakeup_mutex);
+    }
+
+    /* Needs to be protected with RB_VM_LOCK because we don't know if
+       wfd is on the global list of pending FD ops or if it's on a
+       struct rb_io_close_wait_list close-waiter. */
+    RB_VM_LOCK_ENTER();
+    ccan_list_del(&wfd->wfd_node);
+    RB_VM_LOCK_LEAVE();
+
+    if (has_waiter) {
+        rb_thread_wakeup(wfd->busy->closing_thread);
+        rb_mutex_unlock(wfd->busy->wakeup_mutex);
+    }
+}
+
 VALUE
 rb_thread_io_blocking_region(rb_blocking_function_t *func, void *data1, int fd)
 {
@@ -1691,7 +1713,8 @@ rb_thread_io_blocking_region(rb_blocking_function_t *func, void *data1, int fd)
 
     struct waiting_fd waiting_fd = {
         .fd = fd,
-        .th = rb_ec_thread_ptr(ec)
+        .th = rb_ec_thread_ptr(ec),
+        .busy = NULL,
     };
 
     // `errno` is only valid when there is an actual error - but we can't
@@ -1717,13 +1740,9 @@ rb_thread_io_blocking_region(rb_blocking_function_t *func, void *data1, int fd)
 
     /*
      * must be deleted before jump
-     * this will delete either from waiting_fds or on-stack CCAN_LIST_HEAD(busy)
+     * this will delete either from waiting_fds or on-stack struct rb_io_close_wait_list
      */
-    RB_VM_LOCK_ENTER();
-    {
-        ccan_list_del(&waiting_fd.wfd_node);
-    }
-    RB_VM_LOCK_LEAVE();
+    rb_thread_io_wake_pending_closer(&waiting_fd);
 
     if (state) {
         EC_JUMP_TAG(ec, state);
@@ -2480,10 +2499,13 @@ rb_ec_reset_raised(rb_execution_context_t *ec)
 }
 
 int
-rb_notify_fd_close(int fd, struct ccan_list_head *busy)
+rb_notify_fd_close(int fd, struct rb_io_close_wait_list *busy)
 {
     rb_vm_t *vm = GET_THREAD()->vm;
     struct waiting_fd *wfd = 0, *next;
+    ccan_list_head_init(&busy->pending_fd_users);
+    int has_any;
+    VALUE wakeup_mutex;
 
     RB_VM_LOCK_ENTER();
     {
@@ -2493,27 +2515,57 @@ rb_notify_fd_close(int fd, struct ccan_list_head *busy)
                 VALUE err;
 
                 ccan_list_del(&wfd->wfd_node);
-                ccan_list_add(busy, &wfd->wfd_node);
+                ccan_list_add(&busy->pending_fd_users, &wfd->wfd_node);
 
+                wfd->busy = busy;
                 err = th->vm->special_exceptions[ruby_error_stream_closed];
                 rb_threadptr_pending_interrupt_enque(th, err);
                 rb_threadptr_interrupt(th);
             }
         }
     }
+
+    has_any = !ccan_list_empty(&busy->pending_fd_users);
+    busy->closing_thread = rb_thread_current();
+    wakeup_mutex = Qnil;
+    if (has_any) {
+        wakeup_mutex = rb_mutex_new();
+        RBASIC_CLEAR_CLASS(wakeup_mutex); /* hide from ObjectSpace */
+    }
+    busy->wakeup_mutex = wakeup_mutex;
+
     RB_VM_LOCK_LEAVE();
 
-    return !ccan_list_empty(busy);
+    /* If the caller didn't pass *busy as a pointer to something on the stack,
+       we need to guard this mutex object on _our_ C stack for the duration
+       of this function. */
+    RB_GC_GUARD(wakeup_mutex);
+    return has_any;
+}
+
+void
+rb_notify_fd_close_wait(struct rb_io_close_wait_list *busy)
+{
+    if (!RB_TEST(busy->wakeup_mutex)) {
+        /* There was nobody else using this file when we closed it, so we
+           never bothered to allocate a mutex*/
+        return;
+    }
+
+    rb_mutex_lock(busy->wakeup_mutex);
+    while (!ccan_list_empty(&busy->pending_fd_users)) {
+        rb_mutex_sleep(busy->wakeup_mutex, Qnil);
+    }
+    rb_mutex_unlock(busy->wakeup_mutex);
 }
 
 void
 rb_thread_fd_close(int fd)
 {
-    struct ccan_list_head busy;
+    struct rb_io_close_wait_list busy;
 
-    ccan_list_head_init(&busy);
     if (rb_notify_fd_close(fd, &busy)) {
-        do rb_thread_schedule(); while (!ccan_list_empty(&busy));
+        rb_notify_fd_close_wait(&busy);
     }
 }
 
@@ -4256,6 +4308,7 @@ rb_thread_wait_for_single_fd(int fd, int events, struct timeval *timeout)
 
     wfd.th = GET_THREAD();
     wfd.fd = fd;
+    wfd.busy = NULL;
 
     RB_VM_LOCK_ENTER();
     {
@@ -4307,11 +4360,7 @@ rb_thread_wait_for_single_fd(int fd, int events, struct timeval *timeout)
     }
     EC_POP_TAG();
 
-    RB_VM_LOCK_ENTER();
-    {
-        ccan_list_del(&wfd.wfd_node);
-    }
-    RB_VM_LOCK_LEAVE();
+    rb_thread_io_wake_pending_closer(&wfd);
 
     if (state) {
         EC_JUMP_TAG(wfd.th->ec, state);
@@ -4385,11 +4434,7 @@ select_single_cleanup(VALUE ptr)
 {
     struct select_args *args = (struct select_args *)ptr;
 
-    RB_VM_LOCK_ENTER();
-    {
-        ccan_list_del(&args->wfd.wfd_node);
-    }
-    RB_VM_LOCK_LEAVE();
+    rb_thread_io_wake_pending_closer(&args->wfd);
     if (args->read) rb_fd_term(args->read);
     if (args->write) rb_fd_term(args->write);
     if (args->except) rb_fd_term(args->except);
@@ -4412,6 +4457,7 @@ rb_thread_wait_for_single_fd(int fd, int events, struct timeval *timeout)
     args.tv = timeout;
     args.wfd.fd = fd;
     args.wfd.th = GET_THREAD();
+    args.wfd.busy = NULL;
 
     RB_VM_LOCK_ENTER();
     {
@@ -4528,7 +4574,6 @@ check_signals_nogvl(rb_thread_t *th, int sigwait_fd)
         else {
             threadptr_trap_interrupt(vm->ractor.main_thread);
         }
-        ret = TRUE; /* for rb_sigwait_sleep */
     }
     return ret;
 }
