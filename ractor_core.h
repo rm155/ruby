@@ -195,7 +195,14 @@ struct rb_ractor_struct {
 
     rb_ractor_newobj_cache_t newobj_cache;
     rb_ractor_newobj_cache_t newobj_borrowing_cache;
-    rb_nativethread_lock_t newobj_borrowing_cache_lock;
+    struct {
+	rb_nativethread_lock_t lock;
+	rb_ractor_t *lock_owner;
+	rb_nativethread_lock_t page_lock[SIZE_POOL_COUNT];
+	rb_ractor_t *page_lock_owner[SIZE_POOL_COUNT];
+	int page_lock_lev[SIZE_POOL_COUNT];
+	bool page_recently_locked[SIZE_POOL_COUNT];
+    } borrowing_sync;
 
     /* postponed_job (async-signal-safe, NOT thread-safe) */
     struct rb_postponed_job_struct *postponed_job_buffer;

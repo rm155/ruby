@@ -263,7 +263,10 @@ ractor_free(void *ptr)
     rb_native_mutex_destroy(&r->sync.close_lock);
     rb_native_cond_destroy(&r->sync.close_cond);
     rb_native_cond_destroy(&r->sync.cond);
-    rb_native_mutex_destroy(&r->newobj_borrowing_cache_lock);
+    rb_native_mutex_destroy(&r->borrowing_sync.lock);
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+	rb_native_mutex_destroy(&r->borrowing_sync.page_lock[i]);
+    }
     ractor_queue_free(&r->sync.recv_queue);
     ractor_queue_free(&r->sync.takers_queue);
     ractor_local_storage_free(r);
@@ -2034,7 +2037,14 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     rb_native_cond_initialize(&r->sync.cond);
     rb_native_cond_initialize(&r->barrier_wait_cond);
 
-    rb_native_mutex_initialize(&r->newobj_borrowing_cache_lock);
+    rb_native_mutex_initialize(&r->borrowing_sync.lock);
+    r->borrowing_sync.lock_owner = NULL;
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+	rb_native_mutex_initialize(&r->borrowing_sync.page_lock[i]);
+	r->borrowing_sync.page_lock_owner[i] = NULL;
+	r->borrowing_sync.page_lock_lev[i] = 0;
+	r->borrowing_sync.page_recently_locked[i] = false;
+    }
 
     // thread management
     rb_thread_sched_init(&r->threads.sched);
