@@ -2158,8 +2158,12 @@ void
 rb_ractor_teardown(rb_execution_context_t *ec)
 {
     rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
+    rb_native_mutex_lock(&cr->borrowing_sync.lock);
+    cr->borrowing_sync.lock_owner = cr;
     ractor_close_incoming(ec, cr);
     ractor_close_outgoing(ec, cr);
+    cr->borrowing_sync.lock_owner = NULL;
+    rb_native_mutex_unlock(&cr->borrowing_sync.lock);
 
     rb_gc_ractor_teardown_cleanup();
 
