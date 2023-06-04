@@ -2465,11 +2465,18 @@ heap_add_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *hea
     heap->total_slots += page->total_slots;
 }
 
-static void
-insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int size_pool_idx)
+static rb_heap_t *
+select_heap(rb_objspace_t *objspace, int size_pool_idx, bool eden)
 {
+    return eden ? SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx]) : SIZE_POOL_TOMB_HEAP(&size_pools[size_pool_idx]);
+}
+
+static void
+insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int size_pool_idx, bool eden)
+{
+    rb_heap_t *heap = select_heap(objspace, size_pool_idx, eden);
+
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
-    rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
 
     heap_add_page(objspace, size_pool, heap, page);
     insert_into_heap_pages_sorted(objspace, page, page->start);
@@ -2490,12 +2497,12 @@ insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int s
 }
 
 static void
-merge_freepages(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx)
+merge_freepages(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx, bool eden)
 {
     rb_objspace_t *objspace = closing_objspace;
-    rb_heap_t *closing_heap = SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx]);
+    rb_heap_t *closing_heap = select_heap(objspace, size_pool_idx, eden);
     objspace = receiving_objspace;
-    rb_heap_t *receiving_heap = SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx]);
+    rb_heap_t *receiving_heap = select_heap(objspace, size_pool_idx, eden);
     
     struct heap_page *page = receiving_heap->free_pages;
     struct heap_page *prev_page = page;
@@ -2512,34 +2519,34 @@ merge_freepages(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspa
 }
 
 static void
-transfer_size_pool(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx)
+transfer_size_pool(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx, bool eden)
 {
     rb_objspace_t *objspace = closing_objspace;
     objspace = closing_objspace;
-    struct heap_page *page = ccan_list_top(&SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx])->pages, struct heap_page, page_node);
+    struct heap_page *page = ccan_list_top(&select_heap(objspace, size_pool_idx, eden)->pages, struct heap_page, page_node);
     while (page) {
 	ccan_list_del(&page->page_node);
-	insert_page_into_objspace(receiving_objspace, page, size_pool_idx);
-	page = ccan_list_top(&SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx])->pages, struct heap_page, page_node);
+	insert_page_into_objspace(receiving_objspace, page, size_pool_idx, eden);
+	page = ccan_list_top(&select_heap(objspace, size_pool_idx, eden)->pages, struct heap_page, page_node);
     }
-    merge_freepages(receiving_objspace, closing_objspace, size_pool_idx);
+    merge_freepages(receiving_objspace, closing_objspace, size_pool_idx, eden);
 }
 
 static void
-transfer_all_size_pools(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace)
+transfer_all_size_pools(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, bool eden)
 {
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	transfer_size_pool(receiving_objspace, closing_objspace, i);
+	transfer_size_pool(receiving_objspace, closing_objspace, i, eden);
     }
 }
 
 static void
-allocatable_pages_update_for_transfer(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace)
+allocatable_pages_update_for_transfer(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, bool eden)
 {
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
 	rb_objspace_t *objspace = closing_objspace;
 	size_t allocatable_pages_to_add = size_pools[i].allocatable_pages;
-	size_t incoming_pages = SIZE_POOL_EDEN_HEAP(&size_pools[i])->total_pages;
+	size_t incoming_pages = select_heap(objspace, i, eden)->total_pages;
 
 	objspace = receiving_objspace;
 	size_pools[i].allocatable_pages += allocatable_pages_to_add;
@@ -2623,8 +2630,10 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     rb_native_mutex_unlock(&closing_ractor->sync.close_lock);
 
     update_objspace_tables(receiving_objspace, closing_objspace);
-    allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace);
-    transfer_all_size_pools(receiving_objspace, closing_objspace);
+    allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, true);
+    allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, false);
+    transfer_all_size_pools(receiving_objspace, closing_objspace, true);
+    transfer_all_size_pools(receiving_objspace, closing_objspace, false);
     rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_cache);
     rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_borrowing_cache);
     merge_deferred_heap_pages(receiving_objspace, closing_objspace);
