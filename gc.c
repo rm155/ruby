@@ -2490,6 +2490,28 @@ insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int s
 }
 
 static void
+merge_freepages(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx)
+{
+    rb_objspace_t *objspace = closing_objspace;
+    rb_heap_t *closing_heap = SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx]);
+    objspace = receiving_objspace;
+    rb_heap_t *receiving_heap = SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx]);
+    
+    struct heap_page *page = receiving_heap->free_pages;
+    struct heap_page *prev_page = page;
+    while (page) {
+	prev_page = page;
+	page = page->free_next;
+    }
+    if (prev_page) {
+	prev_page->free_next = closing_heap->free_pages;
+    }
+    else {
+	receiving_heap->free_pages = closing_heap->free_pages;
+    }
+}
+
+static void
 transfer_size_pool(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx)
 {
     rb_objspace_t *objspace = closing_objspace;
@@ -2500,6 +2522,7 @@ transfer_size_pool(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_obj
 	insert_page_into_objspace(receiving_objspace, page, size_pool_idx);
 	page = ccan_list_top(&SIZE_POOL_EDEN_HEAP(&size_pools[size_pool_idx])->pages, struct heap_page, page_node);
     }
+    merge_freepages(receiving_objspace, closing_objspace, size_pool_idx);
 }
 
 static void
