@@ -8377,9 +8377,11 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
     rb_native_mutex_unlock(&objspace->obj_id_lock);
 
-    if (!objspace->flags.during_global_gc || !during_gc) {
-	MARK_CHECKPOINT("shareable_tbl");
-	mark_set(objspace, objspace->shareable_tbl);
+    if (rb_multi_ractor_p()) {
+	if (!objspace->flags.during_global_gc || !during_gc) {
+	    MARK_CHECKPOINT("shareable_tbl");
+	    mark_set(objspace, objspace->shareable_tbl);
+	}
     }
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
