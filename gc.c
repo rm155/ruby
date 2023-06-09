@@ -10850,6 +10850,18 @@ garbage_collect_with_gvl(rb_objspace_t *objspace, unsigned int reason)
 static VALUE
 gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE immediate_mark, VALUE immediate_sweep, VALUE global, VALUE compact)
 {
+    bool running_full_mark = RTEST(full_mark);
+    bool running_immediate_mark = RTEST(immediate_mark);
+    bool running_immediate_sweep = RTEST(immediate_sweep);
+    bool running_global = RTEST(global);
+    bool running_compact = RTEST(compact);
+
+    if (running_global) {
+        if (!running_full_mark)       rb_raise(rb_eArgError, "`full_mark' must be true if `global' is true");
+        if (!running_immediate_mark)  rb_raise(rb_eArgError, "`immediate_mark' must be true if `global' is true");
+        if (!running_immediate_sweep) rb_raise(rb_eArgError, "`immediate_sweep' must be true if `global' is true");
+    }
+
     rb_objspace_t *objspace = &rb_objspace;
     unsigned int reason = (GPR_FLAG_FULL_MARK |
                            GPR_FLAG_IMMEDIATE_MARK |
@@ -10858,20 +10870,20 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
                            GPR_FLAG_METHOD);
 
     /* For now, compact implies full mark / sweep, so ignore other flags */
-    if (RTEST(compact)) {
+    if (running_compact) {
         GC_ASSERT(GC_COMPACTION_SUPPORTED);
 
         reason |= GPR_FLAG_COMPACT;
     }
     else {
-        if (!RTEST(full_mark))       reason &= ~GPR_FLAG_FULL_MARK;
-        if (!RTEST(immediate_mark))  reason &= ~GPR_FLAG_IMMEDIATE_MARK;
-        if (!RTEST(immediate_sweep)) reason &= ~GPR_FLAG_IMMEDIATE_SWEEP;
+        if (!running_full_mark)       reason &= ~GPR_FLAG_FULL_MARK;
+        if (!running_immediate_mark)  reason &= ~GPR_FLAG_IMMEDIATE_MARK;
+        if (!running_immediate_sweep) reason &= ~GPR_FLAG_IMMEDIATE_SWEEP;
     }
-    if (!RTEST(global)) reason &= ~GPR_FLAG_GLOBAL;
+    if (!running_global) reason &= ~GPR_FLAG_GLOBAL;
 
     if(!GET_VM()->gc_deactivated) {
-	if (RTEST(global)) {
+	if (running_global) {
 	    garbage_collect(objspace, reason);
 	    gc_finalize_deferred(objspace->self_link);
 	}
