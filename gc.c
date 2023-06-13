@@ -297,6 +297,9 @@ rb_gc_guarded_ptr_val(volatile VALUE *ptr, VALUE val)
 #ifndef GC_HEAP_OLDOBJECT_LIMIT_FACTOR
 #define GC_HEAP_OLDOBJECT_LIMIT_FACTOR 2.0
 #endif
+#ifndef GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR
+#define GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR 2.0
+#endif
 
 #ifndef GC_HEAP_FREE_SLOTS_MIN_RATIO
 #define GC_HEAP_FREE_SLOTS_MIN_RATIO  0.20
@@ -352,6 +355,7 @@ typedef struct {
     double heap_free_slots_max_ratio;
     double uncollectible_wb_unprotected_objects_limit_ratio;
     double oldobject_limit_factor;
+    double sharedobject_limit_factor;
 
     size_t malloc_limit_min;
     size_t malloc_limit_max;
@@ -375,6 +379,7 @@ static ruby_gc_params_t gc_params = {
     GC_HEAP_FREE_SLOTS_MAX_RATIO,
     GC_HEAP_REMEMBERED_WB_UNPROTECTED_OBJECTS_LIMIT_RATIO,
     GC_HEAP_OLDOBJECT_LIMIT_FACTOR,
+    GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR,
 
     GC_MALLOC_LIMIT_MIN,
     GC_MALLOC_LIMIT_MAX,
@@ -730,11 +735,21 @@ enum gc_mode {
 typedef struct rb_global_space {
     VALUE next_object_id;
     rb_nativethread_lock_t id_search_lock;
+
     rb_ractor_t *prev_id_assigner;
     rb_nativethread_lock_t next_object_id_lock;
+
     st_table *absorbed_thread_tbl;
     rb_nativethread_lock_t absorbed_thread_tbl_lock;
+
     struct ccan_list_head objspace_link_set;
+
+    struct {
+        bool need_global_gc;
+	size_t shared_objects;
+	size_t shared_objects_limit;
+	rb_nativethread_lock_t shared_tracking_lock;
+    } rglobalgc; //TODO: Call global GC upon hitting shared object limit
 } rb_global_space_t;
 
 typedef struct rb_objspace {
@@ -3982,7 +3997,13 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_SHAREABLE)) {
-	st_delete(objspace->shareable_tbl, &obj, NULL);
+	bool deleted = !!st_delete(objspace->shareable_tbl, &obj, NULL);
+	if (deleted) {
+	    rb_global_space_t *global_space = &rb_global_space;
+	    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	    global_space->rglobalgc.shared_objects--;
+	    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+	}
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
@@ -4393,6 +4414,7 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->id_search_lock);
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
+    rb_nativethread_lock_initialize(&global_space->rglobalgc.shared_tracking_lock);
     ccan_list_head_init(&global_space->objspace_link_set);
     return global_space;
 }
@@ -4404,6 +4426,7 @@ rb_global_space_free(rb_global_space_t *global_space)
     rb_nativethread_lock_destroy(&global_space->next_object_id_lock);
     st_free_table(global_space->absorbed_thread_tbl);
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
+    rb_nativethread_lock_destroy(&global_space->rglobalgc.shared_tracking_lock);
 }
 
 void
@@ -5235,7 +5258,14 @@ rb_add_to_shareable_tbl(VALUE obj)
     else if (!rb_special_const_p(obj)){
 	objspace = GET_OBJSPACE_OF_VALUE(obj); //TODO: Avoid running this check for every single object
     }
-    st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+    bool duplicate = !!st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+
+    if (!duplicate) {
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	global_space->rglobalgc.shared_objects++;
+	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+    }
 }
 
 static inline int
@@ -9187,6 +9217,9 @@ gc_marks_finish(rb_objspace_t *objspace)
             }
         }
 
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+
         if (full_marking) {
             /* See the comment about RUBY_GC_HEAP_OLDOBJECT_LIMIT_FACTOR */
             const double r = gc_params.oldobject_limit_factor;
@@ -9195,7 +9228,8 @@ gc_marks_finish(rb_objspace_t *objspace)
                 (size_t)(objspace->rgengc.old_objects * gc_params.uncollectible_wb_unprotected_objects_limit_ratio)
             );
             objspace->rgengc.old_objects_limit = (size_t)(objspace->rgengc.old_objects * r);
-        }
+	    global_space->rglobalgc.shared_objects_limit = (size_t)(global_space->rglobalgc.shared_objects * gc_params.sharedobject_limit_factor);
+	}
 
         if (objspace->rgengc.uncollectible_wb_unprotected_objects > objspace->rgengc.uncollectible_wb_unprotected_objects_limit) {
             objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_SHADY;
@@ -9206,12 +9240,28 @@ gc_marks_finish(rb_objspace_t *objspace)
         if (RGENGC_FORCE_MAJOR_GC) {
             objspace->rgengc.need_major_gc = GPR_FLAG_MAJOR_BY_FORCE;
         }
+	if (global_space->rglobalgc.shared_objects_limit > global_space->rglobalgc.shared_objects) {
+	    global_space->rglobalgc.need_global_gc = true;
+	}
+
+	const char *next_gc;
+	if (global_space->rglobalgc.need_global_gc) {
+	    next_gc = "global";
+	}
+	else if (objspace->rgengc.need_major_gc) {
+	    next_gc = "major";
+	}
+	else {
+	    next_gc = "minor";
+	}
+
+	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
 
         gc_report(1, objspace, "gc_marks_finish (marks %"PRIdSIZE" objects, "
                   "old %"PRIdSIZE" objects, total %"PRIdSIZE" slots, "
                   "sweep %"PRIdSIZE" slots, increment: %"PRIdSIZE", next GC: %s)\n",
                   objspace->marked_slots, objspace->rgengc.old_objects, heap_eden_total_slots(objspace), sweep_slots, heap_allocatable_pages(objspace),
-                  objspace->rgengc.need_major_gc ? "major" : "minor");
+                  next_gc);
     }
 
     rb_transient_heap_finish_marking();
@@ -12266,6 +12316,8 @@ enum gc_stat_sym {
     gc_stat_sym_remembered_wb_unprotected_objects_limit,
     gc_stat_sym_old_objects,
     gc_stat_sym_old_objects_limit,
+    gc_stat_sym_shared_objects,
+    gc_stat_sym_shared_objects_limit,
 #if RGENGC_ESTIMATE_OLDMALLOC
     gc_stat_sym_oldmalloc_increase_bytes,
     gc_stat_sym_oldmalloc_increase_bytes_limit,
@@ -12317,6 +12369,10 @@ setup_gc_stat_symbols(void)
         S(remembered_wb_unprotected_objects_limit);
         S(old_objects);
         S(old_objects_limit);
+	if (rb_multi_ractor_p()) {
+	    S(shared_objects);
+	    S(shared_objects_limit);
+	}
 #if RGENGC_ESTIMATE_OLDMALLOC
         S(oldmalloc_increase_bytes);
         S(oldmalloc_increase_bytes_limit);
@@ -12357,6 +12413,12 @@ gc_stat_internal(VALUE hash_or_sym)
         rb_raise(rb_eTypeError, "non-hash or symbol argument");
     }
 
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+    size_t shared_objects_value = global_space->rglobalgc.shared_objects;
+    size_t shared_objects_limit_value = global_space->rglobalgc.shared_objects_limit;
+    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+
 #define SET(name, attr) \
     if (key == gc_stat_symbols[gc_stat_sym_##name]) \
         return attr; \
@@ -12394,6 +12456,10 @@ gc_stat_internal(VALUE hash_or_sym)
     SET(remembered_wb_unprotected_objects_limit, objspace->rgengc.uncollectible_wb_unprotected_objects_limit);
     SET(old_objects, objspace->rgengc.old_objects);
     SET(old_objects_limit, objspace->rgengc.old_objects_limit);
+    if (rb_multi_ractor_p()) {
+	SET(shared_objects, shared_objects_value);
+	SET(shared_objects_limit, shared_objects_limit_value);
+    }
 #if RGENGC_ESTIMATE_OLDMALLOC
     SET(oldmalloc_increase_bytes, objspace->rgengc.oldmalloc_increase);
     SET(oldmalloc_increase_bytes_limit, objspace->rgengc.oldmalloc_increase_limit);
@@ -12934,6 +13000,7 @@ ruby_gc_set_params(void)
     get_envparam_double("RUBY_GC_HEAP_FREE_SLOTS_GOAL_RATIO", &gc_params.heap_free_slots_goal_ratio,
                         gc_params.heap_free_slots_min_ratio, gc_params.heap_free_slots_max_ratio, TRUE);
     get_envparam_double("RUBY_GC_HEAP_OLDOBJECT_LIMIT_FACTOR", &gc_params.oldobject_limit_factor, 0.0, 0.0, TRUE);
+    get_envparam_double("RUBY_GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR", &gc_params.sharedobject_limit_factor, 0.0, 0.0, TRUE);
     get_envparam_double("RUBY_GC_HEAP_REMEMBERED_WB_UNPROTECTED_OBJECTS_LIMIT_RATIO", &gc_params.uncollectible_wb_unprotected_objects_limit_ratio, 0.0, 0.0, TRUE);
 
     if (get_envparam_size("RUBY_GC_MALLOC_LIMIT", &gc_params.malloc_limit_min, 0)) {
