@@ -44,6 +44,10 @@ jobs:
       GITPULLOPTIONS: --no-tags origin ${{github.ref}}
       PATCH: C:\msys64\usr\bin\patch.exe
       OS_VER: windows-${{ matrix.vs < 2022 && '2019' || matrix.vs }}
+      # FIXME: This is a workaround for the vcpkg's issue present as of openssl 3.1.1
+      # where OpenSSL's default modules directory is incorrectly set to C:\vcpkg\packages\openssl_x64-windows\bin
+      # cf. https://github.com/ruby/openssl/pull/635#issuecomment-1596833720
+      OPENSSL_MODULES: C:\vcpkg\installed\x64-windows\bin
     steps:
       - run: md build
         working-directory:
@@ -86,7 +90,7 @@ jobs:
           git config --global core.eol lf
           git config --global advice.detachedHead 0
           git config --global init.defaultBranch garbage
-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
         with:
           path: src
       - uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1

@@ -835,23 +835,28 @@ rb_struct_transient_heap_evacuate(VALUE obj, int promote)
 static VALUE
 struct_alloc(VALUE klass)
 {
-    long n;
-    NEWOBJ_OF(st, struct RStruct, klass, T_STRUCT | (RGENGC_WB_PROTECTED_STRUCT ? FL_WB_PROTECTED : 0), sizeof(struct RStruct), 0);
+    long n = num_members(klass);
+    size_t embedded_size = offsetof(struct RStruct, as.ary) + (sizeof(VALUE) * n);
+    VALUE flags = T_STRUCT | (RGENGC_WB_PROTECTED_STRUCT ? FL_WB_PROTECTED : 0);
 
-    n = num_members(klass);
+    if (n > 0 && rb_gc_size_allocatable_p(embedded_size)) {
+        flags |= n << RSTRUCT_EMBED_LEN_SHIFT;
 
-    if (0 < n && n <= RSTRUCT_EMBED_LEN_MAX) {
-        RBASIC(st)->flags &= ~RSTRUCT_EMBED_LEN_MASK;
-        RBASIC(st)->flags |= n << RSTRUCT_EMBED_LEN_SHIFT;
+        NEWOBJ_OF(st, struct RStruct, klass, flags, embedded_size, 0);
+
         rb_mem_clear((VALUE *)st->as.ary, n);
+
+        return (VALUE)st;
     }
     else {
+        NEWOBJ_OF(st, struct RStruct, klass, flags, sizeof(struct RStruct), 0);
+
         st->as.heap.ptr = struct_heap_alloc((VALUE)st, n);
         rb_mem_clear((VALUE *)st->as.heap.ptr, n);
         st->as.heap.len = n;
-    }
 
-    return (VALUE)st;
+        return (VALUE)st;
+    }
 }
 
 VALUE
@@ -1866,7 +1871,7 @@ rb_data_with(int argc, const VALUE *argv, VALUE self)
     }
 
     VALUE h = rb_struct_to_h(self);
-    rb_hash_update_by(h, kwargs, NULL);
+    rb_hash_update_by(h, kwargs, 0);
     return rb_class_new_instance_kw(1, &h, rb_obj_class(self), TRUE);
 }
 

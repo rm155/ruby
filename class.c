@@ -246,7 +246,7 @@ class_alloc_given_redirected_allocation(VALUE args)
        */
     RCLASS_SET_ORIGIN((VALUE)obj, (VALUE)obj);
     RB_OBJ_WRITE(obj, &RCLASS_REFINED_CLASS(obj), Qnil);
-    RCLASS_SET_ALLOCATOR((VALUE)obj, NULL);
+    RCLASS_SET_ALLOCATOR((VALUE)obj, 0);
 
     VALUE class_obj = (VALUE)obj;
     if ( (flags & T_CLASS) || (flags & T_MODULE) ) {
@@ -474,8 +474,11 @@ cvc_table_copy(ID id, VALUE val, void *data)
 
     ent = ALLOC(struct rb_cvar_class_tbl_entry);
     ent->class_value = ctx->clone;
+    ent->cref = orig_entry->cref;
     ent->global_cvar_state = orig_entry->global_cvar_state;
     rb_id_table_insert(ctx->new_table, id, (VALUE)ent);
+
+    RB_OBJ_WRITTEN(ctx->clone, Qundef, ent->cref);
 
     return ID_TABLE_CONTINUE;
 }
@@ -1155,9 +1158,15 @@ rb_define_module_id_under(VALUE outer, ID id)
 }
 
 VALUE
+rb_iclass_alloc(VALUE klass)
+{
+    return class_alloc(T_ICLASS, klass);
+}
+
+VALUE
 rb_include_class_new(VALUE module, VALUE super)
 {
-    VALUE klass = class_alloc(T_ICLASS, rb_cClass);
+    VALUE klass = rb_iclass_alloc(rb_cClass);
 
     RCLASS_M_TBL(klass) = RCLASS_M_TBL(module);
 
@@ -1434,7 +1443,7 @@ ensure_origin(VALUE klass)
 {
     VALUE origin = RCLASS_ORIGIN(klass);
     if (origin == klass) {
-        origin = class_alloc(T_ICLASS, klass);
+        origin = rb_iclass_alloc(klass);
         RCLASS_SET_SUPER(origin, RCLASS_SUPER(klass));
         RCLASS_SET_SUPER(klass, origin);
         RCLASS_SET_ORIGIN(klass, origin);

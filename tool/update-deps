@@ -111,6 +111,7 @@ FILES_NEED_VPATH = %w[
   ext/ripper/eventids1.c
   ext/ripper/eventids2table.c
   ext/ripper/ripper.c
+  ext/ripper/ripper_init.c
   golf_prelude.c
   id.c
   id.h
@@ -172,7 +173,7 @@ def in_makefile(target, source)
   target = target.to_s
   source = source.to_s
   case target
-  when %r{\A[^/]*\z}, %r{\Acoroutine/}
+  when %r{\A[^/]*\z}, %r{\Acoroutine/}, %r{\Ayarp/}
     target2 = "#{target.sub(/\.o\z/, '.$(OBJEXT)')}"
     case source
     when *FILES_IN_SOURCE_DIRECTORY then source2 = "$(top_srcdir)/#{source}"
