@@ -13,6 +13,7 @@
 
 #include "id.h"
 #include "ruby/encoding.h"
+#include "ruby/thread_native.h"
 
 #define DYNAMIC_ID_P(id) (!(id&ID_STATIC_SYM)&&id>tLAST_OP_ID)
 #define STATIC_ID2SYM(id)  (((VALUE)(id)<<RUBY_SPECIAL_SHIFT)|SYMBOL_FLAG)
@@ -63,6 +64,7 @@ typedef struct {
     st_table *str_sym;
     VALUE ids;
     VALUE dsymbol_fstr_hash;
+    rb_nativethread_lock_t sym_lock;
 } rb_symbols_t;
 
 static inline rb_id_serial_t

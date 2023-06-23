@@ -85,6 +85,8 @@ Init_sym(void)
 {
     rb_symbols_t *symbols = &ruby_global_symbols;
 
+    rb_nativethread_lock_initialize(&symbols->sym_lock);
+
     VALUE dsym_fstrs = rb_ident_hash_new();
     symbols->dsymbol_fstr_hash = dsym_fstrs;
     rb_gc_register_mark_object(dsym_fstrs);
@@ -106,8 +108,8 @@ WARN_UNUSED_RESULT(static VALUE lookup_str_sym(const VALUE str));
 WARN_UNUSED_RESULT(static VALUE lookup_id_str(ID id));
 WARN_UNUSED_RESULT(static ID intern_str(VALUE str, int mutable));
 
-#define GLOBAL_SYMBOLS_ENTER(symbols) rb_symbols_t *symbols = &ruby_global_symbols; RB_VM_LOCK_ENTER()
-#define GLOBAL_SYMBOLS_LEAVE()        RB_VM_LOCK_LEAVE()
+#define GLOBAL_SYMBOLS_ENTER(symbols) { rb_symbols_t *symbols = &ruby_global_symbols; rb_native_mutex_lock(&symbols->sym_lock);
+#define GLOBAL_SYMBOLS_LEAVE(symbols) rb_native_mutex_unlock(&symbols->sym_lock); }
 
 ID
 rb_id_attrset(ID id)
@@ -472,7 +474,7 @@ get_id_serial_entry(rb_id_serial_t num, ID id, const enum id_entry_type t)
             }
         }
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
 
     return result;
 }
@@ -562,7 +564,7 @@ register_static_symid_str(ID id, VALUE str)
         register_sym(symbols, str, sym);
         set_id_entry(symbols, num, str, sym);
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
 
     return id;
 }
@@ -659,7 +661,7 @@ lookup_str_id(VALUE str)
     {
         found = st_lookup(symbols->str_sym, (st_data_t)str, &sym_data);
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
 
     if (found) {
         const VALUE sym = (VALUE)sym_data;
@@ -704,7 +706,7 @@ lookup_str_sym(const VALUE str)
     {
         sym = lookup_str_sym_with_lock(symbols, str);
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
 
     return sym;
 }
@@ -753,7 +755,7 @@ next_id_base(void)
     {
         id = next_id_base_with_lock(symbols);
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
     return id;
 }
 
@@ -817,7 +819,7 @@ rb_gc_free_dsymbol(VALUE sym)
             unregister_sym(symbols, str, sym);
             rb_hash_delete_entry(symbols->dsymbol_fstr_hash, str);
         }
-        GLOBAL_SYMBOLS_LEAVE();
+        GLOBAL_SYMBOLS_LEAVE(symbols);
     }
 }
 
@@ -882,7 +884,7 @@ rb_str_intern(VALUE str)
 #endif
         }
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
     return sym;
 }
 
@@ -910,7 +912,7 @@ rb_sym2id(VALUE sym)
                 rb_hash_delete_entry(symbols->dsymbol_fstr_hash, fstr);
             }
         }
-        GLOBAL_SYMBOLS_LEAVE();
+        GLOBAL_SYMBOLS_LEAVE(symbols);
     }
     else {
         rb_raise(rb_eTypeError, "wrong argument type %s (expected Symbol)",
@@ -1016,7 +1018,7 @@ rb_sym_all_symbols(void)
         ary = rb_ary_new2(symbols->str_sym->num_entries);
         st_foreach(symbols->str_sym, symbols_i, ary);
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
 
     return ary;
 }
@@ -1152,7 +1154,7 @@ rb_check_symbol(volatile VALUE *namep)
             {
                 name = dsymbol_check(symbols, name);
             }
-            GLOBAL_SYMBOLS_LEAVE();
+            GLOBAL_SYMBOLS_LEAVE(symbols);
 
             *namep = name;
         }
