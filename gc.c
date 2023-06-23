@@ -734,7 +734,6 @@ enum gc_mode {
 
 typedef struct rb_global_space {
     VALUE next_object_id;
-    rb_nativethread_lock_t id_search_lock;
 
     rb_ractor_t *prev_id_assigner;
     rb_nativethread_lock_t next_object_id_lock;
@@ -4411,7 +4410,6 @@ rb_global_space_init(void)
     rb_global_space_t *global_space = calloc1(sizeof(rb_global_space_t));
     global_space->next_object_id = INT2FIX(OBJ_ID_INITIAL);
     global_space->prev_id_assigner = NULL;
-    rb_nativethread_lock_initialize(&global_space->id_search_lock);
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->rglobalgc.shared_tracking_lock);
@@ -4422,7 +4420,6 @@ rb_global_space_init(void)
 void
 rb_global_space_free(rb_global_space_t *global_space)
 {
-    rb_nativethread_lock_destroy(&global_space->id_search_lock);
     rb_nativethread_lock_destroy(&global_space->next_object_id_lock);
     st_free_table(global_space->absorbed_thread_tbl);
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
@@ -5368,21 +5365,10 @@ rb_gc_id2ref_obj_tbl(VALUE objid)
 	return result;
     }
 
-    lock_local_gc(objspace);
     rb_ractor_t *r = NULL;
     rb_vm_t *vm = GET_VM();
-    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
-	if (r->local_objspace != objspace) {
-	    result = lookup_id_in_objspace(r->local_objspace, objid);
-	    if (result != Qundef) {
-		break;
-	    }
-	}
-    }
-    unlock_local_gc(objspace);
-    if (result != Qundef) return result;
 
-    lock_local_gc(objspace);
+    lock_ractor_set();
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	result = lookup_id_in_objspace(os, objid);
@@ -5390,7 +5376,7 @@ rb_gc_id2ref_obj_tbl(VALUE objid)
 	    break;
 	}
     }
-    unlock_local_gc(objspace);
+    unlock_ractor_set();
     return result;
 }
 
