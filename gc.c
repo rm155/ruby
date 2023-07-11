@@ -3822,7 +3822,7 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data_ptr)
     VM_ASSERT(vm_ccs_p(ccs));
     VM_ASSERT(id == ccs->cme->called_id);
 
-    if (METHOD_ENTRY_INVALIDATED(ccs->cme)) {
+    if (data->objspace->flags.during_global_gc && METHOD_ENTRY_INVALIDATED(ccs->cme)) {
         rb_vm_ccs_free(ccs);
         return ID_TABLE_DELETE;
     }
@@ -3831,7 +3831,9 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data_ptr)
 
         for (int i=0; i<ccs->len; i++) {
             VM_ASSERT(data->klass == ccs->entries[i].cc->klass);
-            VM_ASSERT(vm_cc_check_cme(ccs->entries[i].cc, ccs->cme));
+	    if (data->objspace->flags.during_global_gc) {
+		VM_ASSERT(vm_cc_check_cme(ccs->entries[i].cc, ccs->cme));
+	    }
 
             gc_mark(data->objspace, (VALUE)ccs->entries[i].ci);
             gc_mark(data->objspace, (VALUE)ccs->entries[i].cc);
