@@ -62,6 +62,11 @@ static void check_before_mod_set(VALUE, ID, VALUE, const char *);
 static void setup_const_entry(rb_const_entry_t *, VALUE, VALUE, rb_const_flag_t);
 static VALUE rb_const_search(VALUE klass, ID id, int exclude, int recurse, int visibility);
 static st_table *generic_iv_tbl_;
+struct generic_ivtbl_sync_struct {
+    rb_nativethread_lock_t lock;
+    struct rb_ractor_struct *lock_owner;
+    int lock_lev;
+} generic_ivtbl_sync;
 
 struct ivar_update {
     struct gen_ivtbl *ivtbl;
@@ -73,10 +78,34 @@ struct ivar_update {
 };
 
 void
+enter_ivtbl_lock(void)
+{
+    rb_ractor_t *cr = GET_RACTOR();
+    if (generic_ivtbl_sync.lock_owner != cr) {
+	rb_native_mutex_lock(&generic_ivtbl_sync.lock);
+	generic_ivtbl_sync.lock_owner = cr;
+    }
+    generic_ivtbl_sync.lock_lev++;
+}
+
+void
+leave_ivtbl_lock(void)
+{
+    generic_ivtbl_sync.lock_lev--;
+    if (generic_ivtbl_sync.lock_lev == 0) {
+	generic_ivtbl_sync.lock_owner = NULL;
+	rb_native_mutex_unlock(&generic_ivtbl_sync.lock);
+    }
+}
+
+void
 Init_var_tables(void)
 {
     rb_global_tbl = rb_id_table_create(0);
     generic_iv_tbl_ = st_init_numtable();
+    rb_nativethread_lock_initialize(&generic_ivtbl_sync.lock);
+    generic_ivtbl_sync.lock_owner = NULL;
+    generic_ivtbl_sync.lock_lev = 0;
     autoload = rb_intern_const("__autoload__");
 
     autoload_mutex = rb_mutex_new();
@@ -974,10 +1003,14 @@ IVAR_ACCESSOR_SHOULD_BE_MAIN_RACTOR(ID id)
       rb_raise(rb_eRactorIsolationError, "can not access class variables from non-main Ractors"); \
   }
 
+#define GENERIC_IVTBL_ENTER() { enter_ivtbl_lock();
+#define GENERIC_IVTBL_LEAVE() leave_ivtbl_lock(); }
+#define ASSERT_generic_ivtbl_locking() VM_ASSERT(generic_ivtbl_sync.lock_owner == GET_RACTOR());
+
 static inline struct st_table *
 generic_ivtbl(VALUE obj, ID id, bool force_check_ractor)
 {
-    ASSERT_vm_locking();
+    ASSERT_generic_ivtbl_locking();
 
     if ((force_check_ractor || LIKELY(rb_is_instance_id(id)) /* not internal ID */ )  &&
         !RB_OBJ_FROZEN_RAW(obj) &&
@@ -1016,14 +1049,14 @@ rb_gen_ivtbl_get(VALUE obj, ID id, struct gen_ivtbl **ivtbl)
     st_data_t data;
     int r = 0;
 
-    RB_VM_LOCK_ENTER();
+    GENERIC_IVTBL_ENTER();
     {
         if (st_lookup(generic_ivtbl(obj, id, false), (st_data_t)obj, &data)) {
             *ivtbl = (struct gen_ivtbl *)data;
             r = 1;
         }
     }
-    RB_VM_LOCK_LEAVE();
+    GENERIC_IVTBL_LEAVE();
 
     return r;
 }
@@ -1072,7 +1105,7 @@ gen_ivtbl_dup(const struct gen_ivtbl *orig)
 static int
 generic_ivar_update(st_data_t *k, st_data_t *v, st_data_t u, int existing)
 {
-    ASSERT_vm_locking();
+    ASSERT_generic_ivtbl_locking();
 
     struct ivar_update *ivup = (struct ivar_update *)u;
     struct gen_ivtbl *ivtbl = 0;
@@ -1121,8 +1154,12 @@ rb_mv_generic_ivar(VALUE rsrc, VALUE dst)
     st_data_t key = (st_data_t)rsrc;
     st_data_t ivtbl;
 
-    if (st_delete(generic_ivtbl_no_ractor_check(rsrc), &key, &ivtbl))
-        st_insert(generic_ivtbl_no_ractor_check(dst), (st_data_t)dst, ivtbl);
+    GENERIC_IVTBL_ENTER();
+    {
+	if (st_delete(generic_ivtbl_no_ractor_check(rsrc), &key, &ivtbl))
+	    st_insert(generic_ivtbl_no_ractor_check(dst), (st_data_t)dst, ivtbl);
+    }
+    GENERIC_IVTBL_LEAVE();
 }
 
 void
@@ -1130,8 +1167,12 @@ rb_free_generic_ivar(VALUE obj)
 {
     st_data_t key = (st_data_t)obj, ivtbl;
 
-    if (st_delete(generic_ivtbl_no_ractor_check(obj), &key, &ivtbl))
-        xfree((struct gen_ivtbl *)ivtbl);
+    GENERIC_IVTBL_ENTER();
+    {
+	if (st_delete(generic_ivtbl_no_ractor_check(obj), &key, &ivtbl))
+	    xfree((struct gen_ivtbl *)ivtbl);
+    }
+    GENERIC_IVTBL_LEAVE();
 }
 
 RUBY_FUNC_EXPORTED size_t
@@ -1151,7 +1192,7 @@ rb_generic_shape_id(VALUE obj)
     struct gen_ivtbl *ivtbl = 0;
     shape_id_t shape_id = 0;
 
-    RB_VM_LOCK_ENTER();
+    GENERIC_IVTBL_ENTER();
     {
         st_table* global_iv_table = generic_ivtbl(obj, 0, false);
 
@@ -1162,7 +1203,7 @@ rb_generic_shape_id(VALUE obj)
             shape_id = SPECIAL_CONST_SHAPE_ID;
         }
     }
-    RB_VM_LOCK_LEAVE();
+    GENERIC_IVTBL_LEAVE();
 
     return shape_id;
 }
@@ -1348,13 +1389,13 @@ generic_ivar_set(VALUE obj, ID id, VALUE val)
     ivup.shape = shape;
 #endif
 
-    RB_VM_LOCK_ENTER();
+    GENERIC_IVTBL_ENTER();
     {
         ivup.iv_index = (uint32_t)index;
 
         st_update(generic_ivtbl(obj, id, false), (st_data_t)obj, generic_ivar_update, (st_data_t)&ivup);
     }
-    RB_VM_LOCK_LEAVE();
+    GENERIC_IVTBL_LEAVE();
 
     ivup.ivtbl->ivptr[ivup.iv_index] = val;
     RB_OBJ_WRITTEN(obj, Qundef, val);
@@ -1451,7 +1492,7 @@ rb_ensure_generic_iv_list_size(VALUE obj, rb_shape_t *shape, uint32_t newsize)
 {
     struct gen_ivtbl * ivtbl = 0;
 
-    RB_VM_LOCK_ENTER();
+    GENERIC_IVTBL_ENTER();
     {
         if (UNLIKELY(!gen_ivtbl_get_unlocked(obj, 0, &ivtbl) || newsize > ivtbl->numiv)) {
             struct ivar_update ivup = {
@@ -1466,7 +1507,7 @@ rb_ensure_generic_iv_list_size(VALUE obj, rb_shape_t *shape, uint32_t newsize)
             FL_SET_RAW(obj, FL_EXIVAR);
         }
     }
-    RB_VM_LOCK_LEAVE();
+    GENERIC_IVTBL_LEAVE();
 
     RUBY_ASSERT(ivtbl);
 
@@ -1600,7 +1641,7 @@ rb_shape_set_shape_id(VALUE obj, shape_id_t shape_id)
       default:
         if (shape_id != SPECIAL_CONST_SHAPE_ID) {
             struct gen_ivtbl *ivtbl = 0;
-            RB_VM_LOCK_ENTER();
+            GENERIC_IVTBL_ENTER();
             {
                 st_table* global_iv_table = generic_ivtbl(obj, 0, false);
 
@@ -1611,7 +1652,7 @@ rb_shape_set_shape_id(VALUE obj, shape_id_t shape_id)
                     rb_bug("Expected shape_id entry in global iv table");
                 }
             }
-            RB_VM_LOCK_LEAVE();
+            GENERIC_IVTBL_LEAVE();
         }
     }
 #endif
@@ -1836,12 +1877,12 @@ rb_copy_generic_ivar(VALUE clone, VALUE obj)
          * c.ivtbl may change in gen_ivar_copy due to realloc,
          * no need to free
          */
-        RB_VM_LOCK_ENTER();
+        GENERIC_IVTBL_ENTER();
         {
             generic_ivtbl_no_ractor_check(clone);
             st_insert(generic_ivtbl_no_ractor_check(obj), (st_data_t)clone, (st_data_t)new_ivtbl);
         }
-        RB_VM_LOCK_LEAVE();
+        GENERIC_IVTBL_LEAVE();
 
         rb_shape_t * obj_shape = rb_shape_get_shape(obj);
         if (rb_shape_frozen_shape_p(obj_shape)) {
@@ -1865,7 +1906,7 @@ rb_replace_generic_ivar(VALUE clone, VALUE obj)
 {
     RUBY_ASSERT(FL_TEST(obj, FL_EXIVAR));
 
-    RB_VM_LOCK_ENTER();
+    GENERIC_IVTBL_ENTER();
     {
         st_data_t ivtbl, obj_data = (st_data_t)obj;
         if (st_lookup(generic_iv_tbl_, (st_data_t)obj, &ivtbl)) {
@@ -1876,7 +1917,7 @@ rb_replace_generic_ivar(VALUE clone, VALUE obj)
             rb_bug("unreachable");
         }
     }
-    RB_VM_LOCK_LEAVE();
+    GENERIC_IVTBL_LEAVE();
 
     FL_SET(clone, FL_EXIVAR);
 }
