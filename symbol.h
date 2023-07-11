@@ -59,12 +59,18 @@ static const uint32_t RB_ID_SERIAL_MAX = /* 256M on LP32 */
     ((sizeof(ID)-sizeof(rb_id_serial_t))*CHAR_BIT < RUBY_ID_SCOPE_SHIFT ?
      RUBY_ID_SCOPE_SHIFT : 0);
 
+struct rb_ractor_struct;
+
 typedef struct {
     rb_id_serial_t last_id;
     st_table *str_sym;
     VALUE ids;
     VALUE dsymbol_fstr_hash;
-    rb_nativethread_lock_t sym_lock;
+    struct {
+	rb_nativethread_lock_t lock;
+	struct rb_ractor_struct *lock_owner;
+	int lock_lev;
+    } sym_sync;
 } rb_symbols_t;
 
 static inline rb_id_serial_t
