@@ -3168,12 +3168,11 @@ rb_redirecting_allocation(void)
     return false;
 }
 
-
-static rb_ractor_t *
-current_allocating_ractor(void)
+rb_ractor_t *
+rb_current_allocating_ractor(void)
 {
-    rb_ractor_t *r = GET_RACTOR();
-    if(r->local_objspace->alloc_target_ractor) {
+    rb_ractor_t *r = ruby_single_main_ractor ? ruby_single_main_ractor : GET_RACTOR();
+    if (r->local_objspace && r->local_objspace->alloc_target_ractor) {
 	return r->local_objspace->alloc_target_ractor;
     }
     return r;
@@ -5505,7 +5504,7 @@ cached_object_id(VALUE obj)
 	rb_native_mutex_lock(&global_space->next_object_id_lock);
         id = global_space->next_object_id;
         global_space->next_object_id = rb_int_plus(id, INT2FIX(OBJ_ID_INCREMENT));
-	global_space->prev_id_assigner = current_allocating_ractor();
+	global_space->prev_id_assigner = rb_current_allocating_ractor();
 	rb_native_mutex_unlock(&global_space->next_object_id_lock);
 
         VALUE already_disabled = gc_disable_no_rest(objspace);
