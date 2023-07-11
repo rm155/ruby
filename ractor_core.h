@@ -380,6 +380,7 @@ rb_ractor_setup_belonging_to(VALUE obj, uint32_t rid)
 static inline void
 rb_ractor_setup_belonging(VALUE obj)
 {
+    rb_ractor_t *r = rb_current_allocating_ractor();
     rb_ractor_setup_belonging_to(obj, rb_ractor_id(r));
 }
 
