@@ -675,6 +675,13 @@ rb_exc_exception(VALUE mesg, int tag, VALUE cause)
     rb_longjmp(GET_EC(), tag, mesg, cause);
 }
 
+static void
+exc_raise_given_redirected_allocation(VALUE mesg)
+{
+    VALUE mesg_copy = rb_ractor_make_shareable_copy(mesg);
+    rb_exc_exception(mesg_copy, TAG_RAISE, Qundef);
+}
+
 /*!
  * Raises an exception in the current thread.
  * \param[in] mesg an Exception class or an \c Exception object.
@@ -685,7 +692,13 @@ rb_exc_exception(VALUE mesg, int tag, VALUE cause)
 void
 rb_exc_raise(VALUE mesg)
 {
-    rb_exc_exception(mesg, TAG_RAISE, Qundef);
+    if (rb_redirecting_allocation()) {
+	rb_ractor_t *r = ruby_single_main_ractor ? ruby_single_main_ractor : GET_RACTOR();
+	rb_run_with_redirected_allocation(r, exc_raise_given_redirected_allocation, mesg);
+    }
+    else {
+	rb_exc_exception(mesg, TAG_RAISE, Qundef);
+    }
 }
 
 /*!

@@ -3158,6 +3158,16 @@ rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALU
     return rb_ensure(func, args, set_current_alloc_target_ractor, old_target);
 }
 
+bool
+rb_redirecting_allocation(void)
+{
+    rb_ractor_t *r = ruby_single_main_ractor ? ruby_single_main_ractor : GET_RACTOR();
+    if (r->local_objspace && r->local_objspace->alloc_target_ractor) {
+	return true;
+    }
+    return false;
+}
+
 
 static rb_ractor_t *
 current_allocating_ractor(void)

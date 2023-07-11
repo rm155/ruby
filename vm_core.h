@@ -1706,6 +1706,7 @@ VALUE rb_proc_alloc(VALUE klass);
 VALUE rb_proc_dup(VALUE self);
 
 VALUE rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE args);
+bool rb_redirecting_allocation(void);
 
 /* for debug */
 extern void rb_vmdebug_stack_dump_raw(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);
