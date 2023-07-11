@@ -251,6 +251,9 @@ bool rb_gc_is_ptr_to_obj(void *ptr);
 VALUE rb_gc_id2ref_obj_tbl(VALUE objid);
 VALUE rb_define_finalizer_no_check(VALUE obj, VALUE block);
 
+bool rb_ractor_safe_gc_state(void);
+#define ASSERT_ractor_safe_gc_state() VM_ASSERT(rb_ractor_safe_gc_state())
+
 void rb_gc_mark_and_move(VALUE *ptr);
 
 #define rb_gc_mark_and_move_ptr(ptr) do { \

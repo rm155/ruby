@@ -102,6 +102,9 @@ struct transient_heap {
 
     struct transient_heap_block *arena;
     int arena_index; /* increment only */
+
+    rb_nativethread_lock_t theap_lock;
+    int marking_count;
 };
 
 struct transient_alloc_header {
@@ -459,6 +462,9 @@ Init_TransientHeap(void)
         integer_overflow,
         sizeof(VALUE) <= SIZE_MAX / TRANSIENT_HEAP_PROMOTED_DEFAULT_SIZE);
     if (theap->promoted_objects == NULL) rb_bug("Init_TransientHeap: malloc failed.");
+
+    rb_nativethread_lock_initialize(&theap->theap_lock);
+    theap->marking_count = 0;
 }
 
 static struct transient_heap_block *
@@ -540,8 +546,6 @@ alloc_header_to_block(struct transient_heap *theap, struct transient_alloc_heade
 void
 rb_transient_heap_mark(VALUE obj, const void *ptr)
 {
-    ASSERT_vm_locking();
-
     struct transient_alloc_header *header = ptr_to_alloc_header(ptr);
     asan_unpoison_memory_region(header, sizeof *header, false);
     if (header->magic != TRANSIENT_HEAP_ALLOC_MAGIC) rb_bug("rb_transient_heap_mark: wrong header, %s (%p)", rb_obj_info(obj), ptr);
@@ -550,6 +554,8 @@ rb_transient_heap_mark(VALUE obj, const void *ptr)
 #if TRANSIENT_HEAP_CHECK_MODE > 0
     {
         struct transient_heap* theap = transient_heap_get();
+	rb_native_mutex_lock(&theap->theap_lock);
+	ASSERT_ractor_safe_gc_state();
         TH_ASSERT(theap->status == transient_heap_marking);
         TH_ASSERT(transient_header_managed_ptr_p(theap, ptr));
 
@@ -562,6 +568,7 @@ rb_transient_heap_mark(VALUE obj, const void *ptr)
             rb_bug("rb_transient_heap_mark: unmatch (%s is stored, but %s is given)",
                    rb_obj_info(header->obj), rb_obj_info(obj));
         }
+	rb_native_mutex_unlock(&theap->theap_lock);
     }
 #endif
 
@@ -571,6 +578,7 @@ rb_transient_heap_mark(VALUE obj, const void *ptr)
     }
     else {
         struct transient_heap* theap = transient_heap_get();
+	rb_native_mutex_lock(&theap->theap_lock);
         struct transient_heap_block *block = alloc_header_to_block(theap, header);
         __asan_unpoison_memory_region(&block->info, sizeof block->info);
         header->next_marked_index = block->info.last_marked_index;
@@ -578,6 +586,7 @@ rb_transient_heap_mark(VALUE obj, const void *ptr)
         theap->total_marked_objects++;
 
         transient_heap_verify(theap);
+	rb_native_mutex_unlock(&theap->theap_lock);
     }
 }
 
@@ -645,11 +654,12 @@ transient_heap_promote_add(struct transient_heap* theap, VALUE obj)
 void
 rb_transient_heap_promote(VALUE obj)
 {
-    ASSERT_vm_locking();
-
     if (transient_heap_ptr(obj, FALSE)) {
         struct transient_heap* theap = transient_heap_get();
+	rb_native_mutex_lock(&theap->theap_lock);
+	ASSERT_ractor_safe_gc_state();
         transient_heap_promote_add(theap, obj);
+	rb_native_mutex_unlock(&theap->theap_lock);
     }
     else {
         /* ignore */
@@ -665,8 +675,6 @@ alloc_header(struct transient_heap_block* block, int index)
 static void
 transient_heap_reset(void)
 {
-    ASSERT_vm_locking();
-
     struct transient_heap* theap = transient_heap_get();
     struct transient_heap_block* block;
 
@@ -803,6 +811,8 @@ transient_heap_evacuate(void *dmy)
                 block = block->info.next_block;
             }
 
+	    ASSERT_vm_locking();
+
             /* all objects in marked_objects are escaped. */
             transient_heap_reset();
 
@@ -882,9 +892,10 @@ transient_heap_blocks_update_refs(struct transient_heap* theap, struct transient
 void
 rb_transient_heap_update_references(void)
 {
-    ASSERT_vm_locking();
-
     struct transient_heap* theap = transient_heap_get();
+    rb_native_mutex_lock(&theap->theap_lock);
+    ASSERT_ractor_safe_gc_state();
+
     int i;
 
     transient_heap_blocks_update_refs(theap, theap->using_blocks, "using_blocks");
@@ -894,15 +905,22 @@ rb_transient_heap_update_references(void)
         VALUE obj = theap->promoted_objects[i];
         theap->promoted_objects[i] = rb_gc_location(obj);
     }
+    rb_native_mutex_unlock(&theap->theap_lock);
 }
 
 void
 rb_transient_heap_start_marking(int full_marking)
 {
-    ASSERT_vm_locking();
     RUBY_DEBUG_LOG("full?:%d", full_marking);
 
     struct transient_heap* theap = transient_heap_get();
+
+    rb_native_mutex_lock(&theap->theap_lock);
+    theap->marking_count++;
+    if (theap->marking_count != 1) {
+	rb_native_mutex_unlock(&theap->theap_lock);
+	return;
+    }
 
     if (TRANSIENT_HEAP_DEBUG >= 1) fprintf(stderr, "!! rb_transient_heap_start_marking objects:%d blocks:%d promoted:%d full_marking:%d\n",
                                            theap->total_objects, theap->total_blocks, theap->promoted_objects_index, full_marking);
@@ -945,13 +963,15 @@ rb_transient_heap_start_marking(int full_marking)
     }
 
     transient_heap_verify(theap);
+    rb_native_mutex_unlock(&theap->theap_lock);
 }
 
 void
 rb_transient_heap_finish_marking(void)
 {
-    ASSERT_vm_locking();
     struct transient_heap* theap = transient_heap_get();
+    rb_native_mutex_lock(&theap->theap_lock);
+    ASSERT_ractor_safe_gc_state();
 
     RUBY_DEBUG_LOG("objects:%d, marked:%d",
                    theap->total_objects,
@@ -960,8 +980,11 @@ rb_transient_heap_finish_marking(void)
 
     TH_ASSERT(theap->total_objects >= theap->total_marked_objects);
 
-    TH_ASSERT(theap->status == transient_heap_marking);
-    transient_heap_update_status(theap, transient_heap_none);
+    theap->marking_count--;
+    if (theap->marking_count == 0) {
+	TH_ASSERT(theap->status == transient_heap_marking);
+	transient_heap_update_status(theap, transient_heap_none);
+    }
 
     if (theap->total_marked_objects > 0) {
         if (TRANSIENT_HEAP_DEBUG >= 1) fprintf(stderr, "-> rb_transient_heap_finish_marking register escape func.\n");
@@ -972,5 +995,6 @@ rb_transient_heap_finish_marking(void)
     }
 
     transient_heap_verify(theap);
+    rb_native_mutex_unlock(&theap->theap_lock);
 }
 #endif /* USE_TRANSIENT_HEAP */

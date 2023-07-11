@@ -7693,6 +7693,21 @@ rb_gc_mark_maybe(VALUE obj)
     gc_mark_maybe(&rb_objspace, obj);
 }
 
+bool
+rb_ractor_safe_gc_state(void)
+{
+    if (!rb_multi_ractor_p()) {
+	return true;
+    }
+    rb_vm_t *vm = GET_VM();
+    rb_ractor_t *cr = GET_RACTOR();
+    if (vm->ractor.sync.lock_owner == cr) {
+	return true;
+    }
+    rb_objspace_t *objspace = &rb_objspace;
+    return !objspace->flags.during_global_gc;
+}
+
 static inline int
 gc_mark_set(rb_objspace_t *objspace, VALUE obj)
 {
