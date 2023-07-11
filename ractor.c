@@ -598,7 +598,17 @@ static void
 ractor_sleep_interrupt(void *ptr)
 {
     rb_ractor_t *r = ptr;
-    ractor_wakeup(r, wait_receiving | wait_taking | wait_yielding, wakeup_by_interrupt);
+
+    bool already_locking = rb_current_execution_context(false) != NULL && is_locked_by_current_thread(r);
+    if (!already_locking) {
+	RACTOR_LOCK(r);
+    }
+    {
+        ractor_wakeup(r, wait_receiving | wait_taking | wait_yielding, wakeup_by_interrupt);
+    }
+    if (!already_locking) {
+	RACTOR_UNLOCK(r);
+    }
 }
 
 typedef void (*ractor_sleep_cleanup_function)(rb_ractor_t *cr, void *p);
