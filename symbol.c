@@ -133,6 +133,7 @@ leave_sym_lock(rb_symbols_t *symbols)
 
 #define GLOBAL_SYMBOLS_ENTER(symbols) { rb_symbols_t *symbols = &ruby_global_symbols; enter_sym_lock(symbols);
 #define GLOBAL_SYMBOLS_LEAVE(symbols) leave_sym_lock(symbols); }
+#define ASSERT_global_symbols_locking(symbols) VM_ASSERT(symbols->sym_sync.lock_owner == GET_RACTOR());
 
 ID
 rb_id_attrset(ID id)
@@ -446,7 +447,7 @@ rb_str_symname_type(VALUE name, unsigned int allowed_attrset)
 static void
 set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
 {
-    ASSERT_vm_locking();
+    ASSERT_global_symbols_locking(symbols);
     size_t idx = num / ID_ENTRY_UNIT;
 
     VALUE ary, ids = symbols->ids;
@@ -543,7 +544,7 @@ register_sym_update_callback(st_data_t *key, st_data_t *value, st_data_t arg, in
 static void
 register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 {
-    ASSERT_vm_locking();
+    ASSERT_global_symbols_locking(symbols);
 
 #if SYMBOL_DEBUG
     st_update(symbols->str_sym, (st_data_t)str,
@@ -556,7 +557,7 @@ register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 static void
 unregister_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 {
-    ASSERT_vm_locking();
+    ASSERT_global_symbols_locking(symbols);
 
     st_data_t str_data = (st_data_t)str;
     if (!st_delete(symbols->str_sym, &str_data, NULL)) {
@@ -637,7 +638,7 @@ must_be_dynamic_symbol(VALUE x)
 static VALUE
 dsymbol_alloc(rb_symbols_t *symbols, const VALUE klass, const VALUE str, rb_encoding * const enc, const ID type)
 {
-    ASSERT_vm_locking();
+    ASSERT_global_symbols_locking(symbols);
 
     const VALUE dsym = rb_newobj_of(klass, T_SYMBOL | FL_WB_PROTECTED);
     long hashval;
@@ -660,7 +661,7 @@ dsymbol_alloc(rb_symbols_t *symbols, const VALUE klass, const VALUE str, rb_enco
 static inline VALUE
 dsymbol_check(rb_symbols_t *symbols, const VALUE sym)
 {
-    ASSERT_vm_locking();
+    ASSERT_global_symbols_locking(symbols);
 
     if (UNLIKELY(rb_objspace_garbage_object_p(sym))) {
         const VALUE fstr = RSYMBOL(sym)->fstr;
