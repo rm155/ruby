@@ -7,7 +7,7 @@ require_relative "helper"
 
 module TestIRB
   class RubyLexTest < TestCase
-    Row = Struct.new(:content, :current_line_spaces, :new_line_spaces, :nesting_level)
+    Row = Struct.new(:content, :current_line_spaces, :new_line_spaces, :indent_level)
 
     class MockIO_AutoIndent
       attr_reader :calculated_indent
@@ -81,26 +81,34 @@ module TestIRB
       assert_equal(row.new_line_spaces, actual_next_line_spaces, error_message)
     end
 
-    def assert_nesting_level(lines, expected, local_variables: [])
-      nesting_level, _code_block_open = check_state(lines, local_variables: local_variables)
-      error_message = "Calculated the wrong number of nesting level for:\n #{lines.join("\n")}"
-      assert_equal(expected, nesting_level, error_message)
+    def assert_indent_level(lines, expected, local_variables: [])
+      indent_level, _continue, _code_block_open = check_state(lines, local_variables: local_variables)
+      error_message = "Calculated the wrong number of indent level for:\n #{lines.join("\n")}"
+      assert_equal(expected, indent_level, error_message)
+    end
+
+    def assert_should_continue(lines, expected, local_variables: [])
+      _indent_level, continue, _code_block_open = check_state(lines, local_variables: local_variables)
+      error_message = "Wrong result of should_continue for:\n #{lines.join("\n")}"
+      assert_equal(expected, continue, error_message)
     end
 
     def assert_code_block_open(lines, expected, local_variables: [])
-      _nesting_level, code_block_open = check_state(lines, local_variables: local_variables)
+      _indent_level, _continue, code_block_open = check_state(lines, local_variables: local_variables)
       error_message = "Wrong result of code_block_open for:\n #{lines.join("\n")}"
       assert_equal(expected, code_block_open, error_message)
     end
 
     def check_state(lines, local_variables: [])
       context = build_context(local_variables)
-      tokens = RubyLex.ripper_lex_without_warning(lines.join("\n"), context: context)
+      code = lines.map { |l| "#{l}\n" }.join # code should end with "\n"
+      tokens = RubyLex.ripper_lex_without_warning(code, context: context)
       opens = IRB::NestingParser.open_tokens(tokens)
       ruby_lex = RubyLex.new(context)
-      _indent, nesting_level = ruby_lex.calc_nesting_depth(opens)
-      code_block_open = !opens.empty? || ruby_lex.process_continue(tokens)
-      [nesting_level, code_block_open]
+      indent_level = ruby_lex.calc_indent_level(opens)
+      continue = ruby_lex.should_continue?(tokens)
+      terminated = ruby_lex.code_terminated?(code, tokens, opens)
+      [indent_level, continue, !terminated]
     end
 
     def test_interpolate_token_with_heredoc_and_unclosed_embexpr
@@ -235,7 +243,7 @@ module TestIRB
     def test_endless_range_at_end_of_line
       input_with_prompt = [
         PromptRow.new('001:0: :> ', %q(a = 3..)),
-        PromptRow.new('002:0: :* ', %q()),
+        PromptRow.new('002:0: :> ', %q()),
       ]
 
       lines = input_with_prompt.map(&:content)
@@ -256,7 +264,7 @@ module TestIRB
         PromptRow.new('009:0:]:* ', %q(B)),
         PromptRow.new('010:0:]:* ', %q(})),
         PromptRow.new('011:0: :> ', %q(])),
-        PromptRow.new('012:0: :* ', %q()),
+        PromptRow.new('012:0: :> ', %q()),
       ]
 
       lines = input_with_prompt.map(&:content)
@@ -266,14 +274,14 @@ module TestIRB
 
     def test_heredoc_prompt_with_quotes
       input_with_prompt = [
-        PromptRow.new("001:0:':* ", %q(<<~'A')),
-        PromptRow.new("002:0:':* ", %q(#{foobar})),
+        PromptRow.new("001:1:':* ", %q(<<~'A')),
+        PromptRow.new("002:1:':* ", %q(#{foobar})),
         PromptRow.new("003:0: :> ", %q(A)),
-        PromptRow.new("004:0:`:* ", %q(<<~`A`)),
-        PromptRow.new("005:0:`:* ", %q(whoami)),
+        PromptRow.new("004:1:`:* ", %q(<<~`A`)),
+        PromptRow.new("005:1:`:* ", %q(whoami)),
         PromptRow.new("006:0: :> ", %q(A)),
-        PromptRow.new('007:0:":* ', %q(<<~"A")),
-        PromptRow.new('008:0:":* ', %q(foobar)),
+        PromptRow.new('007:1:":* ', %q(<<~"A")),
+        PromptRow.new('008:1:":* ', %q(foobar)),
         PromptRow.new('009:0: :> ', %q(A)),
       ]
 
@@ -285,9 +293,9 @@ module TestIRB
     def test_backtick_method
       input_with_prompt = [
         PromptRow.new('001:0: :> ', %q(self.`(arg))),
-        PromptRow.new('002:0: :* ', %q()),
+        PromptRow.new('002:0: :> ', %q()),
         PromptRow.new('003:0: :> ', %q(def `(); end)),
-        PromptRow.new('004:0: :* ', %q()),
+        PromptRow.new('004:0: :> ', %q()),
       ]
 
       lines = input_with_prompt.map(&:content)
@@ -411,7 +419,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -431,7 +439,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -479,7 +487,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -494,7 +502,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -509,7 +517,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -525,7 +533,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -540,7 +548,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -555,7 +563,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -570,7 +578,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -585,16 +593,15 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
     def test_local_variables_dependent_code
-      pend if RUBY_ENGINE == 'truffleruby'
       lines = ["a /1#/ do", "2"]
-      assert_nesting_level(lines, 1)
+      assert_indent_level(lines, 1)
       assert_code_block_open(lines, true)
-      assert_nesting_level(lines, 0, local_variables: ['a'])
+      assert_indent_level(lines, 0, local_variables: ['a'])
       assert_code_block_open(lines, false, local_variables: ['a'])
     end
 
@@ -606,9 +613,9 @@ module TestIRB
         Row.new(%q(=end), 0, 0, 0),
         Row.new(%q(if 1), 0, 2, 1),
         Row.new(%q(  2), 2, 2, 1),
-        Row.new(%q(=begin), 0, 0, 1),
-        Row.new(%q(a), 0, 0, 1),
-        Row.new(%q( b), 1, 1, 1),
+        Row.new(%q(=begin), 0, 0, 0),
+        Row.new(%q(a), 0, 0, 0),
+        Row.new(%q( b), 1, 1, 0),
         Row.new(%q(=end), 0, 2, 1),
         Row.new(%q(  3), 2, 2, 1),
         Row.new(%q(end), 0, 0, 0),
@@ -617,7 +624,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -626,14 +633,14 @@ module TestIRB
         pend 'This test needs Ripper::Lexer#scan to take broken tokens'
       end
       input_with_correct_indents = [
-        Row.new(%q(<<~Q+<<~R), 0, 2, 0),
-        Row.new(%q(a), 2, 2, 0),
-        Row.new(%q(a), 2, 2, 0),
-        Row.new(%q(  b), 2, 2, 0),
-        Row.new(%q(  b), 2, 2, 0),
-        Row.new(%q(  Q), 0, 2, 0),
-        Row.new(%q(    c), 4, 4, 0),
-        Row.new(%q(    c), 4, 4, 0),
+        Row.new(%q(<<~Q+<<~R), 0, 2, 1),
+        Row.new(%q(a), 2, 2, 1),
+        Row.new(%q(a), 2, 2, 1),
+        Row.new(%q(  b), 2, 2, 1),
+        Row.new(%q(  b), 2, 2, 1),
+        Row.new(%q(  Q), 0, 2, 1),
+        Row.new(%q(    c), 4, 4, 1),
+        Row.new(%q(    c), 4, 4, 1),
         Row.new(%q(    R), 0, 0, 0),
       ]
 
@@ -641,7 +648,7 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -657,30 +664,30 @@ module TestIRB
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
     def test_broken_heredoc
       input_with_correct_indents = [
         Row.new(%q(def foo), 0, 2, 1),
-        Row.new(%q(  <<~Q), 2, 4, 1),
-        Row.new(%q(  Qend), 4, 4, 1),
+        Row.new(%q(  <<~Q), 2, 4, 2),
+        Row.new(%q(  Qend), 4, 4, 2),
       ]
       lines = []
       input_with_correct_indents.each do |row|
         lines << row.content
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
     def test_heredoc_keep_indent_spaces
       (1..4).each do |indent|
-        row = Row.new(' ' * indent, nil, [4, indent].max, 1)
+        row = Row.new(' ' * indent, nil, [4, indent].max, 2)
         lines = ['def foo', '  <<~Q', row.content]
         assert_row_indenting(lines, row)
-        assert_nesting_level(lines, row.nesting_level)
+        assert_indent_level(lines, row.indent_level)
       end
     end
 
@@ -698,8 +705,64 @@ module TestIRB
       end
     end
 
+    def test_pasted_code_keep_base_indent_spaces
+      input_with_correct_indents = [
+        Row.new(%q(    def foo), 0, 6, 1),
+        Row.new(%q(        if bar), 6, 10, 2),
+        Row.new(%q(          [1), 10, 12, 3),
+        Row.new(%q(          ]+[["a), 10, 14, 4),
+        Row.new(%q(b" + `c), 0, 14, 4),
+        Row.new(%q(d` + /e), 0, 14, 4),
+        Row.new(%q(f/ + :"g), 0, 14, 4),
+        Row.new(%q(h".tap do), 0, 16, 5),
+        Row.new(%q(                1), 16, 16, 5),
+        Row.new(%q(              end), 14, 14, 4),
+        Row.new(%q(            ]), 12, 12, 3),
+        Row.new(%q(          ]), 10, 10, 2),
+        Row.new(%q(        end), 8, 6, 1),
+        Row.new(%q(    end), 4, 0, 0),
+      ]
+      lines = []
+      input_with_correct_indents.each do |row|
+        lines << row.content
+        assert_row_indenting(lines, row)
+        assert_indent_level(lines, row.indent_level)
+      end
+    end
+
+    def test_pasted_code_keep_base_indent_spaces_with_heredoc
+      input_with_correct_indents = [
+        Row.new(%q(    def foo), 0, 6, 1),
+        Row.new(%q(        if bar), 6, 10, 2),
+        Row.new(%q(          [1), 10, 12, 3),
+        Row.new(%q(          ]+[["a), 10, 14, 4),
+        Row.new(%q(b" + <<~A + <<-B + <<C), 0, 16, 5),
+        Row.new(%q(                a#{), 16, 16, 5),
+        Row.new(%q(                1), 16, 16, 5),
+        Row.new(%q(                }), 16, 16, 5),
+        Row.new(%q(              A), 14, 16, 5),
+        Row.new(%q(                b#{), 16, 16, 5),
+        Row.new(%q(                1), 16, 16, 5),
+        Row.new(%q(                }), 16, 16, 5),
+        Row.new(%q(              B), 14, 0, 0),
+        Row.new(%q(c#{), 0, 0, 0),
+        Row.new(%q(1), 0, 0, 0),
+        Row.new(%q(}), 0, 0, 0),
+        Row.new(%q(C), 0, 14, 4),
+        Row.new(%q(            ]), 12, 12, 3),
+        Row.new(%q(          ]), 10, 10, 2),
+        Row.new(%q(        end), 8, 6, 1),
+        Row.new(%q(    end), 4, 0, 0),
+      ]
+      lines = []
+      input_with_correct_indents.each do |row|
+        lines << row.content
+        assert_row_indenting(lines, row)
+        assert_indent_level(lines, row.indent_level)
+      end
+    end
+
     def assert_dynamic_prompt(lines, expected_prompt_list)
-      pend if RUBY_ENGINE == 'truffleruby'
       context = build_context
       ruby_lex = RubyLex.new(context)
       dynamic_prompt_executed = false
@@ -777,6 +840,36 @@ module TestIRB
       assert_dynamic_prompt(lines, expected_prompt_list)
     end
 
+    def test_should_continue
+      assert_should_continue(['a'], false)
+      assert_should_continue(['/a/'], false)
+      assert_should_continue(['a;'], false)
+      assert_should_continue(['<<A', 'A'], false)
+      assert_should_continue(['a...'], false)
+      assert_should_continue(['a\\'], true)
+      assert_should_continue(['a.'], true)
+      assert_should_continue(['a+'], true)
+      assert_should_continue(['a; #comment', '', '=begin', 'embdoc', '=end', ''], false)
+      assert_should_continue(['a+ #comment', '', '=begin', 'embdoc', '=end', ''], true)
+    end
+
+    def test_code_block_open_with_should_continue
+      # syntax ok
+      assert_code_block_open(['a'], false) # continue: false
+      assert_code_block_open(['a\\'], true) # continue: true
+
+      # recoverable syntax error code is not terminated
+      assert_code_block_open(['a+'], true)
+
+      # unrecoverable syntax error code is terminated
+      assert_code_block_open(['.; a+'], false)
+
+      # other syntax error that failed to determine if it is recoverable or not
+      assert_code_block_open(['@; a'], false)
+      assert_code_block_open(['@; a+'], true)
+      assert_code_block_open(['@; (a'], true)
+    end
+
     def test_broken_percent_literal
       tokens = RubyLex.ripper_lex_without_warning('%wwww')
       pos_to_index = {}
@@ -816,7 +909,7 @@ module TestIRB
       end
     end
 
-    def test_nesting_level_with_heredoc_and_embdoc
+    def test_indent_level_with_heredoc_and_embdoc
       reference_code = <<~EOC.chomp
         if true
           hello
@@ -838,9 +931,9 @@ module TestIRB
           )
       EOC
       expected = 1
-      assert_nesting_level(reference_code.lines, expected)
-      assert_nesting_level(code_with_heredoc.lines, expected)
-      assert_nesting_level(code_with_embdoc.lines, expected)
+      assert_indent_level(reference_code.lines, expected)
+      assert_indent_level(code_with_heredoc.lines, expected)
+      assert_indent_level(code_with_embdoc.lines, expected)
     end
 
     private

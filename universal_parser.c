@@ -48,7 +48,7 @@
 #define ST_CHECK ST2_CHECK
 #define ST_REPLACE ST2_REPLACE
 #undef st_init_numtable
-#define st_init_numtable() rb_parser_st_init_numtable((&p->config->st_functions))
+#define st_init_numtable rb_parser_st_init_numtable
 #undef st_free_table
 #define st_free_table rb_parser_st_free_table
 #undef st_init_table_with_size
@@ -343,25 +343,6 @@ struct rb_imemo_tmpbuf_struct {
 #define ruby_scan_digits p->config->scan_digits
 #define strtod           p->config->strtod
 
-#undef ISSPACE
-#define ISSPACE(c)  ((p->config->isspace)(c))
-#undef ISASCII
-#define ISASCII(c)  ((p->config->isascii)(c))
-#undef ISCNTRL
-#define ISCNTRL(c)  ((p->config->iscntrl)(c))
-#undef ISALPHA
-#define ISALPHA(c)  ((p->config->isalpha)(c))
-#undef ISDIGIT
-#define ISDIGIT(c)  ((p->config->isdigit)(c))
-#undef ISALNUM
-#define ISALNUM(c)  ((p->config->isalnum)(c))
-#undef ISXDIGIT
-#define ISXDIGIT(c) ((p->config->isxdigit)(c))
-#undef STRCASECMP
-#define STRCASECMP p->config->strcasecmp
-#undef STRNCASECMP
-#define STRNCASECMP p->config->strncasecmp
-
 #undef RBOOL
 #define RBOOL p->config->rbool
 #undef UNDEF_P
@@ -393,8 +374,7 @@ struct rb_imemo_tmpbuf_struct {
 #define rb_node_case_when_optimizable_literal p->config->node_case_when_optimizable_literal
 
 #undef st_init_table_with_size
-#define st_init_table_with_size(type, size) \
-    rb_parser_st_init_table_with_size(type, &p->config->st_functions, size)
+#define st_init_table_with_size rb_parser_st_init_table_with_size
 
 #define rb_ast_new() \
     rb_ast_new(p->config)

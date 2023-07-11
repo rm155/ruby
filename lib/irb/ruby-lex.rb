@@ -85,7 +85,7 @@ class RubyLex
             # Avoid appending duplicated token. Tokens that include "\n" like multiline tstring_content can exist in multiple lines.
             tokens_until_line << token if token != tokens_until_line.last
           end
-          continue = process_continue(tokens_until_line)
+          continue = should_continue?(tokens_until_line)
           prompt(next_opens, continue, line_num_offset)
         end
       end
@@ -184,8 +184,8 @@ class RubyLex
 
   def prompt(opens, continue, line_num_offset)
     ltype = ltype_from_open_tokens(opens)
-    _indent_level, nesting_level = calc_nesting_depth(opens)
-    @prompt&.call(ltype, nesting_level, opens.any? || continue, @line_no + line_num_offset)
+    indent_level = calc_indent_level(opens)
+    @prompt&.call(ltype, indent_level, opens.any? || continue, @line_no + line_num_offset)
   end
 
   def check_code_state(code)
@@ -196,7 +196,16 @@ class RubyLex
   end
 
   def code_terminated?(code, tokens, opens)
-    opens.empty? && !process_continue(tokens) && !check_code_block(code, tokens)
+    case check_code_syntax(code)
+    when :unrecoverable_error
+      true
+    when :recoverable_error
+      false
+    when :other_error
+      opens.empty? && !should_continue?(tokens)
+    when :valid
+      !should_continue?(tokens)
+    end
   end
 
   def save_prompt_to_context_io(opens, continue, line_num_offset)
@@ -227,7 +236,7 @@ class RubyLex
       return code if terminated
 
       line_offset += 1
-      continue = process_continue(tokens)
+      continue = should_continue?(tokens)
       save_prompt_to_context_io(opens, continue, line_offset)
     end
   end
@@ -246,29 +255,33 @@ class RubyLex
     end
   end
 
-  def process_continue(tokens)
-    # last token is always newline
-    if tokens.size >= 2 and tokens[-2].event == :on_regexp_end
-      # end of regexp literal
-      return false
-    elsif tokens.size >= 2 and tokens[-2].event == :on_semicolon
-      return false
-    elsif tokens.size >= 2 and tokens[-2].event == :on_kw and ['begin', 'else', 'ensure'].include?(tokens[-2].tok)
-      return false
-    elsif !tokens.empty? and tokens.last.tok == "\\\n"
-      return true
-    elsif tokens.size >= 1 and tokens[-1].event == :on_heredoc_end # "EOH\n"
-      return false
-    elsif tokens.size >= 2 and tokens[-2].state.anybits?(Ripper::EXPR_BEG | Ripper::EXPR_FNAME) and tokens[-2].tok !~ /\A\.\.\.?\z/
-      # end of literal except for regexp
-      # endless range at end of line is not a continue
-      return true
+  def should_continue?(tokens)
+    # Look at the last token and check if IRB need to continue reading next line.
+    # Example code that should continue: `a\` `a +` `a.`
+    # Trailing spaces, newline, comments are skipped
+    return true if tokens.last&.event == :on_sp && tokens.last.tok == "\\\n"
+
+    tokens.reverse_each do |token|
+      case token.event
+      when :on_sp, :on_nl, :on_ignored_nl, :on_comment, :on_embdoc_beg, :on_embdoc, :on_embdoc_end
+        # Skip
+      when :on_regexp_end, :on_heredoc_end, :on_semicolon
+        # State is EXPR_BEG but should not continue
+        return false
+      else
+        # Endless range should not continue
+        return false if token.event == :on_op && token.tok.match?(/\A\.\.\.?\z/)
+
+        # EXPR_DOT and most of the EXPR_BEG should continue
+        return token.state.anybits?(Ripper::EXPR_BEG | Ripper::EXPR_DOT)
+      end
     end
     false
   end
 
-  def check_code_block(code, tokens)
-    return true if tokens.empty?
+  def check_code_syntax(code)
+    lvars_code = RubyLex.generate_local_variables_assign_code(@context.local_variables)
+    code = "#{lvars_code}\n#{code}"
 
     begin # check if parser error are available
       verbose, $VERBOSE = $VERBOSE, nil
@@ -287,6 +300,7 @@ class RubyLex
       end
     rescue EncodingError
       # This is for a hash with invalid encoding symbol, {"\xAE": 1}
+      :unrecoverable_error
     rescue SyntaxError => e
       case e.message
       when /unterminated (?:string|regexp) meets end of file/
@@ -299,7 +313,7 @@ class RubyLex
         #
         #   example:
         #     '
-        return true
+        return :recoverable_error
       when /syntax error, unexpected end-of-input/
         # "syntax error, unexpected end-of-input, expecting keyword_end"
         #
@@ -309,7 +323,7 @@ class RubyLex
         #       if false
         #         fuga
         #       end
-        return true
+        return :recoverable_error
       when /syntax error, unexpected keyword_end/
         # "syntax error, unexpected keyword_end"
         #
@@ -319,47 +333,30 @@ class RubyLex
         #
         #   example:
         #     end
-        return false
+        return :unrecoverable_error
       when /syntax error, unexpected '\.'/
         # "syntax error, unexpected '.'"
         #
         #   example:
         #     .
-        return false
+        return :unrecoverable_error
       when /unexpected tREGEXP_BEG/
         # "syntax error, unexpected tREGEXP_BEG, expecting keyword_do or '{' or '('"
         #
         #   example:
         #     method / f /
-        return false
+        return :unrecoverable_error
+      else
+        return :other_error
       end
     ensure
       $VERBOSE = verbose
     end
-
-    last_lex_state = tokens.last.state
-
-    if last_lex_state.allbits?(Ripper::EXPR_BEG)
-      return false
-    elsif last_lex_state.allbits?(Ripper::EXPR_DOT)
-      return true
-    elsif last_lex_state.allbits?(Ripper::EXPR_CLASS)
-      return true
-    elsif last_lex_state.allbits?(Ripper::EXPR_FNAME)
-      return true
-    elsif last_lex_state.allbits?(Ripper::EXPR_VALUE)
-      return true
-    elsif last_lex_state.allbits?(Ripper::EXPR_ARG)
-      return false
-    end
-
-    false
+    :valid
   end
 
-  # Calculates [indent_level, nesting_level]. nesting_level is used in prompt string.
-  def calc_nesting_depth(opens)
+  def calc_indent_level(opens)
     indent_level = 0
-    nesting_level = 0
     opens.each_with_index do |t, index|
       case t.event
       when :on_heredoc_beg
@@ -370,24 +367,43 @@ class RubyLex
             indent_level = 0
           end
         end
-      when :on_tstring_beg, :on_regexp_beg, :on_symbeg
+      when :on_tstring_beg, :on_regexp_beg, :on_symbeg, :on_backtick
         # can be indented if t.tok starts with `%`
       when :on_words_beg, :on_qwords_beg, :on_symbols_beg, :on_qsymbols_beg, :on_embexpr_beg
         # can be indented but not indented in current implementation
       when :on_embdoc_beg
         indent_level = 0
       else
-        nesting_level += 1
         indent_level += 1
       end
     end
-    [indent_level, nesting_level]
+    indent_level
   end
 
   FREE_INDENT_TOKENS = %i[on_tstring_beg on_backtick on_regexp_beg on_symbeg]
 
   def free_indent_token?(token)
     FREE_INDENT_TOKENS.include?(token&.event)
+  end
+
+  # Calculates the difference of pasted code's indent and indent calculated from tokens
+  def indent_difference(lines, line_results, line_index)
+    loop do
+      _tokens, prev_opens, _next_opens, min_depth = line_results[line_index]
+      open_token = prev_opens.last
+      if !open_token || (open_token.event != :on_heredoc_beg && !free_indent_token?(open_token))
+        # If the leading whitespace is an indent, return the difference
+        indent_level = calc_indent_level(prev_opens.take(min_depth))
+        calculated_indent = 2 * indent_level
+        actual_indent = lines[line_index][/^ */].size
+        return actual_indent - calculated_indent
+      elsif open_token.event == :on_heredoc_beg && open_token.tok.match?(/^<<[^-~]/)
+        return 0
+      end
+      # If the leading whitespace is not an indent but part of a multiline token
+      # Calculate base_indent of the multiline token's beginning line
+      line_index = open_token.pos[0] - 1
+    end
   end
 
   def process_indent_level(tokens, lines, line_index, is_newline)
@@ -403,18 +419,27 @@ class RubyLex
 
     # To correctly indent line like `end.map do`, we use shortest open tokens on each line for indent calculation.
     # Shortest open tokens can be calculated by `opens.take(min_depth)`
-    indent_level, _nesting_level = calc_nesting_depth(prev_opens.take(min_depth))
-    indent = 2 * indent_level
+    indent = 2 * calc_indent_level(prev_opens.take(min_depth))
 
     preserve_indent = lines[line_index - (is_newline ? 1 : 0)][/^ */].size
 
     prev_open_token = prev_opens.last
     next_open_token = next_opens.last
 
+    # Calculates base indent for pasted code on the line where prev_open_token is located
+    # irb(main):001:1*   if a # base_indent is 2, indent calculated from tokens is 0
+    # irb(main):002:1*         if b # base_indent is 6, indent calculated from tokens is 2
+    # irb(main):003:0>           c # base_indent is 6, indent calculated from tokens is 4
+    if prev_open_token
+      base_indent = [0, indent_difference(lines, line_results, prev_open_token.pos[0] - 1)].max
+    else
+      base_indent = 0
+    end
+
     if free_indent_token?(prev_open_token)
       if is_newline && prev_open_token.pos[0] == line_index
         # First newline inside free-indent token
-        indent
+        base_indent + indent
       else
         # Accept any number of indent inside free-indent token
         preserve_indent
@@ -432,21 +457,21 @@ class RubyLex
       if prev_opens.size <= next_opens.size
         if is_newline && lines[line_index].empty? && line_results[line_index - 1][1].last != next_open_token
           # First line in heredoc
-          indent
+          tok.match?(/^<<[-~]/) ? base_indent + indent : indent
         elsif tok.match?(/^<<~/)
           # Accept extra indent spaces inside `<<~` heredoc
-          [indent, preserve_indent].max
+          [base_indent + indent, preserve_indent].max
         else
           # Accept any number of indent inside other heredoc
           preserve_indent
         end
       else
         # Heredoc close
-        prev_line_indent_level, _prev_line_nesting_level = calc_nesting_depth(prev_opens)
-        tok.match?(/^<<[~-]/) ? 2 * (prev_line_indent_level - 1) : 0
+        prev_line_indent_level = calc_indent_level(prev_opens)
+        tok.match?(/^<<[~-]/) ? base_indent + 2 * (prev_line_indent_level - 1) : 0
       end
     else
-      indent
+      base_indent + indent
     end
   end
 
