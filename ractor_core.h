@@ -104,9 +104,9 @@ struct rb_ractor_sync {
     rb_nativethread_cond_t close_cond;
     bool ready_to_close;
     rb_nativethread_lock_t close_lock;
-#if RACTOR_CHECK_MODE > 0
+
     VALUE locked_by;
-#endif
+    VALUE locking_thread;
     rb_nativethread_cond_t cond;
 
     bool incoming_port_closed;

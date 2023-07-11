@@ -35,12 +35,18 @@ static void vm_ractor_blocking_cnt_inc(rb_vm_t *vm, rb_ractor_t *r, const char *
 
 // Ractor locking
 
+static bool
+is_locked_by_current_thread(rb_ractor_t *r)
+{
+    return r->sync.locked_by == rb_ractor_self(GET_RACTOR()) && r->sync.locking_thread == GET_THREAD()->self;
+}
+
 static void
 ASSERT_ractor_unlocking(rb_ractor_t *r)
 {
 #if RACTOR_CHECK_MODE > 0
     // GET_EC is NULL in an RJIT worker
-    if (rb_current_execution_context(false) != NULL && r->sync.locked_by == rb_ractor_self(GET_RACTOR())) {
+    if (rb_current_execution_context(false) != NULL && is_locked_by_current_thread(r)) {
         rb_bug("recursive ractor locking");
     }
 #endif
@@ -51,7 +57,7 @@ ASSERT_ractor_locking(rb_ractor_t *r)
 {
 #if RACTOR_CHECK_MODE > 0
     // GET_EC is NULL in an RJIT worker
-    if (rb_current_execution_context(false) != NULL && r->sync.locked_by != rb_ractor_self(GET_RACTOR())) {
+    if (rb_current_execution_context(false) != NULL && !is_locked_by_current_thread(r)) {
         rp(r->sync.locked_by);
         rb_bug("ractor lock is not acquired.");
     }
@@ -66,12 +72,12 @@ ractor_lock(rb_ractor_t *r, const char *file, int line)
     ASSERT_ractor_unlocking(r);
     rb_native_mutex_lock(&r->sync.lock);
 
-#if RACTOR_CHECK_MODE > 0
     if (rb_current_execution_context(false) != NULL) { // GET_EC is NULL in an RJIT worker
         rb_ractor_t *cr = rb_current_ractor_raw(false);
+        rb_thread_t *ct = rb_current_thread();
         r->sync.locked_by = cr ? rb_ractor_self(cr) : Qundef;
+	r->sync.locking_thread = ct ? ct->self : Qundef;
     }
-#endif
 
     RUBY_DEBUG_LOG2(file, line, "locked  r:%u%s", r->pub.id, rb_current_ractor_raw(false) == r ? " (self)" : "");
 }
@@ -80,9 +86,7 @@ static void
 ractor_lock_self(rb_ractor_t *cr, const char *file, int line)
 {
     VM_ASSERT(cr == GET_RACTOR());
-#if RACTOR_CHECK_MODE > 0
     VM_ASSERT(cr->sync.locked_by != cr->pub.self);
-#endif
     ractor_lock(cr, file, line);
 }
 
@@ -90,9 +94,8 @@ static void
 ractor_unlock(rb_ractor_t *r, const char *file, int line)
 {
     ASSERT_ractor_locking(r);
-#if RACTOR_CHECK_MODE > 0
     r->sync.locked_by = Qnil;
-#endif
+    r->sync.locking_thread = Qnil;
     rb_native_mutex_unlock(&r->sync.lock);
 
     RUBY_DEBUG_LOG2(file, line, "r:%u%s", r->pub.id, rb_current_ractor_raw(false) == r ? " (self)" : "");
@@ -116,15 +119,14 @@ ractor_unlock_self(rb_ractor_t *cr, const char *file, int line)
 static void
 ractor_cond_wait(rb_ractor_t *r)
 {
-#if RACTOR_CHECK_MODE > 0
     VALUE locked_by = r->sync.locked_by;
+    VALUE locking_thread = r->sync.locking_thread;
     r->sync.locked_by = Qnil;
-#endif
+    r->sync.locking_thread = Qnil;
     rb_native_cond_wait(&r->sync.cond, &r->sync.lock);
 
-#if RACTOR_CHECK_MODE > 0
     r->sync.locked_by = locked_by;
-#endif
+    r->sync.locking_thread = locking_thread;
 }
 
 // Ractor status
@@ -596,12 +598,7 @@ static void
 ractor_sleep_interrupt(void *ptr)
 {
     rb_ractor_t *r = ptr;
-
-    RACTOR_LOCK(r);
-    {
-        ractor_wakeup(r, wait_receiving | wait_taking | wait_yielding, wakeup_by_interrupt);
-    }
-    RACTOR_UNLOCK(r);
+    ractor_wakeup(r, wait_receiving | wait_taking | wait_yielding, wakeup_by_interrupt);
 }
 
 typedef void (*ractor_sleep_cleanup_function)(rb_ractor_t *cr, void *p);
