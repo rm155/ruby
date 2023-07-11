@@ -2142,8 +2142,6 @@ size_pool_allocatable_pages_set(rb_objspace_t *objspace, rb_size_pool_t *size_po
 static inline void
 heap_page_add_freeobj(rb_objspace_t *objspace, struct heap_page *page, VALUE obj)
 {
-    ASSERT_vm_locking();
-
     RVALUE *p = (RVALUE *)obj;
 
     asan_unpoison_object(obj, false);
@@ -3936,7 +3934,7 @@ delete_from_obj_id_tables(VALUE obj, st_data_t *o, st_data_t *id)
 static void
 obj_free_object_id(rb_objspace_t *objspace, VALUE obj)
 {
-    ASSERT_vm_locking();
+    ASSERT_ractor_safe_gc_state();
     st_data_t o = (st_data_t)obj, id;
 
     GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
@@ -7711,7 +7709,7 @@ rb_ractor_safe_gc_state(void)
 static inline int
 gc_mark_set(rb_objspace_t *objspace, VALUE obj)
 {
-    ASSERT_vm_locking();
+    ASSERT_ractor_safe_gc_state();
     if (RVALUE_MARKED(obj)) return 0;
     MARK_IN_BITMAP(GET_HEAP_MARK_BITS(obj), obj);
     return 1;
@@ -10569,6 +10567,8 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 
     unsigned int lock_lev;
     if (global_gc) {
+	ASSERT_vm_locking();
+	ASSERT_ractor_safe_gc_state();
 	gc_global_enter(objspace, gc_enter_event_start, &lock_lev);
 #if RGENGC_CHECK_MODE >= 2
 	gc_verify_internal_consistency(objspace);
