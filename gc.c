@@ -919,7 +919,7 @@ static rb_objspace_t *
 current_ractor_objspace(rb_vm_t *vm)
 {
     rb_objspace_t *objspace;
-    if (vm->multi_objspace) {
+    if (vm->multi_objspace && vm->ractor.main_thread) {
 	objspace = GET_RACTOR()->local_objspace;
     }
     else {
