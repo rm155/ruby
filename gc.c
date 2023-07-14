@@ -925,7 +925,7 @@ current_ractor_objspace(rb_vm_t *vm)
     else {
 	objspace = vm->objspace;
     }
-    if(objspace->global_gc_current_target) {
+    if (objspace && objspace->global_gc_current_target) {
 	objspace = objspace->global_gc_current_target;
     }
     return objspace;
@@ -2657,6 +2657,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     closing_objspace->self_link->link_changed = true;
 
     close_objspace(closing_objspace);
+
+    closing_ractor->local_objspace = NULL;
 
     unlock_ractor_set();
 }
