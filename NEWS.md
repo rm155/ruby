@@ -59,7 +59,7 @@ The following default gems are updated.
 * csv 3.2.8
 * fiddle 1.1.2
 * fileutils 1.7.1
-* irb 1.7.2
+* irb 1.7.3
 * nkf 0.1.3
 * optparse 0.4.0.pre.1
 * psych 5.1.0
@@ -137,6 +137,6 @@ changelog for details of the default gems or bundled gems.
 [Bug #19150]:     https://bugs.ruby-lang.org/issues/19150
 [Feature #19314]: https://bugs.ruby-lang.org/issues/19314
 [Feature #19347]: https://bugs.ruby-lang.org/issues/19347
+[Feature #19521]: https://bugs.ruby-lang.org/issues/19521
 [Feature #19538]: https://bugs.ruby-lang.org/issues/19538
 [Feature #19591]: https://bugs.ruby-lang.org/issues/19591
-[Feature #19521]: https://bugs.ruby-lang.org/issues/19521

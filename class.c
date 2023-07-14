@@ -229,21 +229,20 @@ class_alloc_given_redirected_allocation(VALUE args)
     size_t alloc_size = sizeof(struct RClass) + sizeof(rb_classext_t);
 
     flags &= T_MASK;
-    flags |= FL_PROMOTED1 /* start from age == 2 */;
     if (RGENGC_WB_PROTECTED_CLASS) flags |= FL_WB_PROTECTED;
     NEWOBJ_OF(obj, struct RClass, klass, flags, alloc_size, 0);
 
     memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
 
     /* ZALLOC
-       RCLASS_CONST_TBL(obj) = 0;
-       RCLASS_M_TBL(obj) = 0;
-       RCLASS_IV_INDEX_TBL(obj) = 0;
-       RCLASS_SET_SUPER((VALUE)obj, 0);
-       RCLASS_SUBCLASSES(obj) = NULL;
-       RCLASS_PARENT_SUBCLASSES(obj) = NULL;
-       RCLASS_MODULE_SUBCLASSES(obj) = NULL;
-       */
+      RCLASS_CONST_TBL(obj) = 0;
+      RCLASS_M_TBL(obj) = 0;
+      RCLASS_IV_INDEX_TBL(obj) = 0;
+      RCLASS_SET_SUPER((VALUE)obj, 0);
+      RCLASS_SUBCLASSES(obj) = NULL;
+      RCLASS_PARENT_SUBCLASSES(obj) = NULL;
+      RCLASS_MODULE_SUBCLASSES(obj) = NULL;
+     */
     RCLASS_SET_ORIGIN((VALUE)obj, (VALUE)obj);
     RB_OBJ_WRITE(obj, &RCLASS_REFINED_CLASS(obj), Qnil);
     RCLASS_SET_ALLOCATOR((VALUE)obj, 0);

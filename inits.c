@@ -22,9 +22,6 @@ rb_call_inits(void)
 {
     CALL(default_shapes);
     CALL(Thread_Mutex);
-#if USE_TRANSIENT_HEAP
-    CALL(TransientHeap);
-#endif
     CALL(Method);
     CALL(RandomSeedCore);
     CALL(encodings);
