@@ -44,6 +44,8 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
 {
     RUBY_DEBUG_LOG2(file, line, "start locked:%d", locked);
 
+    VM_ASSERT(!cr || !cr->local_objspace || !rb_during_local_gc());
+
     if (locked) {
         ASSERT_vm_locking();
     }
