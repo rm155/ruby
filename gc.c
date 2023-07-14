@@ -7700,8 +7700,7 @@ rb_ractor_safe_gc_state(void)
     if (vm->ractor.sync.lock_owner == cr) {
 	return true;
     }
-    rb_objspace_t *objspace = &rb_objspace;
-    return !objspace->flags.during_global_gc;
+    return !rb_during_global_gc();
 }
 
 static inline int
@@ -7872,8 +7871,7 @@ rb_gc_mark(VALUE ptr)
 void
 rb_gc_mark_if_global_gc(VALUE ptr)
 {
-    rb_objspace_t *objspace = &rb_objspace;
-    if (objspace->flags.during_global_gc) rb_gc_mark(ptr);
+    if (rb_during_global_gc()) rb_gc_mark(ptr);
 }
 
 void
@@ -12163,6 +12161,21 @@ rb_during_gc(void)
 {
     unless_objspace(objspace) { return FALSE; }
     return during_gc;
+}
+
+int
+rb_during_local_gc(void)
+{
+	return 0;
+    unless_objspace(objspace) { return FALSE; }
+    return during_gc && !objspace->flags.during_global_gc;
+}
+
+int
+rb_during_global_gc(void)
+{
+    unless_objspace(objspace) { return FALSE; }
+    return during_gc && objspace->flags.during_global_gc;
 }
 
 #if RGENGC_PROFILE >= 2
