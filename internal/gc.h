@@ -251,6 +251,9 @@ bool rb_gc_is_ptr_to_obj(void *ptr);
 VALUE rb_gc_id2ref_obj_tbl(VALUE objid);
 VALUE rb_define_finalizer_no_check(VALUE obj, VALUE block);
 
+int rb_during_local_gc(void);
+int rb_during_global_gc(void);
+
 bool rb_ractor_safe_gc_state(void);
 #define ASSERT_ractor_safe_gc_state() VM_ASSERT(rb_ractor_safe_gc_state())
 
@@ -279,6 +282,7 @@ typedef struct rb_objspace_link {
 
 rb_objspace_link_t *get_objspace_link_of_value(VALUE v);
 rb_objspace_link_t *get_updated_objspace_link(rb_objspace_link_t *os_link);
+rb_ractor_t *get_ractor_of_value(VALUE obj);
 
 void rb_objspace_each_objects(
     int (*callback)(void *start, void *end, size_t stride, void *data),

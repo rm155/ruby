@@ -1099,6 +1099,12 @@ get_updated_objspace_link(rb_objspace_link_t *os_link)
     return os_link->linked_objspace->self_link;
 }
 
+rb_ractor_t *
+get_ractor_of_value(VALUE obj)
+{
+    return GET_RACTOR_OF_VALUE(obj);
+}
+
 #define NUM_IN_PAGE(p)   (((bits_t)(p) & HEAP_PAGE_ALIGN_MASK) / BASE_SLOT_SIZE)
 #define BITMAP_INDEX(p)  (NUM_IN_PAGE(p) / BITS_BITLENGTH )
 #define BITMAP_OFFSET(p) (NUM_IN_PAGE(p) & (BITS_BITLENGTH-1))
