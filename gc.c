@@ -436,16 +436,6 @@ int ruby_rgengc_debug;
 // Note: using RUBY_ASSERT_WHEN() extend a macro in expr (info by nobu).
 #define GC_ASSERT(expr) RUBY_ASSERT_MESG_WHEN(RGENGC_CHECK_MODE > 0, expr, #expr)
 
-/* RGENGC_OLD_NEWOBJ_CHECK
- * 0:  disable all assertions
- * >0: make a OLD object when new object creation.
- *
- * Make one OLD object per RGENGC_OLD_NEWOBJ_CHECK WB protected objects creation.
- */
-#ifndef RGENGC_OLD_NEWOBJ_CHECK
-#define RGENGC_OLD_NEWOBJ_CHECK 0
-#endif
-
 /* RGENGC_PROFILE
  * 0: disable RGenGC profiling
  * 1: enable profiling for basic information
@@ -2939,24 +2929,6 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
 
     gc_report(5, objspace, "newobj: %s\n", obj_info(obj));
 
-#if RGENGC_OLD_NEWOBJ_CHECK > 0
-    {
-        static int newobj_cnt = RGENGC_OLD_NEWOBJ_CHECK;
-
-        if (!is_incremental_marking(objspace) &&
-            flags & FL_WB_PROTECTED &&   /* do not promote WB unprotected objects */
-            ! RB_TYPE_P(obj, T_ARRAY)) { /* array.c assumes that allocated objects are new */
-            if (--newobj_cnt == 0) {
-                newobj_cnt = RGENGC_OLD_NEWOBJ_CHECK;
-
-                gc_mark_set(objspace, obj);
-                RVALUE_AGE_SET_OLD(objspace, obj);
-
-                rb_gc_writebarrier_remember(obj);
-            }
-        }
-    }
-#endif
     // RUBY_DEBUG_LOG("obj:%p (%s)", (void *)obj, obj_type_name(obj));
     return obj;
 }
@@ -4321,10 +4293,8 @@ Init_heap(rb_objspace_t *objspace)
     objspace->rgengc.oldmalloc_increase_limit = gc_params.oldmalloc_limit_min;
 #endif
 
-    heap_add_pages(objspace, &size_pools[0], SIZE_POOL_EDEN_HEAP(&size_pools[0]), gc_params.heap_init_slots / HEAP_PAGE_OBJ_LIMIT);
-
-    /* Give other size pools allocatable pages. */
-    for (int i = 1; i < SIZE_POOL_COUNT; i++) {
+    /* Set size pools allocatable pages. */
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
         rb_size_pool_t *size_pool = &size_pools[i];
         int multiple = size_pool->slot_size / BASE_SLOT_SIZE;
         size_pool->allocatable_pages = gc_params.heap_init_slots * multiple / HEAP_PAGE_OBJ_LIMIT;
@@ -9797,7 +9767,6 @@ gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
         if (is_incremental_marking(objspace)) rb_bug("gc_writebarrier_generational: called while incremental marking: %s -> %s", obj_info(a), obj_info(b));
     }
 
-#if 1
     /* mark `a' and remember (default behavior) */
     if (!rgengc_remembered(objspace, a)) {
         RB_VM_LOCK_ENTER_NO_BARRIER();
@@ -9807,19 +9776,6 @@ gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
         RB_VM_LOCK_LEAVE_NO_BARRIER();
         gc_report(1, objspace, "gc_writebarrier_generational: %s (remembered) -> %s\n", obj_info(a), obj_info(b));
     }
-#else
-    /* mark `b' and remember */
-    MARK_IN_BITMAP(GET_HEAP_MARK_BITS(b), b);
-    if (RVALUE_WB_UNPROTECTED(b)) {
-        gc_remember_unprotected(objspace, b);
-    }
-    else {
-        RVALUE_AGE_SET_OLD(objspace, b);
-        rgengc_remember(objspace, b);
-    }
-
-    gc_report(1, objspace, "gc_writebarrier_generational: %s -> %s (remembered)\n", obj_info(a), obj_info(b));
-#endif
 
     check_rvalue_consistency(a);
     check_rvalue_consistency(b);
@@ -10854,6 +10810,26 @@ garbage_collect_with_gvl(rb_objspace_t *objspace, unsigned int reason)
     }
 }
 
+static int
+gc_set_candidate_object_i(void *vstart, void *vend, size_t stride, void *data)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    VALUE v = (VALUE)vstart;
+    for (; v != (VALUE)vend; v += stride) {
+        switch (BUILTIN_TYPE(v)) {
+          case T_NONE:
+          case T_ZOMBIE:
+            break;
+          default:
+            if (!RVALUE_OLD_P(v) && !RVALUE_WB_UNPROTECTED(v)) {
+                RVALUE_AGE_SET_CANDIDATE(objspace, v);
+            }
+        }
+    }
+
+    return 0;
+}
+
 static VALUE
 gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE immediate_mark, VALUE immediate_sweep, VALUE global, VALUE compact)
 {
@@ -10905,6 +10881,13 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
     }
 
     return Qnil;
+}
+
+void
+rb_gc_prepare_heap(void)
+{
+    rb_objspace_each_objects(gc_set_candidate_object_i, NULL);
+    gc_start_internal(NULL, Qtrue, Qtrue, Qtrue, Qtrue, Qtrue);
 }
 
 static int
