@@ -32,7 +32,37 @@
 // Exported Object Registry
 
 static st_table *exported_object_table = NULL;
+struct exported_object_table_sync_struct {
+    rb_nativethread_lock_t lock;
+    struct rb_ractor_struct *lock_owner;
+    int lock_lev;
+} exported_object_table_sync;
 VALUE rb_memory_view_exported_object_registry = Qundef;
+
+static void
+enter_exported_object_table_lock(void)
+{
+    rb_ractor_t *cr = GET_RACTOR();
+    if (exported_object_table_sync.lock_owner != cr) {
+	rb_native_mutex_lock(&exported_object_table_sync.lock);
+	exported_object_table_sync.lock_owner = cr;
+    }
+    exported_object_table_sync.lock_lev++;
+}
+
+static void
+leave_exported_object_table_lock(void)
+{
+    exported_object_table_sync.lock_lev--;
+    if (exported_object_table_sync.lock_lev == 0) {
+	exported_object_table_sync.lock_owner = NULL;
+	rb_native_mutex_unlock(&exported_object_table_sync.lock);
+    }
+}
+
+#define EXPORTED_OBJECT_TABLE_ENTER() { enter_exported_object_table_lock();
+#define EXPORTED_OBJECT_TABLE_LEAVE() leave_exported_object_table_lock(); }
+#define ASSERT_exported_object_table_locking() VM_ASSERT(exported_object_table_sync.lock_owner == GET_RACTOR());
 
 static int
 exported_object_registry_mark_key_i(st_data_t key, st_data_t value, st_data_t data)
@@ -51,11 +81,11 @@ exported_object_registry_mark(void *ptr)
 static void
 exported_object_registry_free(void *ptr)
 {
-    RB_VM_LOCK_ENTER();
+    EXPORTED_OBJECT_TABLE_ENTER();
     st_clear(exported_object_table);
     st_free_table(exported_object_table);
     exported_object_table = NULL;
-    RB_VM_LOCK_LEAVE();
+    EXPORTED_OBJECT_TABLE_LEAVE();
 }
 
 const rb_data_type_t rb_memory_view_exported_object_registry_data_type = {
@@ -71,7 +101,7 @@ const rb_data_type_t rb_memory_view_exported_object_registry_data_type = {
 static int
 exported_object_add_ref(st_data_t *key, st_data_t *val, st_data_t arg, int existing)
 {
-    ASSERT_vm_locking();
+    ASSERT_exported_object_table_locking();
 
     if (existing) {
         *val += 1;
@@ -85,7 +115,7 @@ exported_object_add_ref(st_data_t *key, st_data_t *val, st_data_t arg, int exist
 static int
 exported_object_dec_ref(st_data_t *key, st_data_t *val, st_data_t arg, int existing)
 {
-    ASSERT_vm_locking();
+    ASSERT_exported_object_table_locking();
 
     if (existing) {
         *val -= 1;
@@ -99,18 +129,18 @@ exported_object_dec_ref(st_data_t *key, st_data_t *val, st_data_t arg, int exist
 static void
 register_exported_object(VALUE obj)
 {
-    RB_VM_LOCK_ENTER();
+    EXPORTED_OBJECT_TABLE_ENTER();
     st_update(exported_object_table, (st_data_t)obj, exported_object_add_ref, 0);
-    RB_VM_LOCK_LEAVE();
+    EXPORTED_OBJECT_TABLE_LEAVE();
 }
 
 static void
 unregister_exported_object(VALUE obj)
 {
-    RB_VM_LOCK_ENTER();
+    EXPORTED_OBJECT_TABLE_ENTER();
     if (exported_object_table)
         st_update(exported_object_table, (st_data_t)obj, exported_object_dec_ref, 0);
-    RB_VM_LOCK_LEAVE();
+    EXPORTED_OBJECT_TABLE_LEAVE();
 }
 
 // MemoryView
@@ -867,6 +897,10 @@ Init_MemoryView(void)
         exported_object_table);
     rb_gc_register_mark_object(obj);
     rb_memory_view_exported_object_registry = obj;
+
+    rb_nativethread_lock_initialize(&exported_object_table_sync.lock);
+    exported_object_table_sync.lock_owner = NULL;
+    exported_object_table_sync.lock_lev = 0;
 
     id_memory_view = rb_intern_const("__memory_view__");
 }
