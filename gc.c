@@ -10887,7 +10887,7 @@ void
 rb_gc_prepare_heap(void)
 {
     rb_objspace_each_objects(gc_set_candidate_object_i, NULL);
-    gc_start_internal(NULL, Qtrue, Qtrue, Qtrue, Qtrue, Qtrue);
+    gc_start_internal(NULL, Qtrue, Qtrue, Qtrue, Qtrue, Qfalse, Qtrue);
 }
 
 static int
