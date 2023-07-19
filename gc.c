@@ -12095,7 +12095,6 @@ rb_during_gc(void)
 int
 rb_during_local_gc(void)
 {
-	return 0;
     unless_objspace(objspace) { return FALSE; }
     return during_gc && !objspace->flags.during_global_gc;
 }
