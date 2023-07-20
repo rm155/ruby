@@ -1365,7 +1365,7 @@ NORETURN(static void gc_raise(VALUE exc, const char *fmt, ...));
 NORETURN(static void negative_size_allocation_error(const char *));
 
 static void init_mark_stack(mark_stack_t *stack);
-static int garbage_collect(rb_objspace_t *, unsigned int reason);
+static int garbage_collect(rb_objspace_t *, unsigned int reason, bool need_finalize_deferred);
 
 static int  gc_start(rb_objspace_t *objspace, unsigned int reason);
 static void gc_rest(rb_objspace_t *objspace);
@@ -2765,7 +2765,7 @@ heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap
 		rb_bug("cannot create a new borrowing page in target Ractor");
 	    }
 	}
-	else if (gc_start(objspace, GPR_FLAG_NEWOBJ) == FALSE) {
+	else if (garbage_collect(objspace, GPR_FLAG_NEWOBJ, false) == FALSE) {
             rb_memerror();
         }
         else {
@@ -2780,7 +2780,7 @@ heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap
                     rb_bug("cannot create a new page after GC");
                 }
                 else { // Major GC is required, which will allow us to create new page
-                    if (gc_start(objspace, GPR_FLAG_NEWOBJ) == FALSE) {
+                    if (garbage_collect(objspace, GPR_FLAG_NEWOBJ, false) == FALSE) {
                         rb_memerror();
                     }
                     else {
@@ -3261,7 +3261,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *
             }
 
             if (ruby_gc_stressful) {
-                if (!garbage_collect(objspace, GPR_FLAG_NEWOBJ)) {
+                if (!garbage_collect(objspace, GPR_FLAG_NEWOBJ, false)) {
                     rb_memerror();
                 }
             }
@@ -10250,7 +10250,7 @@ unlock_local_gc(rb_objspace_t *objspace) {
 }
 
 static int
-garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
+garbage_collect_global(rb_objspace_t *objspace, unsigned int reason, bool need_finalize_deferred)
 {
     int ret;
     rb_vm_t *vm = GET_VM();
@@ -10268,6 +10268,15 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
 #endif
 
         ret = gc_start(objspace, reason);
+
+	if (need_finalize_deferred) {
+	    rb_objspace_t *os;
+	    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+		objspace->global_gc_current_target = os;
+		gc_finalize_deferred(os->self_link);
+	    }
+	    objspace->global_gc_current_target = NULL;
+	}
     }
     GLOBAL_GC_END(vm, objspace);
 
@@ -10275,7 +10284,7 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason)
 }
 
 static int
-garbage_collect_local(rb_objspace_t *objspace, unsigned int reason)
+garbage_collect_local(rb_objspace_t *objspace, unsigned int reason, bool need_finalize_deferred)
 {
     int ret;
     
@@ -10292,6 +10301,10 @@ garbage_collect_local(rb_objspace_t *objspace, unsigned int reason)
 #endif
 
 	ret = gc_start(objspace, reason);
+
+	if (need_finalize_deferred) {
+	    gc_finalize_deferred(objspace->self_link);
+	}
     }
     LOCAL_GC_END(objspace);
 
@@ -10299,13 +10312,13 @@ garbage_collect_local(rb_objspace_t *objspace, unsigned int reason)
 }
 
 static int
-garbage_collect(rb_objspace_t *objspace, unsigned int reason)
+garbage_collect(rb_objspace_t *objspace, unsigned int reason, bool need_finalize_deferred)
 {
     if (reason & GPR_FLAG_GLOBAL) {
-	return garbage_collect_global(objspace, reason);
+	return garbage_collect_global(objspace, reason, need_finalize_deferred);
     }
     else {
-	return garbage_collect_local(objspace, reason);
+	return garbage_collect_local(objspace, reason, need_finalize_deferred);
     }
 }
 
@@ -10785,7 +10798,7 @@ static void *
 gc_with_gvl(void *ptr)
 {
     struct objspace_and_reason *oar = (struct objspace_and_reason *)ptr;
-    return (void *)(VALUE)garbage_collect(oar->objspace, oar->reason);
+    return (void *)(VALUE)garbage_collect(oar->objspace, oar->reason, false);
 }
 
 static int
@@ -10793,7 +10806,7 @@ garbage_collect_with_gvl(rb_objspace_t *objspace, unsigned int reason)
 {
     if (dont_gc_val()) return TRUE;
     if (ruby_thread_has_gvl_p()) {
-        return garbage_collect(objspace, reason);
+        return garbage_collect(objspace, reason, false);
     }
     else {
         if (ruby_native_thread_p()) {
@@ -10866,18 +10879,7 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
     if (!running_global) reason &= ~GPR_FLAG_GLOBAL;
 
     if(!GET_VM()->gc_deactivated) {
-	if (running_global) {
-	    garbage_collect(objspace, reason);
-	    gc_finalize_deferred(objspace->self_link);
-	}
-	else {
-	    LOCAL_GC_BEGIN(objspace);
-	    {
-		garbage_collect(objspace, reason);
-		gc_finalize_deferred(objspace->self_link);
-	    }
-	    LOCAL_GC_END(objspace);
-	}
+	garbage_collect(objspace, reason, true);
     }
 
     return Qnil;
@@ -12064,16 +12066,12 @@ rb_gc_ractor_teardown_cleanup()
 {
     rb_ractor_t *cr = GET_RACTOR();
     rb_objspace_t *objspace = cr->local_objspace;
-    LOCAL_GC_BEGIN(objspace);
-    {
-	if (!GET_VM()->gc_deactivated) {
-	    cr->during_teardown_cleanup = true;
-	    rb_gc();
-	    cr->during_teardown_cleanup = false;
-	    gc_finalize_deferred(cr->local_objspace->self_link);
-	}
+    if (!GET_VM()->gc_deactivated) {
+	cr->during_teardown_cleanup = true;
+	unsigned int reason = GPR_DEFAULT_REASON;
+	garbage_collect(objspace, reason, true);
+	cr->during_teardown_cleanup = false;
     }
-    LOCAL_GC_END(objspace);
     return Qnil;
 }
 
@@ -12082,7 +12080,7 @@ rb_gc(void)
 {
     unless_objspace(objspace) { return; }
     unsigned int reason = GPR_DEFAULT_REASON;
-    garbage_collect(objspace, reason);
+    garbage_collect(objspace, reason, false);
 }
 
 int
