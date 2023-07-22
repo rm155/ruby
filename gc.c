@@ -1366,6 +1366,8 @@ NORETURN(static void gc_raise(VALUE exc, const char *fmt, ...));
 NORETURN(static void negative_size_allocation_error(const char *));
 
 static void init_mark_stack(mark_stack_t *stack);
+static int garbage_collect_global(rb_objspace_t *, unsigned int reason, bool need_finalize_deferred);
+static int garbage_collect_local(rb_objspace_t *, unsigned int reason, bool need_finalize_deferred);
 static int garbage_collect(rb_objspace_t *, unsigned int reason, bool need_finalize_deferred);
 
 static int  gc_start(rb_objspace_t *objspace, unsigned int reason);
@@ -10276,6 +10278,7 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason, bool need_f
     int ret;
     rb_vm_t *vm = GET_VM();
 
+    bool global_gc_possible = true;
     GLOBAL_GC_BEGIN(vm, objspace);
     {
 #if GC_PROFILE_MORE_DETAIL
@@ -10287,19 +10290,36 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason, bool need_f
 #if GC_PROFILE_MORE_DETAIL
         objspace->profile.prepare_time = getrusage_time() - objspace->profile.prepare_time;
 #endif
+	rb_objspace_t *os = NULL;
+	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+	    if (os == objspace) continue;
 
-        ret = gc_start(objspace, reason);
+	    global_gc_possible = global_gc_possible && (os->heap_pages.allocated_pages && ((reason & GPR_FLAG_METHOD) || ready_to_gc(os)));
 
-	if (need_finalize_deferred) {
-	    rb_objspace_t *os;
-	    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
-		objspace->global_gc_current_target = os;
-		gc_finalize_deferred(os->self_link);
+	    GC_ASSERT(gc_mode(os) == gc_mode_none);
+	    GC_ASSERT(!is_lazy_sweeping(os));
+	    GC_ASSERT(!is_incremental_marking(os));
+	}
+
+	if (global_gc_possible) {
+
+	    ret = gc_start(objspace, reason);
+
+	    if (need_finalize_deferred) {
+		rb_objspace_t *os;
+		ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+		    objspace->global_gc_current_target = os;
+		    gc_finalize_deferred(os->self_link);
+		}
+		objspace->global_gc_current_target = NULL;
 	    }
-	    objspace->global_gc_current_target = NULL;
 	}
     }
     GLOBAL_GC_END(vm, objspace);
+    if (!global_gc_possible) {
+	reason &= ~GPR_FLAG_GLOBAL;
+	return garbage_collect_local(objspace, reason, need_finalize_deferred);
+    }
 
     return ret;
 }
@@ -10502,25 +10522,6 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	    if (os == objspace) continue;
 	    gc_set_flags_start(os, reason, &do_full_mark);
-
-	    if (!heap_allocated_pages) {
-		for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-		    rb_size_pool_t *size_pool = &size_pools[i];
-		    heap_ready_to_gc(objspace, size_pool, SIZE_POOL_EDEN_HEAP(size_pool));
-		}
-		return TRUE;
-	    }
-	    if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(os)) {
-		for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-		    rb_size_pool_t *size_pool = &size_pools[i];
-		    heap_ready_to_gc(objspace, size_pool, SIZE_POOL_EDEN_HEAP(size_pool));
-		}
-		return TRUE;
-	    }
-
-	    GC_ASSERT(gc_mode(os) == gc_mode_none);
-	    GC_ASSERT(!is_lazy_sweeping(os));
-	    GC_ASSERT(!is_incremental_marking(os));
 	}
     }
 
