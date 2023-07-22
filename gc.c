@@ -734,7 +734,6 @@ typedef struct rb_global_space {
 
     struct {
         bool need_global_gc;
-	size_t shared_objects;
 	size_t shared_objects_limit;
 	rb_nativethread_lock_t shared_tracking_lock;
     } rglobalgc; //TODO: Call global GC upon hitting shared object limit
@@ -795,6 +794,8 @@ typedef struct rb_objspace {
     st_table *finalizer_table;
 
     st_table *shareable_tbl;
+    rb_nativethread_lock_t shared_objects_count_lock;
+    size_t shared_objects;
 
     struct {
         int run;
@@ -2018,6 +2019,7 @@ rb_objspace_free(rb_objspace_t *objspace)
             SIZE_POOL_EDEN_HEAP(size_pool)->total_slots = 0;
         }
     }
+    rb_nativethread_lock_destroy(&objspace->shared_objects_count_lock);
     st_free_table(objspace->id_to_obj_tbl);
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
@@ -2565,6 +2567,7 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     int freeable_pages = heap_pages_freeable_pages;
     int final_slots = heap_pages_final_slots;
     int allocated_objects = objspace->total_allocated_objects;
+    size_t shared_objects = objspace->shared_objects;
     size_t uncollectible_wb_unprotected_objects = objspace->rgengc.uncollectible_wb_unprotected_objects;
     size_t uncollectible_wb_unprotected_objects_limit = objspace->rgengc.uncollectible_wb_unprotected_objects_limit;
     size_t old_objects = objspace->rgengc.old_objects;
@@ -2575,6 +2578,7 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     heap_pages_final_slots += final_slots;
     heap_pages_freeable_pages += freeable_pages;
     objspace->total_allocated_objects += allocated_objects;
+    objspace->shared_objects += shared_objects;
     objspace->rgengc.uncollectible_wb_unprotected_objects += uncollectible_wb_unprotected_objects;
     objspace->rgengc.uncollectible_wb_unprotected_objects_limit += uncollectible_wb_unprotected_objects_limit;
     objspace->rgengc.old_objects += old_objects;
@@ -2603,13 +2607,15 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     gc_rest(receiving_objspace);
 
-    lock_ractor_set();
-
     rb_native_mutex_lock(&closing_ractor->sync.close_lock);
     while (!closing_ractor->sync.ready_to_close) {
+	begin_wait_for_global_gc();
 	rb_native_cond_wait(&closing_ractor->sync.close_cond, &closing_ractor->sync.close_lock);
+	end_wait_for_global_gc();
     }
     rb_native_mutex_unlock(&closing_ractor->sync.close_lock);
+
+    lock_ractor_set();
 
     update_objspace_tables(receiving_objspace, closing_objspace);
     allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, true);
@@ -3959,9 +3965,9 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	bool deleted = !!st_delete(objspace->shareable_tbl, &obj, NULL);
 	if (deleted) {
 	    rb_global_space_t *global_space = &rb_global_space;
-	    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	    global_space->rglobalgc.shared_objects--;
-	    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+	    rb_native_mutex_lock(&objspace->shared_objects_count_lock);
+	    objspace->shared_objects--;
+	    rb_native_mutex_unlock(&objspace->shared_objects_count_lock);
 	}
     }
 
@@ -4282,6 +4288,7 @@ Init_heap(rb_objspace_t *objspace)
     heap_page_alloc_use_mmap = INIT_HEAP_PAGE_ALLOC_USE_MMAP;
 #endif
 
+    rb_nativethread_lock_initialize(&objspace->shared_objects_count_lock);
     objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
@@ -5206,10 +5213,9 @@ rb_add_to_shareable_tbl(VALUE obj)
     bool duplicate = !!st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
 
     if (!duplicate) {
-	rb_global_space_t *global_space = &rb_global_space;
-	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	global_space->rglobalgc.shared_objects++;
-	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+	rb_native_mutex_lock(&objspace->shared_objects_count_lock);
+	objspace->shared_objects++;
+	rb_native_mutex_unlock(&objspace->shared_objects_count_lock);
     }
 }
 
@@ -9065,6 +9071,19 @@ gc_marks_wb_unprotected_objects(rb_objspace_t *objspace, rb_heap_t *heap)
     gc_mark_stacked_objects_all(objspace);
 }
 
+static size_t
+shared_objects_global_total(rb_global_space_t *global_space)
+{
+    size_t total = 0;
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	rb_native_mutex_lock(&os->shared_objects_count_lock);
+	total += os->shared_objects;
+	rb_native_mutex_unlock(&os->shared_objects_count_lock);
+    }
+    return total;
+}
+
 static void
 gc_marks_finish(rb_objspace_t *objspace)
 {
@@ -9155,7 +9174,12 @@ gc_marks_finish(rb_objspace_t *objspace)
                 (size_t)(objspace->rgengc.old_objects * gc_params.uncollectible_wb_unprotected_objects_limit_ratio)
             );
             objspace->rgengc.old_objects_limit = (size_t)(objspace->rgengc.old_objects * r);
-	    global_space->rglobalgc.shared_objects_limit = (size_t)(global_space->rglobalgc.shared_objects * gc_params.sharedobject_limit_factor);
+	    if (objspace->flags.during_global_gc) {
+		global_space->rglobalgc.shared_objects_limit = (size_t)(shared_objects_global_total(global_space) * gc_params.sharedobject_limit_factor);
+	    }
+	    else if (rb_multi_ractor_p() && shared_objects_global_total(global_space) > global_space->rglobalgc.shared_objects_limit) {
+		global_space->rglobalgc.need_global_gc = true;
+	    }
 	}
 
         if (objspace->rgengc.uncollectible_wb_unprotected_objects > objspace->rgengc.uncollectible_wb_unprotected_objects_limit) {
@@ -9167,9 +9191,6 @@ gc_marks_finish(rb_objspace_t *objspace)
         if (RGENGC_FORCE_MAJOR_GC) {
             objspace->rgengc.need_major_gc = GPR_FLAG_MAJOR_BY_FORCE;
         }
-	if (global_space->rglobalgc.shared_objects_limit > global_space->rglobalgc.shared_objects) {
-	    global_space->rglobalgc.need_global_gc = true;
-	}
 
 	const char *next_gc;
 	if (global_space->rglobalgc.need_global_gc) {
@@ -10311,9 +10332,23 @@ garbage_collect_local(rb_objspace_t *objspace, unsigned int reason, bool need_fi
     return ret;
 }
 
+static bool
+global_gc_needed(void)
+{
+    bool needed;
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+    needed = global_space->rglobalgc.need_global_gc;
+    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+    return needed;
+}
+
 static int
 garbage_collect(rb_objspace_t *objspace, unsigned int reason, bool need_finalize_deferred)
 {
+    if (global_gc_needed()) {
+	reason |= GPR_FLAG_GLOBAL;
+    }
     if (reason & GPR_FLAG_GLOBAL) {
 	return garbage_collect_global(objspace, reason, need_finalize_deferred);
     }
@@ -10453,29 +10488,40 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	do_full_mark = 1;
 	immediate_mark = 1;
     }
+    gc_set_flags_start(objspace, reason, &do_full_mark);
+
+    if (!heap_allocated_pages) return FALSE; /* heap is not ready */
+    if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(objspace)) return TRUE; /* GC is not allowed */
+
+    GC_ASSERT(gc_mode(objspace) == gc_mode_none);
+    GC_ASSERT(!is_lazy_sweeping(objspace));
+    GC_ASSERT(!is_incremental_marking(objspace));
 
     if (global_gc) {
 	rb_objspace_t *os = NULL;
 	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+	    if (os == objspace) continue;
 	    gc_set_flags_start(os, reason, &do_full_mark);
 
-	    if (!heap_allocated_pages) return FALSE; /* heap is not ready */
-	    if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(os)) return TRUE; /* GC is not allowed */
+	    if (!heap_allocated_pages) {
+		for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+		    rb_size_pool_t *size_pool = &size_pools[i];
+		    heap_ready_to_gc(objspace, size_pool, SIZE_POOL_EDEN_HEAP(size_pool));
+		}
+		return TRUE;
+	    }
+	    if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(os)) {
+		for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+		    rb_size_pool_t *size_pool = &size_pools[i];
+		    heap_ready_to_gc(objspace, size_pool, SIZE_POOL_EDEN_HEAP(size_pool));
+		}
+		return TRUE;
+	    }
 
 	    GC_ASSERT(gc_mode(os) == gc_mode_none);
 	    GC_ASSERT(!is_lazy_sweeping(os));
 	    GC_ASSERT(!is_incremental_marking(os));
 	}
-    }
-    else {
-	gc_set_flags_start(objspace, reason, &do_full_mark);
-
-	if (!heap_allocated_pages) return FALSE; /* heap is not ready */
-	if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(objspace)) return TRUE; /* GC is not allowed */
-
-	GC_ASSERT(gc_mode(objspace) == gc_mode_none);
-	GC_ASSERT(!is_lazy_sweeping(objspace));
-	GC_ASSERT(!is_incremental_marking(objspace));
     }
 
     unsigned int lock_lev;
@@ -10490,6 +10536,10 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	    gc_set_flags_finish(os, reason, &do_full_mark, &immediate_mark);
 	}
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	global_space->rglobalgc.need_global_gc = false;
+	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
 	gc_update_objspace_links(vm);
 	gc_marks_global(objspace, do_full_mark);
 	gc_global_exit(objspace, gc_enter_event_start, &lock_lev);
@@ -10737,6 +10787,7 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event)
     RUBY_DEBUG_LOG("%s (%s)", gc_enter_event_cstr(event), gc_current_status(objspace));
     gc_report(1, objspace, "gc_exit: %s [%s]\n", gc_enter_event_cstr(event), gc_current_status(objspace));
     during_gc = FALSE;
+    objspace->flags.during_global_gc = false;
 
 
 #if RGENGC_CHECK_MODE >= 2
@@ -12392,7 +12443,6 @@ gc_stat_internal(VALUE hash_or_sym)
 
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-    size_t shared_objects_value = global_space->rglobalgc.shared_objects;
     size_t shared_objects_limit_value = global_space->rglobalgc.shared_objects_limit;
     rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
 
@@ -12434,7 +12484,7 @@ gc_stat_internal(VALUE hash_or_sym)
     SET(old_objects, objspace->rgengc.old_objects);
     SET(old_objects_limit, objspace->rgengc.old_objects_limit);
     if (rb_multi_ractor_p()) {
-	SET(shared_objects, shared_objects_value);
+	SET(shared_objects, objspace->shared_objects);
 	SET(shared_objects_limit, shared_objects_limit_value);
     }
 #if RGENGC_ESTIMATE_OLDMALLOC
