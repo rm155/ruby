@@ -2807,12 +2807,20 @@ obj_traverse_reachable_i(VALUE obj, void *ptr)
     }
 }
 
+static VALUE
+create_traverse_rec(VALUE d)
+{
+    struct obj_traverse_data *data = (struct obj_traverse_data *)d;
+    data->rec_hash = rb_ident_hash_new();
+    data->rec = RHASH_ST_TABLE(data->rec_hash);
+    return data->rec;
+}
+
 static struct st_table *
 obj_traverse_rec(struct obj_traverse_data *data)
 {
     if (UNLIKELY(!data->rec)) {
-        data->rec_hash = rb_ident_hash_new();
-        data->rec = RHASH_ST_TABLE(data->rec_hash);
+	rb_run_with_redirected_allocation(NULL, create_traverse_rec, (VALUE)data);
     }
     return data->rec;
 }
@@ -3236,12 +3244,20 @@ obj_iv_hash_traverse_replace_i(st_data_t * _key, st_data_t * val, st_data_t ptr,
     return ST_CONTINUE;
 }
 
+static VALUE
+create_traverse_replace_rec(VALUE d)
+{
+    struct obj_traverse_replace_data *data = (struct obj_traverse_replace_data *)d;
+    data->rec_hash = rb_ident_hash_new();
+    data->rec = RHASH_ST_TABLE(data->rec_hash);
+    return data->rec;
+}
+
 static struct st_table *
 obj_traverse_replace_rec(struct obj_traverse_replace_data *data)
 {
     if (UNLIKELY(!data->rec)) {
-        data->rec_hash = rb_ident_hash_new();
-        data->rec = RHASH_ST_TABLE(data->rec_hash);
+	rb_run_with_redirected_allocation(NULL, create_traverse_replace_rec, (VALUE)data);
     }
     return data->rec;
 }
