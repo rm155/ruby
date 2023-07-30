@@ -4574,11 +4574,6 @@ objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void
         objspace->flags.dont_incremental = TRUE;
     }
 
-    bool using_borrowable_page_arr[SIZE_POOL_COUNT];
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	using_borrowable_page_arr[i] = false;
-    }
-
     struct each_obj_data each_obj_data = {
         .objspace = objspace,
         .reenable_incremental = reenable_incremental,
@@ -4588,9 +4583,10 @@ objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void
 
         .pages = {NULL},
         .pages_counts = {0},
-
-	.using_borrowable_page = using_borrowable_page_arr,
     };
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+	each_obj_data.using_borrowable_page[i] = false;
+    }
     rb_ensure(objspace_each_objects_try, (VALUE)&each_obj_data,
               objspace_each_objects_ensure, (VALUE)&each_obj_data);
 }
