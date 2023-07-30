@@ -4119,8 +4119,8 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         if (!rb_data_free(objspace, obj)) return false;
         break;
       case T_MATCH:
-        if (RANY(obj)->as.match.rmatch) {
-            struct rmatch *rm = RANY(obj)->as.match.rmatch;
+        {
+            rb_matchext_t *rm = RMATCH_EXT(obj);
 #if USE_DEBUG_COUNTER
             if (rm->regs.num_regs >= 8) {
                 RB_DEBUG_COUNTER_INC(obj_match_ge8);
@@ -4135,7 +4135,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
             onig_region_free(&rm->regs, 0);
             if (rm->char_offset)
                 xfree(rm->char_offset);
-            xfree(rm);
 
             RB_DEBUG_COUNTER_INC(obj_match_ptr);
         }
@@ -5659,11 +5658,10 @@ obj_memsize_of(VALUE obj, int use_all_types)
         if (use_all_types) size += rb_objspace_data_type_memsize(obj);
         break;
       case T_MATCH:
-        if (RMATCH(obj)->rmatch) {
-            struct rmatch *rm = RMATCH(obj)->rmatch;
+        {
+            rb_matchext_t *rm = RMATCH_EXT(obj);
             size += onig_region_memsize(&rm->regs);
             size += sizeof(struct rmatch_offset) * rm->char_offset_num_allocated;
-            size += sizeof(struct rmatch);
         }
         break;
       case T_FILE:
@@ -7949,11 +7947,22 @@ gc_mark_imemo(rb_objspace_t *objspace, VALUE obj)
       case imemo_callinfo:
         return;
       case imemo_callcache:
-        {
-            const struct rb_callcache *cc = (const struct rb_callcache *)obj;
-            // should not mark klass here
-            gc_mark(objspace, (VALUE)vm_cc_cme(cc));
-        }
+        /* cc is callcache.
+         *
+         * cc->klass (klass) should not be marked because if the klass is
+         * free'ed, the cc->klass will be cleared by `vm_cc_invalidate()`.
+         *
+         * cc->cme (cme) should not be marked because if cc is invalidated
+         * when cme is free'ed.
+         * - klass marks cme if klass uses cme.
+         * - caller classe's ccs->cme marks cc->cme.
+         * - if cc is invalidated (klass doesn't refer the cc),
+         *   cc is invalidated by `vm_cc_invalidate()` and cc->cme is
+         *   not be accessed.
+         * - On the multi-Ractors, cme will be collected with global GC
+         *   so that it is safe if GC is not interleaving while accessing
+         *   cc and cme.
+         */
         return;
       case imemo_constcache:
         {
@@ -10909,6 +10918,11 @@ gc_set_candidate_object_i(void *vstart, void *vend, size_t stride, void *data)
           case T_NONE:
           case T_ZOMBIE:
             break;
+          case T_STRING:
+            // precompute the string coderange. This both save time for when it will be
+            // eventually needed, and avoid mutating heap pages after a potential fork.
+            rb_enc_str_coderange(v);
+            // fall through
           default:
             if (!RVALUE_OLD_P(v) && !RVALUE_WB_UNPROTECTED(v)) {
                 RVALUE_AGE_SET_CANDIDATE(objspace, v);
@@ -11402,6 +11416,14 @@ gc_update_values(rb_objspace_t *objspace, long n, VALUE *values)
     }
 }
 
+static bool
+moved_or_living_object_strictly_p(rb_objspace_t *objspace, VALUE obj)
+{
+    return obj &&
+           is_pointer_to_heap(objspace, (void *)obj) &&
+           (is_live_object(objspace, obj) || BUILTIN_TYPE(obj) == T_MOVED);
+}
+
 static void
 gc_ref_update_imemo(rb_objspace_t *objspace, VALUE obj)
 {
@@ -11449,17 +11471,18 @@ gc_ref_update_imemo(rb_objspace_t *objspace, VALUE obj)
       case imemo_callcache:
         {
             const struct rb_callcache *cc = (const struct rb_callcache *)obj;
-            if (cc->klass) {
-                UPDATE_IF_MOVED(objspace, cc->klass);
-                if (!is_live_object(objspace, cc->klass)) {
-                    *((VALUE *)(&cc->klass)) = (VALUE)0;
-                }
-            }
 
-            if (cc->cme_) {
-                TYPED_UPDATE_IF_MOVED(objspace, struct rb_callable_method_entry_struct *, cc->cme_);
-                if (!is_live_object(objspace, (VALUE)cc->cme_)) {
-                    *((struct rb_callable_method_entry_struct **)(&cc->cme_)) = (struct rb_callable_method_entry_struct *)0;
+            if (!cc->klass) {
+                // already invalidated
+            }
+            else {
+                if (moved_or_living_object_strictly_p(objspace, cc->klass) &&
+                    moved_or_living_object_strictly_p(objspace, (VALUE)cc->cme_)) {
+                    UPDATE_IF_MOVED(objspace, cc->klass);
+                    TYPED_UPDATE_IF_MOVED(objspace, struct rb_callable_method_entry_struct *, cc->cme_);
+                }
+                else {
+                    vm_cc_invalidate(cc);
                 }
             }
         }
@@ -11606,12 +11629,13 @@ update_cvc_tbl(rb_objspace_t *objspace, VALUE klass)
 static enum rb_id_table_iterator_result
 mark_cvc_tbl_i(VALUE cvc_entry, void *data)
 {
+    rb_objspace_t *objspace = (rb_objspace_t *)data;
     struct rb_cvar_class_tbl_entry *entry;
 
     entry = (struct rb_cvar_class_tbl_entry *)cvc_entry;
 
     RUBY_ASSERT(entry->cref == 0 || (BUILTIN_TYPE((VALUE)entry->cref) == T_IMEMO && IMEMO_TYPE_P(entry->cref, imemo_cref)));
-    rb_gc_mark((VALUE) entry->cref);
+    gc_mark(objspace, (VALUE) entry->cref);
 
     return ID_TABLE_CONTINUE;
 }

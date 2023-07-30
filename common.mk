@@ -124,7 +124,6 @@ YARP_FILES = yarp/api_node.$(OBJEXT) \
 		yarp/util/yp_list.$(OBJEXT) \
 		yarp/util/yp_memchr.$(OBJEXT) \
 		yarp/util/yp_newline_list.$(OBJEXT) \
-		yarp/util/yp_snprintf.$(OBJEXT) \
 		yarp/util/yp_state_stack.$(OBJEXT) \
 		yarp/util/yp_string.$(OBJEXT) \
 		yarp/util/yp_string_list.$(OBJEXT) \
@@ -1071,7 +1070,7 @@ parse.$(OBJEXT): {$(VPATH)}parse.c
 miniprelude.$(OBJEXT): {$(VPATH)}miniprelude.c
 
 # dependencies for optional sources.
-compile.$(OBJEXT): {$(VPATH)}opt_sc.inc {$(VPATH)}optunifs.inc
+compile.$(OBJEXT): {$(VPATH)}optunifs.inc
 
 win32/win32.$(OBJEXT): {$(VPATH)}win32/win32.c {$(VPATH)}win32/file.h \
   {$(VPATH)}dln.h {$(VPATH)}dln_find.c {$(VPATH)}encindex.h \
@@ -1098,7 +1097,6 @@ INSNS2VMOPT = --srcdir="$(srcdir)"
 srcs_vpath = {$(VPATH)}
 
 inc_common_headers = $(tooldir)/ruby_vm/views/_copyright.erb $(tooldir)/ruby_vm/views/_notice.erb
-$(srcs_vpath)opt_sc.inc: $(tooldir)/ruby_vm/views/opt_sc.inc.erb $(inc_common_headers)
 $(srcs_vpath)optinsn.inc: $(tooldir)/ruby_vm/views/optinsn.inc.erb $(inc_common_headers)
 $(srcs_vpath)optunifs.inc: $(tooldir)/ruby_vm/views/optunifs.inc.erb $(inc_common_headers)
 $(srcs_vpath)insns.inc: $(tooldir)/ruby_vm/views/insns.inc.erb $(inc_common_headers)
@@ -19665,10 +19663,6 @@ yarp/util/yp_newline_list.$(OBJEXT): $(top_srcdir)/yarp/defines.h
 yarp/util/yp_newline_list.$(OBJEXT): $(top_srcdir)/yarp/util/yp_newline_list.c
 yarp/util/yp_newline_list.$(OBJEXT): $(top_srcdir)/yarp/util/yp_newline_list.h
 yarp/util/yp_newline_list.$(OBJEXT): {$(VPATH)}config.h
-yarp/util/yp_snprintf.$(OBJEXT): $(top_srcdir)/yarp/config.h
-yarp/util/yp_snprintf.$(OBJEXT): $(top_srcdir)/yarp/defines.h
-yarp/util/yp_snprintf.$(OBJEXT): $(top_srcdir)/yarp/util/yp_snprintf.c
-yarp/util/yp_snprintf.$(OBJEXT): {$(VPATH)}config.h
 yarp/util/yp_state_stack.$(OBJEXT): $(top_srcdir)/yarp/config.h
 yarp/util/yp_state_stack.$(OBJEXT): $(top_srcdir)/yarp/defines.h
 yarp/util/yp_state_stack.$(OBJEXT): $(top_srcdir)/yarp/util/yp_state_stack.c

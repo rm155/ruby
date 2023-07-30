@@ -182,9 +182,6 @@ void *rb_register_sigaltstack(void *);
 #if    OPT_DIRECT_THREADED_CODE
 #undef OPT_DIRECT_THREADED_CODE
 #endif /* OPT_DIRECT_THREADED_CODE */
-#if    OPT_STACK_CACHING
-#undef OPT_STACK_CACHING
-#endif /* OPT_STACK_CACHING */
 #endif /* OPT_CALL_THREADED_CODE */
 
 void rb_vm_encoded_insn_data_table_init(void);
@@ -1710,11 +1707,7 @@ rb_ractor_t *rb_current_allocating_ractor(void);
 /* for debug */
 extern void rb_vmdebug_stack_dump_raw(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);
 extern void rb_vmdebug_debug_print_pre(const rb_execution_context_t *ec, const rb_control_frame_t *cfp, const VALUE *_pc);
-extern void rb_vmdebug_debug_print_post(const rb_execution_context_t *ec, const rb_control_frame_t *cfp
-#if OPT_STACK_CACHING
-    , VALUE reg_a, VALUE reg_b
-#endif
-);
+extern void rb_vmdebug_debug_print_post(const rb_execution_context_t *ec, const rb_control_frame_t *cfp);
 
 #define SDR() rb_vmdebug_stack_dump_raw(GET_EC(), GET_EC()->cfp)
 #define SDR2(cfp) rb_vmdebug_stack_dump_raw(GET_EC(), (cfp))
