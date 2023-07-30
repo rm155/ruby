@@ -198,10 +198,15 @@ struct rb_ractor_struct {
     struct {
 	rb_nativethread_lock_t lock;
 	rb_ractor_t *lock_owner;
+
 	rb_nativethread_lock_t page_lock[SIZE_POOL_COUNT];
 	rb_ractor_t *page_lock_owner[SIZE_POOL_COUNT];
 	int page_lock_lev[SIZE_POOL_COUNT];
 	bool page_recently_locked[SIZE_POOL_COUNT];
+
+	int borrower_count;
+	rb_nativethread_lock_t borrower_count_lock;
+	rb_nativethread_cond_t no_borrowers;
     } borrowing_sync;
 
     /* postponed_job (async-signal-safe, NOT thread-safe) */

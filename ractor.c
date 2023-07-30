@@ -268,6 +268,8 @@ ractor_free(void *ptr)
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
 	rb_native_mutex_destroy(&r->borrowing_sync.page_lock[i]);
     }
+    rb_native_mutex_destroy(&r->borrowing_sync.borrower_count_lock);
+    rb_native_cond_destroy(&r->borrowing_sync.no_borrowers);
     ractor_queue_free(&r->sync.recv_queue);
     ractor_queue_free(&r->sync.takers_queue);
     ractor_local_storage_free(r);
@@ -2050,6 +2052,9 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 	r->borrowing_sync.page_lock_lev[i] = 0;
 	r->borrowing_sync.page_recently_locked[i] = false;
     }
+    r->borrowing_sync.borrower_count = 0;
+    rb_native_mutex_initialize(&r->borrowing_sync.borrower_count_lock);
+    rb_native_cond_initialize(&r->borrowing_sync.no_borrowers);
 
     // thread management
     rb_thread_sched_init(&r->threads.sched);

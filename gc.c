@@ -1390,7 +1390,14 @@ static void release_local_gc_locks(rb_vm_t *vm);
 { \
     if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
 	if (objspace->local_gc_level == 0) { \
+	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
+	    while (objspace->ractor->borrowing_sync.borrower_count != 0) {\
+		begin_wait_for_global_gc(); \
+		rb_native_cond_wait(&objspace->ractor->borrowing_sync.no_borrowers, &objspace->ractor->borrowing_sync.borrower_count_lock); \
+		end_wait_for_global_gc(); \
+	    } \
 	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock); \
+	    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
 	    objspace->ractor->borrowing_sync.lock_owner = GET_RACTOR(); \
 	    lock_local_gc(objspace); \
 	} \
@@ -3113,8 +3120,24 @@ set_current_alloc_target_ractor(VALUE arg)
 VALUE
 rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE args)
 {
+    rb_objspace_t *current_objspace = &rb_objspace;
+    bool target_is_not_self = (target_ractor != NULL && target_ractor != current_objspace->ractor);
+    if (target_is_not_self) {
+	rb_native_mutex_lock(&target_ractor->borrowing_sync.borrower_count_lock);
+	target_ractor->borrowing_sync.borrower_count++;
+	rb_native_mutex_unlock(&target_ractor->borrowing_sync.borrower_count_lock);
+    }
     VALUE old_target = set_current_alloc_target_ractor((VALUE)target_ractor);
-    return rb_ensure(func, args, set_current_alloc_target_ractor, old_target);
+    VALUE ret = rb_ensure(func, args, set_current_alloc_target_ractor, old_target);
+    if (target_is_not_self) {
+	rb_native_mutex_lock(&target_ractor->borrowing_sync.borrower_count_lock);
+	target_ractor->borrowing_sync.borrower_count--;
+	if (target_ractor->borrowing_sync.borrower_count == 0) {
+	    rb_native_cond_signal(&target_ractor->borrowing_sync.no_borrowers);
+	}
+	rb_native_mutex_unlock(&target_ractor->borrowing_sync.borrower_count_lock);
+    }
+    return ret;
 }
 
 bool
