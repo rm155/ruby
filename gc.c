@@ -7761,7 +7761,7 @@ gc_aging(rb_objspace_t *objspace, VALUE obj)
 static bool
 in_marking_range(rb_objspace_t *objspace, VALUE obj)
 {
-    return GET_OBJSPACE_OF_VALUE(obj) == objspace;
+    return !FL_TEST(obj, FL_SHAREABLE) || GET_OBJSPACE_OF_VALUE(obj) == objspace;
 }
 
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
@@ -7773,6 +7773,9 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
     if (!objspace->flags.during_global_gc && !in_marking_range(objspace, obj)) {
 	return;
     }
+
+    VM_ASSERT(objspace->flags.during_global_gc || GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     if (LIKELY(during_gc)) {
         rgengc_check_relation(objspace, obj);
         if (!gc_mark_set(objspace, obj)) return; /* already marked */
