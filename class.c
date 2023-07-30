@@ -248,10 +248,8 @@ class_alloc_given_redirected_allocation(VALUE args)
     RCLASS_SET_ALLOCATOR((VALUE)obj, 0);
 
     VALUE class_obj = (VALUE)obj;
-    if ( (flags & T_CLASS) || (flags & T_MODULE) ) {
-	FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
-	rb_add_to_shareable_tbl(class_obj);
-    }
+    FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(class_obj);
     return class_obj;
 }
 
