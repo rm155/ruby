@@ -1798,7 +1798,7 @@ class TestRefinement < Test::Unit::TestCase
     assert_equal([int_refinement, str_refinement], m.refinements)
   end
 
-  def test_refined_class
+  def test_target
     refinements = Module.new {
       refine Integer do
       end
@@ -1806,7 +1806,9 @@ class TestRefinement < Test::Unit::TestCase
       refine String do
       end
     }.refinements
+    assert_equal(Integer, refinements[0].target)
     assert_equal(Integer, refinements[0].refined_class)
+    assert_equal(String, refinements[1].target)
     assert_equal(String, refinements[1].refined_class)
   end
 
@@ -2624,6 +2626,24 @@ class TestRefinement < Test::Unit::TestCase
 
   def test_inherit_singleton_methods_of_module
     assert_equal([], Refinement.used_modules)
+  end
+
+  def test_inlinecache
+    assert_separately([], <<-"end;")
+      module R
+        refine String do
+          def to_s = :R
+        end
+      end
+
+      2.times{|i|
+        s = ''.to_s
+        assert_equal '', s if i == 0
+        assert_equal :R, s if i == 1
+        using R            if i == 0
+        assert_equal :R, ''.to_s
+      }
+    end;
   end
 
   private
