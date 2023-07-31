@@ -1662,8 +1662,12 @@ void rb_obj_freeze_inline(VALUE x)
 static void
 ivar_set(VALUE obj, ID id, VALUE val)
 {
-    if (rb_multi_ractor_p() && get_ractor_of_value(obj) != get_ractor_of_value(val) && !rb_ractor_shareable_p(val)) {
-	rb_raise(rb_eRuntimeError, "an unshareable object can only be set to an instance variable of an object belonging to the same Ractor");
+    if (rb_multi_ractor_p()) {
+	rb_ractor_t *obj_ractor = get_ractor_of_value(obj);
+	rb_ractor_t *val_ractor = get_ractor_of_value(val);
+	if (obj_ractor && val_ractor && obj_ractor != val_ractor && !rb_ractor_shareable_p(val)) {
+	    rb_raise(rb_eRuntimeError, "an unshareable object can only be set to an instance variable of an object belonging to the same Ractor");
+	}
     }
 
     RB_DEBUG_COUNTER_INC(ivar_set_base);
