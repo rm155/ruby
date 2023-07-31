@@ -8365,7 +8365,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     MARK_CHECKPOINT("end_proc");
     rb_mark_end_proc(objspace);
 
-    if (!rb_multi_ractor_p() || objspace == vm->ractor.main_ractor || objspace->flags.during_global_gc) {
+    if (!rb_multi_ractor_p() || objspace == vm->objspace) {
 	MARK_CHECKPOINT("global_tbl");
 	rb_gc_mark_global_tbl();
     }
