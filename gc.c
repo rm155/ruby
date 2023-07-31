@@ -1093,6 +1093,9 @@ get_updated_objspace_link(rb_objspace_link_t *os_link)
 rb_ractor_t *
 get_ractor_of_value(VALUE obj)
 {
+    if (rb_special_const_p(obj)) {
+	return NULL;
+    }
     return GET_RACTOR_OF_VALUE(obj);
 }
 

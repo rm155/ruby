@@ -41,7 +41,6 @@
 #include "ruby/assert.h"
 #include "builtin.h"
 #include "shape.h"
-#include "vm_sync.h"
 
 /* Flags of RObject
  *
@@ -2877,9 +2876,6 @@ rb_obj_ivar_get(VALUE obj, VALUE iv)
 static VALUE
 rb_obj_ivar_set_m(VALUE obj, VALUE iv, VALUE val)
 {
-    if (rb_multi_ractor_p() && get_ractor_of_value(obj) != GET_VM()->ractor.main_ractor) {
-	rb_raise(rb_eRuntimeError, "the receiver of `instance_variable_set' must belong to the main Ractor");
-    }
     ID id = id_for_var(obj, iv, instance);
     if (!id) id = rb_intern_str(iv);
     return rb_ivar_set(obj, id, val);
