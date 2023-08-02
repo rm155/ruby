@@ -2602,11 +2602,9 @@ close_objspace(rb_objspace_t *objspace)
     free(heap_pages_sorted);
     heap_pages_sorted = NULL;
 
-    lock_local_gc(objspace);
     RB_VM_LOCK();
     ccan_list_del(&objspace->objspace_node);
     RB_VM_UNLOCK();
-    unlock_local_gc(objspace);
     rb_objspace_free(objspace);
 }
 
