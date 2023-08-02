@@ -10419,7 +10419,7 @@ global_gc_needed(void)
 static int
 garbage_collect(rb_objspace_t *objspace, unsigned int reason, bool need_finalize_deferred)
 {
-    if (global_gc_needed()) {
+    if (global_gc_needed() && !(reason & GPR_FLAG_COMPACT)) {
 	reason |= GPR_FLAG_GLOBAL;
     }
     if (reason & GPR_FLAG_GLOBAL) {
@@ -10966,6 +10966,7 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
         if (!running_full_mark)       rb_raise(rb_eArgError, "`full_mark' must be true if `global' is true");
         if (!running_immediate_mark)  rb_raise(rb_eArgError, "`immediate_mark' must be true if `global' is true");
         if (!running_immediate_sweep) rb_raise(rb_eArgError, "`immediate_sweep' must be true if `global' is true");
+	if (running_compact)          rb_raise(rb_eArgError, "global compaction is not yet implemented");
     }
 
     rb_objspace_t *objspace = &rb_objspace;
