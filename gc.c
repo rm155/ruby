@@ -735,6 +735,7 @@ typedef struct rb_global_space {
     struct {
         bool need_global_gc;
 	size_t shared_objects_limit;
+	size_t shared_objects_total;
 	rb_nativethread_lock_t shared_tracking_lock;
     } rglobalgc; //TODO: Call global GC upon hitting shared object limit
 } rb_global_space_t;
@@ -794,7 +795,6 @@ typedef struct rb_objspace {
     st_table *finalizer_table;
 
     st_table *shareable_tbl;
-    rb_nativethread_lock_t shared_objects_count_lock;
     size_t shared_objects;
 
     struct {
@@ -2031,7 +2031,6 @@ rb_objspace_free(rb_objspace_t *objspace)
             SIZE_POOL_EDEN_HEAP(size_pool)->total_slots = 0;
         }
     }
-    rb_nativethread_lock_destroy(&objspace->shared_objects_count_lock);
     st_free_table(objspace->id_to_obj_tbl);
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
@@ -4001,10 +4000,11 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     if (FL_TEST(obj, FL_SHAREABLE)) {
 	bool deleted = !!st_delete(objspace->shareable_tbl, &obj, NULL);
 	if (deleted) {
-	    rb_global_space_t *global_space = &rb_global_space;
-	    rb_native_mutex_lock(&objspace->shared_objects_count_lock);
 	    objspace->shared_objects--;
-	    rb_native_mutex_unlock(&objspace->shared_objects_count_lock);
+	    rb_global_space_t *global_space = &rb_global_space;
+	    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	    global_space->rglobalgc.shared_objects_total--;
+	    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
 	}
     }
 
@@ -4324,7 +4324,6 @@ Init_heap(rb_objspace_t *objspace)
     heap_page_alloc_use_mmap = INIT_HEAP_PAGE_ALLOC_USE_MMAP;
 #endif
 
-    rb_nativethread_lock_initialize(&objspace->shared_objects_count_lock);
     objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
@@ -5246,9 +5245,11 @@ rb_add_to_shareable_tbl(VALUE obj)
     bool duplicate = !!st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
 
     if (!duplicate) {
-	rb_native_mutex_lock(&objspace->shared_objects_count_lock);
 	objspace->shared_objects++;
-	rb_native_mutex_unlock(&objspace->shared_objects_count_lock);
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	global_space->rglobalgc.shared_objects_total++;
+	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
     }
 }
 
@@ -9121,19 +9122,6 @@ gc_marks_wb_unprotected_objects(rb_objspace_t *objspace, rb_heap_t *heap)
     gc_mark_stacked_objects_all(objspace);
 }
 
-static size_t
-shared_objects_global_total(rb_global_space_t *global_space)
-{
-    size_t total = 0;
-    rb_objspace_t *os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
-	rb_native_mutex_lock(&os->shared_objects_count_lock);
-	total += os->shared_objects;
-	rb_native_mutex_unlock(&os->shared_objects_count_lock);
-    }
-    return total;
-}
-
 static void
 gc_marks_finish(rb_objspace_t *objspace)
 {
@@ -9230,9 +9218,9 @@ gc_marks_finish(rb_objspace_t *objspace)
             );
             objspace->rgengc.old_objects_limit = (size_t)(objspace->rgengc.old_objects * r);
 	    if (objspace->flags.during_global_gc) {
-		global_space->rglobalgc.shared_objects_limit = (size_t)(shared_objects_global_total(global_space) * gc_params.sharedobject_limit_factor);
+		global_space->rglobalgc.shared_objects_limit = (size_t)(global_space->rglobalgc.shared_objects_total * gc_params.sharedobject_limit_factor);
 	    }
-	    else if (rb_multi_ractor_p() && shared_objects_global_total(global_space) > global_space->rglobalgc.shared_objects_limit) {
+	    else if (rb_multi_ractor_p() && global_space->rglobalgc.shared_objects_total > global_space->rglobalgc.shared_objects_limit) {
 		global_space->rglobalgc.need_global_gc = true;
 	    }
 	}
