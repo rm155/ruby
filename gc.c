@@ -11985,17 +11985,23 @@ gc_update_references(rb_objspace_t *objspace)
 	rb_gc_update_global_tbl();
     }
 
-    global_symbols.ids = rb_gc_location(global_symbols.ids);
-    global_symbols.dsymbol_fstr_hash = rb_gc_location(global_symbols.dsymbol_fstr_hash);
+    bool shareable_objects_moved = (!rb_multi_ractor_p() || objspace->flags.during_global_gc);
+
+    if (shareable_objects_moved) {
+	global_symbols.ids = rb_gc_location(global_symbols.ids);
+	global_symbols.dsymbol_fstr_hash = rb_gc_location(global_symbols.dsymbol_fstr_hash);
+    }
 
     rb_native_mutex_lock(&objspace->obj_id_lock);
     gc_update_tbl_refs(objspace, objspace->obj_to_id_tbl);
     gc_update_table_refs(objspace, objspace->id_to_obj_tbl);
     rb_native_mutex_unlock(&objspace->obj_id_lock);
 
-    gc_update_table_refs(objspace, global_symbols.str_sym);
+    if (shareable_objects_moved) {
+	gc_update_table_refs(objspace, global_symbols.str_sym);
+	gc_update_table_refs(objspace, objspace->shareable_tbl);
+    }
     gc_update_table_refs(objspace, finalizer_table);
-    gc_update_table_refs(objspace, objspace->shareable_tbl);
 
     objspace->flags.during_reference_updating = false;
 }
