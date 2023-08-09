@@ -101,10 +101,14 @@ Init_sym(void)
     symbols->dsymbol_fstr_hash = dsym_fstrs;
     rb_gc_register_mark_object(dsym_fstrs);
     rb_obj_hide(dsym_fstrs);
+    FL_SET_RAW(symbols->dsymbol_fstr_hash, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(symbols->dsymbol_fstr_hash);
 
     symbols->str_sym = st_init_table_with_size(&symhash, 1000);
     symbols->ids = rb_ary_hidden_new(0);
     rb_gc_register_mark_object(symbols->ids);
+    FL_SET_RAW(symbols->ids, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(symbols->ids);
 
     Init_op_tbl();
     Init_id();
