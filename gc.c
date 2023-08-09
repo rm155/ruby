@@ -11055,6 +11055,7 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 #define COULD_MALLOC_REGION_END() \
     if (_already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
 
+static int
 update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src, st_data_t *srcid, st_data_t *id)
 {
     rb_native_mutex_lock(&objspace->obj_id_lock);
@@ -11071,6 +11072,21 @@ update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src, st_dat
     }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
     return id_found;
+}
+
+static int
+update_shareable_tbl_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src)
+{
+    if (FL_TEST((VALUE) src, FL_SHAREABLE)) {
+	COULD_MALLOC_REGION_START();
+	{
+	    st_delete(objspace->shareable_tbl, (st_data_t *)&src, 0);
+	    st_insert(objspace->shareable_tbl, (st_data_t)dest, INT2FIX(0));
+	}
+	COULD_MALLOC_REGION_END();
+	return 1;
+    }
+    return 0;
 }
 
 static VALUE
@@ -11116,7 +11132,9 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
 
     /* If the source object's object_id has been seen, we need to update
      * the object to object id mapping. */
-    update_obj_id_mapping(GET_OBJSPACE_OF_VALUE(scan), dest, src, &srcid, &id);
+    update_obj_id_mapping(objspace, dest, src, &srcid, &id);
+
+    update_shareable_tbl_mapping(objspace, dest, src);
 
     /* Move the object */
     memcpy(dest, src, MIN(src_slot_size, slot_size));
