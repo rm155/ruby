@@ -118,7 +118,7 @@ WARN_UNUSED_RESULT(static VALUE lookup_str_sym(const VALUE str));
 WARN_UNUSED_RESULT(static VALUE lookup_id_str(ID id));
 WARN_UNUSED_RESULT(static ID intern_str(VALUE str, int mutable));
 
-void
+static void
 enter_sym_lock(rb_symbols_t *symbols)
 {
     rb_ractor_t *cr = GET_RACTOR();
@@ -129,7 +129,7 @@ enter_sym_lock(rb_symbols_t *symbols)
     symbols->sym_sync.lock_lev++;
 }
 
-void
+static void
 leave_sym_lock(rb_symbols_t *symbols)
 {
     symbols->sym_sync.lock_lev--;
@@ -549,6 +549,13 @@ static void
 register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 {
     ASSERT_global_symbols_locking(symbols);
+
+    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
+    if (!rb_special_const_p(sym)) {
+	FL_SET_RAW(sym, RUBY_FL_SHAREABLE);
+    }
+    rb_add_to_shareable_tbl(str);
+    rb_add_to_shareable_tbl(sym);
 
     if (SYMBOL_DEBUG) {
         st_update(symbols->str_sym, (st_data_t)str,
