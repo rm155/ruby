@@ -11962,8 +11962,11 @@ gc_update_references(rb_objspace_t *objspace)
             }
         }
     }
-    rb_vm_update_references(vm);
-    rb_gc_update_global_tbl();
+    if (objspace == vm->objspace) {
+	rb_vm_update_references(vm);
+	rb_gc_update_global_tbl();
+    }
+
     global_symbols.ids = rb_gc_location(global_symbols.ids);
     global_symbols.dsymbol_fstr_hash = rb_gc_location(global_symbols.dsymbol_fstr_hash);
 
