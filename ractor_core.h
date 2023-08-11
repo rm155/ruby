@@ -267,6 +267,7 @@ void rb_ractor_atfork(rb_vm_t *vm, rb_thread_t *th);
 
 VALUE rb_ractor_copy_with_alloc_target(VALUE obj, rb_ractor_t *r);
 VALUE rb_ractor_ensure_shareable(VALUE obj, VALUE name);
+bool rb_ractor_classify_as_shareable(VALUE obj);
 
 RUBY_SYMBOL_EXPORT_BEGIN
 bool rb_ractor_shareable_p_continue(VALUE obj);

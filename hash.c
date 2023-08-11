@@ -7312,7 +7312,7 @@ Init_Hash(void)
     origenviron = environ;
     envtbl = TypedData_Wrap_Struct(rb_cObject, &env_data_type, NULL);
     rb_extend_object(envtbl, rb_mEnumerable);
-    FL_SET_RAW(envtbl, RUBY_FL_SHAREABLE);
+    rb_ractor_classify_as_shareable(envtbl);
 
 
     rb_define_singleton_method(envtbl, "[]", rb_f_getenv, 1);

@@ -419,14 +419,12 @@ rb_fstring(VALUE str)
     if (!bare) {
         if (STR_EMBED_P(str)) {
             OBJ_FREEZE_RAW(str);
-	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
-	    rb_add_to_shareable_tbl(str);
+	    rb_ractor_classify_as_shareable(str);
             return str;
         }
         if (FL_TEST_RAW(str, STR_NOEMBED|STR_SHARED_ROOT|STR_SHARED) == (STR_NOEMBED|STR_SHARED_ROOT)) {
             assert(OBJ_FROZEN(str));
-	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
-	    rb_add_to_shareable_tbl(str);
+	    rb_ractor_classify_as_shareable(str);
             return str;
         }
     }
@@ -435,14 +433,12 @@ rb_fstring(VALUE str)
         rb_str_resize(str, RSTRING_LEN(str));
 
     fstr = register_fstring(str, FALSE);
-    FL_SET_RAW(fstr, RUBY_FL_SHAREABLE);
-    rb_add_to_shareable_tbl(fstr);
+    rb_ractor_classify_as_shareable(fstr);
 
     if (!bare) {
         str_replace_shared_without_enc(str, fstr);
         OBJ_FREEZE_RAW(str);
-	FL_SET_RAW(str, RUBY_FL_SHAREABLE);
-	rb_add_to_shareable_tbl(str);
+	rb_ractor_classify_as_shareable(str);
         return str;
     }
     return fstr;
@@ -510,8 +506,7 @@ rb_fstring_new(const char *ptr, long len)
 {
     struct RString fake_str;
     VALUE str = register_fstring(setup_fake_str(&fake_str, ptr, len, ENCINDEX_US_ASCII), FALSE);
-    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
-    rb_add_to_shareable_tbl(str);
+    rb_ractor_classify_as_shareable(str);
     return str;
 }
 

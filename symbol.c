@@ -101,14 +101,12 @@ Init_sym(void)
     symbols->dsymbol_fstr_hash = dsym_fstrs;
     rb_gc_register_mark_object(dsym_fstrs);
     rb_obj_hide(dsym_fstrs);
-    FL_SET_RAW(symbols->dsymbol_fstr_hash, RUBY_FL_SHAREABLE);
-    rb_add_to_shareable_tbl(symbols->dsymbol_fstr_hash);
+    rb_ractor_classify_as_shareable(symbols->dsymbol_fstr_hash);
 
     symbols->str_sym = st_init_table_with_size(&symhash, 1000);
     symbols->ids = rb_ary_hidden_new(0);
     rb_gc_register_mark_object(symbols->ids);
-    FL_SET_RAW(symbols->ids, RUBY_FL_SHAREABLE);
-    rb_add_to_shareable_tbl(symbols->ids);
+    rb_ractor_classify_as_shareable(symbols->ids);
 
     Init_op_tbl();
     Init_id();
@@ -466,8 +464,7 @@ set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
     if (idx >= (size_t)RARRAY_LEN(ids) || NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
         ary = rb_ary_hidden_new(ID_ENTRY_UNIT * ID_ENTRY_SIZE);
         rb_ary_store(ids, (long)idx, ary);
-	FL_SET_RAW(ary, RUBY_FL_SHAREABLE);
-	rb_add_to_shareable_tbl(ary);
+	rb_ractor_classify_as_shareable(ary);
     }
     idx = (num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
     rb_ary_store(ary, (long)idx + ID_ENTRY_STR, str);
@@ -554,12 +551,8 @@ register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 {
     ASSERT_global_symbols_locking(symbols);
 
-    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
-    if (!rb_special_const_p(sym)) {
-	FL_SET_RAW(sym, RUBY_FL_SHAREABLE);
-    }
-    rb_add_to_shareable_tbl(str);
-    rb_add_to_shareable_tbl(sym);
+    rb_ractor_classify_as_shareable(str);
+    rb_ractor_classify_as_shareable(sym);
 
     if (SYMBOL_DEBUG) {
         st_update(symbols->str_sym, (st_data_t)str,

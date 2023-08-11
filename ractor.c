@@ -2074,7 +2074,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->name = name;
     r->loc = loc;
     r->during_teardown_cleanup = false;
-    rb_add_to_shareable_tbl(r->pub.self);
+    rb_ractor_classify_as_shareable(r->pub.self);
 
     rb_ractor_postponed_job_initialize(r);
 }
@@ -3053,10 +3053,19 @@ make_shareable_check_shareable(VALUE obj)
     return traverse_cont;
 }
 
-static enum obj_traverse_iterator_result
-mark_shareable(VALUE obj)
+bool
+rb_ractor_classify_as_shareable(VALUE obj)
 {
-    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+    rb_add_to_shareable_tbl(obj);
+    if (!rb_special_const_p(obj)) {
+	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+    }
+}
+
+static enum obj_traverse_iterator_result
+mark_shareable_in_traversal(VALUE obj)
+{
+    rb_ractor_classify_as_shareable(obj);
     return traverse_cont;
 }
 
@@ -3065,7 +3074,7 @@ rb_ractor_make_shareable(VALUE obj)
 {
     rb_obj_traverse(obj,
                     make_shareable_check_shareable,
-                    null_leave, mark_shareable);
+                    null_leave, mark_shareable_in_traversal);
     return obj;
 }
 
@@ -3111,7 +3120,7 @@ shareable_p_enter(VALUE obj)
              RB_TYPE_P(obj, T_MODULE) ||
              RB_TYPE_P(obj, T_ICLASS)) {
         // TODO: remove it
-        mark_shareable(obj);
+        rb_ractor_classify_as_shareable(obj);
         return traverse_skip;
     }
     else if (RB_OBJ_FROZEN_RAW(obj) &&
@@ -3127,7 +3136,7 @@ rb_ractor_shareable_p_continue(VALUE obj)
 {
     if (rb_obj_traverse(obj,
                         shareable_p_enter, null_leave,
-                        mark_shareable)) {
+                        mark_shareable_in_traversal)) {
         return false;
     }
     else {

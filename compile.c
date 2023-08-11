@@ -5575,8 +5575,7 @@ make_name_for_block(const rb_iseq_t *orig_iseq)
         block_name = rb_sprintf("block (%d levels) in %"PRIsVALUE, level, ISEQ_BODY(iseq)->location.label);
     }
 
-    FL_SET_RAW(block_name, RUBY_FL_SHAREABLE);
-    rb_add_to_shareable_tbl(block_name);
+    rb_ractor_classify_as_shareable(block_name);
     return block_name;
 }
 

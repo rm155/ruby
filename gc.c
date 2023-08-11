@@ -3511,8 +3511,7 @@ imemo_new_given_shareability(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3,
     VALUE flags = T_IMEMO | (type << FL_USHIFT);
     VALUE obj = newobj_of(GET_RACTOR(), v0, flags, v1, v2, v3, TRUE, size);
     if (shareable) {
-	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
-	rb_add_to_shareable_tbl(obj);
+	rb_ractor_classify_as_shareable(obj);
     }
     return obj;
 }
@@ -3996,14 +3995,14 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_SHAREABLE)) {
-	bool deleted = !!st_delete(objspace->shareable_tbl, &obj, NULL);
-	if (deleted) {
-	    objspace->shared_objects--;
-	    rb_global_space_t *global_space = &rb_global_space;
-	    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	    global_space->rglobalgc.shared_objects_total--;
-	    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
-	}
+	bool shareable_obj_was_in_shareable_table = !!st_delete(objspace->shareable_tbl, &obj, NULL);
+	VM_ASSERT(shareable_obj_was_in_shareable_table);
+
+	objspace->shared_objects--;
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	global_space->rglobalgc.shared_objects_total--;
+	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
