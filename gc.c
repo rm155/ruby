@@ -330,6 +330,14 @@ rb_gc_guarded_ptr_val(volatile VALUE *ptr, VALUE val)
 #define GC_OLDMALLOC_LIMIT_MAX (128 * 1024 * 1024 /* 128MB */)
 #endif
 
+#ifndef GC_CAN_COMPILE_COMPACTION
+#if defined(__wasi__) /* WebAssembly doesn't support signals */
+# define GC_CAN_COMPILE_COMPACTION 0
+#else
+# define GC_CAN_COMPILE_COMPACTION 1
+#endif
+#endif
+
 #ifndef PRINT_MEASURE_LINE
 #define PRINT_MEASURE_LINE 0
 #endif
@@ -1670,9 +1678,6 @@ asan_poison_object_restore(VALUE obj, void *ptr)
 #define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)  MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
 #define RVALUE_PAGE_MARKING(page, obj)        MARKED_IN_BITMAP((page)->marking_bits, (obj))
 
-
-static int rgengc_remembered(rb_objspace_t *objspace, VALUE obj);
-static int rgengc_remembered_sweep(rb_objspace_t *objspace, VALUE obj);
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
 static void rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap);
@@ -2656,6 +2661,7 @@ heap_assign_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *
     heap_add_freepage(heap, page);
 }
 
+#if GC_CAN_COMPILE_COMPACTION
 static void
 heap_add_pages(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap, size_t add)
 {
@@ -2669,6 +2675,7 @@ heap_add_pages(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *he
 
     GC_ASSERT(size_pool->allocatable_pages == 0);
 }
+#endif
 
 static size_t
 minimum_pages_for_size_pool(rb_objspace_t *objspace, int size_pool_idx)
@@ -2916,7 +2923,7 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
         GC_ASSERT(RVALUE_OLD_P(obj) == FALSE);
         GC_ASSERT(RVALUE_WB_UNPROTECTED(obj) == FALSE);
 
-        if (rgengc_remembered(objspace, (VALUE)obj)) rb_bug("newobj: %s is remembered.", obj_info(obj));
+        if (RVALUE_REMEMBERED((VALUE)obj)) rb_bug("newobj: %s is remembered.", obj_info(obj));
     }
     RB_VM_LOCK_LEAVE_NO_BARRIER();
 #endif
@@ -6029,14 +6036,8 @@ gc_unprotect_pages(rb_objspace_t *objspace, rb_heap_t *heap)
 }
 
 static void gc_update_references(rb_objspace_t * objspace);
+#if GC_CAN_COMPILE_COMPACTION
 static void invalidate_moved_page(rb_objspace_t *objspace, struct heap_page *page);
-
-#ifndef GC_CAN_COMPILE_COMPACTION
-#if defined(__wasi__) /* WebAssembly doesn't support signals */
-# define GC_CAN_COMPILE_COMPACTION 0
-#else
-# define GC_CAN_COMPILE_COMPACTION 1
-#endif
 #endif
 
 #if defined(__MINGW32__) || defined(_WIN32)
@@ -6222,45 +6223,6 @@ install_handlers(void)
 #endif
 
 static void
-revert_stack_objects(VALUE stack_obj, void *ctx)
-{
-    rb_objspace_t * objspace = (rb_objspace_t*)ctx;
-
-    if (BUILTIN_TYPE(stack_obj) == T_MOVED) {
-        /* For now we'll revert the whole page if the object made it to the
-         * stack.  I think we can change this to move just the one object
-         * back though */
-        invalidate_moved_page(objspace, GET_HEAP_PAGE(stack_obj));
-    }
-}
-
-static void
-revert_machine_stack_references(rb_objspace_t *objspace, VALUE v)
-{
-    if (is_pointer_to_heap(objspace, (void *)v)) {
-        if (BUILTIN_TYPE(v) == T_MOVED) {
-            /* For now we'll revert the whole page if the object made it to the
-             * stack.  I think we can change this to move just the one object
-             * back though */
-            invalidate_moved_page(objspace, GET_HEAP_PAGE(v));
-        }
-    }
-}
-
-static void each_machine_stack_value(const rb_execution_context_t *ec, void (*cb)(rb_objspace_t *, VALUE));
-
-static void
-check_stack_for_moved(rb_objspace_t *objspace)
-{
-    rb_execution_context_t *ec = GET_EC();
-    rb_vm_t *vm = rb_ec_vm_ptr(ec);
-    rb_vm_each_stack_value(vm, revert_stack_objects, (void*)objspace);
-    each_machine_stack_value(ec, revert_machine_stack_references);
-}
-
-static void gc_mode_transition(rb_objspace_t *objspace, enum gc_mode mode);
-
-static void
 gc_compact_finish(rb_objspace_t *objspace)
 {
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
@@ -6270,13 +6232,6 @@ gc_compact_finish(rb_objspace_t *objspace)
     }
 
     uninstall_handlers();
-
-    /* The mutator is allowed to run during incremental sweeping. T_MOVED
-     * objects can get pushed on the stack and when the compaction process
-     * finishes up, it may remove the read barrier before anything has a
-     * chance to read from the T_MOVED address. To fix this, we scan the stack
-     * then revert any moved objects that made it to the stack. */
-    check_stack_for_moved(objspace);
 
     gc_update_references(objspace);
     objspace->profile.compact_count++;
@@ -6323,7 +6278,7 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 #if RGENGC_CHECK_MODE
                     if (!is_full_marking(objspace)) {
                         if (RVALUE_OLD_P(vp)) rb_bug("page_sweep: %p - old while minor GC.", (void *)p);
-                        if (rgengc_remembered_sweep(objspace, vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
+                        if (RVALUE_REMEMBERED(vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
                     }
 #endif
                     if (obj_free(objspace, vp)) {
@@ -6769,6 +6724,7 @@ gc_sweep_continue(rb_objspace_t *objspace, rb_size_pool_t *sweep_size_pool, rb_h
     gc_sweeping_exit(objspace);
 }
 
+#if GC_CAN_COMPILE_COMPACTION
 static void
 invalidate_moved_plane(rb_objspace_t *objspace, struct heap_page *page, uintptr_t p, bits_t bitset)
 {
@@ -6841,6 +6797,7 @@ invalidate_moved_page(rb_objspace_t *objspace, struct heap_page *page)
         p += BITS_BITLENGTH * BASE_SLOT_SIZE;
     }
 }
+#endif
 
 static void
 gc_compact_start(rb_objspace_t *objspace)
@@ -9659,12 +9616,6 @@ gc_report_body(int level, rb_objspace_t *objspace, const char *fmt, ...)
 /* bit operations */
 
 static int
-rgengc_remembersetbits_get(rb_objspace_t *objspace, VALUE obj)
-{
-    return RVALUE_REMEMBERED(obj);
-}
-
-static int
 rgengc_remembersetbits_set(rb_objspace_t *objspace, VALUE obj)
 {
     struct heap_page *page = GET_HEAP_PAGE(obj);
@@ -9687,7 +9638,7 @@ static int
 rgengc_remember(rb_objspace_t *objspace, VALUE obj)
 {
     gc_report(6, objspace, "rgengc_remember: %s %s\n", obj_info(obj),
-              rgengc_remembersetbits_get(objspace, obj) ? "was already remembered" : "is remembered now");
+              RVALUE_REMEMBERED(obj) ? "was already remembered" : "is remembered now");
 
     check_rvalue_consistency(obj);
 
@@ -9696,7 +9647,7 @@ rgengc_remember(rb_objspace_t *objspace, VALUE obj)
     }
 
 #if RGENGC_PROFILE > 0
-    if (!rgengc_remembered(objspace, obj)) {
+    if (!RVALUE_REMEMBERED(obj)) {
         if (RVALUE_WB_UNPROTECTED(obj) == 0) {
             objspace->profile.total_remembered_normal_object_count++;
 #if RGENGC_PROFILE >= 2
@@ -9707,21 +9658,6 @@ rgengc_remember(rb_objspace_t *objspace, VALUE obj)
 #endif /* RGENGC_PROFILE > 0 */
 
     return rgengc_remembersetbits_set(objspace, obj);
-}
-
-static int
-rgengc_remembered_sweep(rb_objspace_t *objspace, VALUE obj)
-{
-    int result = rgengc_remembersetbits_get(objspace, obj);
-    check_rvalue_consistency(obj);
-    return result;
-}
-
-static int
-rgengc_remembered(rb_objspace_t *objspace, VALUE obj)
-{
-    gc_report(6, objspace, "rgengc_remembered: %s\n", obj_info(obj));
-    return rgengc_remembered_sweep(objspace, obj);
 }
 
 #ifndef PROFILE_REMEMBERSET_MARK
@@ -9829,7 +9765,7 @@ gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
     }
 
     /* mark `a' and remember (default behavior) */
-    if (!rgengc_remembered(objspace, a)) {
+    if (!RVALUE_REMEMBERED(a)) {
         RB_VM_LOCK_ENTER_NO_BARRIER();
         {
             rgengc_remember(objspace, a);
@@ -9924,7 +9860,7 @@ rb_gc_writebarrier_unprotect(VALUE obj)
         rb_objspace_t *objspace = &rb_objspace;
 
         gc_report(2, objspace, "rb_gc_writebarrier_unprotect: %s %s\n", obj_info(obj),
-                  rgengc_remembered(objspace, obj) ? " (already remembered)" : "");
+                  RVALUE_REMEMBERED(obj) ? " (already remembered)" : "");
 
         RB_VM_LOCK_ENTER_NO_BARRIER();
         {

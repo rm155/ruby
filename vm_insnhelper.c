@@ -2485,6 +2485,12 @@ vm_base_ptr(const rb_control_frame_t *cfp)
     }
 }
 
+VALUE *
+rb_vm_base_ptr(const rb_control_frame_t *cfp)
+{
+    return vm_base_ptr(cfp);
+}
+
 /* method call processes with call_info */
 
 #include "vm_args.c"
@@ -5225,6 +5231,12 @@ vm_check_match(rb_execution_context_t *ec, VALUE target, VALUE pattern, rb_num_t
     else {
         return check_match(ec, pattern, target, type);
     }
+}
+
+VALUE
+rb_vm_check_match(rb_execution_context_t *ec, VALUE target, VALUE pattern, rb_num_t flag)
+{
+    return vm_check_match(ec, target, pattern, flag);
 }
 
 static VALUE

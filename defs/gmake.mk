@@ -27,7 +27,7 @@ TEST_TARGETS := $(filter $(CHECK_TARGETS),$(MAKECMDGOALS))
 TEST_DEPENDS := $(filter-out commit $(TEST_TARGETS),$(MAKECMDGOALS))
 TEST_TARGETS := $(patsubst great,exam,$(TEST_TARGETS))
 TEST_DEPENDS := $(filter-out great $(TEST_TARGETS),$(TEST_DEPENDS))
-TEST_TARGETS := $(patsubst exam,test-bundled-gems yes-test-bundler-parallel check,$(TEST_TARGETS))
+TEST_TARGETS := $(patsubst exam,test-bundled-gems test-bundler-parallel check,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst check,test-syntax-suggest test-spec test-all test-tool test-short,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-rubyspec,test-spec,$(TEST_TARGETS))
 TEST_DEPENDS := $(filter-out exam check test-spec $(TEST_TARGETS),$(TEST_DEPENDS))
@@ -45,6 +45,7 @@ TEST_TARGETS := $(patsubst test-bundler-parallel,test-bundler-parallel $(PREPARE
 TEST_TARGETS := $(patsubst test-syntax-suggest,test-syntax-suggest $(PREPARE_SYNTAX_SUGGEST),$(TEST_TARGETS))
 TEST_DEPENDS := $(filter-out test-short $(TEST_TARGETS),$(TEST_DEPENDS))
 TEST_DEPENDS += $(if $(filter great exam love check,$(MAKECMDGOALS)),all exts)
+TEST_TARGETS := $(patsubst yes-%,%,$(filter-out no-%,$(TEST_TARGETS)))
 endif
 
 in-srcdir := $(if $(filter-out .,$(srcdir)),$(CHDIR) $(srcdir) &&)
