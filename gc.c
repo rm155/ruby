@@ -920,12 +920,12 @@ current_ractor_objspace(rb_vm_t *vm)
     rb_objspace_t *objspace;
     if (vm->multi_objspace && vm->ractor.main_thread) {
 	objspace = GET_RACTOR()->local_objspace;
+	if (objspace && objspace->global_gc_current_target) {
+	    objspace = objspace->global_gc_current_target;
+	}
     }
     else {
 	objspace = vm->objspace;
-    }
-    if (objspace && objspace->global_gc_current_target) {
-	objspace = objspace->global_gc_current_target;
     }
     return objspace;
 }
