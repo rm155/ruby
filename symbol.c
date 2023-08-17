@@ -143,7 +143,7 @@ leave_sym_lock(rb_symbols_t *symbols)
 
 #define GLOBAL_SYMBOLS_ENTER(symbols) { rb_symbols_t *symbols = &ruby_global_symbols; enter_sym_lock(symbols);
 #define GLOBAL_SYMBOLS_LEAVE(symbols) leave_sym_lock(symbols); }
-#define ASSERT_global_symbols_locking(symbols) VM_ASSERT(symbols->sym_sync.lock_owner == GET_RACTOR());
+#define ASSERT_global_symbols_locking(symbols) VM_ASSERT(!rb_multi_ractor_p() || symbols->sym_sync.lock_owner == GET_RACTOR());
 
 ID
 rb_id_attrset(ID id)
@@ -472,38 +472,46 @@ set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
 }
 
 static VALUE
+get_id_serial_entry_no_gs_lock(rb_symbols_t *symbols, rb_id_serial_t num, ID id, const enum id_entry_type t)
+{
+    VALUE result = 0;
+    if (num && num <= symbols->last_id) {
+	size_t idx = num / ID_ENTRY_UNIT;
+	VALUE ids = symbols->ids;
+	VALUE ary;
+	if (idx < (size_t)RARRAY_LEN(ids) && !NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
+	    long pos = (long)(num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
+	    result = rb_ary_entry(ary, pos + t);
+
+	    if (NIL_P(result)) {
+		result = 0;
+	    }
+	    else if (CHECK_ID_SERIAL) {
+		if (id) {
+		    VALUE sym = result;
+		    if (t != ID_ENTRY_SYM)
+			sym = rb_ary_entry(ary, pos + ID_ENTRY_SYM);
+		    if (STATIC_SYM_P(sym)) {
+			if (STATIC_SYM2ID(sym) != id) result = 0;
+		    }
+		    else {
+			if (RSYMBOL(sym)->id != id) result = 0;
+		    }
+		}
+	    }
+	}
+    }
+    return result;
+}
+
+static VALUE
 get_id_serial_entry(rb_id_serial_t num, ID id, const enum id_entry_type t)
 {
     VALUE result = 0;
 
     GLOBAL_SYMBOLS_ENTER(symbols);
     {
-        if (num && num <= symbols->last_id) {
-            size_t idx = num / ID_ENTRY_UNIT;
-            VALUE ids = symbols->ids;
-            VALUE ary;
-            if (idx < (size_t)RARRAY_LEN(ids) && !NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
-                long pos = (long)(num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
-                result = rb_ary_entry(ary, pos + t);
-
-                if (NIL_P(result)) {
-                    result = 0;
-                }
-                else if (CHECK_ID_SERIAL) {
-                    if (id) {
-                        VALUE sym = result;
-                        if (t != ID_ENTRY_SYM)
-                          sym = rb_ary_entry(ary, pos + ID_ENTRY_SYM);
-                        if (STATIC_SYM_P(sym)) {
-                            if (STATIC_SYM2ID(sym) != id) result = 0;
-                        }
-                        else {
-                            if (RSYMBOL(sym)->id != id) result = 0;
-                        }
-                    }
-                }
-            }
-        }
+	result = get_id_serial_entry_no_gs_lock(symbols, num, id, t);
     }
     GLOBAL_SYMBOLS_LEAVE(symbols);
 
@@ -520,6 +528,20 @@ int
 rb_static_id_valid_p(ID id)
 {
     return STATIC_ID2SYM(id) == get_id_entry(id, ID_ENTRY_SYM);
+}
+
+static inline ID
+rb_id_serial_to_id_no_gs_lock(rb_id_serial_t num)
+{
+    if (is_notop_id((ID)num)) {
+	rb_symbols_t *symbols = &ruby_global_symbols;
+        VALUE sym = get_id_serial_entry_no_gs_lock(symbols, num, 0, ID_ENTRY_SYM);
+        if (sym) return SYM2ID(sym);
+        return ((ID)num << ID_SCOPE_SHIFT) | ID_INTERNAL | ID_STATIC_SYM;
+    }
+    else {
+        return (ID)num;
+    }
 }
 
 static inline ID
