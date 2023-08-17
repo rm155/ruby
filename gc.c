@@ -1330,11 +1330,14 @@ total_freed_pages(rb_objspace_t *objspace)
 static inline size_t
 total_allocated_objects(rb_objspace_t *objspace)
 {
+    rb_ractor_t *r = objspace->ractor;
+    if (!during_gc) rb_native_mutex_lock(&r->borrowing_sync.lock);
     size_t count = 0;
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
         rb_size_pool_t *size_pool = &size_pools[i];
         count += size_pool->total_allocated_objects;
     }
+    if (!during_gc) rb_native_mutex_unlock(&r->borrowing_sync.lock);
     return count;
 }
 
