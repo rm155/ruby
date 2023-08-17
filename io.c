@@ -846,7 +846,7 @@ rb_io_timeout(VALUE self)
  *    timeout = duration -> duration
  *    timeout = nil -> nil
  *
- *  \Set the internal timeout to the specified duration or nil. The timeout
+ *  Sets the internal timeout to the specified duration or nil. The timeout
  *  applies to all blocking operations where possible.
  *
  *  When the operation performs longer than the timeout set, IO::TimeoutError
@@ -1063,20 +1063,24 @@ rb_gc_for_fd(int err)
     return 0;
 }
 
+/* try `expr` upto twice while it returns false and `errno`
+ * is to GC.  Each `errno`s are available as `first_errno` and
+ * `retried_errno` respectively */
+#define TRY_WITH_GC(expr) \
+    for (int first_errno, retried_errno = 0, retried = 0; \
+         (!retried && \
+          !(expr) && \
+          (!rb_gc_for_fd(first_errno = errno) || !(expr)) &&   \
+          (retried_errno = errno, 1)); \
+         (void)retried_errno, retried = 1)
+
 static int
 ruby_dup(int orig)
 {
-    int fd;
+    int fd = -1;
 
-    fd = rb_cloexec_dup(orig);
-    if (fd < 0) {
-        int e = errno;
-        if (rb_gc_for_fd(e)) {
-            fd = rb_cloexec_dup(orig);
-        }
-        if (fd < 0) {
-            rb_syserr_fail(e, 0);
-        }
+    TRY_WITH_GC((fd = rb_cloexec_dup(orig)) >= 0) {
+        rb_syserr_fail(first_errno, 0);
     }
     rb_update_max_fd(fd);
     return fd;
@@ -6945,7 +6949,7 @@ rb_sysopen_internal(struct sysopen_struct *data)
 static int
 rb_sysopen(VALUE fname, int oflags, mode_t perm)
 {
-    int fd;
+    int fd = -1;
     struct sysopen_struct data;
 
     data.fname = rb_str_encode_ospath(fname);
@@ -6953,21 +6957,14 @@ rb_sysopen(VALUE fname, int oflags, mode_t perm)
     data.oflags = oflags;
     data.perm = perm;
 
-    fd = rb_sysopen_internal(&data);
-    if (fd < 0) {
-        int e = errno;
-        if (rb_gc_for_fd(e)) {
-            fd = rb_sysopen_internal(&data);
-        }
-        if (fd < 0) {
-            rb_syserr_fail_path(e, fname);
-        }
+    TRY_WITH_GC((fd = rb_sysopen_internal(&data)) >= 0) {
+        rb_syserr_fail_path(first_errno, fname);
     }
     return fd;
 }
 
-FILE *
-rb_fdopen(int fd, const char *modestr)
+static inline FILE *
+fdopen_internal(int fd, const char *modestr)
 {
     FILE *file;
 
@@ -6976,26 +6973,22 @@ rb_fdopen(int fd, const char *modestr)
 #endif
     file = fdopen(fd, modestr);
     if (!file) {
-        int e = errno;
-#if defined(__sun)
-        if (e == 0) {
-            rb_gc();
-            errno = 0;
-            file = fdopen(fd, modestr);
-        }
-        else
-#endif
-        if (rb_gc_for_fd(e)) {
-            file = fdopen(fd, modestr);
-        }
-        if (!file) {
 #ifdef _WIN32
-            if (e == 0) e = EINVAL;
+        if (errno == 0) errno = EINVAL;
 #elif defined(__sun)
-            if (e == 0) e = EMFILE;
+        if (errno == 0) errno = EMFILE;
 #endif
-            rb_syserr_fail(e, 0);
-        }
+    }
+    return file;
+}
+
+FILE *
+rb_fdopen(int fd, const char *modestr)
+{
+    FILE *file = 0;
+
+    TRY_WITH_GC((file = fdopen_internal(fd, modestr)) != 0) {
+        rb_syserr_fail(first_errno, 0);
     }
 
     /* xxx: should be _IONBF?  A buffer in FILE may have trouble. */
@@ -7286,12 +7279,7 @@ int
 rb_pipe(int *pipes)
 {
     int ret;
-    ret = rb_cloexec_pipe(pipes);
-    if (ret < 0) {
-        if (rb_gc_for_fd(errno)) {
-            ret = rb_cloexec_pipe(pipes);
-        }
-    }
+    TRY_WITH_GC((ret = rb_cloexec_pipe(pipes)) >= 0);
     if (ret == 0) {
         rb_update_max_fd(pipes[0]);
         rb_update_max_fd(pipes[1]);
@@ -8007,11 +7995,11 @@ rb_open_file(int argc, const VALUE *argv, VALUE io)
  *    File.open(path, mode = 'r', perm = 0666, **opts) -> file
  *    File.open(path, mode = 'r', perm = 0666, **opts) {|f| ... } -> object
  *
- *  Creates a new \File object, via File.new with the given arguments.
+ *  Creates a new File object, via File.new with the given arguments.
  *
- *  With no block given, returns the \File object.
+ *  With no block given, returns the File object.
  *
- *  With a block given, calls the block with the \File object
+ *  With a block given, calls the block with the File object
  *  and returns the block's value.
  *
  */
@@ -8799,9 +8787,9 @@ io_puts_ary(VALUE ary, VALUE out, int recur)
  *
  *  Treatment for each object:
  *
- *  - \String: writes the string.
+ *  - String: writes the string.
  *  - Neither string nor array: writes <tt>object.to_s</tt>.
- *  - \Array: writes each element of the array; arrays may be nested.
+ *  - Array: writes each element of the array; arrays may be nested.
  *
  *  To keep these examples brief, we define this helper method:
  *
@@ -9460,9 +9448,9 @@ rb_io_set_encoding_by_bom(VALUE io)
  *    File.new(path, mode = 'r', perm = 0666, **opts) -> file
  *
  *  Opens the file at the given +path+ according to the given +mode+;
- *  creates and returns a new \File object for that file.
+ *  creates and returns a new File object for that file.
  *
- *  The new \File object is buffered mode (or non-sync mode), unless
+ *  The new File object is buffered mode (or non-sync mode), unless
  *  +filename+ is a tty.
  *  See IO#flush, IO#fsync, IO#fdatasync, and IO#sync=.
  *
@@ -14656,7 +14644,7 @@ set_LAST_READ_LINE(VALUE val, ID _x, VALUE *_y)
  *  ARGF is not itself a subclass of \IO.
  *
  *  \Class StringIO provides an IO-like stream that handles a String.
- *  \StringIO is not itself a subclass of \IO.
+ *  StringIO is not itself a subclass of \IO.
  *
  *  Important objects based on \IO include:
  *
@@ -14674,7 +14662,7 @@ set_LAST_READ_LINE(VALUE val, ID _x, VALUE *_y)
  *  - Kernel#open: Returns a new \IO object connected to a given source:
  *    stream, file, or subprocess.
  *
- *  Like a \File stream, an \IO stream has:
+ *  Like a File stream, an \IO stream has:
  *
  *  - A read/write mode, which may be read-only, write-only, or read/write;
  *    see {Read/Write Mode}[rdoc-ref:File@Read-2FWrite+Mode].
@@ -14710,7 +14698,7 @@ set_LAST_READ_LINE(VALUE val, ID _x, VALUE *_y)
  *  that determine how a new stream is to be opened:
  *
  *  - +:mode+: Stream mode.
- *  - +:flags+: \Integer file open flags;
+ *  - +:flags+: Integer file open flags;
  *    If +mode+ is also given, the two are bitwise-ORed.
  *  - +:external_encoding+: External encoding for the stream.
  *  - +:internal_encoding+: Internal encoding for the stream.

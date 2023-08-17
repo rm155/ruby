@@ -411,7 +411,8 @@ module YARP
     end
 
     def test_InterpolatedStringNode
-      assert_location(InterpolatedStringNode, "<<~A\nhello world\nA")
+      assert_location(InterpolatedStringNode, "\"foo \#@bar baz\"")
+      assert_location(InterpolatedStringNode, "<<~A\nhello world\nA", 0...4)
     end
 
     def test_InterpolatedSymbolNode
@@ -753,9 +754,11 @@ module YARP
     private
 
     def assert_location(kind, source, expected = 0...source.length)
-      YARP.parse(source) => ParseResult[comments: [], errors: [], value: node]
+      result = YARP.parse(source)
+      assert_equal [], result.comments
+      assert_equal [], result.errors
 
-      node => ProgramNode[statements: [*, node]]
+      node = result.value.statements.body.last
       node = yield node if block_given?
 
       assert_kind_of kind, node

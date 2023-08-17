@@ -18,6 +18,7 @@ require_relative "irb/color"
 
 require_relative "irb/version"
 require_relative "irb/easter-egg"
+require_relative "irb/debug"
 
 # IRB stands for "interactive Ruby" and is a tool to interactively execute Ruby
 # expressions read from the standard input.
@@ -194,10 +195,10 @@ require_relative "irb/easter-egg"
 # For instance, the default prompt mode is defined as follows:
 #
 #     IRB.conf[:PROMPT_MODE][:DEFAULT] = {
-#       :PROMPT_I => "%N(%m):%03n:%i> ",
-#       :PROMPT_N => "%N(%m):%03n:%i> ",
-#       :PROMPT_S => "%N(%m):%03n:%i%l ",
-#       :PROMPT_C => "%N(%m):%03n:%i* ",
+#       :PROMPT_I => "%N(%m):%03n> ",
+#       :PROMPT_N => "%N(%m):%03n> ",
+#       :PROMPT_S => "%N(%m):%03n%l ",
+#       :PROMPT_C => "%N(%m):%03n* ",
 #       :RETURN => "%s\n" # used to printf
 #     }
 #
@@ -211,10 +212,10 @@ require_relative "irb/easter-egg"
 #   #   :RETURN: |
 #   #     %s
 #   # :DEFAULT:
-#   #   :PROMPT_I: ! '%N(%m):%03n:%i> '
-#   #   :PROMPT_N: ! '%N(%m):%03n:%i> '
-#   #   :PROMPT_S: ! '%N(%m):%03n:%i%l '
-#   #   :PROMPT_C: ! '%N(%m):%03n:%i* '
+#   #   :PROMPT_I: ! '%N(%m):%03n> '
+#   #   :PROMPT_N: ! '%N(%m):%03n> '
+#   #   :PROMPT_S: ! '%N(%m):%03n%l '
+#   #   :PROMPT_C: ! '%N(%m):%03n* '
 #   #   :RETURN: |
 #   #     => %s
 #   # :CLASSIC:
@@ -232,7 +233,7 @@ require_relative "irb/easter-egg"
 #   #   :RETURN: |
 #   #     => %s
 #   # :INF_RUBY:
-#   #   :PROMPT_I: ! '%N(%m):%03n:%i> '
+#   #   :PROMPT_I: ! '%N(%m):%03n> '
 #   #   :PROMPT_N:
 #   #   :PROMPT_S:
 #   #   :PROMPT_C:
@@ -373,8 +374,6 @@ module IRB
   class Abort < Exception;end
 
   @CONF = {}
-
-
   # Displays current configuration.
   #
   # Modifying the configuration is achieved by sending a message to IRB.conf.
@@ -441,7 +440,7 @@ module IRB
     # Creates a new irb session
     def initialize(workspace = nil, input_method = nil)
       @context = Context.new(self, workspace, input_method)
-      @context.main.extend ExtendCommandBundle
+      @context.workspace.load_commands_to_main
       @signal_status = :IN_IRB
       @scanner = RubyLex.new(@context)
     end
@@ -455,6 +454,38 @@ module IRB
         # and remove the redundant method
         DEBUGGER__.singleton_class.send(:undef_method, :capture_frames_without_irb)
       end
+    end
+
+    def debug_readline(binding)
+      workspace = IRB::WorkSpace.new(binding)
+      context.workspace = workspace
+      context.workspace.load_commands_to_main
+      scanner.increase_line_no(1)
+
+      # When users run:
+      # 1. Debugging commands, like `step 2`
+      # 2. Any input that's not irb-command, like `foo = 123`
+      #
+      # Irb#eval_input will simply return the input, and we need to pass it to the debugger.
+      input = if IRB.conf[:SAVE_HISTORY] && context.io.support_history_saving?
+        # Previous IRB session's history has been saved when `Irb#run` is exited
+        # We need to make sure the saved history is not saved again by reseting the counter
+        context.io.reset_history_counter
+
+        begin
+          eval_input
+        ensure
+          context.io.save_history
+        end
+      else
+        eval_input
+      end
+
+      if input&.include?("\n")
+        scanner.increase_line_no(input.count("\n") - 1)
+      end
+
+      input
     end
 
     def run(conf = IRB.conf)
@@ -537,16 +568,21 @@ module IRB
         end
       end
 
-      @scanner.configure_io(@context.io)
+      configure_io
 
-      @scanner.each_top_level_statement do |line, line_no, is_assignment|
+      @scanner.each_top_level_statement do |statement, line_no|
         signal_status(:IN_EVAL) do
           begin
-            evaluate_line(line, line_no)
+            # If the integration with debugger is activated, we need to handle certain input differently
+            if @context.with_debugger && statement.should_be_handled_by_debugger?
+              return statement.code
+            end
+
+            @context.evaluate(statement.evaluable_code, line_no)
 
             # Don't echo if the line ends with a semicolon
-            if @context.echo? && !line.match?(/;\s*\z/)
-              if is_assignment
+            if @context.echo? && !statement.suppresses_echo?
+              if statement.is_assignment?
                 if @context.echo_on_assignment?
                   output_value(@context.echo_on_assignment? == :truncate)
                 end
@@ -564,21 +600,56 @@ module IRB
       end
     end
 
-    def evaluate_line(line, line_no)
-      # Transform a non-identifier alias (@, $) or keywords (next, break)
-      command, args = line.split(/\s/, 2)
-      if original = @context.command_aliases[command.to_sym]
-        line = line.gsub(/\A#{Regexp.escape(command)}/, original.to_s)
-        command = original
+    def configure_io
+      if @context.io.respond_to?(:check_termination)
+        @context.io.check_termination do |code|
+          if Reline::IOGate.in_pasting?
+            rest = @scanner.check_termination_in_prev_line(code)
+            if rest
+              Reline.delete_text
+              rest.bytes.reverse_each do |c|
+                Reline.ungetc(c)
+              end
+              true
+            else
+              false
+            end
+          else
+            # Accept any single-line input for symbol aliases or commands that transform args
+            next true if @scanner.single_line_command?(code)
+
+            _tokens, _opens, terminated = @scanner.check_code_state(code)
+            terminated
+          end
+        end
+      end
+      if @context.io.respond_to?(:dynamic_prompt)
+        @context.io.dynamic_prompt do |lines|
+          lines << '' if lines.empty?
+          tokens = RubyLex.ripper_lex_without_warning(lines.map{ |l| l + "\n" }.join, context: @context)
+          line_results = IRB::NestingParser.parse_by_line(tokens)
+          tokens_until_line = []
+          line_results.map.with_index do |(line_tokens, _prev_opens, next_opens, _min_depth), line_num_offset|
+            line_tokens.each do |token, _s|
+              # Avoid appending duplicated token. Tokens that include "\n" like multiline tstring_content can exist in multiple lines.
+              tokens_until_line << token if token != tokens_until_line.last
+            end
+            continue = @scanner.should_continue?(tokens_until_line)
+            @scanner.prompt(next_opens, continue, line_num_offset)
+          end
+        end
       end
 
-      # Hook command-specific transformation
-      command_class = ExtendCommandBundle.load_command(command)
-      if command_class&.respond_to?(:transform_args)
-        line = "#{command} #{command_class.transform_args(args)}"
-      end
+      if @context.io.respond_to?(:auto_indent) and @context.auto_indent_mode
+        @context.io.auto_indent do |lines, line_index, byte_pointer, is_newline|
+          next nil if lines == [nil] # Workaround for exit IRB with CTRL+d
+          next nil if !is_newline && lines[line_index]&.byteslice(0, byte_pointer)&.match?(/\A\s*\z/)
 
-      @context.evaluate(line, line_no)
+          code = lines[0..line_index].map { |l| "#{l}\n" }.join
+          tokens = RubyLex.ripper_lex_without_warning(code, context: @context)
+          @scanner.process_indent_level(tokens, lines, line_index, is_newline)
+        end
+      end
     end
 
     def convert_invalid_byte_sequence(str, enc)
@@ -934,12 +1005,32 @@ class Binding
   #
   # See IRB@Usage for more information.
   def irb(show_code: true)
+    # Setup IRB with the current file's path and no command line arguments
     IRB.setup(source_location[0], argv: [])
+    # Create a new workspace using the current binding
     workspace = IRB::WorkSpace.new(self)
+    # Print the code around the binding if show_code is true
     STDOUT.print(workspace.code_around_binding) if show_code
-    binding_irb = IRB::Irb.new(workspace)
-    binding_irb.context.irb_path = File.expand_path(source_location[0])
-    binding_irb.run(IRB.conf)
-    binding_irb.debug_break
+    # Get the original IRB instance
+    debugger_irb = IRB.instance_variable_get(:@debugger_irb)
+
+    irb_path = File.expand_path(source_location[0])
+
+    if debugger_irb
+      # If we're already in a debugger session, set the workspace and irb_path for the original IRB instance
+      debugger_irb.context.workspace = workspace
+      debugger_irb.context.irb_path = irb_path
+      # If we've started a debugger session and hit another binding.irb, we don't want to start an IRB session
+      # instead, we want to resume the irb:rdbg session.
+      IRB::Debug.setup(debugger_irb)
+      IRB::Debug.insert_debug_break
+      debugger_irb.debug_break
+    else
+      # If we're not in a debugger session, create a new IRB instance with the current workspace
+      binding_irb = IRB::Irb.new(workspace)
+      binding_irb.context.irb_path = irb_path
+      binding_irb.run(IRB.conf)
+      binding_irb.debug_break
+    end
   end
 end

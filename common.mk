@@ -85,32 +85,14 @@ MAKE_ENC      = -f $(ENC_MK) V="$(V)" UNICODE_HDR_DIR="$(UNICODE_HDR_DIR)" \
 YARP_FILES = yarp/api_node.$(OBJEXT) \
 		yarp/api_pack.$(OBJEXT) \
 		yarp/diagnostic.$(OBJEXT) \
-		yarp/enc/yp_ascii.$(OBJEXT) \
 		yarp/enc/yp_big5.$(OBJEXT) \
 		yarp/enc/yp_euc_jp.$(OBJEXT) \
 		yarp/enc/yp_gbk.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_1.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_10.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_11.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_13.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_14.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_15.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_16.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_2.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_3.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_4.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_5.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_6.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_7.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_8.$(OBJEXT) \
-		yarp/enc/yp_iso_8859_9.$(OBJEXT) \
-		yarp/enc/yp_koi8_r.$(OBJEXT) \
-		yarp/enc/yp_shared.$(OBJEXT) \
 		yarp/enc/yp_shift_jis.$(OBJEXT) \
+		yarp/enc/yp_tables.$(OBJEXT) \
 		yarp/enc/yp_unicode.$(OBJEXT) \
-		yarp/enc/yp_windows_1251.$(OBJEXT) \
-		yarp/enc/yp_windows_1252.$(OBJEXT) \
 		yarp/enc/yp_windows_31j.$(OBJEXT) \
+		yarp/extension.$(OBJEXT) \
 		yarp/node.$(OBJEXT) \
 		yarp/pack.$(OBJEXT) \
 		yarp/prettyprint.$(OBJEXT) \
@@ -130,8 +112,7 @@ YARP_FILES = yarp/api_node.$(OBJEXT) \
 		yarp/util/yp_strncasecmp.$(OBJEXT) \
 		yarp/util/yp_strpbrk.$(OBJEXT) \
 		yarp/yarp.$(OBJEXT) \
-		yarp/yarp_init.$(OBJEXT) \
-		yarp/extension.$(OBJEXT)
+		yarp/yarp_init.$(OBJEXT)
 
 COMMONOBJS    = array.$(OBJEXT) \
 		ast.$(OBJEXT) \
@@ -259,7 +240,7 @@ INSTALL_DATA_MODE = 0644
 BOOTSTRAPRUBY_COMMAND = $(BOOTSTRAPRUBY) $(BOOTSTRAPRUBY_OPT)
 TESTSDIR      = $(srcdir)/test
 TOOL_TESTSDIR = $(tooldir)/test
-TEST_EXCLUDES = --excludes-dir=$(TESTSDIR)/excludes --name=!/memory_leak/
+TEST_EXCLUDES = --excludes-dir=$(TESTSDIR)/.excludes --name=!/memory_leak/
 TESTWORKDIR   = testwork
 TESTOPTS      = $(RUBY_TESTOPTS)
 
@@ -883,10 +864,12 @@ test-sample: test-basic # backward compatibility for mswin-build
 test-short: btest-ruby $(DOT_WAIT) test-knownbug $(DOT_WAIT) test-basic
 test: test-short
 
+yes-test-all-precheck: programs encs exts PHONY $(DOT_WAIT)
+
 # $ make test-all TESTOPTS="--help" displays more detail
 # for example, make test-all TESTOPTS="-j2 -v -n test-name -- test-file-name"
 test-all: $(TEST_RUNNABLE)-test-all
-yes-test-all: programs PHONY
+yes-test-all: yes-test-all-precheck
 	$(ACTIONS_GROUP)
 	$(gnumake_recursive)$(Q)$(exec) $(RUNRUBY) "$(TESTSDIR)/runner.rb" --ruby="$(RUNRUBY)" $(TEST_EXCLUDES) $(TESTOPTS) $(TESTS)
 	$(ACTIONS_ENDGROUP)
@@ -928,10 +911,10 @@ $(RBCONFIG): $(tooldir)/mkconfig.rb config.status $(srcdir)/version.h $(srcdir)/
 test-rubyspec: test-spec
 yes-test-rubyspec: yes-test-spec
 
-test-spec-precheck: programs yes-fake
+yes-test-spec-precheck: yes-test-all-precheck yes-fake
 
 test-spec: $(TEST_RUNNABLE)-test-spec
-yes-test-spec: test-spec-precheck
+yes-test-spec: yes-test-spec-precheck
 	$(ACTIONS_GROUP)
 	$(gnumake_recursive)$(Q) \
 	$(RUNRUBY) -r./$(arch)-fake -r$(tooldir)/rubyspec_temp \
@@ -1544,6 +1527,7 @@ check: $(DOT_WAIT) $(PREPARE_SYNTAX_SUGGEST) test-syntax-suggest
 test-bundler-precheck: $(TEST_RUNNABLE)-test-bundler-precheck
 no-test-bundler-precheck:
 yes-test-bundler-precheck: main $(arch)-fake.rb
+yes-test-bundler-parallel-precheck: yes-test-bundler-precheck
 
 test-bundler-prepare: $(TEST_RUNNABLE)-test-bundler-prepare
 no-test-bundler-prepare: no-test-bundler-precheck
@@ -19327,6 +19311,11 @@ yarp/enc/yp_shift_jis.$(OBJEXT): $(top_srcdir)/yarp/defines.h
 yarp/enc/yp_shift_jis.$(OBJEXT): $(top_srcdir)/yarp/enc/yp_encoding.h
 yarp/enc/yp_shift_jis.$(OBJEXT): $(top_srcdir)/yarp/enc/yp_shift_jis.c
 yarp/enc/yp_shift_jis.$(OBJEXT): {$(VPATH)}config.h
+yarp/enc/yp_tables.$(OBJEXT): $(top_srcdir)/yarp/config.h
+yarp/enc/yp_tables.$(OBJEXT): $(top_srcdir)/yarp/defines.h
+yarp/enc/yp_tables.$(OBJEXT): $(top_srcdir)/yarp/enc/yp_encoding.h
+yarp/enc/yp_tables.$(OBJEXT): $(top_srcdir)/yarp/enc/yp_tables.c
+yarp/enc/yp_tables.$(OBJEXT): {$(VPATH)}config.h
 yarp/enc/yp_unicode.$(OBJEXT): $(top_srcdir)/yarp/config.h
 yarp/enc/yp_unicode.$(OBJEXT): $(top_srcdir)/yarp/defines.h
 yarp/enc/yp_unicode.$(OBJEXT): $(top_srcdir)/yarp/enc/yp_encoding.h
@@ -19587,6 +19576,7 @@ yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/regexp.c
 yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/regexp.h
 yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/util/yp_constant_pool.h
 yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/util/yp_list.h
+yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/util/yp_memchr.h
 yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/util/yp_newline_list.h
 yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/util/yp_state_stack.h
 yarp/regexp.$(OBJEXT): $(top_srcdir)/yarp/util/yp_string.h
@@ -19595,15 +19585,25 @@ yarp/regexp.$(OBJEXT): {$(VPATH)}config.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/ast.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/config.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/defines.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/diagnostic.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/enc/yp_encoding.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/node.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/pack.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/parser.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/regexp.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/serialize.c
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/unescape.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_buffer.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_char.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_constant_pool.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_list.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_memchr.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_newline_list.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_state_stack.h
 yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_string.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_string_list.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/util/yp_strpbrk.h
+yarp/serialize.$(OBJEXT): $(top_srcdir)/yarp/yarp.h
 yarp/serialize.$(OBJEXT): {$(VPATH)}config.h
 yarp/token_type.$(OBJEXT): $(top_srcdir)/yarp/ast.h
 yarp/token_type.$(OBJEXT): $(top_srcdir)/yarp/config.h
@@ -19617,9 +19617,13 @@ yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/config.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/defines.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/diagnostic.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/enc/yp_encoding.h
+yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/node.h
+yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/pack.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/parser.h
+yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/regexp.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/unescape.c
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/unescape.h
+yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_buffer.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_char.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_constant_pool.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_list.h
@@ -19627,6 +19631,9 @@ yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_memchr.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_newline_list.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_state_stack.h
 yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_string.h
+yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_string_list.h
+yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/util/yp_strpbrk.h
+yarp/unescape.$(OBJEXT): $(top_srcdir)/yarp/yarp.h
 yarp/unescape.$(OBJEXT): {$(VPATH)}config.h
 yarp/util/yp_buffer.$(OBJEXT): $(top_srcdir)/yarp/config.h
 yarp/util/yp_buffer.$(OBJEXT): $(top_srcdir)/yarp/defines.h
