@@ -7742,7 +7742,7 @@ gc_aging(rb_objspace_t *objspace, VALUE obj)
 static bool
 in_marking_range(rb_objspace_t *objspace, VALUE obj)
 {
-    return !FL_TEST(obj, FL_SHAREABLE) || GET_OBJSPACE_OF_VALUE(obj) == objspace;
+    return !FL_TEST_RAW(obj, FL_SHAREABLE) || GET_OBJSPACE_OF_VALUE(obj) == objspace;
 }
 
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
