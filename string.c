@@ -422,7 +422,8 @@ rb_fstring(VALUE str)
 	    rb_ractor_classify_as_shareable(str);
             return str;
         }
-        if (FL_TEST_RAW(str, STR_NOEMBED|STR_SHARED_ROOT|STR_SHARED) == (STR_NOEMBED|STR_SHARED_ROOT)) {
+
+        if (FL_TEST_RAW(str, STR_SHARED_ROOT | STR_SHARED) == STR_SHARED_ROOT) {
             assert(OBJ_FROZEN(str));
 	    rb_ractor_classify_as_shareable(str);
             return str;

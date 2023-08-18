@@ -1,3 +1,22 @@
+# regression test for return type of Integer#/
+# It can return a T_BIGNUM when inputs are T_FIXNUM.
+assert_equal 0x3fffffffffffffff.to_s, %q{
+  def call(fixnum_min)
+    (fixnum_min / -1) - 1
+  end
+
+  call(-(2**62))
+}
+
+# regression test for return type of String#<<
+assert_equal 'Sub', %q{
+  def call(sub) = (sub << sub).itself
+
+  class Sub < String; end
+
+  call(Sub.new('o')).class
+}
+
 # test splat filling required and feeding rest
 assert_equal '[0, 1, 2, [3, 4]]', %q{
   public def lead_rest(a, b, *rest)
@@ -4091,4 +4110,19 @@ assert_equal '6', %q{
   end
 
   Sub.new.number { 3 }
+}
+
+# Integer multiplication and overflow
+assert_equal '[6, -6, 9671406556917033397649408, -9671406556917033397649408, 21267647932558653966460912964485513216]', %q{
+  def foo(a, b)
+    a * b
+  end
+
+  r1 = foo(2, 3)
+  r2 = foo(2, -3)
+  r3 = foo(2 << 40, 2 << 41)
+  r4 = foo(2 << 40, -2 << 41)
+  r5 = foo(1 << 62, 1 << 62)
+
+  [r1, r2, r3, r4, r5]
 }

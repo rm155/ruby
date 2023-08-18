@@ -3398,8 +3398,42 @@ fn gen_opt_mult(
     asm: &mut Assembler,
     ocb: &mut OutlinedCb,
 ) -> Option<CodegenStatus> {
-    // Delegate to send, call the method on the recv
-    gen_opt_send_without_block(jit, asm, ocb)
+    let two_fixnums = match asm.ctx.two_fixnums_on_stack(jit) {
+        Some(two_fixnums) => two_fixnums,
+        None => {
+            defer_compilation(jit, asm, ocb);
+            return Some(EndBlock);
+        }
+    };
+
+    if two_fixnums {
+        if !assume_bop_not_redefined(jit, asm, ocb, INTEGER_REDEFINED_OP_FLAG, BOP_MULT) {
+            return None;
+        }
+
+        // Check that both operands are fixnums
+        guard_two_fixnums(jit, asm, ocb);
+
+        // Get the operands from the stack
+        let arg1 = asm.stack_pop(1);
+        let arg0 = asm.stack_pop(1);
+
+        // Do some bitwise gymnastics to handle tag bits
+        // x * y is translated to (x >> 1) * (y - 1) + 1
+        let arg0_untag = asm.rshift(arg0, Opnd::UImm(1));
+        let arg1_untag = asm.sub(arg1, Opnd::UImm(1));
+        let out_val = asm.mul(arg0_untag, arg1_untag);
+        asm.jo(Target::side_exit(Counter::opt_mult_overflow));
+        let out_val = asm.add(out_val, Opnd::UImm(1));
+
+        // Push the output on the stack
+        let dst = asm.stack_push(Type::Fixnum);
+        asm.mov(dst, out_val);
+
+        Some(KeepCompiling)
+    } else {
+        gen_opt_send_without_block(jit, asm, ocb)
+    }
 }
 
 fn gen_opt_div(
@@ -4497,6 +4531,9 @@ fn jit_rb_int_div(
     }
     guard_two_fixnums(jit, asm, ocb);
 
+    // rb_fix_div_fix may GC-allocate for Bignum
+    jit_prepare_routine_call(jit, asm);
+
     asm.comment("Integer#/");
     let obj = asm.stack_pop(1);
     let recv = asm.stack_pop(1);
@@ -4507,7 +4544,7 @@ fn jit_rb_int_div(
 
     let ret = asm.ccall(rb_fix_div_fix as *const u8, vec![recv, obj]);
 
-    let ret_opnd = asm.stack_push(Type::Fixnum);
+    let ret_opnd = asm.stack_push(Type::Unknown);
     asm.mov(ret_opnd, ret);
     true
 }
@@ -4764,7 +4801,7 @@ fn jit_rb_str_concat(
     asm.spill_temps(); // for ccall
     let ret_opnd = asm.ccall(rb_yjit_str_simple_append as *const u8, vec![recv, concat_arg]);
     let ret_label = asm.new_label("func_return");
-    let stack_ret = asm.stack_push(Type::CString);
+    let stack_ret = asm.stack_push(Type::TString);
     asm.mov(stack_ret, ret_opnd);
     asm.stack_pop(1); // forget stack_ret to re-push after ccall
     asm.jmp(ret_label);
@@ -4773,7 +4810,7 @@ fn jit_rb_str_concat(
     asm.write_label(enc_mismatch);
     asm.spill_temps(); // for ccall
     let ret_opnd = asm.ccall(rb_str_buf_append as *const u8, vec![recv, concat_arg]);
-    let stack_ret = asm.stack_push(Type::CString);
+    let stack_ret = asm.stack_push(Type::TString);
     asm.mov(stack_ret, ret_opnd);
     // Drop through to return
 
@@ -4885,19 +4922,27 @@ fn jit_obj_respond_to(
     };
 
     let result = match (visibility, allow_priv) {
-        (METHOD_VISI_UNDEF, _) => Qfalse, // No method => false
-        (METHOD_VISI_PUBLIC, _) => Qtrue, // Public method => true regardless of include_all
-        (_, Some(true)) => Qtrue, // include_all => always true
+        (METHOD_VISI_UNDEF, _) => {
+            // No method, we can return false given respond_to_missing? hasn't been overridden.
+            // In the future, we might want to jit the call to respond_to_missing?
+            if !assume_method_basic_definition(jit, asm, ocb, recv_class, idRespond_to_missing.into()) {
+                return false;
+            }
+            Qfalse
+        }
+        (METHOD_VISI_PUBLIC, _) | // Public method => fine regardless of include_all
+        (_, Some(true)) => { // include_all => all visibility are acceptable
+            // Method exists and has acceptable visibility
+            if cme_def_type == VM_METHOD_TYPE_NOTIMPLEMENTED {
+                // C method with rb_f_notimplement(). `respond_to?` returns false
+                // without consulting `respond_to_missing?`. See also: rb_add_method_cfunc()
+                Qfalse
+            } else {
+                Qtrue
+            }
+        }
         (_, _) => return false // not public and include_all not known, can't compile
     };
-
-    if result != Qtrue {
-        // Only if respond_to_missing? hasn't been overridden
-        // In the future, we might want to jit the call to respond_to_missing?
-        if !assume_method_basic_definition(jit, asm, ocb, recv_class, idRespond_to_missing.into()) {
-            return false;
-        }
-    }
 
     // Invalidate this block if method lookup changes for the method being queried. This works
     // both for the case where a method does or does not exist, as for the latter we asked for a
