@@ -7470,19 +7470,25 @@ mark_and_pin_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
 }
 
 static void
-mark_global_cc_cache_table(void)
+mark_global_cc_cache_table_item(rb_objspace_t *objspace, int index)
+{
+    const struct rb_callcache *cc = objspace->global_cc_cache_table[index];
+
+    if (cc != NULL) {
+	if (!vm_cc_invalidated_p(cc)) {
+	    rb_gc_mark((VALUE)cc);
+	}
+	else {
+	    objspace->global_cc_cache_table[index] = NULL;
+	}
+    }
+}
+
+static void
+mark_global_cc_cache_table(rb_objspace_t *objspace)
 {
     for (int i=0; i<VM_GLOBAL_CC_CACHE_TABLE_SIZE; i++) {
-	const struct rb_callcache *cc = get_from_global_cc_cache_table(i);
-
-	if (cc != NULL) {
-	    if (!vm_cc_invalidated_p(cc)) {
-		rb_gc_mark((VALUE)cc);
-	    }
-	    else {
-		set_in_global_cc_cache_table(i, NULL);
-	    }
-	}
+	mark_global_cc_cache_table_item(objspace, i);
     }
 }
 
@@ -8337,7 +8343,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     mark_absorbed_threads_tbl(objspace);
 
     MARK_CHECKPOINT("cache_table");
-    mark_global_cc_cache_table();
+    mark_global_cc_cache_table(objspace);
 
     MARK_CHECKPOINT("ractor");
     if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(objspace->ractor);
