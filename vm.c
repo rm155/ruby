@@ -488,6 +488,7 @@ VALUE rb_block_param_proxy;
 VALUE ruby_vm_const_missing_count = 0;
 rb_vm_t *ruby_current_vm_ptr = NULL;
 rb_ractor_t *ruby_single_main_ractor;
+struct rb_objspace *ruby_single_main_objspace;
 bool ruby_vm_keep_script_lines;
 
 #ifdef RB_THREAD_LOCAL_SPECIFIER
@@ -2902,7 +2903,7 @@ ruby_vm_destruct(rb_vm_t *vm)
 
     if (vm) {
         rb_thread_t *th = vm->ractor.main_thread;
-        struct rb_objspace *objspace = vm->objspace;
+        struct rb_objspace *objspace = ruby_single_main_objspace = vm->objspace;
         vm->ractor.main_thread = NULL;
 
         if (th) {
@@ -4047,7 +4048,7 @@ Init_BareVM(void)
     vm_init2(vm);
 
     vm->global_space = rb_global_space_init();
-    vm->objspace = rb_objspace_alloc();
+    vm->objspace = ruby_single_main_objspace = rb_objspace_alloc();
     vm->global_gc_underway = false;
 
     ruby_current_vm_ptr = vm;

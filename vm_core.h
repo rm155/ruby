@@ -709,7 +709,6 @@ typedef struct rb_vm_struct {
     st_table * defined_module_hash;
 
     struct rb_objspace *objspace;
-    bool multi_objspace;
     struct ccan_list_head objspace_set; //TODO: Remove once Ractors handle their own objspace upon ending
     struct rb_global_space *global_space;
 
@@ -1824,6 +1823,7 @@ rb_execution_context_t *rb_vm_main_ractor_ec(rb_vm_t *vm); // ractor.c
 #if RUBY_VM_THREAD_MODEL == 2
 
 RUBY_EXTERN struct rb_ractor_struct *ruby_single_main_ractor; // ractor.c
+RUBY_EXTERN struct rb_objspace *ruby_single_main_objspace;
 RUBY_EXTERN rb_vm_t *ruby_current_vm_ptr;
 RUBY_EXTERN rb_event_flag_t ruby_vm_event_flags;
 RUBY_EXTERN rb_event_flag_t ruby_vm_event_enabled_global_flags;

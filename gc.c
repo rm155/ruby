@@ -916,17 +916,14 @@ typedef struct rb_objspace {
 } rb_objspace_t;
 
 static rb_objspace_t *
-current_ractor_objspace(rb_vm_t *vm)
+current_ractor_objspace(void)
 {
-    rb_objspace_t *objspace;
-    if (vm->multi_objspace && vm->ractor.main_thread) {
-	objspace = GET_RACTOR()->local_objspace;
-	if (objspace && objspace->global_gc_current_target) {
-	    objspace = objspace->global_gc_current_target;
-	}
+    if (ruby_single_main_objspace) {
+	return ruby_single_main_objspace;
     }
-    else {
-	objspace = vm->objspace;
+    rb_objspace_t *objspace = GET_RACTOR()->local_objspace;
+    if (objspace && objspace->global_gc_current_target) {
+	objspace = objspace->global_gc_current_target;
     }
     return objspace;
 }
@@ -1158,14 +1155,13 @@ RVALUE_AGE_SET(VALUE obj, int age)
 }
 
 /* Aliases */
-#define rb_objspace (*rb_objspace_of(GET_VM()))
-#define rb_objspace_of(vm) (current_ractor_objspace(vm))
+#define rb_objspace (*current_ractor_objspace())
 #define rb_global_space (*rb_global_space_of(GET_VM()))
 #define rb_global_space_of(vm) ((vm)->global_space)
 #define unless_objspace(objspace) \
     rb_objspace_t *objspace; \
     rb_vm_t *unless_objspace_vm = GET_VM(); \
-    if (unless_objspace_vm) objspace = rb_objspace_of(unless_objspace_vm); \
+    if (unless_objspace_vm) objspace = &rb_objspace; \
     else /* return; or objspace will be warned uninitialized */
 
 #define ruby_initial_gc_stress	gc_params.gc_stress
@@ -13251,7 +13247,7 @@ void
 rb_memerror(void)
 {
     rb_execution_context_t *ec = GET_EC();
-    rb_objspace_t *objspace = rb_objspace_of(rb_ec_vm_ptr(ec));
+    rb_objspace_t *objspace = &rb_objspace;
     VALUE exc;
 
     if (0) {
