@@ -3217,29 +3217,27 @@ unlock_own_borrowable_page(rb_ractor_t *cr, int size_pool_idx)
 }
 
 static VALUE
-newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked, bool borrowing)
+newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked)
 {
-    rb_ractor_t *alloc_target_ractor = borrowing ? objspace->ractor : cr;
+    rb_ractor_t *alloc_target_ractor = objspace->ractor;
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
-    rb_ractor_newobj_cache_t *cache = borrowing ? &alloc_target_ractor->newobj_borrowing_cache : &alloc_target_ractor->newobj_cache;
+    rb_ractor_newobj_cache_t *cache = &alloc_target_ractor->newobj_borrowing_cache;
 
     bool borrowable_page_locked = false;
-    if (borrowing) {
-	borrowable_page_locked = !rb_native_mutex_trylock(&alloc_target_ractor->borrowing_sync.page_lock[size_pool_idx]);
-	if (borrowable_page_locked) {
-	    alloc_target_ractor->borrowing_sync.page_lock_owner[size_pool_idx] = cr;
-	}
+    borrowable_page_locked = !rb_native_mutex_trylock(&alloc_target_ractor->borrowing_sync.page_lock[size_pool_idx]);
+    if (borrowable_page_locked) {
+	alloc_target_ractor->borrowing_sync.page_lock_owner[size_pool_idx] = cr;
     }
 
-    bool need_new_borrowing_page = borrowing && !borrowable_page_locked && alloc_target_ractor->borrowing_sync.page_recently_locked[size_pool_idx];
+    bool need_new_borrowing_page = !borrowable_page_locked && alloc_target_ractor->borrowing_sync.page_recently_locked[size_pool_idx];
 
     VALUE obj;
     if (need_new_borrowing_page) {
 	obj = Qfalse;
     }
     else {
-	obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, borrowing);
+	obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, true);
     }
 
     if (UNLIKELY(obj == Qfalse)) {
@@ -3255,17 +3253,9 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
         {
             ASSERT_vm_locking();
 
-            if (!borrowing && is_incremental_marking(objspace)) {
-                gc_continue(objspace, size_pool, heap);
-                cache->incremental_mark_step_allocated_slots = 0;
-
-                // Retry allocation after resetting incremental_mark_step_allocated_slots
-                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
-            }
-
             if (obj == Qfalse) {
                 // Get next free page (possibly running GC)
-                struct heap_page *page = heap_next_free_page(objspace, size_pool, heap, borrowing);
+                struct heap_page *page = heap_next_free_page(objspace, size_pool, heap, true);
 		if (need_new_borrowing_page)
 		{
 		    rb_ractor_newobj_size_pool_cache_t *size_pool_cache = &cache->size_pool_caches[size_pool_idx];
@@ -3275,7 +3265,7 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
                 ractor_cache_set_page(cache, size_pool_idx, page);
 
                 // Retry allocation after moving to new page
-                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, borrowing);
+                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, true);
 
                 GC_ASSERT(obj != Qfalse);
             }
@@ -3288,13 +3278,64 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, boo
 
     size_pool->total_allocated_objects++;
 
-    if (borrowing) {
-	if (borrowable_page_locked) {
-	    alloc_target_ractor->borrowing_sync.page_lock_owner[size_pool_idx] = NULL;
-	    rb_native_mutex_unlock(&alloc_target_ractor->borrowing_sync.page_lock[size_pool_idx]);
-	}
-	alloc_target_ractor->borrowing_sync.page_recently_locked[size_pool_idx] = false;
+    if (borrowable_page_locked) {
+	alloc_target_ractor->borrowing_sync.page_lock_owner[size_pool_idx] = NULL;
+	rb_native_mutex_unlock(&alloc_target_ractor->borrowing_sync.page_lock[size_pool_idx]);
     }
+    alloc_target_ractor->borrowing_sync.page_recently_locked[size_pool_idx] = false;
+
+    return obj;
+}
+
+static VALUE
+newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked)
+{
+    rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
+    rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
+    rb_ractor_newobj_cache_t *cache = &cr->newobj_cache;
+
+    VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
+
+    if (UNLIKELY(obj == Qfalse)) {
+        unsigned int lev;
+        bool unlock_vm = false;
+
+        if (!vm_locked) {
+            RB_VM_LOCK_ENTER_CR_LEV(cr, &lev);
+            vm_locked = true;
+            unlock_vm = true;
+        }
+
+        {
+            ASSERT_vm_locking();
+
+            if (is_incremental_marking(objspace)) {
+                gc_continue(objspace, size_pool, heap);
+                cache->incremental_mark_step_allocated_slots = 0;
+
+                // Retry allocation after resetting incremental_mark_step_allocated_slots
+                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
+            }
+
+            if (obj == Qfalse) {
+                // Get next free page (possibly running GC)
+                struct heap_page *page = heap_next_free_page(objspace, size_pool, heap, false);
+
+                ractor_cache_set_page(cache, size_pool_idx, page);
+
+                // Retry allocation after moving to new page
+                obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
+
+                GC_ASSERT(obj != Qfalse);
+            }
+        }
+
+        if (unlock_vm) {
+            RB_VM_LOCK_LEAVE_CR_LEV(cr, &lev);
+        }
+    }
+
+    size_pool->total_allocated_objects++;
 
     return obj;
 }
@@ -3329,7 +3370,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *
             }
         }
 
-        obj = newobj_alloc(objspace, cr, size_pool_idx, true, borrowing);
+        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cr, size_pool_idx, true) : newobj_alloc(objspace, cr, size_pool_idx, true) ;
         newobj_init(klass, flags, wb_protected, objspace, obj);
 
         gc_event_hook_prep(objspace, RUBY_INTERNAL_EVENT_NEWOBJ, obj, newobj_zero_slot(obj));
@@ -3387,7 +3428,7 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
                   ruby_gc_stressful ||
                   gc_event_hook_available_p(objspace)) &&
             wb_protected) {
-        obj = newobj_alloc(objspace, cr, size_pool_idx, false, borrowing);
+        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cr, size_pool_idx, false) : newobj_alloc(objspace, cr, size_pool_idx, false);
         newobj_init(klass, flags, wb_protected, objspace, obj);
     }
     else {
