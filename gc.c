@@ -715,6 +715,7 @@ typedef struct rb_size_pool_struct {
     size_t force_major_gc_count;
     size_t force_incremental_marking_finish_count;
     size_t total_allocated_objects;
+    size_t newly_created_by_borrowing_count;
     size_t total_freed_objects;
 
     /* Sweeping statistics */
@@ -1331,6 +1332,8 @@ total_allocated_objects(rb_objspace_t *objspace)
     size_t count = 0;
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
         rb_size_pool_t *size_pool = &size_pools[i];
+	size_pool->total_allocated_objects += size_pool->newly_created_by_borrowing_count;
+	size_pool->newly_created_by_borrowing_count = 0;
         count += size_pool->total_allocated_objects;
     }
     if (!during_gc) rb_native_mutex_unlock(&r->borrowing_sync.lock);
@@ -2608,7 +2611,7 @@ update_size_pool_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspa
     size_t total_freed_pages = size_pool_to_copy_from->total_freed_pages;
     size_t force_major_gc_count = size_pool_to_copy_from->force_major_gc_count;
     size_t force_incremental_marking_finish_count = size_pool_to_copy_from->force_incremental_marking_finish_count;
-    size_t total_allocated_objects = size_pool_to_copy_from->total_allocated_objects;
+    size_t total_allocated_objects = size_pool_to_copy_from->total_allocated_objects + size_pool_to_copy_from->newly_created_by_borrowing_count;
     size_t total_freed_objects = size_pool_to_copy_from->total_freed_objects;
 
     objspace = objspace_to_update;
@@ -3276,7 +3279,7 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_poo
         }
     }
 
-    size_pool->total_allocated_objects++;
+    size_pool->newly_created_by_borrowing_count++;
 
     if (borrowable_page_locked) {
 	alloc_target_ractor->borrowing_sync.page_lock_owner[size_pool_idx] = NULL;
@@ -12698,6 +12701,11 @@ gc_stat_heap_internal(int size_pool_idx, VALUE hash_or_sym)
     }
 
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
+
+    if (!during_gc) rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock);
+    size_pool->total_allocated_objects += size_pool->newly_created_by_borrowing_count;
+    size_pool->newly_created_by_borrowing_count = 0;
+    if (!during_gc) rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.lock);
 
 #define SET(name, attr) \
     if (key == gc_stat_heap_symbols[gc_stat_heap_sym_##name]) \
