@@ -775,7 +775,6 @@ typedef struct rb_objspace {
         unsigned int has_hook: 1;
         unsigned int during_minor_gc : 1;
         unsigned int during_global_gc : 1;
-        unsigned int using_local_limits : 1;
         unsigned int during_incremental_marking : 1;
         unsigned int measure_gc : 1;
     } flags;
@@ -1361,6 +1360,7 @@ total_freed_objects(rb_objspace_t *objspace)
 #define will_be_incremental_marking(objspace) ((objspace)->rgengc.need_major_gc != GPR_FLAG_NONE)
 #define GC_INCREMENTAL_SWEEP_SLOT_COUNT 2048
 #define is_lazy_sweeping(objspace)           (GC_ENABLE_LAZY_SWEEP && has_sweeping_pages(objspace))
+#define using_local_limits(objspace)     (objspace != ruby_single_main_objspace && !objspace->flags.during_global_gc)
 
 #if SIZEOF_LONG == SIZEOF_VOIDP
 # define obj_id_to_ref(objid) ((objid) ^ FIXNUM_FLAG) /* unset FIXNUM_FLAG */
@@ -3880,7 +3880,7 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data_ptr)
     VM_ASSERT(vm_ccs_p(ccs));
     VM_ASSERT(id == ccs->cme->called_id);
 
-    if (!data->objspace->flags.using_local_limits && METHOD_ENTRY_INVALIDATED(ccs->cme)) {
+    if (!using_local_limits(data->objspace) && METHOD_ENTRY_INVALIDATED(ccs->cme)) {
         rb_vm_ccs_free(ccs);
         return ID_TABLE_DELETE;
     }
@@ -3889,7 +3889,7 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data_ptr)
 
         for (int i=0; i<ccs->len; i++) {
             VM_ASSERT(data->klass == ccs->entries[i].cc->klass);
-	    if (!data->objspace->flags.using_local_limits) {
+	    if (!using_local_limits(data->objspace)) {
 		VM_ASSERT(vm_cc_check_cme(ccs->entries[i].cc, ccs->cme));
 	    }
 
@@ -7798,9 +7798,9 @@ static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
     
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !objspace->flags.using_local_limits);
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
 
-    if (objspace->flags.using_local_limits && !in_marking_range(objspace, obj)) {
+    if (using_local_limits(objspace) && !in_marking_range(objspace, obj)) {
 	return;
     }
 
@@ -8420,7 +8420,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
     rb_native_mutex_unlock(&objspace->obj_id_lock);
 
-    if (objspace->flags.using_local_limits || !during_gc) {
+    if (using_local_limits(objspace) || !during_gc) {
 	MARK_CHECKPOINT("shareable_tbl");
 	mark_set(objspace, objspace->shareable_tbl);
     }
@@ -10424,7 +10424,6 @@ gc_set_flags_start(rb_objspace_t *objspace, unsigned int reason, unsigned int *d
     objspace->flags.immediate_sweep = !!(reason & GPR_FLAG_IMMEDIATE_SWEEP);
 
     objspace->flags.during_global_gc = !!(reason & GPR_FLAG_GLOBAL);
-    objspace->flags.using_local_limits = rb_multi_ractor_p() && !objspace->flags.during_global_gc;
 
     /* Explicitly enable compaction (GC.compact) */
     if (*do_full_mark && ruby_enable_autocompact) {
@@ -10830,7 +10829,6 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event)
     gc_report(1, objspace, "gc_exit: %s [%s]\n", gc_enter_event_cstr(event), gc_current_status(objspace));
     during_gc = FALSE;
     objspace->flags.during_global_gc = false;
-    objspace->flags.using_local_limits = false;
 
 
 #if RGENGC_CHECK_MODE >= 2
@@ -11988,7 +11986,7 @@ gc_update_references(rb_objspace_t *objspace)
 	rb_gc_update_global_tbl();
     }
 
-    bool shareable_objects_moved = !objspace->flags.using_local_limits;
+    bool shareable_objects_moved = !using_local_limits(objspace);
 
     if (shareable_objects_moved) {
 	global_symbols.ids = rb_gc_location(global_symbols.ids);
