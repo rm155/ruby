@@ -432,26 +432,17 @@ module SyncDefaultGems
     |\.git.*
     |[A-Z]\w+file
     |COPYING
+    |Gemfile.lock
+    |bin\/.*
     |rakelib\/.*
     |test\/lib\/.*
     )\z/mx
 
   YARP_IGNORE_FILE_PATTERN =
-    /\A(?:[A-Z]\w*\.(?:md|txt)
-    |[^\/]+\.yml
-    |\.git.*
-    |[A-Z]\w+file
-    |COPYING
-    |CONTRIBUTING\.md
-    |Gemfile
-    |Gemfile\.lock
-    |Makefile\.in
-    |README\.md
-    |bin\/.*
+    /\A(?:Makefile\.in
     |configure\.ac
-    |rakelib\/.*
+    |fuzz\/.*
     |rust\/.*
-    |test\/lib\/.*
     |tasks\/.*
     |ext\/yarp\/extconf\.rb
     )\z/mx
@@ -502,7 +493,7 @@ module SyncDefaultGems
     # Fetch the repository to be synchronized
     IO.popen(%W"git remote") do |f|
       unless f.read.split.include?(gem)
-        `git remote add #{gem} git@github.com:#{repo}.git`
+        `git remote add #{gem} https://github.com/#{repo}.git`
       end
     end
     system(*%W"git fetch --no-tags #{gem}")
@@ -526,11 +517,9 @@ module SyncDefaultGems
     end
 
     # Ignore Merge commits and already-merged commits.
-    case gem
-    when "yarp"
-      ignore_file_pattern = YARP_IGNORE_FILE_PATTERN
-    else
-      ignore_file_pattern = IGNORE_FILE_PATTERN
+    ignore_file_pattern = IGNORE_FILE_PATTERN
+    if gem == "yarp"
+      ignore_file_pattern = Regexp.union(ignore_file_pattern, YARP_IGNORE_FILE_PATTERN)
     end
     commits.delete_if do |sha, subject|
       files = pipe_readlines(%W"git diff-tree -z --no-commit-id --name-only -r #{sha}")
@@ -558,30 +547,36 @@ module SyncDefaultGems
       puts "Pick #{sha} from #{repo}."
 
       # Attempt to cherry-pick a commit
-      skipped = false
       result = IO.popen(%W"git cherry-pick #{sha}", &:read)
       if result =~ /nothing\ to\ commit/
         `git reset`
-        skipped = true
         puts "Skip empty commit #{sha}"
+        next
       end
-      next if skipped
 
       # Skip empty commits or deal with conflicts
+      skipped = false
       if result.empty?
         skipped = true
       elsif /^CONFLICT/ =~ result
         # Forcibly remove any files that we don't want to copy to this repository.
         # We also ignore them as new `toplevels` even when they don't conflict.
+        ignored_paths = []
         case gem
         when "rubygems"
           # We don't copy any vcr_cassettes to this repository. Because the directory does not
           # exist, rename detection doesn't work. So it starts with the original path `bundler/`.
-          %w[bundler/spec/support/artifice/vcr_cassettes].each do |rem|
-            if File.exist?(rem)
-              system("git", "reset", rem)
-              rm_rf(rem)
-            end
+          ignored_paths += %w[bundler/spec/support/artifice/vcr_cassettes]
+        when "yarp"
+          # Rename detection never works between ruby/ruby/doc and ruby/yarp/docs
+          # since ruby/ruby/doc is not something owned by YARP.
+          ignored_paths += %w[docs/]
+        end
+        ignored_paths.each do |path|
+          if File.exist?(path)
+            puts "Removing: #{path}"
+            system("git", "reset", path)
+            rm_rf(path)
           end
         end
 
@@ -597,14 +592,28 @@ module SyncDefaultGems
           system(*%w[git add yarp])
         end
 
+        # Skip this commit if everything has been removed as `ignored_paths`.
+        changes = pipe_readlines(%W"git status --porcelain -z")
+        if changes.empty?
+          `git reset` && `git checkout .` && `git clean -fd`
+          puts "Skip empty commit #{sha}"
+          next
+        end
+
+        # For YARP, we want to skip DD: deleted by both.
+        if gem == "yarp"
+          deleted = changes.grep(/^DD /)
+          deleted.map! { |line| line.delete_prefix("DD ") }
+          system(*%W"git rm -f --", *deleted) unless deleted.empty?
+        end
+
         # Discover unmerged files
         # AU: unmerged, added by us
         # DU: unmerged, deleted by us
         # UU: unmerged, both modified
         # UA: unmerged, added by them
         # AA: unmerged, both added
-        unmerged = pipe_readlines(%W"git status --porcelain -z")
-        unmerged.map! {|line| line[/\A(?:.U|[UA]A) (.*)/, 1]}
+        unmerged = changes.map {|line| line[/\A(?:.U|[UA]A) (.*)/, 1]}
         unmerged.compact!
         ignore, conflict = unmerged.partition {|name| ignore_file_pattern =~ name}
         # Reset ignored files if they conflict
@@ -812,7 +821,7 @@ module SyncDefaultGems
   ruby #$0 rubygems 97e9768612..9e53702832
 
 \e[1mPick all commits since the last picked commit\e[0m
-  ruby #$0 rubygems -a
+  ruby #$0 -a rubygems
 
 \e[1mList known libraries\e[0m
   ruby #$0 list

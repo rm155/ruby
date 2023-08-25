@@ -30,12 +30,22 @@ yp_newline_list_append(yp_newline_list_t *list, const char *cursor) {
         if (list->offsets == NULL) return false;
     }
 
+    assert(*cursor == '\n');
     assert(cursor >= list->start);
     size_t newline_offset = (size_t) (cursor - list->start + 1);
     assert(list->size == 0 || newline_offset > list->offsets[list->size - 1]);
     list->offsets[list->size++] = newline_offset;
 
     return true;
+}
+
+// Conditionally append a new offset to the newline list, if the value passed in is a newline.
+bool
+yp_newline_list_check_append(yp_newline_list_t *list, const char *cursor) {
+    if (*cursor != '\n') {
+        return true;
+    }
+    return yp_newline_list_append(list, cursor);
 }
 
 // Returns the line and column of the given offset, assuming we don't have any

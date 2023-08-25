@@ -54,7 +54,7 @@ Note: We're only listing outstanding class updates.
     * Notify the Ruby virtual machine that the boot sequence is finished,
       and that now is a good time to optimize the application. This is useful
       for long running applications. The actual optimizations performed are entirely
-      implementation specific and may change in the future without notice. [[Feature #18885]
+      implementation specific and may change in the future without notice. [[Feature #18885]]
 
 * Refinement
 
@@ -69,20 +69,21 @@ The following default gems are updated.
 * bigdecimal 3.1.4
 * bundler 2.5.0.dev
 * csv 3.2.8
+* erb 4.0.3
 * fiddle 1.1.2
 * fileutils 1.7.1
 * irb 1.7.4
 * nkf 0.1.3
 * optparse 0.4.0.pre.1
 * psych 5.1.0
-* reline 0.3.7
+* reline 0.3.8
 * stringio 3.0.8
 * strscan 3.0.7
 * syntax_suggest 1.1.0
 * time 0.2.2
 * timeout 0.4.0
 * uri 0.12.2
-* yarp 0.7.0
+* yarp 0.8.0
 
 The following bundled gems are updated.
 
@@ -122,23 +123,29 @@ changelog for details of the default gems or bundled gems.
 
 ### YJIT
 
-* Significant performance improvements over 3.2
-  * Splat and rest arguments support has been improved.
+* Major performance improvements over 3.2
+  * Support for splat and rest arguments has been improved.
   * Registers are allocated for stack operations of the virtual machine.
   * More calls with optional arguments are compiled.
-  * `Integer#!=`, `String#!=`, `Kernel#block_given?`, `Kernel#is_a?`,
-    `Kernel#instance_of?`, `Module#===` are specially optimized.
+  * Exception handlers are also compiled.
   * Instance variables no longer exit to the interpreter
     with megamorphic Object Shapes.
+  * Unsupported call types no longer exit to the interpreter.
+  * `Integer#!=`, `String#!=`, `Kernel#block_given?`, `Kernel#is_a?`,
+    `Kernel#instance_of?`, `Module#===` are specially optimized.
+  * Now more than 3x faster than the interpreter on optcarrot!
 * Metadata for compiled code uses a lot less memory.
-* Improved code generation on ARM64
+* Generate more compact code on ARM64
 * Option to start YJIT in paused mode and then later enable it manually
   * `--yjit-pause` and `RubyVM::YJIT.resume`
   * This can be used to enable YJIT only once your application is done booting
+* `ratio_in_yjit` stat produced by `--yjit-stats` is now avaiable in release builds,
+  a special stats or dev build is no longer required.
 * Exit tracing option now supports sampling
   * `--trace-exits-sample-rate=N`
+* `--yjit-stats=quiet` is added to avoid printing stats on exit.
 * The default value for `--yjit-exec-mem-size` is changed from 64 to 128.
-* Multiple bug fixes
+* More thorough testing and multiple bug fixes
 
 ### RJIT
 
@@ -149,6 +156,7 @@ changelog for details of the default gems or bundled gems.
   * You should keep using YJIT in production.
 
 [Feature #18498]: https://bugs.ruby-lang.org/issues/18498
+[Feature #18885]: https://bugs.ruby-lang.org/issues/18885
 [Bug #19150]:     https://bugs.ruby-lang.org/issues/19150
 [Feature #19314]: https://bugs.ruby-lang.org/issues/19314
 [Feature #19347]: https://bugs.ruby-lang.org/issues/19347

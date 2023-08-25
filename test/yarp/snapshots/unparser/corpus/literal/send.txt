@@ -1,14 +1,13 @@
-ProgramNode(0...991)(
+ProgramNode(0...999)(
   [],
-  StatementsNode(0...991)(
+  StatementsNode(0...999)(
     [ModuleNode(0...35)(
        [:foo, :a, :_],
        (0...6),
        ConstantReadNode(7...8)(),
        StatementsNode(11...31)(
-         [LocalVariableOperatorOrWriteNode(11...31)(
-            (11...14),
-            (15...18),
+         [OrWriteNode(11...31)(
+            LocalVariableWriteNode(11...14)(:foo, 0, nil, (11...14), nil),
             ParenthesesNode(19...31)(
               StatementsNode(21...30)(
                 [MultiWriteNode(21...30)(
@@ -45,10 +44,11 @@ ProgramNode(0...991)(
               (19...20),
               (30...31)
             ),
-            :foo
+            (15...18)
           )]
        ),
-       (32...35)
+       (32...35),
+       "A"
      ),
      ModuleNode(37...73)(
        [:local],
@@ -74,7 +74,8 @@ ProgramNode(0...991)(
             "bar"
           )]
        ),
-       (70...73)
+       (70...73),
+       "A"
      ),
      CallNode(74...89)(
        ClassNode(74...85)(
@@ -84,7 +85,8 @@ ProgramNode(0...991)(
          nil,
          nil,
          nil,
-         (82...85)
+         (82...85),
+         "A"
        ),
        (85...86),
        (86...89),
@@ -101,7 +103,8 @@ ProgramNode(0...991)(
          (90...96),
          ConstantReadNode(97...98)(),
          nil,
-         (99...102)
+         (99...102),
+         "A"
        ),
        (102...103),
        (103...106),
@@ -2026,6 +2029,29 @@ ProgramNode(0...991)(
        nil,
        0,
        "~"
+     ),
+     CallNode(992...999)(
+       CallNode(992...993)(nil, nil, (992...993), nil, nil, nil, nil, 2, "a"),
+       (993...995),
+       (995...996),
+       (996...997),
+       ArgumentsNode(997...998)(
+         [CallNode(997...998)(
+            nil,
+            nil,
+            (997...998),
+            nil,
+            nil,
+            nil,
+            nil,
+            2,
+            "b"
+          )]
+       ),
+       (998...999),
+       nil,
+       1,
+       "+"
      )]
   )
 )

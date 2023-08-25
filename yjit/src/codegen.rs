@@ -1417,7 +1417,7 @@ fn guard_object_is_heap(
     asm.cmp(object, Qfalse.into());
     asm.je(Target::side_exit(counter));
 
-    if object_type.diff(Type::UnknownHeap) != TypeDiff::Incompatible {
+    if Type::UnknownHeap.diff(object_type) != TypeDiff::Incompatible {
         asm.ctx.upgrade_opnd_type(object_opnd, Type::UnknownHeap);
     }
 }
@@ -1449,7 +1449,7 @@ fn guard_object_is_array(
     asm.cmp(flags_opnd, (RUBY_T_ARRAY as u64).into());
     asm.jne(Target::side_exit(counter));
 
-    if object_type.diff(Type::TArray) != TypeDiff::Incompatible {
+    if Type::UnknownHeap.diff(object_type) != TypeDiff::Incompatible {
         asm.ctx.upgrade_opnd_type(object_opnd, Type::TArray);
     }
 }
@@ -1481,7 +1481,7 @@ fn guard_object_is_string(
     asm.cmp(flags_reg, Opnd::UImm(RUBY_T_STRING as u64));
     asm.jne(Target::side_exit(counter));
 
-    if object_type.diff(Type::TString) != TypeDiff::Incompatible {
+    if Type::UnknownHeap.diff(object_type) != TypeDiff::Incompatible {
         asm.ctx.upgrade_opnd_type(object_opnd, Type::TString);
     }
 }
@@ -5063,9 +5063,7 @@ unsafe extern "C" fn build_kwhash(ci: *const rb_callinfo, sp: *const VALUE) -> V
 // at sp[-2]. Depending on the frame type, it can serve different purposes,
 // which are covered here by enum variants.
 enum SpecVal {
-    None,
-    BlockHandler(BlockHandler),
-    BlockParamProxy,
+    BlockHandler(Option<BlockHandler>),
     PrevEP(*const VALUE),
     PrevEPOpnd(Opnd),
 }
@@ -5077,6 +5075,11 @@ pub enum BlockHandler {
     BlockISeq(IseqPtr),
     // invokesuper: GET_BLOCK_HANDLER() (GET_LEP()[VM_ENV_DATA_INDEX_SPECVAL])
     LEPSpecVal,
+    // part of the allocate-free block forwarding scheme
+    BlockParamProxy,
+    // To avoid holding the block arg (e.g. proc and symbol) across C calls,
+    // we might need to set the block handler early in the call sequence
+    AlreadySet,
 }
 
 struct ControlFrame {
@@ -5124,10 +5127,8 @@ fn gen_push_frame(
     // the outer environment depending on the frame type.
     // sp[-2] = specval;
     let specval: Opnd = match frame.specval {
-        SpecVal::None => {
-            VM_BLOCK_HANDLER_NONE.into()
-        }
-        SpecVal::BlockHandler(block_handler) => {
+        SpecVal::BlockHandler(None) => VM_BLOCK_HANDLER_NONE.into(),
+        SpecVal::BlockHandler(Some(block_handler)) => {
             match block_handler {
                 BlockHandler::BlockISeq(block_iseq) => {
                     // Change cfp->block_code in the current frame. See vm_caller_setup_arg_block().
@@ -5142,17 +5143,18 @@ fn gen_push_frame(
                     let lep_opnd = gen_get_lep(jit, asm);
                     asm.load(Opnd::mem(64, lep_opnd, SIZEOF_VALUE_I32 * VM_ENV_DATA_INDEX_SPECVAL))
                 }
+                BlockHandler::BlockParamProxy => {
+                    let ep_opnd = gen_get_lep(jit, asm);
+                    let block_handler = asm.load(
+                        Opnd::mem(64, ep_opnd, SIZEOF_VALUE_I32 * VM_ENV_DATA_INDEX_SPECVAL)
+                    );
+
+                    asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_BLOCK_CODE), block_handler);
+
+                    block_handler
+                }
+                BlockHandler::AlreadySet => 0.into(), // unused
             }
-        }
-        SpecVal::BlockParamProxy => {
-            let ep_opnd = gen_get_lep(jit, asm);
-            let block_handler = asm.load(
-                Opnd::mem(64, ep_opnd, SIZEOF_VALUE_I32 * VM_ENV_DATA_INDEX_SPECVAL)
-            );
-
-            asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_BLOCK_CODE), block_handler);
-
-            block_handler
         }
         SpecVal::PrevEP(prev_ep) => {
             let tagged_prev_ep = (prev_ep as usize) | 1;
@@ -5160,9 +5162,13 @@ fn gen_push_frame(
         }
         SpecVal::PrevEPOpnd(ep_opnd) => {
             asm.or(ep_opnd, 1.into())
-        },
+        }
     };
-    asm.store(Opnd::mem(64, sp, SIZEOF_VALUE_I32 * -2), specval);
+    if let SpecVal::BlockHandler(Some(BlockHandler::AlreadySet)) = frame.specval {
+        asm.comment("specval should have been set");
+    } else {
+        asm.store(Opnd::mem(64, sp, SIZEOF_VALUE_I32 * -2), specval);
+    }
 
     // Write env flags at sp[-1]
     // sp[-1] = frame_type;
@@ -5406,11 +5412,9 @@ fn gen_send_cfunc(
     let sp = asm.lea(asm.ctx.sp_opnd((SIZEOF_VALUE as isize) * 3));
 
     let specval = if block_arg_type == Some(Type::BlockParamProxy) {
-        SpecVal::BlockParamProxy
-    } else if let Some(block_handler) = block {
-        SpecVal::BlockHandler(block_handler)
+        SpecVal::BlockHandler(Some(BlockHandler::BlockParamProxy))
     } else {
-        SpecVal::None
+        SpecVal::BlockHandler(block)
     };
 
     let mut frame_type = VM_FRAME_MAGIC_CFUNC | VM_FRAME_FLAG_CFRAME | VM_ENV_FLAG_LOCAL;
@@ -5794,13 +5798,7 @@ fn gen_send_iseq(
     }
     let mut opts_missing: i32 = opt_num - opts_filled;
 
-
     let block_arg = flags & VM_CALL_ARGS_BLOCKARG != 0;
-    let block_arg_type = if block_arg {
-        Some(asm.ctx.get_opnd_type(StackOpnd(0)))
-    } else {
-        None
-    };
 
     exit_if_stack_too_large(iseq)?;
     exit_if_tail_call(asm, ci)?;
@@ -5816,7 +5814,7 @@ fn gen_send_iseq(
     exit_if_wrong_number_arguments(asm, opts_filled, flags, opt_num, iseq_has_rest)?;
     exit_if_doing_kw_and_opts_missing(asm, doing_kw_call, opts_missing)?;
     exit_if_has_rest_and_optional_and_block(asm, iseq_has_rest, opt_num, iseq, block_arg)?;
-    exit_if_unsupported_block_arg_type(asm, block_arg_type)?;
+    let block_arg_type = exit_if_unsupported_block_arg_type(jit, asm, block_arg)?;
 
     // Block parameter handling. This mirrors setup_parameters_complex().
     if iseq_has_block_param {
@@ -6003,12 +6001,35 @@ fn gen_send_iseq(
             // We don't need the actual stack value
             asm.stack_pop(1);
         }
+        Some(Type::TProc) => {
+            // Place the proc as the block handler. We do this early because
+            // the block arg being at the top of the stack gets in the way of
+            // rest param handling later. Also, since there are C calls that
+            // come later, we can't hold this value in a register and place it
+            // near the end when we push a new control frame.
+            asm.comment("guard block arg is a proc");
+            // Simple predicate, no need for jit_prepare_routine_call().
+            let is_proc = asm.ccall(rb_obj_is_proc as _, vec![asm.stack_opnd(0)]);
+            asm.cmp(is_proc, Qfalse.into());
+            jit_chain_guard(
+                JCC_JE,
+                jit,
+                asm,
+                ocb,
+                SEND_MAX_CHAIN_DEPTH,
+                Counter::guard_send_block_arg_type,
+            );
+
+            let proc = asm.stack_pop(1);
+            let callee_ep = -argc + num_locals + VM_ENV_DATA_SIZE as i32 - 1;
+            let callee_specval = callee_ep + VM_ENV_DATA_INDEX_SPECVAL;
+            let callee_specval = asm.ctx.sp_opnd(callee_specval as isize * SIZEOF_VALUE as isize);
+            asm.store(callee_specval, proc);
+        }
         None => {
             // Nothing to do
         }
-        _ => {
-            assert!(false);
-        }
+        _ => unreachable!(),
     }
 
     let builtin_attrs = unsafe { rb_yjit_iseq_builtin_attrs(iseq) };
@@ -6432,12 +6453,12 @@ fn gen_send_iseq(
     } else if let Some(captured_opnd) = captured_opnd {
         let ep_opnd = asm.load(Opnd::mem(64, captured_opnd, SIZEOF_VALUE_I32)); // captured->ep
         SpecVal::PrevEPOpnd(ep_opnd)
-    } else if block_arg_type == Some(Type::BlockParamProxy) {
-        SpecVal::BlockParamProxy
-    } else if let Some(block_handler) = block {
-        SpecVal::BlockHandler(block_handler)
+    } else if let Some(Type::TProc) = block_arg_type {
+        SpecVal::BlockHandler(Some(BlockHandler::AlreadySet))
+    } else if let Some(Type::BlockParamProxy) = block_arg_type {
+        SpecVal::BlockHandler(Some(BlockHandler::BlockParamProxy))
     } else {
-        SpecVal::None
+        SpecVal::BlockHandler(block)
     };
 
     // Setup the new frame
@@ -6642,20 +6663,35 @@ fn exit_if_has_rest_and_optional_and_block(asm: &mut Assembler, iseq_has_rest: b
 }
 
 #[must_use]
-fn exit_if_unsupported_block_arg_type(asm: &mut Assembler, block_arg_type: Option<Type>) -> Option<()> {
+fn exit_if_unsupported_block_arg_type(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    supplying_block_arg: bool
+) -> Option<Option<Type>> {
+    let block_arg_type = if supplying_block_arg {
+        asm.ctx.get_opnd_type(StackOpnd(0))
+    } else {
+        // Passing no block argument
+        return Some(None);
+    };
+
     match block_arg_type {
-        Some(Type::Nil | Type::BlockParamProxy) => {
+        Type::Nil | Type::BlockParamProxy => {
             // We'll handle this later
+            Some(Some(block_arg_type))
         }
-        None => {
-            // Nothing to do
+        _ if {
+            let sample_block_arg = jit.peek_at_stack(&asm.ctx, 0);
+            unsafe { rb_obj_is_proc(sample_block_arg) }.test()
+        } => {
+            // Speculate that we'll have a proc as the block arg
+            Some(Some(Type::TProc))
         }
         _ => {
             gen_counter_incr(asm, Counter::send_block_arg);
-            return None
+            None
         }
     }
-    Some(())
 }
 
 #[must_use]

@@ -6,7 +6,10 @@ class CommentsTest < Test::Unit::TestCase
   include ::YARP::DSL
 
   def test_comment_inline
-    assert_comment "# comment", :inline, 0..9
+    source = "# comment"
+
+    assert_comment source, :inline, 0..9
+    assert_equal [0], YARP.const_get(:Debug).newlines(source)
   end
 
   def test_comment_inline_def
@@ -26,6 +29,12 @@ class CommentsTest < Test::Unit::TestCase
     RUBY
 
     assert_comment source, :__END__, 0..16
+  end
+
+  def test_comment___END__crlf
+    source = "__END__\r\ncomment\r\n"
+
+    assert_comment source, :__END__, 0..18
   end
 
   def test_comment_embedded_document

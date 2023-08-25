@@ -18,9 +18,10 @@ class ErrorsTest < Test::Unit::TestCase
       Location(),
       ConstantReadNode(),
       StatementsNode(
-        [ModuleNode([], Location(), MissingNode(), nil, Location())]
+        [ModuleNode([], Location(), MissingNode(), nil, Location(), "")]
       ),
-      Location()
+      Location(),
+      "Parent"
     )
 
     assert_errors expected, "module Parent module end", [
@@ -130,6 +131,14 @@ class ErrorsTest < Test::Unit::TestCase
     ]
   end
 
+  def test_unterminated_regular_expression_with_heredoc
+    source = "<<-END + /b\nEND\n"
+
+    assert_errors expression(source), source, [
+      ["Expected a closing delimiter for a regular expression.", 10..10]
+    ]
+  end
+
   def test_unterminated_xstring
     assert_errors expression("`hello"), "`hello", [
       ["Expected a closing delimiter for an xstring.", 1..1]
@@ -159,6 +168,12 @@ class ErrorsTest < Test::Unit::TestCase
     assert_errors expression('a %'), 'a %', [
       ["Unexpected end of input", 2..3],
       ["Expected a value after the operator.", 3..3],
+    ]
+  end
+
+  def test_cr_without_lf_in_percent_expression
+    assert_errors expression("%\r"), "%\r", [
+      ["Invalid %% token", 0..2],
     ]
   end
 
@@ -377,7 +392,7 @@ class ErrorsTest < Test::Unit::TestCase
       Location(),
       nil,
       nil,
-      StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location())]),
+      StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location(), "A")]),
       [],
       Location(),
       nil,
@@ -408,7 +423,7 @@ class ErrorsTest < Test::Unit::TestCase
            BlockNode(
              [],
              nil,
-             StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location())]),
+             StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location(), "Foo")]),
              Location(),
              Location()
            ),
@@ -449,7 +464,8 @@ class ErrorsTest < Test::Unit::TestCase
            nil,
            nil,
            nil,
-           Location()
+           Location(),
+           "A"
          )]
       ),
       [],
@@ -949,7 +965,8 @@ class ErrorsTest < Test::Unit::TestCase
       nil,
       nil,
       StatementsNode([ReturnNode(Location(), nil)]),
-      Location()
+      Location(),
+      "A"
     )
 
     assert_errors expected, "class A; return; end", [
@@ -963,7 +980,8 @@ class ErrorsTest < Test::Unit::TestCase
       Location(),
       ConstantReadNode(),
       StatementsNode([ReturnNode(Location(), nil)]),
-      Location()
+      Location(),
+      "A"
     )
 
     assert_errors expected, "module A; return; end", [

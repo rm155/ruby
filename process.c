@@ -1419,21 +1419,18 @@ proc_m_wait(int c, VALUE *v, VALUE _)
     return proc_wait(c, v);
 }
 
-
 /*
  *  call-seq:
- *     Process.wait2(pid=-1, flags=0)      -> [pid, status]
- *     Process.waitpid2(pid=-1, flags=0)   -> [pid, status]
+ *    Process.wait2(pid = -1, flags = 0) -> [pid, status]
  *
- *  Waits for a child process to exit (see Process::waitpid for exact
- *  semantics) and returns an array containing the process ID and the
- *  exit status (a Process::Status object) of that
- *  child. Raises a SystemCallError if there are no child processes.
+ *  Like Process.waitpid, but returns an array
+ *  containing the child process +pid+ and Process::Status +status+:
  *
- *     Process.fork { exit 99 }   #=> 27437
- *     pid, status = Process.wait2
- *     pid                        #=> 27437
- *     status.exitstatus          #=> 99
+ *    pid = Process.spawn('ruby', '-e', 'exit 13') # => 309581
+ *    Process.wait2(pid)
+ *    # => [309581, #<Process::Status: pid 309581 exit 13>]
+ *
+ *  Process.waitpid2 is an alias for Process.waitpid.
  */
 
 static VALUE
@@ -1447,22 +1444,17 @@ proc_wait2(int argc, VALUE *argv, VALUE _)
 
 /*
  *  call-seq:
- *     Process.waitall   -> [ [pid1,status1], ...]
+ *    Process.waitall -> array
  *
- *  Waits for all children, returning an array of
- *  _pid_/_status_ pairs (where _status_ is a
- *  Process::Status object).
+ *  Waits for all children, returns an array of 2-element arrays;
+ *  each subarray contains the integer pid and Process::Status status
+ *  for one of the reaped child processes:
  *
- *     fork { sleep 0.2; exit 2 }   #=> 27432
- *     fork { sleep 0.1; exit 1 }   #=> 27433
- *     fork {            exit 0 }   #=> 27434
- *     p Process.waitall
+ *    pid0 = Process.spawn('ruby', '-e', 'exit 13') # => 325470
+ *    pid1 = Process.spawn('ruby', '-e', 'exit 14') # => 325495
+ *    Process.waitall
+ *    # => [[325470, #<Process::Status: pid 325470 exit 13>], [325495, #<Process::Status: pid 325495 exit 14>]]
  *
- *  <em>produces</em>:
- *
- *     [[30982, #<Process::Status: pid 30982 exit 0>],
- *      [30979, #<Process::Status: pid 30979 exit 1>],
- *      [30976, #<Process::Status: pid 30976 exit 2>]]
  */
 
 static VALUE
@@ -1520,48 +1512,41 @@ rb_detach_process(rb_pid_t pid)
 
 /*
  *  call-seq:
- *     Process.detach(pid)   -> thread
+ *    Process.detach(pid) -> thread
  *
- *  Some operating systems retain the status of terminated child
- *  processes until the parent collects that status (normally using
- *  some variant of <code>wait()</code>). If the parent never collects
- *  this status, the child stays around as a <em>zombie</em> process.
- *  Process::detach prevents this by setting up a separate Ruby thread
- *  whose sole job is to reap the status of the process _pid_ when it
- *  terminates. Use #detach only when you do not intend to explicitly
- *  wait for the child to terminate.
+ *  Avoids the potential for a child process to become a
+ *  {zombie process}[https://en.wikipedia.org/wiki/Zombie_process].
+ *  Process.detach prevents this by setting up a separate Ruby thread
+ *  whose sole job is to reap the status of the process _pid_ when it terminates.
  *
- *  The waiting thread returns the exit status of the detached process
- *  when it terminates, so you can use Thread#join to
- *  know the result.  If specified _pid_ is not a valid child process
- *  ID, the thread returns +nil+ immediately.
+ *  This method is needed only when the parent process will never wait
+ *  for the child process.
  *
- *  The waiting thread has #pid method which returns the pid.
+ *  This example does not reap the second child process;
+ *  that process appears as a zombie in the process status (+ps+) output:
  *
- *  In this first example, we don't reap the first child process, so
- *  it appears as a zombie in the process status display.
+ *    pid = Process.spawn('ruby', '-e', 'exit 13') # => 312691
+ *    sleep(1)
+ *    # Find zombies.
+ *    system("ps -ho pid,state -p #{pid}")
  *
- *     p1 = fork { sleep 0.1 }
- *     p2 = fork { sleep 0.2 }
- *     Process.waitpid(p2)
- *     sleep 2
- *     system("ps -ho pid,state -p #{p1}")
+ *  Output:
  *
- *  <em>produces:</em>
+ *     312716 Z
  *
- *     27389 Z
+ *  This example also does not reap the second child process,
+ *  but it does detach the process so that it does not become a zombie:
  *
- *  In the next example, Process::detach is used to reap
- *  the child automatically.
+ *    pid = Process.spawn('ruby', '-e', 'exit 13') # => 313213
+ *    thread = Process.detach(pid)
+ *    sleep(1)
+ *    # => #<Process::Waiter:0x00007f038f48b838 run>
+ *    system("ps -ho pid,state -p #{pid}")        # Finds no zombies.
  *
- *     p1 = fork { sleep 0.1 }
- *     p2 = fork { sleep 0.2 }
- *     Process.detach(p1)
- *     Process.waitpid(p2)
- *     sleep 2
- *     system("ps -ho pid,state -p #{p1}")
+ *  The waiting thread can return the pid of the detached child process:
  *
- *  <em>(produces no output)</em>
+ *    thread.join.pid                       # => 313262
+ *
  */
 
 static VALUE
@@ -3020,77 +3005,65 @@ NORETURN(static VALUE f_exec(int c, const VALUE *a, VALUE _));
 
 /*
  *  call-seq:
- *     exec([env,] command... [,options])
+ *    exec([env, ] command_line, options = {})
+ *    exec([env, ] exe_path, *args, options  = {})
  *
- *  Replaces the current process by running the given external _command_, which
- *  can take one of the following forms:
+ *  Replaces the current process by doing one of the following:
  *
- *  [<code>exec(commandline)</code>]
- *	command line string which is passed to the standard shell
- *  [<code>exec(cmdname, arg1, ...)</code>]
- *	command name and one or more arguments (no shell)
- *  [<code>exec([cmdname, argv0], arg1, ...)</code>]
- *	command name, +argv[0]+ and zero or more arguments (no shell)
+ *  - Passing string +command_line+ to the shell.
+ *  - Invoking the executable at +exe_path+.
  *
- *  In the first form, the string is taken as a command line that is subject to
- *  shell expansion before being executed.
+ *  The new process is created using the
+ *  {exec system call}[https://pubs.opengroup.org/onlinepubs/9699919799.2018edition/functions/execve.html];
+ *  it may inherit some of its environment from the calling program
+ *  (possibly including open file descriptors).
  *
- *  The standard shell always means <code>"/bin/sh"</code> on Unix-like systems,
- *  otherwise, <code>ENV["RUBYSHELL"]</code> or <code>ENV["COMSPEC"]</code> on
- *  Windows and similar.  The command is passed as an argument to the
- *  <code>"-c"</code> switch to the shell, except in the case of +COMSPEC+.
+ *  Argument +env+, if given, is a hash that affects +ENV+ for the new process;
+ *  see {Execution Environment}[rdoc-ref:Process@Execution+Environment].
  *
- *  If the string from the first form (<code>exec("command")</code>) follows
- *  these simple rules:
+ *  Argument +options+ is a hash of options for the new process;
+ *  see {Execution Options}[rdoc-ref:Process@Execution+Options].
  *
- *  * no meta characters,
- *  * not starting with shell reserved word or special built-in,
+ *  The first required argument is one of the following:
  *
- *  Ruby invokes the command directly without shell.
+ *  - +command_line+ if it is a string,
+ *    and if it begins with a shell reserved word or special built-in,
+ *    or if it contains one or more metacharacters.
+ *  - +exe_path+ otherwise.
  *
- *  You can force shell invocation by adding ";" to the string (because ";" is
- *  a meta character).
+ *  <b>Argument +command_line+</b>
  *
- *  Note that this behavior is observable by pid obtained
- *  (return value of spawn() and IO#pid for IO.popen) is the pid of the invoked
- *  command, not shell.
+ *  \String argument +command_line+ is a command line to be passed to a shell;
+ *  it must begin with a shell reserved word, begin with a special built-in,
+ *  or contain meta characters.
+ *  It may also contain arguments and options for that command.
  *
- *  In the second form (<code>exec("command1", "arg1", ...)</code>), the first
- *  is taken as a command name and the rest are passed as parameters to command
- *  with no shell expansion.
+ *  On a Unix-like system, the shell is <tt>/bin/sh</tt>;
+ *  otherwise the shell is determined by environment variable
+ *  <tt>ENV['RUBYSHELL']</tt>, if defined, or <tt>ENV['COMSPEC']</tt> otherwise.
  *
- *  In the third form (<code>exec(["command", "argv0"], "arg1", ...)</code>),
- *  starting a two-element array at the beginning of the command, the first
- *  element is the command to be executed, and the second argument is used as
- *  the <code>argv[0]</code> value, which may show up in process listings.
+ *  Except for the +COMSPEC+ case,
+ *  the entire string +command_line+ is passed as an argument
+ *  to {shell option -c}[https://pubs.opengroup.org/onlinepubs/9699919799.2018edition/utilities/sh.html].
  *
- *  In order to execute the command, one of the <code>exec(2)</code> system
- *  calls are used, so the running command may inherit some of the environment
- *  of the original program (including open file descriptors).
+ *  The shell performs normal shell expansion on the command line.
  *
- *  This behavior is modified by the given +env+ and +options+ parameters. See
- *  ::spawn for details.
+ *  Raises an exception if the new process fails to execute.
  *
- *  If the command fails to execute (typically Errno::ENOENT when
- *  it was not found) a SystemCallError exception is raised.
+ *  <b>Argument +exe_path+</b>
  *
- *  This method modifies process attributes according to given +options+ before
- *  <code>exec(2)</code> system call. See ::spawn for more details about the
- *  given +options+.
+ *  Argument +exe_path+ is one of the following:
  *
- *  The modified attributes may be retained when <code>exec(2)</code> system
- *  call fails.
+ *  - The string path to an executable to be called.
+ *  - A 2-element array containing the path to an executable
+ *    and the string to be used as the name of the executing process.
  *
- *  For example, hard resource limits are not restorable.
+ *  Ruby invokes the executable directly, with no shell and no shell expansion.
  *
- *  Consider to create a child process using ::spawn or Kernel#system if this
- *  is not acceptable.
+ *  If one or more +args+ is given, each is an argument or option
+ *  to be passed to the executable.
  *
- *     exec "echo *"       # echoes list of files in current directory
- *     # never get here
- *
- *     exec "echo", "*"    # echoes an asterisk
- *     # never get here
+ *  Raises an exception if the new process fails to execute.
  */
 
 static VALUE
@@ -4265,27 +4238,62 @@ rb_proc__fork(VALUE _obj)
 
 /*
  *  call-seq:
- *     Kernel.fork  [{ block }]   -> integer or nil
- *     Process.fork [{ block }]   -> integer or nil
+ *    Process.fork { ... } -> integer or nil
+ *    Process.fork -> integer or nil
  *
- *  Creates a subprocess. If a block is specified, that block is run
- *  in the subprocess, and the subprocess terminates with a status of
- *  zero. Otherwise, the +fork+ call returns twice, once in the
- *  parent, returning the process ID of the child, and once in the
- *  child, returning _nil_. The child process can exit using
- *  Kernel.exit! to avoid running any <code>at_exit</code>
- *  functions. The parent process should use Process.wait to collect
- *  the termination statuses of its children or use Process.detach to
- *  register disinterest in their status; otherwise, the operating
- *  system may accumulate zombie processes.
+ *  Creates a child process.
  *
- *  The thread calling fork is the only thread in the created child process.
- *  fork doesn't copy other threads.
+ *  With a block given, runs the block in the child process;
+ *  on block exit, the child terminates with a status of zero:
  *
- *  If fork is not usable, Process.respond_to?(:fork) returns false.
+ *    puts "Before the fork: #{Process.pid}"
+ *    fork do
+ *      puts "In the child process: #{Process.pid}"
+ *    end                   # => 382141
+ *    puts "After the fork: #{Process.pid}"
  *
- *  Note that fork(2) is not available on some platforms like Windows and NetBSD 4.
- *  Therefore you should use spawn() instead of fork().
+ *  Output:
+ *
+ *    Before the fork: 420496
+ *    After the fork: 420496
+ *    In the child process: 420520
+ *
+ *  With no block given, the +fork+ call returns twice:
+ *
+ *  - Once in the parent process, returning the pid of the child process.
+ *  - Once in the child process, returning +nil+.
+ *
+ *  Example:
+ *
+ *    puts "This is the first line before the fork (pid #{Process.pid})"
+ *    puts fork
+ *    puts "This is the second line after the fork (pid #{Process.pid})"
+ *
+ *  Output:
+ *
+ *    This is the first line before the fork (pid 420199)
+ *    420223
+ *    This is the second line after the fork (pid 420199)
+ *
+ *    This is the second line after the fork (pid 420223)
+ *
+ *  In either case, the child process may exit using
+ *  Kernel.exit! to avoid the call to Kernel#at_exit.
+ *
+ *  To avoid zombie processes, the parent process should call either:
+ *
+ *  - Process.wait, to collect the termination statuses of its children.
+ *  - Process.detach, to register disinterest in their status.
+ *
+ *  The thread calling +fork+ is the only thread in the created child process;
+ *  +fork+ doesn't copy other threads.
+ *
+ *  Note that method +fork+ is available on some platforms,
+ *  but not on others:
+ *
+ *    Process.respond_to?(:fork) # => true # Would be false on some.
+ *
+ *  If not, you may use ::spawn instead of +fork+.
  */
 
 static VALUE
@@ -4337,13 +4345,18 @@ exit_status_code(VALUE status)
 NORETURN(static VALUE rb_f_exit_bang(int argc, VALUE *argv, VALUE obj));
 /*
  *  call-seq:
- *     Process.exit!(status=false)
+ *    exit!(status = false)
+ *    Process.exit!(status = false)
  *
- *  Exits the process immediately. No exit handlers are
- *  run. <em>status</em> is returned to the underlying system as the
- *  exit status.
+ *  Exits the process immediately; no exit handlers are called.
+ *  Returns exit status +status+ to the underlying operating system.
  *
  *     Process.exit!(true)
+ *
+ *  Values +true+ and +false+ for argument +status+
+ *  indicate, respectively, success and failure;
+ *  The meanings of integer values are system-dependent.
+ *
  */
 
 static VALUE
@@ -4394,43 +4407,47 @@ rb_f_exit(int argc, const VALUE *argv)
 NORETURN(static VALUE f_exit(int c, const VALUE *a, VALUE _));
 /*
  *  call-seq:
- *     exit(status=true)
- *     Kernel::exit(status=true)
- *     Process::exit(status=true)
+ *    exit(status = true)
+ *    Process.exit(status = true)
  *
- *  Initiates the termination of the Ruby script by raising the
- *  SystemExit exception. This exception may be caught. The
- *  optional parameter is used to return a status code to the invoking
- *  environment.
- *  +true+ and +FALSE+ of _status_ means success and failure
- *  respectively.  The interpretation of other integer values are
- *  system dependent.
+ *  Initiates termination of the Ruby script by raising SystemExit;
+ *  the exception may be caught.
+ *  Returns exit status +status+ to the underlying operating system.
  *
- *     begin
- *       exit
- *       puts "never get here"
- *     rescue SystemExit
- *       puts "rescued a SystemExit exception"
- *     end
- *     puts "after begin block"
+ *  Values +true+ and +false+ for argument +status+
+ *  indicate, respectively, success and failure;
+ *  The meanings of integer values are system-dependent.
  *
- *  <em>produces:</em>
+ *  Example:
  *
- *     rescued a SystemExit exception
- *     after begin block
+ *    begin
+ *      exit
+ *      puts 'Never get here.'
+ *    rescue SystemExit
+ *      puts 'Rescued a SystemExit exception.'
+ *    end
+ *    puts 'After begin block.'
  *
- *  Just prior to termination, Ruby executes any <code>at_exit</code>
- *  functions (see Kernel::at_exit) and runs any object finalizers
- *  (see ObjectSpace::define_finalizer).
+ *  Output:
  *
- *     at_exit { puts "at_exit function" }
- *     ObjectSpace.define_finalizer("string",  proc { puts "in finalizer" })
- *     exit
+ *    Rescued a SystemExit exception.
+ *    After begin block.
  *
- *  <em>produces:</em>
+ *  Just prior to final termination,
+ *  Ruby executes any at-exit procedures (see Kernel::at_exit)
+ *  and any object finalizers (see ObjectSpace::define_finalizer).
  *
- *     at_exit function
- *     in finalizer
+ *  Example:
+ *
+ *    at_exit { puts 'In at_exit function.' }
+ *    ObjectSpace.define_finalizer('string', proc { puts 'In finalizer.' })
+ *    exit
+ *
+ *  Output:
+ *
+ *     In at_exit function.
+ *     In finalizer.
+ *
  */
 
 static VALUE
@@ -4469,14 +4486,16 @@ NORETURN(static VALUE f_abort(int c, const VALUE *a, VALUE _));
 
 /*
  *  call-seq:
- *     abort
- *     Kernel::abort([msg])
- *     Process.abort([msg])
+ *    abort
+ *    Process.abort(msg = nil)
  *
- *  Terminate execution immediately, effectively by calling
- *  <code>Kernel.exit(false)</code>. If _msg_ is given, it is written
- *  to STDERR prior to terminating. Otherwise, if an exception was raised,
- *  print its message and backtrace.
+ *  Terminates execution immediately, effectively by calling
+ *  <tt>Kernel.exit(false)</tt>.
+ *
+ *  If string argument +msg+ is given,
+ *  it is written to STDERR prior to termination;
+ *  otherwise, if an exception was raised,
+ *  prints its message and backtrace.
  */
 
 static VALUE
@@ -8216,7 +8235,9 @@ rb_clock_gettime(int argc, VALUE *argv, VALUE _)
 
     VALUE unit = (rb_check_arity(argc, 1, 2) == 2) ? argv[1] : Qnil;
     VALUE clk_id = argv[0];
+#ifdef HAVE_CLOCK_GETTIME
     clockid_t c;
+#endif
 
     if (SYMBOL_P(clk_id)) {
 #ifdef CLOCK_REALTIME
@@ -8444,7 +8465,9 @@ rb_clock_getres(int argc, VALUE *argv, VALUE _)
     timetick_int_t denominators[2];
     int num_numerators = 0;
     int num_denominators = 0;
+#ifdef HAVE_CLOCK_GETRES
     clockid_t c;
+#endif
 
     VALUE unit = (rb_check_arity(argc, 1, 2) == 2) ? argv[1] : Qnil;
     VALUE clk_id = argv[0];
@@ -8668,6 +8691,172 @@ proc_warmup(VALUE _)
  *
  * \Module +Process+ represents a process in the underlying operating system.
  * Its methods support management of the current process and its child processes.
+ *
+ * == \Process Creation
+ *
+ * Each of these methods creates a process:
+ *
+ * - Process.exec: Replaces the current process by running a given external command.
+ * - Process.spawn, Kernel#spawn: Executes the given command and returns its pid without waiting for completion.
+ * - Kernel#system: Executes the given command in a subshell.
+ *
+ * Each of these methods accepts:
+ *
+ * - An optional hash of environment variable names and values.
+ * - An optional hash of execution options.
+ *
+ * === Execution Environment
+ *
+ * Optional leading argument +env+ is a hash of name/value pairs,
+ * where each name is a string and each value is a string or +nil+;
+ * each name/value pair is added to ENV in the new process.
+ *
+ *   Process.spawn(                'ruby -e "p ENV[\"Foo\"]"')
+ *   Process.spawn({'Foo' => '0'}, 'ruby -e "p ENV[\"Foo\"]"')
+ *
+ * Output:
+ *
+ *   nil
+ *   "0"
+ *
+ * The effect is usually similar to that of calling ENV#update with argument +env+,
+ * where each named environment variable is created or updated
+ * (if the value is non-+nil+),
+ * or deleted (if the value is +nil+).
+ *
+ * However, some modifications to the calling process may remain
+ * if the new process fails.
+ * For example, hard resource limits are not restored.
+ *
+ * === Execution Options
+ *
+ * Optional trailing argument +options+ is a hash of execution options.
+ *
+ * ==== Working Directory (+:chdir+)
+ *
+ * By default, the working directory for the new process is the same as
+ * that of the current process:
+ *
+ *   Dir.chdir('/var')
+ *   Process.spawn('ruby -e "puts Dir.pwd"')
+ *
+ * Output:
+ *
+ *   /var
+ *
+ * Use option +:chdir+ to set the working directory for the new process:
+ *
+ *   Process.spawn('ruby -e "puts Dir.pwd"', {chdir: '/tmp'})
+ *
+ * Output:
+ *
+ *   /tmp
+ *
+ * The working directory of the current process is not changed:
+ *
+ *   Dir.pwd # => "/var"
+ *
+ * ==== \File Redirection (\File Descriptor)
+ *
+ * Use execution options for file redirection in the new process.
+ *
+ * The key for such an option may be an integer file descriptor (fd),
+ * specifying a source,
+ * or an array of fds, specifying multiple sources.
+
+ * An integer source fd may be specified as:
+ *
+ * - _n_: Specifies file descriptor _n_.
+ *
+ * There are these shorthand symbols for fds:
+ *
+ * - +:in+: Specifies file descriptor 0 (STDIN).
+ * - +:out+: Specifies file descriptor 1 (STDOUT).
+ * - +:err+: Specifies file descriptor 2 (STDERR).
+ *
+ * The value given with a source is one of:
+ *
+ * - _n_:
+ *   Redirects to fd _n_ in the parent process.
+ * - +filepath+:
+ *   Redirects from or to the file at +filepath+ via <tt>open(filepath, mode, 0644)</tt>,
+ *   where +mode+ is <tt>'r'</tt> for source +:in+,
+ *   or <tt>'w'</tt> for source +:out+ or +:err+.
+ * - <tt>[filepath]</tt>:
+ *   Redirects from the file at +filepath+ via <tt>open(filepath, 'r', 0644)</tt>.
+ * - <tt>[filepath, mode]</tt>:
+ *   Redirects from or to the file at +filepath+ via <tt>open(filepath, mode, 0644)</tt>.
+ * - <tt>[filepath, mode, perm]</tt>:
+ *   Redirects from or to the file at +filepath+ via <tt>open(filepath, mode, perm)</tt>.
+ * - <tt>[:child, fd]</tt>:
+ *   Redirects to the redirected +fd+.
+ * - +:close+: Closes the file descriptor in child process.
+ *
+ * See {Access Modes}[rdoc-ref:File@Access+Modes]
+ * and {File Permissions}[rdoc-ref:File@File+Permissions].
+ *
+ * ==== Environment Variables (+:unsetenv_others+)
+ *
+ * By default, the new process inherits environment variables
+ * from the parent process;
+ * use execution option key +:unsetenv_others+ with value +true+
+ * to clear environment variables in the new process.
+ *
+ * Any changes specified by execution option +env+ are made after the new process
+ * inherits or clears its environment variables;
+ * see {Execution Environment}[rdoc-ref:Process@Execution+Environment].
+ *
+ * ==== \File-Creation Access (+:umask+)
+ *
+ * Use execution option +:umask+ to set the file-creation access
+ * for the new process;
+ * see {Access Modes}[rdoc-ref:File@Access+Modes]:
+ *
+ *   command = 'ruby -e "puts sprintf(\"0%o\", File.umask)"'
+ *   options = {:umask => 0644}
+ *   Process.spawn(command, options)
+ *
+ * Output:
+ *
+ *   0644
+ *
+ * ==== \Process Groups (+:pgroup+ and +:new_pgroup+)
+ *
+ * By default, the new process belongs to the same
+ * {process group}[https://en.wikipedia.org/wiki/Process_group]
+ * as the parent process.
+ *
+ * To specify a different process group.
+ * use execution option +:pgroup+ with one of the following values:
+ *
+ * - +true+: Create a new process group for the new process.
+ * - _pgid_: Create the new process in the process group
+ *   whose id is _pgid_.
+ *
+ * On Windows only, use execution option +:new_pgroup+ with value +true+
+ * to create a new process group for the new process.
+ *
+ * ==== Resource Limits
+ *
+ * Use execution options to set resource limits.
+ *
+ * The keys for these options are symbols of the form
+ * <tt>:rlimit_<i>resource_name</i></tt>,
+ * where _resource_name_ is the downcased form of one of the string
+ * resource names described at method Process.setrlimit.
+ * For example, key +:rlimit_cpu+ corresponds to resource limit <tt>'CPU'</tt>.
+ *
+ * The value for such as key is one of:
+ *
+ * - An integer, specifying both the current and maximum limits.
+ * - A 2-element array of integers, specifying the current and maximum limits.
+ *
+ * ==== \File Descriptor Inheritance
+ *
+ * By default, the new process inherits file descriptors from the parent process.
+ *
+ * Use execution option <tt>:close_others => true</tt> to modify that inheritance
+ * by closing non-standard fds (3 and greater) that are not otherwise redirected.
  *
  * == What's Here
  *
