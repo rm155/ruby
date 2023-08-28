@@ -1781,7 +1781,7 @@ rb_transfer_postponed_jobs(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_r
 int
 rb_postponed_job_register(unsigned int flags, rb_postponed_job_func_t func, void *data)
 {
-    rb_postponed_job_register_general(GET_RACTOR(), flags, func, data, false, false);
+    return rb_postponed_job_register_general(GET_RACTOR(), flags, func, data, false, false);
 }
 
 /*
@@ -1791,7 +1791,7 @@ rb_postponed_job_register(unsigned int flags, rb_postponed_job_func_t func, void
 int
 rb_postponed_job_register_one(unsigned int flags, rb_postponed_job_func_t func, void *data)
 {
-    rb_postponed_job_register_general(GET_RACTOR(), flags, func, data, false, true);
+    return rb_postponed_job_register_general(GET_RACTOR(), flags, func, data, false, true);
 }
 
 /*

@@ -3053,7 +3053,7 @@ make_shareable_check_shareable(VALUE obj)
     return traverse_cont;
 }
 
-bool
+void
 rb_ractor_classify_as_shareable(VALUE obj)
 {
     rb_add_to_shareable_tbl(obj);
