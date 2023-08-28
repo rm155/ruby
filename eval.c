@@ -675,6 +675,19 @@ rb_exc_exception(VALUE mesg, int tag, VALUE cause)
     rb_longjmp(GET_EC(), tag, mesg, cause);
 }
 
+static VALUE
+rb_exc_raise_no_redirection(VALUE mesg)
+{
+    if (rb_redirecting_allocation()) {
+	mesg = rb_ractor_copy_with_alloc_target(mesg, NULL);
+	rb_run_with_redirected_allocation(NULL, rb_exc_raise_no_redirection, mesg);
+    }
+    else {
+	rb_exc_exception(mesg, TAG_RAISE, Qundef);
+    }
+    return Qnil;
+}
+
 /*!
  * Raises an exception in the current thread.
  * \param[in] mesg an Exception class or an \c Exception object.
@@ -685,13 +698,7 @@ rb_exc_exception(VALUE mesg, int tag, VALUE cause)
 void
 rb_exc_raise(VALUE mesg)
 {
-    if (rb_redirecting_allocation()) {
-	mesg = rb_ractor_copy_with_alloc_target(mesg, NULL);
-	rb_run_with_redirected_allocation(NULL, rb_exc_raise, mesg);
-    }
-    else {
-	rb_exc_exception(mesg, TAG_RAISE, Qundef);
-    }
+    rb_exc_raise_no_redirection(mesg);
 }
 
 /*!

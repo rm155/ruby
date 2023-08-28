@@ -2813,7 +2813,7 @@ create_traverse_rec(VALUE d)
     struct obj_traverse_data *data = (struct obj_traverse_data *)d;
     data->rec_hash = rb_ident_hash_new();
     data->rec = RHASH_ST_TABLE(data->rec_hash);
-    return data->rec;
+    return (VALUE)data->rec;
 }
 
 static struct st_table *
@@ -3265,7 +3265,7 @@ create_traverse_replace_rec(VALUE d)
     struct obj_traverse_replace_data *data = (struct obj_traverse_replace_data *)d;
     data->rec_hash = rb_ident_hash_new();
     data->rec = RHASH_ST_TABLE(data->rec_hash);
-    return data->rec;
+    return (VALUE)data->rec;
 }
 
 static struct st_table *
