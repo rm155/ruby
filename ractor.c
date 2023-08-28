@@ -2177,12 +2177,10 @@ rb_ractor_teardown(rb_execution_context_t *ec)
 
     rb_gc_ractor_teardown_cleanup();
 
-    rb_thread_t *th = NULL;
     // sync with rb_ractor_terminate_interrupt_main_thread()
     RB_VM_LOCK_ENTER();
     {
         VM_ASSERT(cr->threads.main != NULL);
-	th = cr->threads.main;
 	rb_add_to_absorbed_threads_tbl(cr->threads.main);
 	cr->dropped_main_thread = cr->threads.main;
         cr->threads.main = NULL;
