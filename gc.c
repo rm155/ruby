@@ -5023,6 +5023,7 @@ rb_gc_copy_finalizer(VALUE dest, VALUE obj)
     if (!FL_TEST(obj, FL_FINALIZE)) return;
     if (st_lookup(finalizer_table, obj, &data)) {
         table = (VALUE)data;
+	objspace = GET_OBJSPACE_OF_VALUE(dest);
         st_insert(finalizer_table, dest, table);
     }
     FL_SET(dest, FL_FINALIZE);
