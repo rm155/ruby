@@ -3229,6 +3229,8 @@ unlock_own_borrowable_page(rb_ractor_t *cr, int size_pool_idx)
     }
 }
 
+static void gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache);
+
 static VALUE
 newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool vm_locked)
 {
@@ -3272,7 +3274,7 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_poo
 		if (need_new_borrowing_page)
 		{
 		    rb_ractor_newobj_size_pool_cache_t *size_pool_cache = &cache->size_pool_caches[size_pool_idx];
-		    rb_gc_ractor_newobj_size_pool_cache_clear(size_pool_cache);
+		    gc_ractor_newobj_size_pool_cache_clear(size_pool_cache);
 		}
 
                 ractor_cache_set_page(cache, size_pool_idx, page);
@@ -7498,29 +7500,11 @@ mark_const_entry_i(VALUE value, void *data)
     return ID_TABLE_CONTINUE;
 }
 
-static enum rb_id_table_iterator_result
-mark_and_pin_const_entry_i(VALUE value, void *data)
-{
-    const rb_const_entry_t *ce = (const rb_const_entry_t *)value;
-    rb_objspace_t *objspace = data;
-
-    gc_mark_and_pin(objspace, ce->value);
-    gc_mark_and_pin(objspace, ce->file);
-    return ID_TABLE_CONTINUE;
-}
-
 static void
 mark_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
 {
     if (!tbl) return;
     rb_id_table_foreach_values(tbl, mark_const_entry_i, objspace);
-}
-
-static void
-mark_and_pin_const_tbl(rb_objspace_t *objspace, struct rb_id_table *tbl)
-{
-    if (!tbl) return;
-    rb_id_table_foreach_values(tbl, mark_and_pin_const_entry_i, objspace);
 }
 
 static void
@@ -10095,8 +10079,8 @@ rb_obj_gc_flags(VALUE obj, ID* flags, size_t max)
 }
 
 /* GC */
-void
-rb_gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache)
+static void
+gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache)
 {
     struct heap_page *page = cache->using_page;
     RVALUE *freelist = cache->freelist;
@@ -10114,7 +10098,7 @@ rb_gc_ractor_newobj_cache_clear(rb_ractor_newobj_cache_t *newobj_cache)
 
     for (size_t size_pool_idx = 0; size_pool_idx < SIZE_POOL_COUNT; size_pool_idx++) {
 	rb_ractor_newobj_size_pool_cache_t *cache = &newobj_cache->size_pool_caches[size_pool_idx];
-	rb_gc_ractor_newobj_size_pool_cache_clear(cache);
+	gc_ractor_newobj_size_pool_cache_clear(cache);
     }
 }
 
@@ -12255,7 +12239,7 @@ rb_gc_start(void)
 }
 
 VALUE
-rb_gc_ractor_teardown_cleanup()
+rb_gc_ractor_teardown_cleanup(void)
 {
     rb_ractor_t *cr = GET_RACTOR();
     rb_objspace_t *objspace = cr->local_objspace;
