@@ -1912,7 +1912,6 @@ cancel_single_ractor_mode(void)
         rb_gc_disable();
     }
 
-    rb_vm_t *vm = GET_VM();
     ruby_single_main_ractor = NULL;
     ruby_single_main_objspace = NULL;
 }

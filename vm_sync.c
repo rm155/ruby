@@ -127,9 +127,7 @@ rb_signal_at_gc_barrier(rb_ractor_t *cr)
 	vm->ractor.sync.lock_owner = cr;
 
 	if (vm->ractor.sync.barrier_waiting && vm->ractor.sync.gc_barrier) {
-	    unsigned int barrier_cnt = vm->ractor.sync.barrier_cnt;
 	    rb_thread_t *th = GET_THREAD();
-	    bool running;
 
 	    RB_VM_SAVE_MACHINE_CONTEXT(th);
 

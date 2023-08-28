@@ -2817,7 +2817,6 @@ heap_increment(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *he
 static void
 gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
 {
-    unsigned int lock_lev;
     LOCAL_GC_BEGIN(objspace);
     {
 	gc_enter(objspace, gc_enter_event_continue, false);
@@ -4074,8 +4073,12 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_SHAREABLE)) {
+#if RUBY_DEBUG
 	bool shareable_obj_was_in_shareable_table = !!st_delete(objspace->shareable_tbl, &obj, NULL);
 	VM_ASSERT(shareable_obj_was_in_shareable_table);
+#else
+	!!st_delete(objspace->shareable_tbl, &obj, NULL);
+#endif
 
 	objspace->shared_objects--;
 	rb_global_space_t *global_space = &rb_global_space;
@@ -5430,7 +5433,6 @@ rb_gc_id2ref_obj_tbl(VALUE objid)
 	return result;
     }
 
-    rb_ractor_t *r = NULL;
     rb_vm_t *vm = GET_VM();
 
     lock_ractor_set();
@@ -10358,7 +10360,6 @@ release_local_gc_locks(rb_vm_t *vm)
 
 static void
 lock_local_gc(rb_objspace_t *objspace) {
-    rb_vm_t *vm = GET_VM();
     begin_wait_for_global_gc();
     rb_native_mutex_lock(&objspace->local_gc_lock);
     end_wait_for_global_gc();

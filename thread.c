@@ -1008,8 +1008,6 @@ thread_create_ractor_given_redirected_allocation(VALUE args)
 VALUE
 rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc)
 {
-    VALUE th;
-
     struct thread_create_params params = {
 	.type = thread_invoke_type_ractor_proc,
 	.g = g,
