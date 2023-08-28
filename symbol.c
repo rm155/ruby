@@ -17,6 +17,7 @@
 #include "internal/symbol.h"
 #include "internal/vm.h"
 #include "probes.h"
+#include "ractor_core.h"
 #include "ruby/encoding.h"
 #include "ruby/st.h"
 #include "symbol.h"

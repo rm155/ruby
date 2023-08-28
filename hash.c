@@ -40,6 +40,7 @@
 #include "internal/time.h"
 #include "internal/vm.h"
 #include "probes.h"
+#include "ractor_core.h"
 #include "ruby/st.h"
 #include "ruby/util.h"
 #include "ruby_assert.h"

@@ -34,6 +34,7 @@
 #include "internal/thread.h"
 #include "internal/variable.h"
 #include "iseq.h"
+#include "ractor_core.h"
 #include "ruby/re.h"
 #include "ruby/util.h"
 #include "vm_core.h"

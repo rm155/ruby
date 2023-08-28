@@ -39,6 +39,7 @@
 #include "internal/string.h"
 #include "internal/transcode.h"
 #include "probes.h"
+#include "ractor_core.h"
 #include "ruby/encoding.h"
 #include "ruby/re.h"
 #include "ruby/util.h"
