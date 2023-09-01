@@ -10673,7 +10673,7 @@ gc_rest(rb_objspace_t *objspace)
     if (marking || sweeping) {
 	LOCAL_GC_BEGIN(objspace);
 	{
-	    gc_enter(objspace, gc_enter_event_rest, false);
+	    gc_enter(objspace, gc_enter_event_rest, GET_VM()->global_gc_underway);
 
 	    if (RGENGC_CHECK_MODE >= 2) gc_verify_internal_consistency(objspace);
 
