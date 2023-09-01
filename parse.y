@@ -910,6 +910,13 @@ set_line_body(NODE *body, int line)
     }
 }
 
+static void
+set_embraced_location(NODE *node, const rb_code_location_t *beg, const rb_code_location_t *end)
+{
+    node->nd_body->nd_loc = code_loc_gen(beg, end);
+    nd_set_line(node, beg->end_pos.lineno);
+}
+
 #define yyparse ruby_yyparse
 
 static NODE* cond(struct parser_params *p, NODE *node, const YYLTYPE *loc);
@@ -2250,8 +2257,7 @@ cmd_brace_block	: tLBRACE_ARG brace_body '}'
                     {
                         $$ = $2;
                     /*%%%*/
-                        $$->nd_body->nd_loc = code_loc_gen(&@1, &@3);
-                        nd_set_line($$, @1.end_pos.lineno);
+                        set_embraced_location($$, &@1, &@3);
                     /*% %*/
                     }
                 ;
@@ -2313,6 +2319,14 @@ command		: fcall command_args       %prec tLOWEST
                         $$ = new_command_qcall(p, ID2VAL(idCOLON2), $1, $3, $4, $5, &@3, &@$);
                     /*% %*/
                     /*% ripper: method_add_block!(command_call!($1, $2, $3, $4), $5) %*/
+                   }
+                | primary_value tCOLON2 tCONSTANT '{' brace_body '}'
+                    {
+                    /*%%%*/
+                        set_embraced_location($5, &@4, &@6);
+                        $$ = new_command_qcall(p, ID2VAL(idCOLON2), $1, $3, Qnull, $5, &@3, &@$);
+                    /*% %*/
+                    /*% ripper: method_add_block!(command_call!($1, $2, $3, Qnull), $5) %*/
                    }
                 | keyword_super command_args
                     {
@@ -3348,14 +3362,7 @@ primary		: literal
                     /*% %*/
                     /*% ripper: begin!($3) %*/
                     }
-                | tLPAREN_ARG {SET_LEX_STATE(EXPR_ENDARG);} rparen
-                    {
-                    /*%%%*/
-                        $$ = NEW_BEGIN(0, &@$);
-                    /*% %*/
-                    /*% ripper: paren!(0) %*/
-                    }
-                | tLPAREN_ARG stmt {SET_LEX_STATE(EXPR_ENDARG);} rparen
+                | tLPAREN_ARG compstmt {SET_LEX_STATE(EXPR_ENDARG);} ')'
                     {
                     /*%%%*/
                         if (nd_type_p($2, NODE_SELF)) $2->nd_state = 0;
@@ -4274,8 +4281,7 @@ do_block	: k_do_block do_body k_end
                     {
                         $$ = $2;
                     /*%%%*/
-                        $$->nd_body->nd_loc = code_loc_gen(&@1, &@3);
-                        nd_set_line($$, @1.end_pos.lineno);
+                        set_embraced_location($$, &@1, &@3);
                     /*% %*/
                     }
                 ;
@@ -4393,16 +4399,14 @@ brace_block	: '{' brace_body '}'
                     {
                         $$ = $2;
                     /*%%%*/
-                        $$->nd_body->nd_loc = code_loc_gen(&@1, &@3);
-                        nd_set_line($$, @1.end_pos.lineno);
+                        set_embraced_location($$, &@1, &@3);
                     /*% %*/
                     }
                 | k_do do_body k_end
                     {
                         $$ = $2;
                     /*%%%*/
-                        $$->nd_body->nd_loc = code_loc_gen(&@1, &@3);
-                        nd_set_line($$, @1.end_pos.lineno);
+                        set_embraced_location($$, &@1, &@3);
                     /*% %*/
                     }
                 ;
@@ -12114,7 +12118,7 @@ value_expr_check(struct parser_params *p, NODE *node)
             if (node->nd_body->nd_body) {
                 return NULL;
             }
-            /* single line pattern matching */
+            /* single line pattern matching with "=>" operator */
             return void_node ? void_node : node;
 
           case NODE_BLOCK:
@@ -12737,7 +12741,6 @@ new_args_tail(struct parser_params *p, NODE *kw_args, ID kw_rest_arg, ID block, 
         if (block) arg_var(p, block);
 
         args->kw_rest_arg = NEW_DVAR(kw_rest_arg, kw_rest_loc);
-        args->kw_rest_arg->nd_cflag = kw_bits;
     }
     else if (kw_rest_arg == idNil) {
         args->no_kwarg = 1;

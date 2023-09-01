@@ -37,7 +37,7 @@ module YARP
   class Location
     # A Source object that is used to determine more information from the given
     # offset and length.
-    private attr_reader :source
+    protected attr_reader :source
 
     # The byte offset from the beginning of the source where this location
     # starts.
@@ -52,6 +52,16 @@ module YARP
       @length = length
     end
 
+    # Create a new location object with the given options.
+    def copy(**options)
+      Location.new(
+        options.fetch(:source) { source },
+        options.fetch(:start_offset) { start_offset },
+        options.fetch(:length) { length }
+      )
+    end
+
+    # Returns a string representation of this location.
     def inspect
       "#<YARP::Location @start_offset=#{@start_offset} @length=#{@length}>"
     end
@@ -100,6 +110,16 @@ module YARP
       other.is_a?(Location) &&
         other.start_offset == start_offset &&
         other.end_offset == end_offset
+    end
+
+    # Returns a new location that stretches from this location to the given
+    # other location. Raises an error if this location is not before the other
+    # location or if they don't share the same source.
+    def join(other)
+      raise "Incompatible sources" if source != other.source
+      raise "Incompatible locations" if start_offset > other.start_offset
+
+      Location.new(source, start_offset, other.end_offset - start_offset)
     end
 
     def self.null
@@ -333,7 +353,7 @@ module YARP
 
   class RationalNode < Node
     def value
-      Rational(numeric.value)
+      Rational(slice.chomp("r"))
     end
   end
 
@@ -442,10 +462,10 @@ module YARP
           # order here so that we can compare properly.
           if params
             sorted = [
-              *params.requireds.grep(RequiredParameterNode).map(&:constant_id),
-              *params.optionals.map(&:constant_id),
+              *params.requireds.grep(RequiredParameterNode).map(&:name),
+              *params.optionals.map(&:name),
               *((params.rest.name ? params.rest.name.to_sym : :*) if params.rest && params.rest.operator != ","),
-              *params.posts.grep(RequiredParameterNode).map(&:constant_id),
+              *params.posts.grep(RequiredParameterNode).map(&:name),
               *params.keywords.reject(&:value).map { |param| param.name.chomp(":").to_sym },
               *params.keywords.select(&:value).map { |param| param.name.chomp(":").to_sym }
             ]
@@ -465,9 +485,9 @@ module YARP
               when RequiredDestructuredParameterNode
                 param_stack.concat(param.parameters.reverse)
               when RequiredParameterNode
-                sorted << param.constant_id
+                sorted << param.name
               when SplatNode
-                sorted << param.expression.constant_id if param.expression
+                sorted << param.expression.name if param.expression
               end
             end
 
@@ -507,6 +527,8 @@ module YARP
 end
 
 require_relative "yarp/lex_compat"
+require_relative "yarp/mutation_visitor"
+require_relative "yarp/desugar_visitor"
 require_relative "yarp/node"
 require_relative "yarp/ripper_compat"
 require_relative "yarp/serialize"

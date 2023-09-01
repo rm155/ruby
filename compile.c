@@ -44,6 +44,7 @@
 #include "builtin.h"
 #include "insns.inc"
 #include "insns_info.inc"
+#include "yarp/yarp.h"
 
 #undef RUBY_UNTYPED_DATA_WARNING
 #define RUBY_UNTYPED_DATA_WARNING 0
@@ -852,6 +853,45 @@ rb_iseq_compile_node(rb_iseq_t *iseq, const NODE *node)
         validate_labels(iseq, labels_table);
     }
 #endif
+    CHECK(iseq_setup_insn(iseq, ret));
+    return iseq_setup(iseq, ret);
+}
+
+typedef struct yp_compile_context {
+    yp_parser_t *parser;
+    struct yp_compile_context *previous;
+    ID *constants;
+    st_table *index_lookup_table;
+} yp_compile_context_t;
+
+static VALUE rb_translate_yarp(rb_iseq_t *iseq, const yp_node_t *node, LINK_ANCHOR *const ret, yp_compile_context_t *compile_context);
+
+VALUE
+rb_iseq_compile_yarp_node(rb_iseq_t * iseq, const yp_node_t *yarp_pointer, yp_parser_t *parser)
+{
+    DECL_ANCHOR(ret);
+    INIT_ANCHOR(ret);
+
+    ID *constants = calloc(parser->constant_pool.size, sizeof(ID));
+    rb_encoding *encoding = rb_enc_find(parser->encoding.name);
+
+    for (size_t index = 0; index < parser->constant_pool.capacity; index++) {
+        yp_constant_t constant = parser->constant_pool.constants[index];
+
+        if (constant.id != 0) {
+            constants[constant.id - 1] = rb_intern3((const char *) constant.start, constant.length, encoding);
+        }
+    }
+
+    yp_compile_context_t compile_context = {
+        .parser = parser,
+        .previous = NULL,
+        .constants = constants
+    };
+
+    CHECK(rb_translate_yarp(iseq, yarp_pointer, ret, &compile_context));
+    free(constants);
+
     CHECK(iseq_setup_insn(iseq, ret));
     return iseq_setup(iseq, ret);
 }
@@ -13294,3 +13334,5 @@ rb_iseq_ibf_load_extra_data(VALUE str)
     RB_GC_GUARD(loader_obj);
     return extra_str;
 }
+
+#include "yarp/yarp_compiler.c"

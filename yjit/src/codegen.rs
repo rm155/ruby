@@ -342,12 +342,14 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
     // Verify stack operand types
     let top_idx = cmp::min(ctx.get_stack_size(), MAX_TEMP_TYPES as u8);
     for i in 0..top_idx {
-        let (learned_mapping, learned_type) = ctx.get_opnd_mapping(StackOpnd(i));
+        let learned_mapping = ctx.get_opnd_mapping(StackOpnd(i));
+        let learned_type = ctx.get_opnd_type(StackOpnd(i));
+
         let stack_val = jit.peek_at_stack(ctx, i as isize);
         let val_type = Type::from(stack_val);
 
-        match learned_mapping {
-            TempMapping::MapToSelf => {
+        match learned_mapping.get_kind() {
+            TempMappingKind::MapToSelf => {
                 if self_val != stack_val {
                     panic!(
                         "verify_ctx: stack value was mapped to self, but values did not match!\n  stack: {}\n  self: {}",
@@ -356,8 +358,8 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
                     );
                 }
             }
-            TempMapping::MapToLocal(local_idx) => {
-                let local_idx: u8 = local_idx.into();
+            TempMappingKind::MapToLocal => {
+                let local_idx: u8 = learned_mapping.get_local_idx().into();
                 let local_val = jit.peek_at_local(local_idx.into());
                 if local_val != stack_val {
                     panic!(
@@ -368,7 +370,7 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
                     );
                 }
             }
-            TempMapping::MapToStack => {}
+            TempMappingKind::MapToStack => {}
         }
 
         // If the actual type differs from the learned type
@@ -1009,9 +1011,9 @@ fn gen_dup(
     _ocb: &mut OutlinedCb,
 ) -> Option<CodegenStatus> {
     let dup_val = asm.stack_opnd(0);
-    let (mapping, tmp_type) = asm.ctx.get_opnd_mapping(dup_val.into());
+    let mapping = asm.ctx.get_opnd_mapping(dup_val.into());
 
-    let loc0 = asm.stack_push_mapping((mapping, tmp_type));
+    let loc0 = asm.stack_push_mapping(mapping);
     asm.mov(loc0, dup_val);
 
     Some(KeepCompiling)
@@ -1272,7 +1274,7 @@ fn gen_newarray(
     );
 
     asm.stack_pop(n.as_usize());
-    let stack_ret = asm.stack_push(Type::CArray);
+    let stack_ret = asm.stack_push(Type::TArray);
     asm.mov(stack_ret, new_ary);
 
     Some(KeepCompiling)
@@ -1295,7 +1297,7 @@ fn gen_duparray(
         vec![ary.into()],
     );
 
-    let stack_ret = asm.stack_push(Type::CArray);
+    let stack_ret = asm.stack_push(Type::TArray);
     asm.mov(stack_ret, new_ary);
 
     Some(KeepCompiling)
@@ -1926,7 +1928,7 @@ fn gen_putstring(
         vec![EC, put_val.into()]
     );
 
-    let stack_top = asm.stack_push(Type::CString);
+    let stack_top = asm.stack_push(Type::TString);
     asm.mov(stack_top, str_opnd);
 
     Some(KeepCompiling)
@@ -2327,7 +2329,7 @@ fn gen_setinstancevariable(
         return None;
     }
 
-    let (_, stack_type) = asm.ctx.get_opnd_mapping(StackOpnd(0));
+    let stack_type = asm.ctx.get_opnd_type(StackOpnd(0));
 
     // Check if the comptime class uses a custom allocator
     let custom_allocator = unsafe { rb_get_alloc_func(comptime_val_klass) };
@@ -2722,7 +2724,7 @@ fn gen_concatstrings(
     );
 
     asm.stack_pop(n);
-    let stack_ret = asm.stack_push(Type::CString);
+    let stack_ret = asm.stack_push(Type::TString);
     asm.mov(stack_ret, return_value);
 
     Some(KeepCompiling)
@@ -4170,9 +4172,14 @@ fn jit_guard_known_klass(
         jit_chain_guard(JCC_JNE, jit, asm, ocb, max_chain_depth, counter);
 
         if known_klass == unsafe { rb_cString } {
-            asm.ctx.upgrade_opnd_type(insn_opnd, Type::CString);
+            // Upgrading to Type::CString here is incorrect.
+            // The guard we put only checks RBASIC_CLASS(obj),
+            // which adding a singleton class can change. We
+            // additionally need to know the string is frozen
+            // to claim Type::CString.
+            asm.ctx.upgrade_opnd_type(insn_opnd, Type::TString);
         } else if known_klass == unsafe { rb_cArray } {
-            asm.ctx.upgrade_opnd_type(insn_opnd, Type::CArray);
+            asm.ctx.upgrade_opnd_type(insn_opnd, Type::TArray);
         }
     }
 }
@@ -6196,7 +6203,7 @@ fn gen_send_iseq(
         let rest_param = if opts_missing == 0 {
             // All optionals are filled, the rest param goes at the top of the stack
             argc += 1;
-            asm.stack_push(Type::CArray)
+            asm.stack_push(Type::TArray)
         } else {
             // The top of the stack will be a missing optional, but the rest
             // parameter needs to be placed after all the missing optionals.
@@ -8144,9 +8151,10 @@ fn gen_getblockparamproxy(
     // Peek at the block handler so we can check whether it's nil
     let comptime_handler = jit.peek_at_block_handler(level);
 
-    // Filter for the 3 cases we currently handle
+    // Filter for the 4 cases we currently handle
     if !(comptime_handler.as_u64() == 0 ||              // no block given
             comptime_handler.as_u64() & 0x3 == 0x1 ||   // iseq block (no associated GC managed object)
+            comptime_handler.as_u64() & 0x3 == 0x3 ||   // ifunc block (no associated GC managed object)
             unsafe { rb_obj_is_proc(comptime_handler) }.test() // block is a Proc
         ) {
         // Missing the symbol case, where we basically need to call Symbol#to_proc at runtime
@@ -8174,7 +8182,7 @@ fn gen_getblockparamproxy(
 
     // Use block handler sample to guide specialization...
     // NOTE: we use jit_chain_guard() in this decision tree, and since
-    // there are only 3 cases, it should never reach the depth limit use
+    // there are only a few cases, it should never reach the depth limit use
     // the exit counter we pass to it.
     //
     // No block given
@@ -8192,15 +8200,18 @@ fn gen_getblockparamproxy(
         );
 
         jit_putobject(asm, Qnil);
-    } else if comptime_handler.as_u64() & 0x3 == 0x1 {
-        // Block handler is a tagged pointer. Look at the tag. 0x03 is from VM_BH_ISEQ_BLOCK_P().
-        let block_handler = asm.and(block_handler, 0x3.into());
+    } else if comptime_handler.as_u64() & 0x1 == 0x1 {
+        // This handles two cases which are nearly identical
+        // Block handler is a tagged pointer. Look at the tag.
+        //   VM_BH_ISEQ_BLOCK_P(): block_handler & 0x03 == 0x01
+        //   VM_BH_IFUNC_P():      block_handler & 0x03 == 0x03
+        // So to check for either of those cases we can use: val & 0x1 == 0x1
+        const _: () = assert!(RUBY_SYMBOL_FLAG & 1 == 0, "guard below rejects symbol block handlers");
+        // Procs are aligned heap pointers so testing the bit rejects them too.
 
-        // Bail unless VM_BH_ISEQ_BLOCK_P(bh). This also checks for null.
-        asm.cmp(block_handler, 0x1.into());
-
+        asm.test(block_handler, 0x1.into());
         jit_chain_guard(
-            JCC_JNZ,
+            JCC_JZ,
             jit,
             asm,
             ocb,
@@ -8963,8 +8974,8 @@ mod tests {
 
         let status = gen_swap(&mut jit, &mut asm, &mut ocb);
 
-        let (_, tmp_type_top) = asm.ctx.get_opnd_mapping(StackOpnd(0));
-        let (_, tmp_type_next) = asm.ctx.get_opnd_mapping(StackOpnd(1));
+        let tmp_type_top = asm.ctx.get_opnd_type(StackOpnd(0));
+        let tmp_type_next = asm.ctx.get_opnd_type(StackOpnd(1));
 
         assert_eq!(status, Some(KeepCompiling));
         assert_eq!(tmp_type_top, Type::Fixnum);
@@ -8976,7 +8987,7 @@ mod tests {
         let (mut jit, _context, mut asm, mut cb, mut ocb) = setup_codegen();
         let status = gen_putnil(&mut jit, &mut asm, &mut ocb);
 
-        let (_, tmp_type_top) = asm.ctx.get_opnd_mapping(StackOpnd(0));
+        let tmp_type_top = asm.ctx.get_opnd_type(StackOpnd(0));
 
         assert_eq!(status, Some(KeepCompiling));
         assert_eq!(tmp_type_top, Type::Nil);
@@ -8995,7 +9006,7 @@ mod tests {
 
         let status = gen_putobject(&mut jit, &mut asm, &mut ocb);
 
-        let (_, tmp_type_top) = asm.ctx.get_opnd_mapping(StackOpnd(0));
+        let tmp_type_top = asm.ctx.get_opnd_type(StackOpnd(0));
 
         assert_eq!(status, Some(KeepCompiling));
         assert_eq!(tmp_type_top, Type::True);
@@ -9015,7 +9026,7 @@ mod tests {
 
         let status = gen_putobject(&mut jit, &mut asm, &mut ocb);
 
-        let (_, tmp_type_top) = asm.ctx.get_opnd_mapping(StackOpnd(0));
+        let tmp_type_top = asm.ctx.get_opnd_type(StackOpnd(0));
 
         assert_eq!(status, Some(KeepCompiling));
         assert_eq!(tmp_type_top, Type::Fixnum);
@@ -9029,7 +9040,7 @@ mod tests {
         jit.opcode = YARVINSN_putobject_INT2FIX_0_.as_usize();
         let status = gen_putobject_int2fix(&mut jit, &mut asm, &mut ocb);
 
-        let (_, tmp_type_top) = asm.ctx.get_opnd_mapping(StackOpnd(0));
+        let tmp_type_top = asm.ctx.get_opnd_type(StackOpnd(0));
 
         // Right now we're not testing the generated machine code to make sure a literal 1 or 0 was pushed. I've checked locally.
         assert_eq!(status, Some(KeepCompiling));
