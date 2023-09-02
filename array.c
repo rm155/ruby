@@ -25,6 +25,7 @@
 #include "internal/rational.h"
 #include "internal/vm.h"
 #include "probes.h"
+#include "ractor_core.h"
 #include "ruby/encoding.h"
 #include "ruby/st.h"
 #include "ruby/util.h"
@@ -516,6 +517,7 @@ rb_ary_set_shared(VALUE ary, VALUE shared_root)
     rb_ary_increment_share(shared_root);
     FL_SET_SHARED(ary);
     RB_OBJ_WRITE(ary, &RARRAY(ary)->as.heap.aux.shared_root, shared_root);
+    rb_ractor_classify_as_shareable(RARRAY(ary)->as.heap.aux.shared_root);
 
     RB_DEBUG_COUNTER_INC(obj_ary_shared_create);
 }
