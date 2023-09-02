@@ -34,6 +34,7 @@
 #include "internal/thread.h"
 #include "internal/variable.h"
 #include "iseq.h"
+#include "ractor_core.h"
 #include "rjit.h"
 #include "ruby/util.h"
 #include "vm_core.h"
@@ -1309,6 +1310,7 @@ iseqw_new(const rb_iseq_t *iseq)
         deconst.in = iseq;
         obj = TypedData_Wrap_Struct(rb_cISeq, &iseqw_data_type, deconst.out);
         RB_OBJ_WRITTEN(obj, Qundef, iseq);
+	rb_ractor_classify_as_shareable(obj);
 
         /* cache a wrapper object */
         RB_OBJ_WRITE((VALUE)iseq, &iseq->wrapper, obj);
