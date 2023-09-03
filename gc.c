@@ -2686,7 +2686,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     rb_objspace_t *receiving_objspace = receiving_ractor->local_objspace;
     rb_objspace_t *closing_objspace = closing_ractor->local_objspace;
 
-    gc_rest(receiving_objspace);
+    VALUE already_disabled = rb_objspace_gc_disable(receiving_objspace);
 
     rb_native_mutex_lock(&closing_ractor->sync.close_lock);
     while (!closing_ractor->sync.ready_to_close) {
@@ -2718,6 +2718,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     closing_ractor->local_objspace = NULL;
 
     unlock_ractor_set();
+
+    if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_objspace);
 }
 
 static void
