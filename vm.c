@@ -1095,7 +1095,7 @@ rb_proc_dup(VALUE self)
 
     GetProcPtr(self, src);
     procval = proc_create(rb_obj_class(self), &src->block, src->is_from_method, src->is_lambda);
-    if (RB_OBJ_SHAREABLE_P(self)) FL_SET_RAW(procval, RUBY_FL_SHAREABLE);
+    if (RB_OBJ_SHAREABLE_P(self)) rb_ractor_classify_as_shareable(procval);
     RB_GC_GUARD(self); /* for: body = rb_proc_dup(body) */
     return procval;
 }

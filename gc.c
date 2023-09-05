@@ -5332,16 +5332,27 @@ rb_remove_from_absorbed_threads_tbl(rb_thread_t *th)
 void
 rb_add_to_shareable_tbl(VALUE obj)
 {
-    rb_objspace_t *objspace = &rb_objspace;
-    if (objspace->alloc_target_ractor && !rb_special_const_p(obj)) {
-	objspace = GET_OBJSPACE_OF_VALUE(obj);
-    }
-    else if (!rb_special_const_p(obj)){
-	objspace = GET_OBJSPACE_OF_VALUE(obj); //TODO: Avoid running this check for every single object
-    }
-    bool duplicate = !!st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+    VM_ASSERT (!rb_special_const_p(obj));
 
-    if (!duplicate) {
+    rb_objspace_t *objspace = &rb_objspace;
+    rb_objspace_t *value_objspace = GET_OBJSPACE_OF_VALUE(obj);
+    bool new_addition = false;
+
+    if (objspace != value_objspace) {
+	if (objspace->alloc_target_ractor) {
+	    objspace = value_objspace;
+	    new_addition = !st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+	}
+	else {
+	    return; //The object should already be in its objspace's table
+	}
+    }
+    else {
+	new_addition = !st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+    }
+
+
+    if (new_addition) {
 	objspace->shared_objects++;
 	rb_global_space_t *global_space = &rb_global_space;
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);

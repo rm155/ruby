@@ -249,20 +249,16 @@ static inline bool
 rb_ractor_shareable_p(VALUE obj)
 {
     bool rb_ractor_shareable_p_continue(VALUE obj);
-    void rb_add_to_shareable_tbl(VALUE obj);
 
     if (RB_SPECIAL_CONST_P(obj)) {
-	rb_add_to_shareable_tbl(obj);
         return true;
     }
     else if (RB_OBJ_SHAREABLE_P(obj)) {
-	rb_add_to_shareable_tbl(obj);
 	return true;
     }
     else {
 	if(rb_ractor_shareable_p_continue(obj))
 	{
-	    rb_add_to_shareable_tbl(obj);
 	    return true;
 	}
 	else

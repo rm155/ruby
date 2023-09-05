@@ -1978,7 +1978,7 @@ ractor_alloc(VALUE klass)
 {
     rb_ractor_t *r;
     VALUE rv = TypedData_Make_Struct(klass, rb_ractor_t, &ractor_data_type, r);
-    FL_SET_RAW(rv, RUBY_FL_SHAREABLE);
+    rb_ractor_classify_as_shareable(rv);
     r->pub.self = rv;
     VM_ASSERT(ractor_status_p(r, ractor_created));
     return rv;
@@ -2084,7 +2084,7 @@ rb_ractor_main_setup(rb_vm_t *vm, rb_ractor_t *r, rb_thread_t *th)
 {
     r->pub.self = TypedData_Wrap_Struct(rb_cRactor, &ractor_data_type, r);
     rb_assign_main_ractor_objspace(r);
-    FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
+    rb_ractor_classify_as_shareable(r->pub.self);
     ractor_init(r, Qnil, Qnil);
     r->threads.main = th;
     rb_ractor_living_threads_insert(r, th);
@@ -3054,9 +3054,9 @@ make_shareable_check_shareable(VALUE obj)
 void
 rb_ractor_classify_as_shareable(VALUE obj)
 {
-    rb_add_to_shareable_tbl(obj);
-    if (!rb_special_const_p(obj)) {
+    if (!rb_special_const_p(obj) && !FL_TEST_RAW(obj, RUBY_FL_SHAREABLE)) {
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	rb_add_to_shareable_tbl(obj);
     }
 }
 
