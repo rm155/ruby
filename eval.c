@@ -675,6 +675,8 @@ rb_exc_exception(VALUE mesg, int tag, VALUE cause)
     rb_longjmp(GET_EC(), tag, mesg, cause);
 }
 
+NORETURN(static VALUE rb_exc_raise_no_redirection(VALUE mesg));
+
 static VALUE
 rb_exc_raise_no_redirection(VALUE mesg)
 {
@@ -685,7 +687,7 @@ rb_exc_raise_no_redirection(VALUE mesg)
     else {
 	rb_exc_exception(mesg, TAG_RAISE, Qundef);
     }
-    return Qnil;
+    UNREACHABLE_RETURN(Qnil);
 }
 
 /*!
