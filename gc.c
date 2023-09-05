@@ -807,7 +807,10 @@ typedef struct rb_objspace {
     st_table *finalizer_table;
 
     st_table *shareable_tbl;
-    size_t shared_objects;
+    size_t shareable_tbl_size;
+    st_table *secondary_shareable_tbl;
+    size_t secondary_shareable_tbl_size;
+    rb_nativethread_lock_t secondary_shareable_tbl_lock;
 
     struct {
         int run;
@@ -953,7 +956,11 @@ static void
 update_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
 {
 	update_table_contents(objspace_to_update->finalizer_table, objspace_to_copy_from->finalizer_table);
+
 	update_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->shareable_tbl);
+	objspace_to_update->shareable_tbl_size += objspace_to_copy_from->shareable_tbl_size;
+	update_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->secondary_shareable_tbl);
+	objspace_to_update->shareable_tbl_size += objspace_to_copy_from->secondary_shareable_tbl_size;
 
 	rb_native_mutex_lock(&objspace_to_copy_from->obj_id_lock);
 	rb_native_mutex_lock(&objspace_to_update->obj_id_lock);
@@ -2078,6 +2085,8 @@ rb_objspace_free(rb_objspace_t *objspace)
     rb_nativethread_lock_destroy(&objspace->local_gc_lock);
 
     st_free_table(objspace->shareable_tbl);
+    st_free_table(objspace->secondary_shareable_tbl);
+    rb_nativethread_lock_destroy(&objspace->secondary_shareable_tbl_lock);
 
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
@@ -2647,7 +2656,6 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     size_t allocatable_pages = objspace->heap_pages.allocatable_pages;
     int freeable_pages = heap_pages_freeable_pages;
     int final_slots = heap_pages_final_slots;
-    size_t shared_objects = objspace->shared_objects;
     size_t uncollectible_wb_unprotected_objects = objspace->rgengc.uncollectible_wb_unprotected_objects;
     size_t uncollectible_wb_unprotected_objects_limit = objspace->rgengc.uncollectible_wb_unprotected_objects_limit;
     size_t old_objects = objspace->rgengc.old_objects;
@@ -2657,7 +2665,6 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     objspace->heap_pages.allocatable_pages += allocatable_pages;
     heap_pages_final_slots += final_slots;
     heap_pages_freeable_pages += freeable_pages;
-    objspace->shared_objects += shared_objects;
     objspace->rgengc.uncollectible_wb_unprotected_objects += uncollectible_wb_unprotected_objects;
     objspace->rgengc.uncollectible_wb_unprotected_objects_limit += uncollectible_wb_unprotected_objects_limit;
     objspace->rgengc.old_objects += old_objects;
@@ -4088,14 +4095,18 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_SHAREABLE)) {
-#if RUBY_DEBUG
-	bool shareable_obj_was_in_shareable_table = !!st_delete(objspace->shareable_tbl, &obj, NULL);
-	VM_ASSERT(shareable_obj_was_in_shareable_table);
-#else
-	!!st_delete(objspace->shareable_tbl, &obj, NULL);
-#endif
+	bool shared_item_found_in_table = !!st_delete(objspace->shareable_tbl, &obj, NULL);
+	if (shared_item_found_in_table) {
+	    objspace->shareable_tbl_size--;
+	}
+	else {
+	    rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
+	    shared_item_found_in_table = !!st_delete(objspace->secondary_shareable_tbl, &obj, NULL);
+	    objspace->secondary_shareable_tbl_size--;
+	    rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
+	}
+	VM_ASSERT(shared_item_found_in_table);
 
-	objspace->shared_objects--;
 	rb_global_space_t *global_space = &rb_global_space;
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
 	global_space->rglobalgc.shared_objects_total--;
@@ -4445,6 +4456,9 @@ Init_heap(rb_objspace_t *objspace)
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
+    objspace->secondary_shareable_tbl = st_init_numtable();
+
+    rb_nativethread_lock_initialize(&objspace->secondary_shareable_tbl_lock);
 
     objspace->alloc_target_ractor = NULL;
 
@@ -5334,26 +5348,26 @@ rb_add_to_shareable_tbl(VALUE obj)
 {
     VM_ASSERT (!rb_special_const_p(obj));
 
-    rb_objspace_t *objspace = &rb_objspace;
+    rb_objspace_t *current_objspace = &rb_objspace;
     rb_objspace_t *value_objspace = GET_OBJSPACE_OF_VALUE(obj);
     bool new_addition = false;
 
-    if (objspace != value_objspace) {
-	if (objspace->alloc_target_ractor) {
-	    objspace = value_objspace;
-	    new_addition = !st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
-	}
-	else {
-	    return; //The object should already be in its objspace's table
-	}
+    if (current_objspace == value_objspace) {
+	new_addition = !st_insert(current_objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+	current_objspace->shareable_tbl_size++;
     }
     else {
-	new_addition = !st_insert(objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
+	rb_native_mutex_lock(&value_objspace->secondary_shareable_tbl_lock);
+
+	VALUE already_disabled = rb_gc_disable_no_rest();
+	new_addition = !st_insert(value_objspace->secondary_shareable_tbl, (st_data_t)obj, INT2FIX(0));
+	if (already_disabled == Qfalse) rb_objspace_gc_enable(current_objspace);
+
+	value_objspace->secondary_shareable_tbl_size++;
+	rb_native_mutex_unlock(&value_objspace->secondary_shareable_tbl_lock);
     }
 
-
     if (new_addition) {
-	objspace->shared_objects++;
 	rb_global_space_t *global_space = &rb_global_space;
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
 	global_space->rglobalgc.shared_objects_total++;
@@ -8465,6 +8479,9 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     if (using_local_limits(objspace) || !during_gc) {
 	MARK_CHECKPOINT("shareable_tbl");
 	mark_set(objspace, objspace->shareable_tbl);
+	rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
+	mark_set(objspace, objspace->secondary_shareable_tbl);
+	rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
     }
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
@@ -11194,8 +11211,17 @@ update_shareable_tbl_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src)
     if (FL_TEST((VALUE) src, FL_SHAREABLE)) {
 	COULD_MALLOC_REGION_START();
 	{
-	    st_delete(objspace->shareable_tbl, (st_data_t *)&src, 0);
-	    st_insert(objspace->shareable_tbl, (st_data_t)dest, INT2FIX(0));
+	    bool shared_item_found_in_table = st_delete(objspace->shareable_tbl, (st_data_t *)&src, 0);
+	    if (shared_item_found_in_table) {
+		st_insert(objspace->shareable_tbl, (st_data_t)dest, INT2FIX(0));
+	    }
+	    else {
+		rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
+		shared_item_found_in_table = st_delete(objspace->secondary_shareable_tbl, (st_data_t *)&src, 0);
+		st_insert(objspace->secondary_shareable_tbl, (st_data_t)dest, INT2FIX(0));
+		rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
+	    }
+	    VM_ASSERT(shared_item_found_in_table);
 	}
 	COULD_MALLOC_REGION_END();
 	return 1;
@@ -12120,6 +12146,9 @@ gc_update_references(rb_objspace_t *objspace)
     if (shareable_objects_moved) {
 	gc_update_table_refs(objspace, global_symbols.str_sym);
 	gc_update_table_refs(objspace, objspace->shareable_tbl);
+	rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
+	gc_update_table_refs(objspace, objspace->secondary_shareable_tbl);
+	rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
     }
     gc_update_table_refs(objspace, finalizer_table);
 
@@ -12694,7 +12723,7 @@ gc_stat_internal(VALUE hash_or_sym)
     SET(old_objects, objspace->rgengc.old_objects);
     SET(old_objects_limit, objspace->rgengc.old_objects_limit);
     if (rb_multi_ractor_p()) {
-	SET(shared_objects, objspace->shared_objects);
+	SET(shared_objects, objspace->shareable_tbl_size + objspace->secondary_shareable_tbl_size);
 	SET(shared_objects_limit, shared_objects_limit_value);
     }
 #if RGENGC_ESTIMATE_OLDMALLOC
