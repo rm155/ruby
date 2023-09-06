@@ -7828,7 +7828,6 @@ static void reachable_objects_from_callback(VALUE obj);
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-    
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
 
     if (using_local_limits(objspace) && !in_marking_range(objspace, obj)) {
@@ -10631,13 +10630,14 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 {
     rb_vm_t *vm = GET_VM();
 
-    unsigned int do_full_mark = !!(reason & GPR_FLAG_FULL_MARK);
-    unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
     unsigned int global_gc = !!(reason & GPR_FLAG_GLOBAL);
     if (global_gc) {
-	do_full_mark = 1;
-	immediate_mark = 1;
+	reason |= GPR_FLAG_FULL_MARK;
+	reason |= GPR_FLAG_IMMEDIATE_MARK;
+	reason |= GPR_FLAG_IMMEDIATE_SWEEP;
     }
+    unsigned int do_full_mark = !!(reason & GPR_FLAG_FULL_MARK);
+    unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
     gc_set_flags_start(objspace, reason, &do_full_mark);
 
     if (!heap_allocated_pages) return FALSE; /* heap is not ready */
