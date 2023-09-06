@@ -2706,6 +2706,9 @@ EOS
   def test_warmup_run_major_gc_and_compact
     assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
     begin;
+      # Run a GC to ensure that we are not in the middle of a GC run
+      GC.start
+
       major_gc_count = GC.stat(:major_gc_count)
       compact_count = GC.stat(:compact_count)
       Process.warmup
@@ -2729,6 +2732,8 @@ EOS
   def test_warmup_frees_pages
     assert_separately([{"RUBY_GC_HEAP_FREE_SLOTS_MAX_RATIO" => "1.0"}, "-W0"], "#{<<~"begin;"}\n#{<<~'end;'}")
     begin;
+      GC.start
+
       TIMES = 10_000
       ary = Array.new(TIMES)
       TIMES.times do |i|
@@ -2737,13 +2742,16 @@ EOS
       ary.clear
       ary = nil
 
+      # Disable GC so we can make sure GC only runs in Process.warmup
+      GC.disable
+
       total_pages_before = GC.stat(:heap_eden_pages) + GC.stat(:heap_allocatable_pages)
 
       Process.warmup
 
       # Number of pages freed should cause equal increase in number of allocatable pages.
       assert_equal(total_pages_before, GC.stat(:heap_eden_pages) + GC.stat(:heap_allocatable_pages))
-      assert_equal(0, GC.stat(:heap_tomb_pages))
+      assert_equal(0, GC.stat(:heap_tomb_pages), GC.stat)
       assert_operator(GC.stat(:total_freed_pages), :>, 0)
     end;
   end

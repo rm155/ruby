@@ -1,10 +1,15 @@
 ProgramNode(0...704)(
   [:a, :b, :foo, :c, :x],
   StatementsNode(0...704)(
-    [GlobalVariableWriteNode(0...6)((0...2), IntegerNode(5...6)(), (3...4)),
+    [GlobalVariableWriteNode(0...6)(
+       :$a,
+       (0...2),
+       IntegerNode(5...6)(),
+       (3...4)
+     ),
      MultiWriteNode(7...24)(
-       [GlobalVariableTargetNode(8...10)(),
-        GlobalVariableTargetNode(12...14)()],
+       [GlobalVariableTargetNode(8...10)(:$a),
+        GlobalVariableTargetNode(12...14)(:$b)],
        (16...17),
        ArrayNode(18...24)(
          [IntegerNode(19...20)(), IntegerNode(22...23)()],
@@ -280,13 +285,13 @@ ProgramNode(0...704)(
      ConstantPathWriteNode(288...301)(
        ConstantPathNode(288...293)(
          nil,
-         ConstantReadNode(290...293)(),
+         ConstantReadNode(290...293)(:Foo),
          (288...290)
        ),
        (294...295),
        ConstantPathNode(296...301)(
          nil,
-         ConstantReadNode(298...301)(),
+         ConstantReadNode(298...301)(:Bar),
          (296...298)
        )
      ),
@@ -303,6 +308,7 @@ ProgramNode(0...704)(
        (313...314)
      ),
      ConstantWriteNode(317...326)(
+       :CONST,
        (317...322),
        IntegerNode(325...326)(),
        (323...324)
@@ -310,11 +316,11 @@ ProgramNode(0...704)(
      ConstantPathWriteNode(327...350)(
        ConstantPathNode(327...346)(
          ConstantPathNode(327...339)(
-           ConstantReadNode(327...331)(),
-           ConstantReadNode(333...339)(),
+           ConstantReadNode(327...331)(:Name),
+           ConstantReadNode(333...339)(:Spaced),
            (331...333)
          ),
-         ConstantReadNode(341...346)(),
+         ConstantReadNode(341...346)(:CONST),
          (339...341)
        ),
        (347...348),
@@ -579,32 +585,20 @@ ProgramNode(0...704)(
        0,
        "[]="
      ),
-     CallOperatorOrWriteNode(536...550)(
-       CallNode(536...542)(
-         LocalVariableReadNode(536...537)(:a, 0),
-         nil,
-         (537...542),
-         (537...538),
-         ArgumentsNode(538...541)(
-           [StringNode(538...541)((538...540), (540...540), (540...541), "")]
-         ),
-         (541...542),
-         nil,
-         0,
-         "[]="
+     CallOrWriteNode(536...550)(
+       LocalVariableReadNode(536...537)(:a, 0),
+       nil,
+       (537...542),
+       (537...538),
+       ArgumentsNode(538...541)(
+         [StringNode(538...541)((538...540), (540...540), (540...541), "")]
        ),
-       CallNode(547...550)(
-         nil,
-         nil,
-         (547...550),
-         nil,
-         nil,
-         nil,
-         nil,
-         2,
-         "bar"
-       ),
-       (543...546)
+       (541...542),
+       0,
+       "[]",
+       "[]=",
+       (543...546),
+       CallNode(547...550)(nil, nil, (547...550), nil, nil, nil, nil, 2, "bar")
      ),
      InstanceVariableOrWriteNode(551...561)(
        :@a,
@@ -663,42 +657,26 @@ ProgramNode(0...704)(
        0,
        "[]="
      ),
-     CallOperatorOrWriteNode(651...672)(
-       CallNode(651...664)(
-         LocalVariableReadNode(651...652)(:a, 0),
-         nil,
-         (652...664),
-         (652...653),
-         ArgumentsNode(653...663)(
-           [InterpolatedStringNode(653...663)(
-              (653...663),
-              [StringNode(673...675)(nil, (673...675), nil, "  "),
-               EmbeddedStatementsNode(675...678)(
-                 (675...677),
-                 nil,
-                 (677...678)
-               ),
-               StringNode(678...679)(nil, (678...679), nil, "\n")],
-              (679...687)
-            )]
-         ),
-         (663...664),
-         nil,
-         0,
-         "[]="
+     CallOrWriteNode(651...672)(
+       LocalVariableReadNode(651...652)(:a, 0),
+       nil,
+       (652...664),
+       (652...653),
+       ArgumentsNode(653...663)(
+         [InterpolatedStringNode(653...663)(
+            (653...663),
+            [StringNode(673...675)(nil, (673...675), nil, "  "),
+             EmbeddedStatementsNode(675...678)((675...677), nil, (677...678)),
+             StringNode(678...679)(nil, (678...679), nil, "\n")],
+            (679...687)
+          )]
        ),
-       CallNode(669...672)(
-         nil,
-         nil,
-         (669...672),
-         nil,
-         nil,
-         nil,
-         nil,
-         2,
-         "bar"
-       ),
-       (665...668)
+       (663...664),
+       0,
+       "[]",
+       "[]=",
+       (665...668),
+       CallNode(669...672)(nil, nil, (669...672), nil, nil, nil, nil, 2, "bar")
      ),
      InstanceVariableOrWriteNode(687...704)(
        :@a,

@@ -5017,22 +5017,18 @@ rb_f_spawn(int argc, VALUE *argv, VALUE _)
 
 /*
  *  call-seq:
- *     sleep([duration])    -> integer
+ *    sleep(secs = nil) -> slept_secs
  *
- *  Suspends the current thread for _duration_ seconds (which may be any number,
- *  including a +Float+ with fractional seconds). Returns the actual number of
- *  seconds slept (rounded), which may be less than that asked for if another
- *  thread calls Thread#run. Called without an argument, sleep()
- *  will sleep forever.
+ *  Suspends execution of the current thread for the number of seconds
+ *  specified by numeric argument +secs+, or forever if +secs+ is +nil+;
+ *  returns the integer number of seconds suspended (rounded).
  *
- *  If the +duration+ is not supplied, or is +nil+, the thread sleeps forever.
- *  Threads in this state may still be interrupted by other threads.
+ *    Time.new  # => 2008-03-08 19:56:19 +0900
+ *    sleep 1.2 # => 1
+ *    Time.new  # => 2008-03-08 19:56:20 +0900
+ *    sleep 1.9 # => 2
+ *    Time.new  # => 2008-03-08 19:56:22 +0900
  *
- *     Time.new    #=> 2008-03-08 19:56:19 +0900
- *     sleep 1.2   #=> 1
- *     Time.new    #=> 2008-03-08 19:56:20 +0900
- *     sleep 1.9   #=> 2
- *     Time.new    #=> 2008-03-08 19:56:22 +0900
  */
 
 static VALUE
@@ -5063,13 +5059,13 @@ rb_f_sleep(int argc, VALUE *argv, VALUE _)
 #if (defined(HAVE_GETPGRP) && defined(GETPGRP_VOID)) || defined(HAVE_GETPGID)
 /*
  *  call-seq:
- *     Process.getpgrp   -> integer
+ *    Process.getpgrp -> integer
  *
- *  Returns the process group ID for this process. Not available on
- *  all platforms.
+ *  Returns the process group ID for the current process:
  *
- *     Process.getpgid(0)   #=> 25527
- *     Process.getpgrp      #=> 25527
+ *    Process.getpgid(0) # => 25527
+ *    Process.getpgrp    # => 25527
+ *
  */
 
 static VALUE
@@ -5095,10 +5091,11 @@ proc_getpgrp(VALUE _)
 #if defined(HAVE_SETPGID) || (defined(HAVE_SETPGRP) && defined(SETPGRP_VOID))
 /*
  *  call-seq:
- *     Process.setpgrp   -> 0
+ *    Process.setpgrp -> 0
  *
- *  Equivalent to <code>setpgid(0,0)</code>. Not available on all
- *  platforms.
+ *  Equivalent to <tt>setpgid(0, 0)</tt>.
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -5123,12 +5120,13 @@ proc_setpgrp(VALUE _)
 #if defined(HAVE_GETPGID)
 /*
  *  call-seq:
- *     Process.getpgid(pid)   -> integer
+ *    Process.getpgid(pid) -> integer
  *
- *  Returns the process group ID for the given process id. Not
- *  available on all platforms.
+ *  Returns the process group ID for the given process ID +pid+:
  *
- *     Process.getpgid(Process.ppid())   #=> 25527
+ *    Process.getpgid(Process.ppid) # => 25527
+ *
+ * Not available on all platforms.
  */
 
 static VALUE
@@ -5148,10 +5146,12 @@ proc_getpgid(VALUE obj, VALUE pid)
 #ifdef HAVE_SETPGID
 /*
  *  call-seq:
- *     Process.setpgid(pid, integer)   -> 0
+ *    Process.setpgid(pid, pgid) -> 0
  *
- *  Sets the process group ID of _pid_ (0 indicates this
- *  process) to <em>integer</em>. Not available on all platforms.
+ *  Sets the process group ID for the process given by process ID +pid+
+ *  to +pgid+.
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -5173,15 +5173,16 @@ proc_setpgid(VALUE obj, VALUE pid, VALUE pgrp)
 #ifdef HAVE_GETSID
 /*
  *  call-seq:
- *     Process.getsid()      -> integer
- *     Process.getsid(pid)   -> integer
+ *    Process.getsid(pid = nil) -> integer
  *
- *  Returns the session ID for the given process id. If not given,
- *  return current process sid. Not available on all platforms.
+ *  Returns the session ID of the given process ID +pid+,
+ *  or of the current process if not given:
  *
- *     Process.getsid()                #=> 27422
- *     Process.getsid(0)               #=> 27422
- *     Process.getsid(Process.pid())   #=> 27422
+ *    Process.getsid                # => 27422
+ *    Process.getsid(0)             # => 27422
+ *    Process.getsid(Process.pid()) # => 27422
+ *
+ *  Not available on all platforms.
  */
 static VALUE
 proc_getsid(int argc, VALUE *argv, VALUE _)
@@ -5208,13 +5209,15 @@ static rb_pid_t ruby_setsid(void);
 #endif
 /*
  *  call-seq:
- *     Process.setsid   -> integer
+ *    Process.setsid -> integer
  *
- *  Establishes this process as a new session and process group
- *  leader, with no controlling tty. Returns the session id. Not
- *  available on all platforms.
+ *  Establishes the current process as a new session and process group leader,
+ *  with no controlling tty;
+ *  returns the session ID:
  *
- *     Process.setsid   #=> 27422
+ *    Process.setsid # => 27422
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -5262,19 +5265,26 @@ ruby_setsid(void)
 #ifdef HAVE_GETPRIORITY
 /*
  *  call-seq:
- *     Process.getpriority(kind, integer)   -> integer
+ *    Process.getpriority(kind, id)   -> integer
  *
- *  Gets the scheduling priority for specified process, process group,
- *  or user. <em>kind</em> indicates the kind of entity to find: one
- *  of Process::PRIO_PGRP,
- *  Process::PRIO_USER, or
- *  Process::PRIO_PROCESS. _integer_ is an id
- *  indicating the particular process, process group, or user (an id
- *  of 0 means _current_). Lower priorities are more favorable
- *  for scheduling. Not available on all platforms.
+ *  Returns the scheduling priority for specified process, process group,
+ *  or user.
  *
- *     Process.getpriority(Process::PRIO_USER, 0)      #=> 19
- *     Process.getpriority(Process::PRIO_PROCESS, 0)   #=> 19
+ *  Argument +kind+ is one of:
+ *
+ *  - Process::PRIO_PROCESS: return priority for process.
+ *  - Process::PRIO_PGRP: return priority for process group.
+ *  - Process::PRIO_USER: return priority for user.
+ *
+ *  Argument +id+ is the ID for the process, process group, or user;
+ *  zero specified the current ID for +kind+.
+ *
+ *  Examples:
+ *
+ *    Process.getpriority(Process::PRIO_USER, 0)    # => 19
+ *    Process.getpriority(Process::PRIO_PROCESS, 0) # => 19
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -5298,14 +5308,18 @@ proc_getpriority(VALUE obj, VALUE which, VALUE who)
 #ifdef HAVE_GETPRIORITY
 /*
  *  call-seq:
- *     Process.setpriority(kind, integer, priority)   -> 0
+ *    Process.setpriority(kind, integer, priority) -> 0
  *
  *  See Process.getpriority.
  *
- *     Process.setpriority(Process::PRIO_USER, 0, 19)      #=> 0
- *     Process.setpriority(Process::PRIO_PROCESS, 0, 19)   #=> 0
- *     Process.getpriority(Process::PRIO_USER, 0)          #=> 19
- *     Process.getpriority(Process::PRIO_PROCESS, 0)       #=> 19
+ *  Examples:
+ *
+ *    Process.setpriority(Process::PRIO_USER, 0, 19)    # => 0
+ *    Process.setpriority(Process::PRIO_PROCESS, 0, 19) # => 0
+ *    Process.getpriority(Process::PRIO_USER, 0)        # => 19
+ *    Process.getpriority(Process::PRIO_PROCESS, 0)     # => 19
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -5553,22 +5567,24 @@ rlimit_resource_value(VALUE rval)
 #if defined(HAVE_GETRLIMIT) && defined(RLIM2NUM)
 /*
  *  call-seq:
- *     Process.getrlimit(resource)   -> [cur_limit, max_limit]
+ *    Process.getrlimit(resource) -> [cur_limit, max_limit]
  *
- *  Gets the resource limit of the process.
- *  _cur_limit_ means current (soft) limit and
- *  _max_limit_ means maximum (hard) limit.
+ *  Returns a 2-element array of the current (soft) limit
+ *  and maximum (hard) limit for the given +resource+.
  *
- *  _resource_ indicates the kind of resource to limit.
- *  It is specified as a symbol such as <code>:CORE</code>,
- *  a string such as <code>"CORE"</code> or
- *  a constant such as Process::RLIMIT_CORE.
- *  See Process.setrlimit for details.
+ *  Argument +resource+ specifies the resource whose limits are to be returned;
+ *  see Process.setrlimit.
  *
- *  _cur_limit_ and _max_limit_ may be Process::RLIM_INFINITY,
- *  Process::RLIM_SAVED_MAX or
- *  Process::RLIM_SAVED_CUR.
- *  See Process.setrlimit and the system getrlimit(2) manual for details.
+ *  Each of the returned values +cur_limit+ and +max_limit+ is an integer;
+ *  see Process.setrlimit.
+ *
+ *  Example:
+ *
+ *    Process.getrlimit(:CORE) # => [0, 18446744073709551615]
+ *
+ *  See Process.setrlimit.
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -5588,54 +5604,54 @@ proc_getrlimit(VALUE obj, VALUE resource)
 #if defined(HAVE_SETRLIMIT) && defined(NUM2RLIM)
 /*
  *  call-seq:
- *     Process.setrlimit(resource, cur_limit, max_limit)        -> nil
- *     Process.setrlimit(resource, cur_limit)                   -> nil
+ *    Process.setrlimit(resource, cur_limit, max_limit = cur_limit) -> nil
  *
- *  Sets the resource limit of the process.
- *  _cur_limit_ means current (soft) limit and
- *  _max_limit_ means maximum (hard) limit.
+ *  Sets limits for the current process for the given +resource+
+ *  to +cur_limit+ (soft limit) and +max_limit+ (hard limit);
+ *  returns +nil+.
  *
- *  If _max_limit_ is not given, _cur_limit_ is used.
+ *  Argument +resource+ specifies the resource whose limits are to be set;
+ *  the argument may be given as a symbol, as a string, or as a constant
+ *  beginning with <tt>Process::RLIMIT_</tt>
+ *  (e.g., +:CORE+, <tt>'CORE'</tt>, or <tt>Process::RLIMIT_CORE</tt>.
  *
- *  _resource_ indicates the kind of resource to limit.
- *  It should be a symbol such as <code>:CORE</code>,
- *  a string such as <code>"CORE"</code> or
- *  a constant such as Process::RLIMIT_CORE.
- *  The available resources are OS dependent.
- *  Ruby may support following resources.
+ *  The resources available and supported are system-dependent,
+ *  and may include (here expressed as symbols):
  *
- *  [AS] total available memory (bytes) (SUSv3, NetBSD, FreeBSD, OpenBSD but 4.4BSD-Lite)
- *  [CORE] core size (bytes) (SUSv3)
- *  [CPU] CPU time (seconds) (SUSv3)
- *  [DATA] data segment (bytes) (SUSv3)
- *  [FSIZE] file size (bytes) (SUSv3)
- *  [MEMLOCK] total size for mlock(2) (bytes) (4.4BSD, GNU/Linux)
- *  [MSGQUEUE] allocation for POSIX message queues (bytes) (GNU/Linux)
- *  [NICE] ceiling on process's nice(2) value (number) (GNU/Linux)
- *  [NOFILE] file descriptors (number) (SUSv3)
- *  [NPROC] number of processes for the user (number) (4.4BSD, GNU/Linux)
- *  [NPTS] number of pseudo terminals (number) (FreeBSD)
- *  [RSS] resident memory size (bytes) (4.2BSD, GNU/Linux)
- *  [RTPRIO] ceiling on the process's real-time priority (number) (GNU/Linux)
- *  [RTTIME] CPU time for real-time process (us) (GNU/Linux)
- *  [SBSIZE] all socket buffers (bytes) (NetBSD, FreeBSD)
- *  [SIGPENDING] number of queued signals allowed (signals) (GNU/Linux)
- *  [STACK] stack size (bytes) (SUSv3)
+ *  - +:AS+: Total available memory (bytes) (SUSv3, NetBSD, FreeBSD, OpenBSD except 4.4BSD-Lite).
+ *  - +:CORE+: Core size (bytes) (SUSv3).
+ *  - +:CPU+: CPU time (seconds) (SUSv3).
+ *  - +:DATA+: Data segment (bytes) (SUSv3).
+ *  - +:FSIZE+: File size (bytes) (SUSv3).
+ *  - +:MEMLOCK+: Total size for mlock(2) (bytes) (4.4BSD, GNU/Linux).
+ *  - +:MSGQUEUE+: Allocation for POSIX message queues (bytes) (GNU/Linux).
+ *  - +:NICE+: Ceiling on process's nice(2) value (number) (GNU/Linux).
+ *  - +:NOFILE+: File descriptors (number) (SUSv3).
+ *  - +:NPROC+: Number of processes for the user (number) (4.4BSD, GNU/Linux).
+ *  - +:NPTS+: Number of pseudo terminals (number) (FreeBSD).
+ *  - +:RSS+: Resident memory size (bytes) (4.2BSD, GNU/Linux).
+ *  - +:RTPRIO+: Ceiling on the process's real-time priority (number) (GNU/Linux).
+ *  - +:RTTIME+: CPU time for real-time process (us) (GNU/Linux).
+ *  - +:SBSIZE+: All socket buffers (bytes) (NetBSD, FreeBSD).
+ *  - +:SIGPENDING+: Number of queued signals allowed (signals) (GNU/Linux).
+ *  - +:STACK+: Stack size (bytes) (SUSv3).
  *
- *  _cur_limit_ and _max_limit_ may be
- *  <code>:INFINITY</code>, <code>"INFINITY"</code> or
- *  Process::RLIM_INFINITY,
- *  which means that the resource is not limited.
- *  They may be Process::RLIM_SAVED_MAX,
- *  Process::RLIM_SAVED_CUR and
- *  corresponding symbols and strings too.
- *  See system setrlimit(2) manual for details.
+ *  Arguments +cur_limit+ and +max_limit+ may be:
  *
- *  The following example raises the soft limit of core size to
- *  the hard limit to try to make core dump possible.
+ *  - Integers (+max_limit+ should not be smaller than +cur_limit+).
+ *  - Symbol +:SAVED_MAX+, string <tt>'SAVED_MAX'</tt>,
+ *    or constant <tt>Process::RLIM_SAVED_MAX</tt>: saved maximum limit.
+ *  - Symbol +:SAVED_CUR+, string <tt>'SAVED_CUR'</tt>,
+ *    or constant <tt>Process::RLIM_SAVED_CUR</tt>: saved current limit.
+ *  - Symbol +:INFINITY+, string <tt>'INFINITY'</tt>,
+ *    or constant <tt>Process::RLIM_INFINITY</tt>: no limit on resource.
+ *
+ *  This example raises the soft limit of core size to
+ *  the hard limit to try to make core dump possible:
  *
  *    Process.setrlimit(:CORE, Process.getrlimit(:CORE)[1])
  *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -6214,13 +6230,14 @@ p_sys_setresuid(VALUE obj, VALUE rid, VALUE eid, VALUE sid)
 
 /*
  *  call-seq:
- *     Process.uid           -> integer
- *     Process::UID.rid      -> integer
- *     Process::Sys.getuid   -> integer
+ *    Process.uid         -> integer
+ *    Process::UID.rid    -> integer
+ *    Process::Sys.getuid -> integer
  *
- *  Returns the (real) user ID of this process.
+ *  Returns the (real) user ID of the current process.
  *
- *     Process.uid   #=> 501
+ *    Process.uid # => 1000
+ *
  */
 
 static VALUE
@@ -6234,10 +6251,13 @@ proc_getuid(VALUE obj)
 #if defined(HAVE_SETRESUID) || defined(HAVE_SETREUID) || defined(HAVE_SETRUID) || defined(HAVE_SETUID)
 /*
  *  call-seq:
- *     Process.uid= user   -> numeric
+ *    Process.uid = new_uid -> new_uid
  *
- *  Sets the (user) user ID for this process. Not available on all
- *  platforms.
+ *  Sets the (user) user ID for the current process to +new_uid+:
+ *
+ *    Process.uid = 1000 # => 1000
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -6612,13 +6632,14 @@ p_sys_issetugid(VALUE obj)
 
 /*
  *  call-seq:
- *     Process.gid           -> integer
- *     Process::GID.rid      -> integer
- *     Process::Sys.getgid   -> integer
+ *    Process.gid         -> integer
+ *    Process::GID.rid    -> integer
+ *    Process::Sys.getgid -> integer
  *
- *  Returns the (real) group ID for this process.
+ *  Returns the (real) group ID for the current process:
  *
- *     Process.gid   #=> 500
+ *    Process.gid # => 1000
+ *
  */
 
 static VALUE
@@ -6632,9 +6653,12 @@ proc_getgid(VALUE obj)
 #if defined(HAVE_SETRESGID) || defined(HAVE_SETREGID) || defined(HAVE_SETRGID) || defined(HAVE_SETGID)
 /*
  *  call-seq:
- *     Process.gid= integer   -> integer
+ *    Process.gid = new_gid -> new_gid
  *
- *  Sets the group ID for this process.
+ *  Sets the group ID for the current process to +new_gid+:
+ *
+ *    Process.gid = 1000 # => 1000
+ *
  */
 
 static VALUE
@@ -6718,26 +6742,23 @@ maxgroups(void)
 #ifdef HAVE_GETGROUPS
 /*
  *  call-seq:
- *     Process.groups   -> array
+ *    Process.groups -> array
  *
- *  Get an Array of the group IDs in the
- *  supplemental group access list for this process.
+ *  Returns an array of the group IDs
+ *  in the supplemental group access list for the current process:
  *
- *     Process.groups   #=> [27, 6, 10, 11]
+ *    Process.groups # => [4, 24, 27, 30, 46, 122, 135, 136, 1000]
  *
- *  Note that this method is just a wrapper of getgroups(2).
- *  This means that the following characteristics of
- *  the result completely depend on your system:
+ *  These properties of the returned array are system-dependent:
  *
- *  - the result is sorted
- *  - the result includes effective GIDs
- *  - the result does not include duplicated GIDs
- *  - the result size does not exceed the value of Process.maxgroups
+ *  - Whether (and how) the array is sorted.
+ *  - Whether the array includes effective group IDs.
+ *  - Whether the array includes duplicate group IDs.
+ *  - Whether the array size exceeds the value of Process.maxgroups.
  *
- *  You can make sure to get a sorted unique GID list of
- *  the current process by this expression:
+ *  Use this call to get a sorted and unique array:
  *
- *     Process.groups.uniq.sort
+ *    Process.groups.uniq.sort
  *
  */
 
@@ -6774,14 +6795,14 @@ proc_getgroups(VALUE obj)
 #ifdef HAVE_SETGROUPS
 /*
  *  call-seq:
- *     Process.groups= array   -> array
+ *    Process.groups = new_groups -> new_groups
  *
- *  Set the supplemental group access list to the given
- *  Array of group IDs.
+ *  Sets the supplemental group access list to the given
+ *  array of group IDs.
  *
- *     Process.groups   #=> [0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27]
- *     Process.groups = [27, 6, 10, 11]   #=> [27, 6, 10, 11]
- *     Process.groups   #=> [27, 6, 10, 11]
+ *    Process.groups                     # => [0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27]
+ *    Process.groups = [27, 6, 10, 11]   # => [27, 6, 10, 11]
+ *    Process.groups                     # => [27, 6, 10, 11]
  *
  */
 
@@ -6823,19 +6844,21 @@ proc_setgroups(VALUE obj, VALUE ary)
 #ifdef HAVE_INITGROUPS
 /*
  *  call-seq:
- *     Process.initgroups(username, gid)   -> array
+ *     Process.initgroups(username, gid) -> array
  *
- *  Initializes the supplemental group access list by reading the
- *  system group database and using all groups of which the given user
- *  is a member. The group with the specified _gid_ is also added to
- *  the list. Returns the resulting Array of the GIDs of all the
- *  groups in the supplementary group access list. Not available on
- *  all platforms.
+ *  Sets the supplemental group access list;
+ *  the new list includes:
  *
- *     Process.groups   #=> [0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27]
- *     Process.initgroups( "mgranger", 30 )   #=> [30, 6, 10, 11]
- *     Process.groups   #=> [30, 6, 10, 11]
+ *  - The group IDs of those groups to which the user given by +username+ belongs.
+ *  - The group ID +gid+.
  *
+ *  Example:
+ *
+ *     Process.groups                # => [0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27]
+ *     Process.initgroups('me', 30)  # => [30, 6, 10, 11]
+ *     Process.groups                # => [30, 6, 10, 11]
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -6853,12 +6876,13 @@ proc_initgroups(VALUE obj, VALUE uname, VALUE base_grp)
 #if defined(_SC_NGROUPS_MAX) || defined(NGROUPS_MAX)
 /*
  *  call-seq:
- *     Process.maxgroups   -> integer
+ *    Process.maxgroups -> integer
  *
- *  Returns the maximum number of GIDs allowed in the supplemental
- *  group access list.
+ *  Returns the maximum number of group IDs allowed
+ *  in the supplemental group access list:
  *
- *     Process.maxgroups   #=> 32
+ *    Process.maxgroups # => 32
+ *
  */
 
 static VALUE
@@ -6873,10 +6897,10 @@ proc_getmaxgroups(VALUE obj)
 #ifdef HAVE_SETGROUPS
 /*
  *  call-seq:
- *     Process.maxgroups= integer   -> integer
+ *    Process.maxgroups = new_max -> new_max
  *
- *  Sets the maximum number of GIDs allowed in the supplemental group
- *  access list.
+ *  Sets the maximum number of group IDs allowed
+ *  in the supplemental group access list.
  */
 
 static VALUE
@@ -6907,15 +6931,22 @@ static int rb_daemon(int nochdir, int noclose);
 
 /*
  *  call-seq:
- *     Process.daemon()                        -> 0
- *     Process.daemon(nochdir=nil,noclose=nil) -> 0
+ *    Process.daemon(nochdir = nil, noclose = nil) -> 0
  *
- *  Detach the process from controlling terminal and run in the
- *  background as system daemon.  Unless the argument _nochdir_ is
- *  +true+, it changes the current working directory to the root
- *  ("/"). Unless the argument _noclose_ is +true+, daemon() will
- *  redirect standard input, standard output and standard error to
- *  null device.  Return zero on success, or raise one of Errno::*.
+ *  Detaches the current process from its controlling terminal
+ *  and runs it in the background as system daemon;
+ *  returns zero.
+ *
+ *  By default:
+ *
+ *  - Changes the current working directory to the root directory.
+ *  - Redirects $stdin, $stdout, and $stderr to the null device.
+ *
+ *  If optional argument +nochdir+ is +true+,
+ *  does not change the current working directory.
+ *
+ *  If optional argument +noclose+ is +true+,
+ *  does not redirect $stdin, $stdout, or $stderr.
  */
 
 static VALUE
@@ -7172,13 +7203,14 @@ p_gid_change_privilege(VALUE obj, VALUE id)
 
 /*
  *  call-seq:
- *     Process.euid           -> integer
- *     Process::UID.eid       -> integer
- *     Process::Sys.geteuid   -> integer
+ *    Process.euid         -> integer
+ *    Process::UID.eid     -> integer
+ *    Process::Sys.geteuid -> integer
  *
- *  Returns the effective user ID for this process.
+ *  Returns the effective user ID for the current process.
  *
- *     Process.euid   #=> 501
+ *    Process.euid # => 501
+ *
  */
 
 static VALUE
@@ -7214,10 +7246,11 @@ proc_seteuid(rb_uid_t uid)
 #if defined(HAVE_SETRESUID) || defined(HAVE_SETREUID) || defined(HAVE_SETEUID) || defined(HAVE_SETUID)
 /*
  *  call-seq:
- *     Process.euid= user
+ *    Process.euid = new_euid -> new_euid
  *
- *  Sets the effective user ID for this process. Not available on all
- *  platforms.
+ *  Sets the effective user ID for the current process.
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -7295,14 +7328,15 @@ p_uid_grant_privilege(VALUE obj, VALUE id)
 
 /*
  *  call-seq:
- *     Process.egid          -> integer
- *     Process::GID.eid      -> integer
- *     Process::Sys.geteid   -> integer
+ *    Process.egid        -> integer
+ *    Process::GID.eid    -> integer
+ *    Process::Sys.geteid -> integer
  *
- *  Returns the effective group ID for this process. Not available on
- *  all platforms.
+ *  Returns the effective group ID for the current process:
  *
- *     Process.egid   #=> 500
+ *    Process.egid # => 500
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -7316,10 +7350,11 @@ proc_getegid(VALUE obj)
 #if defined(HAVE_SETRESGID) || defined(HAVE_SETREGID) || defined(HAVE_SETEGID) || defined(HAVE_SETGID) || defined(_POSIX_SAVED_IDS)
 /*
  *  call-seq:
- *     Process.egid = integer   -> integer
+ *    Process.egid = new_egid -> new_egid
  *
- *  Sets the effective group ID for this process. Not available on all
- *  platforms.
+ *  Sets the effective group ID for the current process.
+ *
+ *  Not available on all platforms.
  */
 
 static VALUE
@@ -7792,14 +7827,14 @@ get_clk_tck(void)
 
 /*
  *  call-seq:
- *     Process.times   -> aProcessTms
+ *    Process.times -> process_tms
  *
- *  Returns a <code>Tms</code> structure (see Process::Tms)
- *  that contains user and system CPU times for this process,
- *  and also for children processes.
+ *  Returns a Process::Tms structure that contains user and system CPU times
+ *  for the current process, and for its children processes:
  *
- *     t = Process.times
- *     [ t.utime, t.stime, t.cutime, t.cstime ]   #=> [0.0, 0.02, 0.00, 0.00]
+ *    Process.times
+ *    # => #<struct Process::Tms utime=55.122118, stime=35.533068, cutime=0.0, cstime=0.002846>
+ *
  */
 
 VALUE
@@ -8061,130 +8096,167 @@ ruby_real_ms_time(void)
 
 /*
  *  call-seq:
- *     Process.clock_gettime(clock_id [, unit])   -> number
+ *    Process.clock_gettime(clock_id, unit = :float_second) -> number
  *
- *  Returns a time returned by POSIX clock_gettime() function.
+ *  Returns a clock time as determined by POSIX function
+ *  {clock_gettime()}[https://man7.org/linux/man-pages/man3/clock_gettime.3.html]:
  *
- *    p Process.clock_gettime(Process::CLOCK_MONOTONIC)
- *    #=> 896053.968060096
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID) # => 198.650379677
  *
- *  +clock_id+ specifies a kind of clock.
- *  It is specified as a constant which begins with <code>Process::CLOCK_</code>
- *  such as Process::CLOCK_REALTIME and Process::CLOCK_MONOTONIC.
+ *  Argument +clock_id+ should be a symbol or a constant that specifies
+ *  the clock whose time is to be returned;
+ *  see below.
  *
- *  The supported constants depends on OS and version.
- *  Ruby provides following types of +clock_id+ if available.
+ *  Optional argument +unit+ should be a symbol that specifies
+ *  the unit to be used in the returned clock time;
+ *  see below.
  *
- *  [CLOCK_REALTIME] SUSv2 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 2.1, macOS 10.12, Windows-8/Server-2012
- *  [CLOCK_MONOTONIC] SUSv3 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 3.4, macOS 10.12, Windows-2000
- *  [CLOCK_PROCESS_CPUTIME_ID] SUSv3 to 4, Linux 2.5.63, FreeBSD 9.3, OpenBSD 5.4, macOS 10.12
- *  [CLOCK_THREAD_CPUTIME_ID] SUSv3 to 4, Linux 2.5.63, FreeBSD 7.1, OpenBSD 5.4, macOS 10.12
- *  [CLOCK_VIRTUAL] FreeBSD 3.0, OpenBSD 2.1
- *  [CLOCK_PROF] FreeBSD 3.0, OpenBSD 2.1
- *  [CLOCK_REALTIME_FAST] FreeBSD 8.1
- *  [CLOCK_REALTIME_PRECISE] FreeBSD 8.1
- *  [CLOCK_REALTIME_COARSE] Linux 2.6.32
- *  [CLOCK_REALTIME_ALARM] Linux 3.0
- *  [CLOCK_MONOTONIC_FAST] FreeBSD 8.1
- *  [CLOCK_MONOTONIC_PRECISE] FreeBSD 8.1
- *  [CLOCK_MONOTONIC_COARSE] Linux 2.6.32
- *  [CLOCK_MONOTONIC_RAW] Linux 2.6.28, macOS 10.12
- *  [CLOCK_MONOTONIC_RAW_APPROX] macOS 10.12
- *  [CLOCK_BOOTTIME] Linux 2.6.39
- *  [CLOCK_BOOTTIME_ALARM] Linux 3.0
- *  [CLOCK_UPTIME] FreeBSD 7.0, OpenBSD 5.5
- *  [CLOCK_UPTIME_FAST] FreeBSD 8.1
- *  [CLOCK_UPTIME_RAW] macOS 10.12
- *  [CLOCK_UPTIME_RAW_APPROX] macOS 10.12
- *  [CLOCK_UPTIME_PRECISE] FreeBSD 8.1
- *  [CLOCK_SECOND] FreeBSD 8.1
- *  [CLOCK_TAI] Linux 3.10
+ *  <b>Argument +clock_id+</b>
+ *
+ *  Argument +clock_id+ specifies the clock whose time is to be returned;
+ *  it may be a constant such as <tt>Process::CLOCK_REALTIME</tt>,
+ *  or a symbol shorthand such as +:CLOCK_REALTIME+.
+ *
+ *  The supported clocks depend on the underlying operating system;
+ *  this method supports the following clocks on the indicated platforms
+ *  (raises Errno::EINVAL if called with an unsupported clock):
+ *
+ *  - +:CLOCK_BOOTTIME+: Linux 2.6.39.
+ *  - +:CLOCK_BOOTTIME_ALARM+: Linux 3.0.
+ *  - +:CLOCK_MONOTONIC+: SUSv3 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 3.4, macOS 10.12, Windows-2000.
+ *  - +:CLOCK_MONOTONIC_COARSE+: Linux 2.6.32.
+ *  - +:CLOCK_MONOTONIC_FAST+: FreeBSD 8.1.
+ *  - +:CLOCK_MONOTONIC_PRECISE+: FreeBSD 8.1.
+ *  - +:CLOCK_MONOTONIC_RAW+: Linux 2.6.28, macOS 10.12.
+ *  - +:CLOCK_MONOTONIC_RAW_APPROX+: macOS 10.12.
+ *  - +:CLOCK_PROCESS_CPUTIME_ID+: SUSv3 to 4, Linux 2.5.63, FreeBSD 9.3, OpenBSD 5.4, macOS 10.12.
+ *  - +:CLOCK_PROF+: FreeBSD 3.0, OpenBSD 2.1.
+ *  - +:CLOCK_REALTIME+: SUSv2 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 2.1, macOS 10.12, Windows-8/Server-2012.
+ *    Time.now is recommended over +:CLOCK_REALTIME:.
+ *  - +:CLOCK_REALTIME_ALARM+: Linux 3.0.
+ *  - +:CLOCK_REALTIME_COARSE+: Linux 2.6.32.
+ *  - +:CLOCK_REALTIME_FAST+: FreeBSD 8.1.
+ *  - +:CLOCK_REALTIME_PRECISE+: FreeBSD 8.1.
+ *  - +:CLOCK_SECOND+: FreeBSD 8.1.
+ *  - +:CLOCK_TAI+: Linux 3.10.
+ *  - +:CLOCK_THREAD_CPUTIME_ID+: SUSv3 to 4, Linux 2.5.63, FreeBSD 7.1, OpenBSD 5.4, macOS 10.12.
+ *  - +:CLOCK_UPTIME+: FreeBSD 7.0, OpenBSD 5.5.
+ *  - +:CLOCK_UPTIME_FAST+: FreeBSD 8.1.
+ *  - +:CLOCK_UPTIME_PRECISE+: FreeBSD 8.1.
+ *  - +:CLOCK_UPTIME_RAW+: macOS 10.12.
+ *  - +:CLOCK_UPTIME_RAW_APPROX+: macOS 10.12.
+ *  - +:CLOCK_VIRTUAL+: FreeBSD 3.0, OpenBSD 2.1.
  *
  *  Note that SUS stands for Single Unix Specification.
  *  SUS contains POSIX and clock_gettime is defined in the POSIX part.
- *  SUS defines CLOCK_REALTIME mandatory but
- *  CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID and CLOCK_THREAD_CPUTIME_ID are optional.
+ *  SUS defines +:CLOCK_REALTIME+ as mandatory but
+ *  +:CLOCK_MONOTONIC+, +:CLOCK_PROCESS_CPUTIME_ID+,
+ *  and +:CLOCK_THREAD_CPUTIME_ID+ are optional.
  *
- *  Also, several symbols are accepted as +clock_id+.
- *  There are emulations for clock_gettime().
+ *  Certain emulations are used when the given +clock_id+
+ *  is not supported directly:
  *
- *  For example, Process::CLOCK_REALTIME is defined as
- *  +:GETTIMEOFDAY_BASED_CLOCK_REALTIME+ when clock_gettime() is not available.
+ *  - Emulations for +:CLOCK_REALTIME+:
  *
- *  Emulations for +CLOCK_REALTIME+:
- *  [:GETTIMEOFDAY_BASED_CLOCK_REALTIME]
- *    Use gettimeofday() defined by SUS.
- *    (SUSv4 obsoleted it, though.)
- *    The resolution is 1 microsecond.
- *  [:TIME_BASED_CLOCK_REALTIME]
- *    Use time() defined by ISO C.
- *    The resolution is 1 second.
+ *    - +:GETTIMEOFDAY_BASED_CLOCK_REALTIME+:
+ *      Use gettimeofday() defined by SUS (deprecated in SUSv4).
+ *      The resolution is 1 microsecond.
+ *    - +:TIME_BASED_CLOCK_REALTIME+:
+ *      Use time() defined by ISO C.
+ *      The resolution is 1 second.
  *
- *  Emulations for +CLOCK_MONOTONIC+:
- *  [:MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC]
- *    Use mach_absolute_time(), available on Darwin.
- *    The resolution is CPU dependent.
- *  [:TIMES_BASED_CLOCK_MONOTONIC]
- *    Use the result value of times() defined by POSIX.
- *    POSIX defines it as "times() shall return the elapsed real time, in clock ticks, since an arbitrary point in the past (for example, system start-up time)".
- *    For example, GNU/Linux returns a value based on jiffies and it is monotonic.
- *    However, 4.4BSD uses gettimeofday() and it is not monotonic.
- *    (FreeBSD uses clock_gettime(CLOCK_MONOTONIC) instead, though.)
- *    The resolution is the clock tick.
- *    "getconf CLK_TCK" command shows the clock ticks per second.
- *    (The clock ticks per second is defined by HZ macro in older systems.)
- *    If it is 100 and clock_t is 32 bits integer type, the resolution is 10 millisecond and
- *    cannot represent over 497 days.
+ *  - Emulations for +:CLOCK_MONOTONIC+:
  *
- *  Emulations for +CLOCK_PROCESS_CPUTIME_ID+:
- *  [:GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID]
- *    Use getrusage() defined by SUS.
- *    getrusage() is used with RUSAGE_SELF to obtain the time only for
- *    the calling process (excluding the time for child processes).
- *    The result is addition of user time (ru_utime) and system time (ru_stime).
- *    The resolution is 1 microsecond.
- *  [:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID]
- *    Use times() defined by POSIX.
- *    The result is addition of user time (tms_utime) and system time (tms_stime).
- *    tms_cutime and tms_cstime are ignored to exclude the time for child processes.
- *    The resolution is the clock tick.
- *    "getconf CLK_TCK" command shows the clock ticks per second.
- *    (The clock ticks per second is defined by HZ macro in older systems.)
- *    If it is 100, the resolution is 10 millisecond.
- *  [:CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID]
- *    Use clock() defined by ISO C.
- *    The resolution is 1/CLOCKS_PER_SEC.
- *    CLOCKS_PER_SEC is the C-level macro defined by time.h.
- *    SUS defines CLOCKS_PER_SEC is 1000000.
- *    Non-Unix systems may define it a different value, though.
- *    If CLOCKS_PER_SEC is 1000000 as SUS, the resolution is 1 microsecond.
- *    If CLOCKS_PER_SEC is 1000000 and clock_t is 32 bits integer type, it cannot represent over 72 minutes.
+ *    - +:MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC+:
+ *      Use mach_absolute_time(), available on Darwin.
+ *      The resolution is CPU dependent.
+ *    - +:TIMES_BASED_CLOCK_MONOTONIC+:
+ *      Use the result value of times() defined by POSIX, thus:
+ *      >>>
+ *        Upon successful completion, times() shall return the elapsed real time,
+ *        in clock ticks, since an arbitrary point in the past
+ *        (for example, system start-up time).
  *
- *  If the given +clock_id+ is not supported, Errno::EINVAL is raised.
+ *      For example, GNU/Linux returns a value based on jiffies and it is monotonic.
+ *      However, 4.4BSD uses gettimeofday() and it is not monotonic.
+ *      (FreeBSD uses +:CLOCK_MONOTONIC+ instead, though.)
  *
- *  +unit+ specifies a type of the return value.
+ *      The resolution is the clock tick.
+ *      "getconf CLK_TCK" command shows the clock ticks per second.
+ *      (The clock ticks-per-second is defined by HZ macro in older systems.)
+ *      If it is 100 and clock_t is 32 bits integer type,
+ *      the resolution is 10 millisecond and cannot represent over 497 days.
  *
- *  [:float_second] number of seconds as a float (default)
- *  [:float_millisecond] number of milliseconds as a float
- *  [:float_microsecond] number of microseconds as a float
- *  [:second] number of seconds as an integer
- *  [:millisecond] number of milliseconds as an integer
- *  [:microsecond] number of microseconds as an integer
- *  [:nanosecond] number of nanoseconds as an integer
+ *  - Emulations for +:CLOCK_PROCESS_CPUTIME_ID+:
+ *
+ *    - +:GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID+:
+ *      Use getrusage() defined by SUS.
+ *      getrusage() is used with RUSAGE_SELF to obtain the time only for
+ *      the calling process (excluding the time for child processes).
+ *      The result is addition of user time (ru_utime) and system time (ru_stime).
+ *      The resolution is 1 microsecond.
+ *    - +:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID+:
+ *      Use times() defined by POSIX.
+ *      The result is addition of user time (tms_utime) and system time (tms_stime).
+ *      tms_cutime and tms_cstime are ignored to exclude the time for child processes.
+ *      The resolution is the clock tick.
+ *      "getconf CLK_TCK" command shows the clock ticks per second.
+ *      (The clock ticks per second is defined by HZ macro in older systems.)
+ *      If it is 100, the resolution is 10 millisecond.
+ *    - +:CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID+:
+ *      Use clock() defined by ISO C.
+ *      The resolution is <tt>1/CLOCKS_PER_SEC</tt>.
+ *      +CLOCKS_PER_SEC+ is the C-level macro defined by time.h.
+ *      SUS defines +CLOCKS_PER_SEC+ as 1000000;
+ *      other systems may define it differently.
+ *      If +CLOCKS_PER_SEC+ is 1000000 (as in SUS),
+ *      the resolution is 1 microsecond.
+ *      If +CLOCKS_PER_SEC+ is 1000000 and clock_t is a 32-bit integer type,
+ *      it cannot represent over 72 minutes.
+ *
+ *  <b>Argument +unit+</b>
+ *
+ *  Optional argument +unit+ (default +:float_second+)
+ *  specifies the unit for the returned value.
+ *
+ *  - +:float_microsecond+: Number of microseconds as a float.
+ *  - +:float_millisecond+: Number of milliseconds as a float.
+ *  - +:float_second+: Number of seconds as a float.
+ *  - +:microsecond+: Number of microseconds as an integer.
+ *  - +:millisecond+: Number of milliseconds as an integer.
+ *  - +:nanosecond+: Number of nanoseconds as an integer.
+ *  - +::second+: Number of seconds as an integer.
+ *
+ *  Examples:
+ *
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID, :float_microsecond)
+ *    # => 203605054.825
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID, :float_millisecond)
+ *    # => 203643.696848
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID, :float_second)
+ *    # => 203.762181929
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID, :microsecond)
+ *    # => 204123212
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID, :millisecond)
+ *    # => 204298
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID, :nanosecond)
+ *    # => 204602286036
+ *    Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID, :second)
+ *    # => 204
  *
  *  The underlying function, clock_gettime(), returns a number of nanoseconds.
  *  Float object (IEEE 754 double) is not enough to represent
- *  the return value for CLOCK_REALTIME.
+ *  the return value for +:CLOCK_REALTIME+.
  *  If the exact nanoseconds value is required, use +:nanosecond+ as the +unit+.
  *
- *  The origin (zero) of the returned value varies.
- *  For example, system start up time, process start up time, the Epoch, etc.
+ *  The origin (time zero) of the returned value is system-dependent,
+ *  and may be, for example, system start up time,
+ *  process start up time, the Epoch, etc.
  *
- *  The origin in CLOCK_REALTIME is defined as the Epoch
- *  (1970-01-01 00:00:00 UTC).
- *  But some systems count leap seconds and others doesn't.
- *  So the result can be interpreted differently across systems.
- *  Time.now is recommended over CLOCK_REALTIME.
+ *  The origin in +:CLOCK_REALTIME+ is defined as the Epoch:
+ *  <tt>1970-01-01 00:00:00 UTC</tt>;
+ *  some systems count leap seconds and others don't,
+ *  so the result may vary across systems.
  */
 static VALUE
 rb_clock_gettime(int argc, VALUE *argv, VALUE _)
@@ -8379,45 +8451,39 @@ rb_clock_gettime(int argc, VALUE *argv, VALUE _)
 
 /*
  *  call-seq:
- *     Process.clock_getres(clock_id [, unit])   -> number
+ *    Process.clock_getres(clock_id, unit = :float_second)  -> number
  *
- *  Returns an estimate of the resolution of a +clock_id+ using the POSIX
- *  <code>clock_getres()</code> function.
+ *  Returns a clock resolution as determined by POSIX function
+ *  {clock_getres()}[https://man7.org/linux/man-pages/man3/clock_getres.3.html]:
  *
- *  Note the reported resolution is often inaccurate on most platforms due to
- *  underlying bugs for this function and therefore the reported resolution
- *  often differs from the actual resolution of the clock in practice.
- *  Inaccurate reported resolutions have been observed for various clocks including
- *  CLOCK_MONOTONIC and CLOCK_MONOTONIC_RAW when using Linux, macOS, BSD or AIX
- *  platforms, when using ARM processors, or when using virtualization.
+ *    Process.clock_getres(:CLOCK_REALTIME) # => 1.0e-09
  *
- *  +clock_id+ specifies a kind of clock.
- *  See the document of +Process.clock_gettime+ for details.
- *  +clock_id+ can be a symbol as for +Process.clock_gettime+.
+ *  See Process.clock_gettime for the values of +clock_id+ and +unit+.
  *
- *  If the given +clock_id+ is not supported, Errno::EINVAL is raised.
+ *  Examples:
  *
- *  +unit+ specifies the type of the return value.
- *  +Process.clock_getres+ accepts +unit+ as +Process.clock_gettime+.
- *  The default value, +:float_second+, is also the same as
- *  +Process.clock_gettime+.
+ *    Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID, :float_microsecond) # => 0.001
+ *    Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID, :float_millisecond) # => 1.0e-06
+ *    Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID, :float_second)      # => 1.0e-09
+ *    Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID, :microsecond)       # => 0
+ *    Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID, :millisecond)       # => 0
+ *    Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID, :nanosecond)        # => 1
+ *    Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID, :second)            # => 0
  *
- *  +Process.clock_getres+ also accepts +:hertz+ as +unit+.
- *  +:hertz+ means the reciprocal of +:float_second+.
+ *  In addition to the values for +unit+ supported in Process.clock_gettime,
+ *  this method supports +:hertz+, the integer number of clock ticks per second
+ *  (which is the reciprocal of +:float_second+):
  *
- *  +:hertz+ can be used to obtain the exact value of
- *  the clock ticks per second for the times() function and
- *  CLOCKS_PER_SEC for the clock() function.
+ *    Process.clock_getres(:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)        # => 100.0
+ *    Process.clock_getres(:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID, :float_second) # => 0.01
  *
- *  <code>Process.clock_getres(:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)</code>
- *  returns the clock ticks per second.
- *
- *  <code>Process.clock_getres(:CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)</code>
- *  returns CLOCKS_PER_SEC.
- *
- *    p Process.clock_getres(Process::CLOCK_MONOTONIC)
- *    #=> 1.0e-09
- *
+ *  <b>Accuracy</b>:
+ *  Note that the returned resolution may be inaccurate on some platforms
+ *  due to underlying bugs.
+ *  Inaccurate resolutions have been reported for various clocks including
+ *  +:CLOCK_MONOTONIC+ and +:CLOCK_MONOTONIC_RAW+
+ *  on Linux, macOS, BSD or AIX platforms, when using ARM processors,
+ *  or when using virtualization.
  */
 static VALUE
 rb_clock_getres(int argc, VALUE *argv, VALUE _)
@@ -8573,38 +8639,82 @@ get_PROCESS_ID(ID _x, VALUE *_y)
 
 /*
  *  call-seq:
- *     Process.kill(signal, pid, *pids)    -> integer
+ *    Process.kill(signal, *ids) -> count
  *
- *  Sends the given signal to the specified process id(s) if _pid_ is positive.
- *  If _pid_ is zero, _signal_ is sent to all processes whose group ID is equal
- *  to the group ID of the process. If _pid_ is negative, results are dependent
- *  on the operating system. _signal_ may be an integer signal number or
- *  a POSIX signal name (either with or without a +SIG+ prefix). If _signal_ is
- *  negative (or starts with a minus sign), kills process groups instead of
- *  processes. Not all signals are available on all platforms.
- *  The keys and values of Signal.list are known signal names and numbers,
- *  respectively.
+ *  Sends a signal to each process specified by +ids+
+ *  (which must specify at least one ID);
+ *  returns the count of signals sent.
  *
- *     pid = fork do
- *        Signal.trap("HUP") { puts "Ouch!"; exit }
- *        # ... do some work ...
- *     end
- *     # ...
- *     Process.kill("HUP", pid)
- *     Process.wait
+ *  For each given +id+, if +id+ is:
  *
- *  <em>produces:</em>
+ *  - Positive, sends the signal to the process whose process ID is +id+.
+ *  - Zero, send the signal to all processes in the current process group.
+ *  - Negative, sends the signal to a system-dependent collection of processes.
+ *
+ *  Argument +signal+ specifies the signal to be sent;
+ *  the argument may be:
+ *
+ *  - An integer signal number: e.g., +-29+, +0+, +29+.
+ *  - A signal name (string), with or without leading <tt>'SIG'</tt>,
+ *    and with or without a further prefixed minus sign (<tt>'-'</tt>):
+ *    e.g.:
+ *
+ *    - <tt>'SIGPOLL'</tt>.
+ *    - <tt>'POLL'</tt>,
+ *    - <tt>'-SIGPOLL'</tt>.
+ *    - <tt>'-POLL'</tt>.
+ *
+ *  - A signal symbol, with or without leading <tt>'SIG'</tt>,
+ *    and with or without a further prefixed minus sign (<tt>'-'</tt>):
+ *    e.g.:
+ *
+ *    - +:SIGPOLL+.
+ *    - +:POLL+.
+ *    - <tt>:'-SIGPOLL'</tt>.
+ *    - <tt>:'-POLL'</tt>.
+ *
+ *  If +signal+ is:
+ *
+ *  - A non-negative integer, or a signal name or symbol
+ *    without prefixed <tt>'-'</tt>,
+ *    each process with process ID +id+ is signalled.
+ *  - A negative integer, or a signal name or symbol
+ *    with prefixed <tt>'-'</tt>,
+ *    each process group with group ID +id+ is signalled.
+ *
+ *  Use method Signal.list to see which signals are supported
+ *  by Ruby on the underlying platform;
+ *  the method returns a hash of the string names
+ *  and non-negative integer values of the supported signals.
+ *  The size and content of the returned hash varies widely
+ *  among platforms.
+ *
+ *  Additionally, signal +0+ is useful to determine if the process exists.
+ *
+ *  Example:
+ *
+ *    pid = fork do
+ *      Signal.trap('HUP') { puts 'Ouch!'; exit }
+ *      # ... do some work ...
+ *    end
+ *    # ...
+ *    Process.kill('HUP', pid)
+ *    Process.wait
+ *
+ *  Output:
  *
  *     Ouch!
  *
- *  If _signal_ is an integer but wrong for signal, Errno::EINVAL or
- *  RangeError will be raised.  Otherwise unless _signal_ is a String
- *  or a Symbol, and a known signal name, ArgumentError will be
- *  raised.
+ *  Exceptions:
  *
- *  Also, Errno::ESRCH or RangeError for invalid _pid_, Errno::EPERM
- *  when failed because of no privilege, will be raised.  In these
- *  cases, signals may have been sent to preceding processes.
+ *  - Raises Errno::EINVAL or RangeError if +signal+ is an integer
+ *    but invalid.
+ *  - Raises ArgumentError if +signal+ is a string or symbol
+ *    but invalid.
+ *  - Raises Errno::ESRCH or RangeError if one of +ids+ is invalid.
+ *  - Raises Errno::EPERM if needed permissions are not in force.
+ *
+ *  In the last two cases, signals may have been sent to some processes.
  */
 
 static VALUE

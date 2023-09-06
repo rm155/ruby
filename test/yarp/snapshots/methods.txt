@@ -173,7 +173,7 @@ ProgramNode(0...1194)(
      ),
      DefNode(161...175)(
        (170...171),
-       GlobalVariableReadNode(165...169)(),
+       GlobalVariableReadNode(165...169)(:$var),
        nil,
        nil,
        [],
@@ -876,7 +876,7 @@ ProgramNode(0...1194)(
          nil,
          [],
          nil,
-         BlockParameterNode(789...791)((790...791), (789...790))
+         BlockParameterNode(789...791)(:b, (790...791), (789...790))
        ),
        nil,
        [:b],
@@ -897,7 +897,7 @@ ProgramNode(0...1194)(
          nil,
          [],
          nil,
-         BlockParameterNode(803...804)(nil, (803...804))
+         BlockParameterNode(803...804)(nil, nil, (803...804))
        ),
        nil,
        [:&],
@@ -968,13 +968,14 @@ ProgramNode(0...1194)(
        (872...875)
      ),
      ConstantWriteNode(877...886)(
+       :Const,
        (877...882),
        IntegerNode(885...886)(),
        (883...884)
      ),
      DefNode(888...903)(
        (898...899),
-       ConstantReadNode(892...897)(),
+       ConstantReadNode(892...897)(:Const),
        nil,
        nil,
        [],

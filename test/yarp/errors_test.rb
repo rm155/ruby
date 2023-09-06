@@ -17,12 +17,13 @@ module YARP
       expected = ModuleNode(
         [],
         Location(),
-        ConstantReadNode(),
+        ConstantReadNode(:Parent),
         StatementsNode(
-          [ModuleNode([], Location(), MissingNode(), nil, Location(), "")]
+          [ModuleNode([], Location(), MissingNode(), nil, Location(), :"", :"")]
         ),
         Location(),
-        "Parent"
+        :Parent,
+        :Parent
       )
 
       assert_errors expected, "module Parent module end", [
@@ -393,7 +394,7 @@ module YARP
         Location(),
         nil,
         nil,
-        StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location(), "A")]),
+        StatementsNode([ModuleNode([], Location(), ConstantReadNode(:A), nil, Location(), :A, :A)]),
         [],
         Location(),
         nil,
@@ -424,7 +425,7 @@ module YARP
             BlockNode(
               [],
               nil,
-              StatementsNode([ModuleNode([], Location(), ConstantReadNode(), nil, Location(), "Foo")]),
+              StatementsNode([ModuleNode([], Location(), ConstantReadNode(:Foo), nil, Location(), :Foo, :Foo)]),
               Location(),
               Location()
             ),
@@ -459,12 +460,13 @@ module YARP
           [ClassNode(
             [],
             Location(),
-            ConstantReadNode(),
+            ConstantReadNode(:A),
             nil,
             nil,
             nil,
             Location(),
-            "A"
+            :A,
+            :A
           )]
         ),
         [],
@@ -642,7 +644,7 @@ module YARP
           nil,
           [],
           nil,
-          BlockParameterNode(Location(), Location())
+          BlockParameterNode(:block, Location(), Location())
         ),
         nil,
         [:block, :a],
@@ -662,7 +664,7 @@ module YARP
       expected = DefNode(
         Location(),
         nil,
-        ParametersNode([], [], [RequiredParameterNode(:a)], nil, [], nil, BlockParameterNode(nil, Location())),
+        ParametersNode([], [], [RequiredParameterNode(:a)], nil, [], nil, BlockParameterNode(nil, nil, Location())),
         nil,
         [:&, :a],
         Location(),
@@ -974,12 +976,13 @@ module YARP
       expected = ClassNode(
         [],
         Location(),
-        ConstantReadNode(),
+        ConstantReadNode(:A),
         nil,
         nil,
         StatementsNode([ReturnNode(Location(), nil)]),
         Location(),
-        "A"
+        :A,
+        :A
       )
 
       assert_errors expected, "class A; return; end", [
@@ -991,10 +994,11 @@ module YARP
       expected = ModuleNode(
         [],
         Location(),
-        ConstantReadNode(),
+        ConstantReadNode(:A),
         StatementsNode([ReturnNode(Location(), nil)]),
         Location(),
-        "A"
+        :A,
+        :A
       )
 
       assert_errors expected, "module A; return; end", [
@@ -1006,8 +1010,8 @@ module YARP
       expected = BeginNode(
         Location(),
         StatementsNode([
-          GlobalVariableWriteNode(Location(), NilNode(), Location()),
-          GlobalVariableWriteNode(Location(), NilNode(), Location())
+          GlobalVariableWriteNode(:$+, Location(), NilNode(), Location()),
+          GlobalVariableWriteNode(:$1466, Location(), NilNode(), Location())
         ]),
         nil,
         nil,
@@ -1083,7 +1087,7 @@ module YARP
       expected = DefNode(
         Location(),
         nil,
-        ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], [], nil, [], nil, BlockParameterNode(Location(), Location())),
+        ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], [], nil, [], nil, BlockParameterNode(:a, Location(), Location())),
         nil,
         [:a, :b],
         Location(),

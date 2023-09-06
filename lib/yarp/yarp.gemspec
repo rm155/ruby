@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name = "yarp"
-  spec.version = "0.9.0"
+  spec.version = "0.10.0"
   spec.authors = ["Shopify"]
   spec.email = ["ruby@shopify.com"]
 
@@ -65,6 +65,7 @@ Gem::Specification.new do |spec|
     "lib/yarp/mutation_visitor.rb",
     "lib/yarp/node.rb",
     "lib/yarp/pack.rb",
+    "lib/yarp/pattern.rb",
     "lib/yarp/ripper_compat.rb",
     "lib/yarp/serialize.rb",
     "src/diagnostic.c",
