@@ -782,8 +782,6 @@ nodes:
         type: location
       - name: name
         type: constant
-      - name: name_constant
-        type: constant
     comment: |
       Represents a class declaration involving the `class` keyword.
 
@@ -1041,6 +1039,8 @@ nodes:
           ^^^^^^^
   - name: DefNode
     fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: receiver
@@ -1558,6 +1558,8 @@ nodes:
               ^^^^
   - name: KeywordParameterNode
     fields:
+      - name: name
+        type: constant
       - name: name_loc
         type: location
       - name: value
@@ -1574,10 +1576,12 @@ nodes:
           end
   - name: KeywordRestParameterNode
     fields:
-      - name: operator_loc
-        type: location
+      - name: name
+        type: constant?
       - name: name_loc
         type: location?
+      - name: operator_loc
+        type: location
     comment: |
       Represents a keyword rest parameter to a method, block, or lambda definition.
 
@@ -1742,27 +1746,38 @@ nodes:
         type: location
       - name: name
         type: constant
-      - name: name_constant
-        type: constant
     comment: |
       Represents a module declaration involving the `module` keyword.
 
           module Foo end
           ^^^^^^^^^^^^^^
-  - name: MultiWriteNode
+  - name: MultiTargetNode
     fields:
       - name: targets
         type: node[]
-      - name: operator_loc
-        type: location?
-      - name: value
-        type: node?
       - name: lparen_loc
         type: location?
       - name: rparen_loc
         type: location?
     comment: |
       Represents a multi-target expression.
+
+          a, b, c = 1, 2, 3
+          ^^^^^^^
+  - name: MultiWriteNode
+    fields:
+      - name: targets
+        type: node[]
+      - name: lparen_loc
+        type: location?
+      - name: rparen_loc
+        type: location?
+      - name: operator_loc
+        type: location
+      - name: value
+        type: node
+    comment: |
+      Represents a write to a multi-target expression.
 
           a, b, c = 1, 2, 3
           ^^^^^^^^^^^^^^^^^
@@ -2059,10 +2074,12 @@ nodes:
       `ex` is in the `exception` field.
   - name: RestParameterNode
     fields:
-      - name: operator_loc
-        type: location
+      - name: name
+        type: constant?
       - name: name_loc
         type: location?
+      - name: operator_loc
+        type: location
     comment: |
       Represents a rest parameter to a method, block, or lambda definition.
 

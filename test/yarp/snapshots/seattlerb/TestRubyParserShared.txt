@@ -50,6 +50,7 @@ ProgramNode(0...689)(
        nil,
        StatementsNode(168...246)(
          [DefNode(168...246)(
+            :y,
             (177...178),
             SelfNode(172...176)(),
             ParametersNode(179...200)(
@@ -87,7 +88,6 @@ ProgramNode(0...689)(
           )]
        ),
        (266...269),
-       :X,
        :X
      ),
      ClassNode(293...376)(
@@ -112,12 +112,10 @@ ProgramNode(0...689)(
                )]
             ),
             (355...358),
-            :Y,
             :Y
           )]
        ),
        (373...376),
-       :X,
        :X
      ),
      ClassNode(395...498)(
@@ -128,6 +126,7 @@ ProgramNode(0...689)(
        nil,
        StatementsNode(417...480)(
          [DefNode(417...480)(
+            :y,
             (421...422),
             nil,
             ParametersNode(423...444)(
@@ -165,7 +164,6 @@ ProgramNode(0...689)(
           )]
        ),
        (495...498),
-       :X,
        :X
      ),
      ModuleNode(517...565)(
@@ -186,7 +184,6 @@ ProgramNode(0...689)(
           )]
        ),
        (562...565),
-       :X,
        :X
      ),
      ModuleNode(568...651)(
@@ -207,12 +204,10 @@ ProgramNode(0...689)(
                )]
             ),
             (630...633),
-            :Y,
             :Y
           )]
        ),
        (648...651),
-       :X,
        :X
      ),
      CallNode(670...689)(

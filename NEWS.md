@@ -96,11 +96,11 @@ The following default gems are updated.
 * time 0.2.2
 * timeout 0.4.0
 * uri 0.12.2
-* yarp 0.10.0
+* yarp 0.11.0
 
 The following bundled gems are updated.
 
-* minitest 5.19.0
+* minitest 5.20.0
 * test-unit 3.6.1
 * rexml 3.2.6
 * rss 0.3.0
