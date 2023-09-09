@@ -5311,16 +5311,15 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 		}
 	    }
 	}
-
 	gc_exit(objspace, gc_enter_event_finalizer);
-
-	finalize_deferred_heap_pages(objspace);
-
-	st_free_table(finalizer_table);
-	finalizer_table = 0;
-	ATOMIC_SET(finalizing, 0);
     }
     LOCAL_GC_END(objspace);
+
+    finalize_deferred_heap_pages(objspace);
+
+    st_free_table(finalizer_table);
+    finalizer_table = 0;
+    ATOMIC_SET(finalizing, 0);
 }
 
 void
