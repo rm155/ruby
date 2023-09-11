@@ -1894,8 +1894,10 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     RUBY_DEBUG_LOG("r:%u ractor.cnt:%u++", r->pub.id, vm->ractor.cnt);
     VM_ASSERT(single_ractor_mode || RB_VM_LOCKED_P());
 
+    lock_ractor_set();
     ccan_list_add_tail(&vm->ractor.set, &r->vmlr_node);
     vm->ractor.cnt++;
+    unlock_ractor_set();
 }
 
 static void
@@ -1953,6 +1955,8 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 
     RB_VM_LOCK();
     {
+	lock_ractor_set();
+
         RUBY_DEBUG_LOG("ractor.cnt:%u-- terminate_waiting:%d",
                        vm->ractor.cnt,  vm->ractor.sync.terminate_waiting);
 
@@ -1969,6 +1973,8 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         rb_gc_ractor_newobj_cache_clear(&cr->newobj_borrowing_cache);
 
         ractor_status_set(cr, ractor_terminated);
+	
+	unlock_ractor_set();
     }
     RB_VM_UNLOCK();
 }
@@ -2257,9 +2263,7 @@ void
 lock_ractor_set(void)
 {
     rb_vm_t *vm = GET_VM();
-    begin_wait_for_global_gc();
     rb_native_mutex_lock(&vm->ractor.ractor_set_lock);
-    end_wait_for_global_gc();
 }
 
 void
@@ -2285,9 +2289,7 @@ rb_ractor_living_threads_insert(rb_ractor_t *r, rb_thread_t *th)
     // first thread for a ractor
     if (r->threads.cnt == 1) {
         VM_ASSERT(ractor_status_p(r, ractor_created));
-	lock_ractor_set();
 	vm_insert_ractor(th->vm, r);
-	unlock_ractor_set();
     }
 }
 
@@ -2352,14 +2354,11 @@ ractor_check_blocking(rb_ractor_t *cr, unsigned int remained_thread_cnt, const c
 void
 rb_ractor_living_threads_remove(rb_ractor_t *cr, rb_thread_t *th)
 {
-    bool last_thread = (cr->threads.cnt == 1);
-    if (last_thread) lock_ractor_set();
-
     VM_ASSERT(cr == GET_RACTOR());
     RUBY_DEBUG_LOG("r->threads.cnt:%d--", cr->threads.cnt);
     ractor_check_blocking(cr, cr->threads.cnt - 1, __FILE__, __LINE__);
 
-    if (last_thread) {
+    if (cr->threads.cnt == 1) {
         vm_remove_ractor(th->vm, cr);
     }
 
@@ -2373,8 +2372,6 @@ rb_ractor_living_threads_remove(rb_ractor_t *cr, rb_thread_t *th)
 	}
     }
     RACTOR_UNLOCK(cr);
-
-    if (last_thread) unlock_ractor_set();
 }
 
 void

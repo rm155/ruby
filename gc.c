@@ -915,7 +915,6 @@ typedef struct rb_objspace {
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
 
-    rb_nativethread_lock_t local_gc_lock;
     int local_gc_level;
     bool running_global_gc;
 
@@ -1433,25 +1432,20 @@ enum gc_enter_event {
     gc_enter_event_rb_memerror,
 };
 
-static void lock_local_gc(rb_objspace_t *objspace);
-static void unlock_local_gc(rb_objspace_t *objspace);
-static void acquire_local_gc_locks(rb_vm_t *vm);
-static void release_local_gc_locks(rb_vm_t *vm);
-
 #define LOCAL_GC_BEGIN(objspace) \
 { \
     if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
 	if (objspace->local_gc_level == 0) { \
 	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
+	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
 	    while (objspace->ractor->borrowing_sync.borrower_count != 0) {\
-		begin_wait_for_global_gc(); \
+		rb_ractor_blocking_threads_inc(objspace->ractor, __FILE__, __LINE__); \
 		rb_native_cond_wait(&objspace->ractor->borrowing_sync.no_borrowers, &objspace->ractor->borrowing_sync.borrower_count_lock); \
-		end_wait_for_global_gc(); \
+		rb_ractor_blocking_threads_dec(objspace->ractor, __FILE__, __LINE__); \
 	    } \
 	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock); \
 	    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
 	    objspace->ractor->borrowing_sync.lock_owner = GET_RACTOR(); \
-	    lock_local_gc(objspace); \
 	} \
 	objspace->local_gc_level++; \
     }
@@ -1460,7 +1454,6 @@ static void release_local_gc_locks(rb_vm_t *vm);
     if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
 	objspace->local_gc_level--; \
 	if (objspace->local_gc_level == 0) { \
-	    unlock_local_gc(objspace); \
 	    objspace->ractor->borrowing_sync.lock_owner = NULL;\
 	    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.lock); \
 	} \
@@ -1469,18 +1462,15 @@ static void release_local_gc_locks(rb_vm_t *vm);
 
 #define GLOBAL_GC_BEGIN(vm, objspace) \
 { \
-    lock_ractor_set(); \
-    acquire_local_gc_locks(vm); \
     objspace->running_global_gc = true; \
     vm->global_gc_underway = true; \
-    RB_VM_LOCK_ENTER();
+    RB_VM_LOCK_ENTER(); \
+    rb_vm_barrier();
 
 #define GLOBAL_GC_END(vm, objspace) \
     RB_VM_LOCK_LEAVE(); \
     objspace->running_global_gc = false; \
     vm->global_gc_underway = false; \
-    release_local_gc_locks(vm); \
-    unlock_ractor_set(); \
 }
 
 
@@ -2083,8 +2073,6 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
 
-    rb_nativethread_lock_destroy(&objspace->local_gc_lock);
-
     st_free_table(objspace->shareable_tbl);
     st_free_table(objspace->secondary_shareable_tbl);
     rb_nativethread_lock_destroy(&objspace->secondary_shareable_tbl_lock);
@@ -2684,13 +2672,15 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 static void
 close_objspace(rb_objspace_t *objspace)
 {
+    lock_ractor_set();
+
     free(heap_pages_sorted);
     heap_pages_sorted = NULL;
 
-    RB_VM_LOCK();
     ccan_list_del(&objspace->objspace_node);
-    RB_VM_UNLOCK();
     rb_objspace_free(objspace);
+
+    unlock_ractor_set();
 }
 
 void
@@ -2701,15 +2691,16 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     VALUE already_disabled = rb_objspace_gc_disable(receiving_objspace);
 
+    rb_ractor_t *cr = GET_RACTOR();
     rb_native_mutex_lock(&closing_ractor->sync.close_lock);
     while (!closing_ractor->sync.ready_to_close) {
-	begin_wait_for_global_gc();
+	rb_ractor_blocking_threads_inc(cr, __FILE__, __LINE__);
 	rb_native_cond_wait(&closing_ractor->sync.close_cond, &closing_ractor->sync.close_lock);
-	end_wait_for_global_gc();
+	rb_ractor_blocking_threads_dec(cr, __FILE__, __LINE__);
     }
     rb_native_mutex_unlock(&closing_ractor->sync.close_lock);
 
-    lock_ractor_set();
+    RB_VM_LOCK();
 
     update_objspace_tables(receiving_objspace, closing_objspace);
     allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, true);
@@ -2730,7 +2721,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     closing_ractor->local_objspace = NULL;
 
-    unlock_ractor_set();
+    RB_VM_UNLOCK();
 
     if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_objspace);
 }
@@ -4438,8 +4429,6 @@ Init_heap(rb_objspace_t *objspace)
     objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
-
-    rb_nativethread_lock_initialize(&objspace->local_gc_lock);
     objspace->local_gc_level = 0;
 
 #if RGENGC_ESTIMATE_OLDMALLOC
@@ -5468,10 +5457,7 @@ bool
 rb_gc_is_ptr_to_obj(void *ptr)
 {
     rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE((VALUE)ptr);
-    lock_local_gc(objspace);
-    bool success = is_pointer_to_heap(objspace, ptr);
-    unlock_local_gc(objspace);
-    return success;
+    return is_pointer_to_heap(objspace, ptr);
 }
 
 VALUE
@@ -10379,55 +10365,6 @@ gc_rest_global(rb_objspace_t *objspace) {
 	gc_rest(os);
     }
     objspace->global_gc_current_target = old_target;
-}
-
-void
-begin_wait_for_global_gc(void)
-{
-    rb_vm_t *vm = GET_VM();
-    rb_native_mutex_lock(&vm->gc_waiter_cnt_lock);
-    vm->gc_waiter_cnt++;
-    rb_native_mutex_unlock(&vm->gc_waiter_cnt_lock);
-    rb_signal_at_gc_barrier(GET_RACTOR());
-}
-
-void
-end_wait_for_global_gc(void)
-{
-    rb_vm_t *vm = GET_VM();
-    rb_native_mutex_lock(&vm->gc_waiter_cnt_lock);
-    vm->gc_waiter_cnt--;
-    rb_native_mutex_unlock(&vm->gc_waiter_cnt_lock);
-}
-
-static void
-acquire_local_gc_locks(rb_vm_t *vm)
-{
-    rb_objspace_t *os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
-	rb_native_mutex_lock(&os->local_gc_lock);
-    }
-}
-
-static void
-release_local_gc_locks(rb_vm_t *vm)
-{
-    rb_objspace_t *os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
-	rb_native_mutex_unlock(&os->local_gc_lock);
-    }
-}
-
-static void
-lock_local_gc(rb_objspace_t *objspace) {
-    begin_wait_for_global_gc();
-    rb_native_mutex_lock(&objspace->local_gc_lock);
-    end_wait_for_global_gc();
-}
-
-static void
-unlock_local_gc(rb_objspace_t *objspace) {
-    rb_native_mutex_unlock(&objspace->local_gc_lock);
 }
 
 static int

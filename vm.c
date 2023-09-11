@@ -4066,7 +4066,6 @@ Init_BareVM(void)
 
     // setup ractor system
     rb_native_mutex_initialize(&vm->ractor.ractor_set_lock);
-    rb_native_mutex_initialize(&vm->gc_waiter_cnt_lock);
     rb_native_mutex_initialize(&vm->ractor.sync.lock);
     rb_native_cond_initialize(&vm->ractor.sync.barrier_cond);
     rb_native_cond_initialize(&vm->ractor.sync.terminate_cond);

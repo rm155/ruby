@@ -113,37 +113,6 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
                     (unsigned int)rb_ractor_id(vm->ractor.sync.lock_owner));
 }
 
-void
-rb_signal_at_gc_barrier(rb_ractor_t *cr)
-{
-    rb_vm_t *vm = GET_VM();
-    RUBY_DEBUG_LOG2(file, line, "start locked:%d", locked);
-
-    if (vm->ractor.sync.lock_owner != cr)
-    {
-	rb_native_mutex_lock(&vm->ractor.sync.lock);
-	VM_ASSERT(vm->ractor.sync.lock_owner == NULL);
-	rb_ractor_t *original = vm->ractor.sync.lock_owner;
-	vm->ractor.sync.lock_owner = cr;
-
-	if (vm->ractor.sync.barrier_waiting && vm->ractor.sync.gc_barrier) {
-	    rb_thread_t *th = GET_THREAD();
-
-	    RB_VM_SAVE_MACHINE_CONTEXT(th);
-
-	    if (vm_barrier_finish_p(vm)) {
-		RUBY_DEBUG_LOG("wakeup barrier owner");
-		rb_native_cond_signal(&vm->ractor.sync.barrier_cond);
-	    }
-	    else {
-		RUBY_DEBUG_LOG("wait for barrier finish");
-	    }
-	}
-	vm->ractor.sync.lock_owner = original;
-	rb_native_mutex_unlock(&vm->ractor.sync.lock);
-    }
-}
-
 static void
 vm_lock_leave(rb_vm_t *vm, unsigned int *lev APPEND_LOCATION_ARGS)
 {
@@ -250,23 +219,7 @@ rb_vm_cond_timedwait(rb_vm_t *vm, rb_nativethread_cond_t *cond, unsigned long ms
 }
 
 static bool
-vm_gc_barrier_finish_p(rb_vm_t *vm)
-{
-    rb_native_mutex_lock(&vm->gc_waiter_cnt_lock);
-    int gc_waiter_cnt = vm->gc_waiter_cnt;
-    rb_native_mutex_unlock(&vm->gc_waiter_cnt_lock);
-    RUBY_DEBUG_LOG("cnt:%u living:%u blocking:%u, gc_waiter_cnt:%u",
-                   vm->ractor.sync.barrier_cnt,
-                   vm->ractor.cnt,
-                   vm->ractor.blocking_cnt,
-		   gc_waiter_cnt);
-
-    VM_ASSERT(vm->ractor.blocking_cnt + gc_waiter_cnt <= vm->ractor.cnt);
-    return gc_waiter_cnt + vm->ractor.blocking_cnt == vm->ractor.cnt;
-}
-
-static bool
-vm_non_gc_barrier_finish_p(rb_vm_t *vm)
+vm_barrier_finish_p(rb_vm_t *vm)
 {
     RUBY_DEBUG_LOG("cnt:%u living:%u blocking:%u",
                    vm->ractor.sync.barrier_cnt,
@@ -275,12 +228,6 @@ vm_non_gc_barrier_finish_p(rb_vm_t *vm)
 
     VM_ASSERT(vm->ractor.blocking_cnt <= vm->ractor.cnt);
     return vm->ractor.blocking_cnt == vm->ractor.cnt;
-}
-
-static bool
-vm_barrier_finish_p(rb_vm_t *vm)
-{
-    return vm->ractor.sync.gc_barrier ? vm_gc_barrier_finish_p(vm) : vm_non_gc_barrier_finish_p(vm);
 }
 
 void
@@ -302,7 +249,6 @@ rb_vm_barrier(void)
         VM_ASSERT(rb_ractor_status_p(cr, ractor_running));
 
         vm->ractor.sync.barrier_waiting = true;
-        vm->ractor.sync.gc_barrier = vm->global_gc_underway;
 
         RUBY_DEBUG_LOG("barrier start. cnt:%u living:%u blocking:%u",
                        vm->ractor.sync.barrier_cnt,
@@ -329,7 +275,6 @@ rb_vm_barrier(void)
         rb_vm_ractor_blocking_cnt_dec(vm, cr, __FILE__, __LINE__);
 
         vm->ractor.sync.barrier_waiting = false;
-        vm->ractor.sync.gc_barrier = false;
         vm->ractor.sync.barrier_cnt++;
 
         ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {

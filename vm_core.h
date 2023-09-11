@@ -645,7 +645,6 @@ typedef struct rb_vm_struct {
             bool barrier_waiting;
             unsigned int barrier_cnt;
             rb_nativethread_cond_t barrier_cond;
-	    bool gc_barrier;
 
             // join at exit
             rb_nativethread_cond_t terminate_cond;
@@ -713,9 +712,6 @@ typedef struct rb_vm_struct {
     struct rb_global_space *global_space;
 
     bool global_gc_underway;
-
-    unsigned int gc_waiter_cnt;
-    rb_nativethread_lock_t gc_waiter_cnt_lock;
 
     rb_at_exit_list *at_exit;
 

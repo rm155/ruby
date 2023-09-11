@@ -25,7 +25,6 @@ void rb_vm_lock_enter_body_cr(struct rb_ractor_struct *cr, unsigned int *lev APP
 void rb_vm_lock_enter_body_nb(unsigned int *lev APPEND_LOCATION_ARGS);
 void rb_vm_lock_enter_body(unsigned int *lev APPEND_LOCATION_ARGS);
 void rb_vm_lock_leave_body(unsigned int *lev APPEND_LOCATION_ARGS);
-void rb_signal_at_gc_barrier(struct rb_ractor_struct *cr);
 void rb_vm_barrier(void);
 
 #if RUBY_DEBUG
