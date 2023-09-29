@@ -1452,7 +1452,6 @@ enum gc_enter_event {
     if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
 	if (objspace->local_gc_level == 0) { \
 	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
-	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
 	    while (objspace->ractor->borrowing_sync.borrower_count != 0) {\
 		rb_ractor_blocking_threads_inc(objspace->ractor, __FILE__, __LINE__); \
 		rb_native_cond_wait(&objspace->ractor->borrowing_sync.no_borrowers, &objspace->ractor->borrowing_sync.borrower_count_lock); \
