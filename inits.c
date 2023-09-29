@@ -22,7 +22,6 @@ rb_call_inits(void)
 {
     CALL(default_shapes);
     CALL(Thread_Mutex);
-    CALL(Method);
     CALL(RandomSeedCore);
     CALL(encodings);
     CALL(sym);
@@ -76,7 +75,7 @@ rb_call_inits(void)
     CALL(ast);
     CALL(gc_stress);
     CALL(shape);
-    CALL(YARP);
+    CALL(Prism);
 
     // enable builtin loading
     CALL(builtin);
