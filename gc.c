@@ -2707,13 +2707,13 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     VALUE already_disabled = rb_objspace_gc_disable(receiving_objspace);
 
     rb_ractor_t *cr = GET_RACTOR();
+    rb_ractor_blocking_threads_inc(cr, __FILE__, __LINE__);
     rb_native_mutex_lock(&closing_ractor->sync.close_lock);
     while (!closing_ractor->sync.ready_to_close) {
-	rb_ractor_blocking_threads_inc(cr, __FILE__, __LINE__);
 	rb_native_cond_wait(&closing_ractor->sync.close_cond, &closing_ractor->sync.close_lock);
-	rb_ractor_blocking_threads_dec(cr, __FILE__, __LINE__);
     }
     rb_native_mutex_unlock(&closing_ractor->sync.close_lock);
+    rb_ractor_blocking_threads_dec(cr, __FILE__, __LINE__);
 
     RB_VM_LOCK();
 
