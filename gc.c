@@ -823,6 +823,10 @@ typedef struct rb_objspace {
     size_t secondary_shareable_tbl_size;
     rb_nativethread_lock_t secondary_shareable_tbl_lock;
 
+    st_table *shared_reference_tbl;
+    rb_nativethread_lock_t shared_reference_tbl_lock;
+    st_table *external_reference_tbl;
+
     struct {
         int run;
         unsigned int latest_gc_info;
@@ -951,6 +955,36 @@ current_ractor_objspace(void)
     return objspace;
 }
 
+enum {
+    shared_object_local,
+    shared_object_unmarked,
+    shared_object_marked,
+    shared_object_added,
+};
+
+typedef struct gc_reference_count {
+    rb_atomic_t count;
+    bool removed_by_global_gc;
+} gc_reference_count_t;
+
+typedef struct gc_reference_status {
+    gc_reference_count_t *refcount;
+    int status;
+} gc_reference_status_t;
+
+static void mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace);
+static bool external_references_all_unmarked(rb_objspace_t *objspace);
+static gc_reference_status_t *get_reference_status(st_table *tbl, VALUE obj);
+static void set_reference_status(st_table *tbl, VALUE obj, gc_reference_status_t *rs);
+static void delete_reference_status(st_table *tbl, VALUE obj);
+static void mark_in_external_reference_tbl(rb_objspace_t *objspace, VALUE obj);
+static bool shared_references_all_marked(rb_objspace_t *objspace);
+static bool double_check_shared_reference_tbl(rb_objspace_t *objspace);
+static void drop_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs);
+static void add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs);
+static void update_shared_object_references(rb_objspace_t *objspace);
+static void absorb_shared_object_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from);
+
 static int
 insert_table_row(st_data_t key, st_data_t val, st_data_t arg)
 {
@@ -960,29 +994,35 @@ insert_table_row(st_data_t key, st_data_t val, st_data_t arg)
 }
 
 static void
-update_table_contents(st_table *receiving_tbl, st_table *added_tbl)
+absorb_table_contents(st_table *receiving_tbl, st_table *added_tbl)
 {
     st_foreach(added_tbl, insert_table_row, (st_data_t)receiving_tbl);
 }
 
 static void
-update_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
+absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
 {
-	update_table_contents(objspace_to_update->finalizer_table, objspace_to_copy_from->finalizer_table);
+    //Finalizer table
+    absorb_table_contents(objspace_to_update->finalizer_table, objspace_to_copy_from->finalizer_table);
 
-	update_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->shareable_tbl);
-	objspace_to_update->shareable_tbl_size += objspace_to_copy_from->shareable_tbl_size;
-	update_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->secondary_shareable_tbl);
-	objspace_to_update->shareable_tbl_size += objspace_to_copy_from->secondary_shareable_tbl_size;
+    //Shareable tables
+    absorb_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->shareable_tbl);
+    objspace_to_update->shareable_tbl_size += objspace_to_copy_from->shareable_tbl_size;
+    absorb_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->secondary_shareable_tbl);
+    objspace_to_update->shareable_tbl_size += objspace_to_copy_from->secondary_shareable_tbl_size;
 
-	rb_native_mutex_lock(&objspace_to_copy_from->obj_id_lock);
-	rb_native_mutex_lock(&objspace_to_update->obj_id_lock);
+    //Shared object tables
+    absorb_shared_object_tables(objspace_to_update, objspace_to_copy_from);
 
-	update_table_contents(objspace_to_update->obj_to_id_tbl, objspace_to_copy_from->obj_to_id_tbl);
-	update_table_contents(objspace_to_update->id_to_obj_tbl, objspace_to_copy_from->id_to_obj_tbl);
+    //Object ID tables
+    rb_native_mutex_lock(&objspace_to_copy_from->obj_id_lock);
+    rb_native_mutex_lock(&objspace_to_update->obj_id_lock);
 
-	rb_native_mutex_unlock(&objspace_to_copy_from->obj_id_lock);
-	rb_native_mutex_unlock(&objspace_to_update->obj_id_lock);
+    absorb_table_contents(objspace_to_update->obj_to_id_tbl, objspace_to_copy_from->obj_to_id_tbl);
+    absorb_table_contents(objspace_to_update->id_to_obj_tbl, objspace_to_copy_from->id_to_obj_tbl);
+
+    rb_native_mutex_unlock(&objspace_to_copy_from->obj_id_lock);
+    rb_native_mutex_unlock(&objspace_to_update->obj_id_lock);
 }
 
 #ifndef HEAP_PAGE_ALIGN_LOG
@@ -2092,6 +2132,10 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->secondary_shareable_tbl);
     rb_nativethread_lock_destroy(&objspace->secondary_shareable_tbl_lock);
 
+    st_free_table(objspace->shared_reference_tbl);
+    rb_nativethread_lock_destroy(&objspace->shared_reference_tbl_lock);
+    st_free_table(objspace->external_reference_tbl);
+
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
 
@@ -2717,7 +2761,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     RB_VM_LOCK();
 
-    update_objspace_tables(receiving_objspace, closing_objspace);
+    absorb_objspace_tables(receiving_objspace, closing_objspace);
     allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, true);
     allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, false);
     transfer_all_size_pools(receiving_objspace, closing_objspace, true);
@@ -4123,6 +4167,15 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
 	global_space->rglobalgc.shared_objects_total--;
 	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+
+	rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
+	gc_reference_status_t *rs = get_reference_status(objspace->shared_reference_tbl, obj);
+	if (rs) {
+	    rs->refcount->removed_by_global_gc = true;
+	    delete_reference_status(objspace->shared_reference_tbl, obj);
+	    free(rs);
+	}
+	rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
@@ -4462,6 +4515,10 @@ Init_heap(rb_objspace_t *objspace)
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
     objspace->secondary_shareable_tbl = st_init_numtable();
+
+    objspace->shared_reference_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
+    objspace->external_reference_tbl = st_init_numtable();
 
     rb_nativethread_lock_initialize(&objspace->secondary_shareable_tbl_lock);
 
@@ -7845,6 +7902,13 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
 
     if (using_local_limits(objspace) && !in_marking_range(objspace, obj)) {
+	if (LIKELY(during_gc)) {
+	    if (UNLIKELY(RB_TYPE_P(obj, T_NONE))) {
+		rp(obj);
+		rb_bug("try to mark T_NONE object"); /* check here will help debugging */
+	    }
+	    mark_in_external_reference_tbl(objspace, obj);
+	}
 	return;
     }
 
@@ -8403,14 +8467,244 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
 static int
 gc_mark_stacked_objects_incremental(rb_objspace_t *objspace, size_t count)
 {
-    return gc_mark_stacked_objects(objspace, TRUE, count);
+    if (gc_mark_stacked_objects(objspace, TRUE, count) == TRUE && double_check_shared_reference_tbl(objspace)) {
+	return TRUE;
+    }
+    else
+    {
+	return FALSE;
+    }
 }
 
 static int
 gc_mark_stacked_objects_all(rb_objspace_t *objspace)
 {
-    return gc_mark_stacked_objects(objspace, FALSE, 0);
+    while (true) {
+	gc_mark_stacked_objects(objspace, FALSE, 0);
+	if (double_check_shared_reference_tbl(objspace)) return TRUE;
+    }
 }
+
+static void
+mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace)
+{
+    rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
+    mark_set(objspace, objspace->shared_reference_tbl);
+    rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
+}
+
+static int
+external_references_all_unmarked_i(st_data_t key, st_data_t value, st_data_t arg)
+{
+    gc_reference_status_t *rs = (gc_reference_status_t *)value;
+    if (rs->status == shared_object_unmarked) {
+	return ST_CONTINUE;
+    }
+    else {
+	bool *all_unmarked = (bool *)arg;
+	*all_unmarked = false;
+	return ST_STOP;
+    }
+}
+
+static bool
+external_references_all_unmarked(rb_objspace_t *objspace)
+{
+    bool all_unmarked = true;
+    st_foreach(objspace->external_reference_tbl, external_references_all_unmarked_i, (st_data_t)&all_unmarked);
+    return all_unmarked;
+}
+
+static gc_reference_status_t *
+get_reference_status(st_table *tbl, VALUE obj)
+{
+    st_data_t data;
+    bool found = !!st_lookup(tbl, (st_data_t)obj, &data);
+    if (found) {
+	return (gc_reference_status_t *)data;
+    }
+    else {
+	return NULL;
+    }
+}
+
+static void
+set_reference_status(st_table *tbl, VALUE obj, gc_reference_status_t *rs)
+{
+    st_insert(tbl, (st_data_t)obj, (st_data_t)rs);
+}
+
+static void
+delete_reference_status(st_table *tbl, VALUE obj)
+{
+    st_delete(tbl, (st_data_t *)&obj, NULL);
+}
+
+static void
+mark_in_external_reference_tbl(rb_objspace_t *objspace, VALUE obj)
+{
+    gc_reference_status_t *rs = get_reference_status(objspace->external_reference_tbl, obj);
+    if (rs) {
+	if (rs->status == shared_object_unmarked) {
+	    rs->status = shared_object_marked;
+	}
+    }
+    else {
+	rs = malloc(sizeof(gc_reference_status_t));
+	rs->refcount = NULL;
+	rs->status = shared_object_added;
+	set_reference_status(objspace->external_reference_tbl, obj, rs);
+    }
+}
+
+static int
+shared_references_all_marked_i(st_data_t key, st_data_t value, st_data_t arg)
+{
+    if (!RVALUE_MARKED((VALUE)key)) {
+	bool *all_marked = (bool *)arg;
+	*all_marked = false;
+	return ST_STOP;
+    }
+    return ST_CONTINUE;
+}
+
+static bool
+shared_references_all_marked(rb_objspace_t *objspace)
+{
+    bool all_marked = true;
+    st_foreach(objspace->shared_reference_tbl, shared_references_all_marked_i, (st_data_t)&all_marked);
+    return all_marked;
+}
+
+static bool
+double_check_shared_reference_tbl(rb_objspace_t *objspace)
+{
+    if (!shared_references_all_marked(objspace)) {
+	mark_and_pin_shared_reference_tbl(objspace);
+	return false;
+    }
+    return true;
+}
+
+static void
+drop_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs)
+{
+    gc_reference_count_t *refcount = rs->refcount;
+    rb_atomic_t prev_count = RUBY_ATOMIC_FETCH_SUB(refcount->count, 1);
+    if (prev_count == 1) {
+	if (!refcount->removed_by_global_gc) {
+	    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+	    rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
+	    if (refcount->count == 0) {
+		delete_reference_status(source_objspace->shared_reference_tbl, obj);
+		free(refcount);
+	    }
+	    rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
+	}
+	else {
+	    free(refcount);
+	}
+    }
+    free(rs);
+}
+
+static void
+add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs)
+{
+    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+    rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
+    gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
+    if (local_rs) {
+	ATOMIC_INC(local_rs->refcount->count);
+    }
+    else {
+	gc_reference_count_t *refcount = malloc(sizeof(gc_reference_count_t));
+	refcount->count = 1;
+	refcount->removed_by_global_gc = false;
+
+	local_rs = malloc(sizeof(gc_reference_status_t));
+	local_rs->refcount = refcount;
+	local_rs->status = shared_object_local;
+	set_reference_status(source_objspace->shared_reference_tbl, obj, local_rs);
+    }
+    rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
+    rs->refcount = local_rs->refcount;
+}
+
+static int
+update_shared_object_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    rb_objspace_t *objspace = (rb_objspace_t *)argp;
+    gc_reference_status_t *rs = (gc_reference_status_t *)value;
+    VALUE obj = (VALUE)key;
+    switch (rs->status) {
+	case shared_object_unmarked:
+	    drop_external_reference_usage(objspace, obj, rs);
+	    return ST_DELETE;
+	case shared_object_marked:
+	    rs->status = shared_object_unmarked;
+	    return ST_CONTINUE;
+	case shared_object_added:
+	    add_external_reference_usage(objspace, obj, rs);
+	    rs->status = shared_object_unmarked;
+	    return ST_CONTINUE;
+	default:
+	    rb_bug("update_shared_object_references_i: unreachable");
+    }
+}
+
+static void
+update_shared_object_references(rb_objspace_t *objspace)
+{
+    st_foreach(objspace->external_reference_tbl, update_shared_object_references_i, (st_data_t)objspace);
+    VM_ASSERT(external_references_all_unmarked(objspace));
+}
+
+static int
+insert_external_reference_row(st_data_t key, st_data_t val, st_data_t arg)
+{
+    VALUE obj = (VALUE)key;
+    gc_reference_status_t *rs = (gc_reference_status_t *)val;
+    rb_objspace_t **objspaces = (rb_objspace_t **)arg;
+    rb_objspace_t *objspace_to_update = objspaces[0];
+    rb_objspace_t *objspace_to_copy_from = objspaces[1];
+    st_table *target_tbl = objspace_to_update->external_reference_tbl;
+
+    if (GET_OBJSPACE_OF_VALUE(obj) == objspace_to_update) {
+	drop_external_reference_usage(objspace_to_copy_from, obj, rs);
+    }
+    else {
+	bool replaced = !!st_insert(target_tbl, key, val);
+	if (replaced) {
+	    ATOMIC_DEC(rs->refcount->count);
+	}
+    }
+    return ST_CONTINUE;
+}
+
+static void
+absorb_external_references(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
+{
+    rb_objspace_t *objspaces[2];
+    objspaces[0] = objspace_to_update;
+    objspaces[1] = objspace_to_copy_from;
+    st_foreach(objspace_to_copy_from->external_reference_tbl, insert_external_reference_row, (st_data_t)objspaces);
+}
+
+static void
+absorb_shared_object_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
+{
+    rb_native_mutex_lock(&objspace_to_copy_from->shared_reference_tbl_lock);
+    rb_native_mutex_lock(&objspace_to_update->shared_reference_tbl_lock);
+
+    absorb_table_contents(objspace_to_update->shared_reference_tbl, objspace_to_copy_from->shared_reference_tbl);
+
+    rb_native_mutex_unlock(&objspace_to_copy_from->shared_reference_tbl_lock);
+    rb_native_mutex_unlock(&objspace_to_update->shared_reference_tbl_lock);
+
+    absorb_external_references(objspace_to_update, objspace_to_copy_from);
+}
+
 
 #if PRINT_ROOT_TICKS
 #define MAX_TICKS 0x100
@@ -8528,6 +8822,8 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
 	mark_set(objspace, objspace->secondary_shareable_tbl);
 	rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
+
+	mark_and_pin_shared_reference_tbl(objspace);
     }
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
@@ -9146,6 +9442,17 @@ heap_move_pooled_pages_to_free_pages(rb_heap_t *heap)
     }
 }
 
+static int
+count_objspaces(rb_vm_t *vm) //TODO: Replace with count-tracker
+{
+    int i = 0;
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+	i++;
+    }
+    return i;
+}
+
 /* marks */
 
 static void
@@ -9154,6 +9461,10 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
     /* start marking */
     gc_report(1, objspace, "gc_marks_start: (%s)\n", full_mark ? "full" : "minor");
     gc_mode_transition(objspace, gc_mode_marking);
+
+    VM_ASSERT(count_objspaces(GET_VM()) > 1 || st_table_size(objspace->shared_reference_tbl) == 0);
+    VM_ASSERT(count_objspaces(GET_VM()) > 1 || st_table_size(objspace->external_reference_tbl) == 0);
+    VM_ASSERT(external_references_all_unmarked(objspace));
 
     if (full_mark) {
         size_t incremental_marking_steps = (objspace->rincgc.pooled_slots / INCREMENTAL_MARK_STEP_ALLOCATIONS) + 1;
@@ -9299,6 +9610,8 @@ gc_marks_finish(rb_objspace_t *objspace)
     }
 
     gc_update_weak_references(objspace);
+
+    update_shared_object_references(objspace);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
