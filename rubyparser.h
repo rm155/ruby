@@ -71,7 +71,6 @@ enum node_type {
     NODE_ZSUPER,
     NODE_LIST,
     NODE_ZLIST,
-    NODE_VALUES,
     NODE_HASH,
     NODE_RETURN,
     NODE_YIELD,
@@ -131,7 +130,6 @@ enum node_type {
     NODE_HSHPTN,
     NODE_FNDPTN,
     NODE_ERROR,
-    NODE_DEF_TEMP,
     NODE_RIPPER,
     NODE_RIPPER_VALUES,
     NODE_LAST
@@ -176,7 +174,7 @@ typedef struct RNode_SCOPE {
 
     rb_ast_id_table_t *nd_tbl;
     struct RNode *nd_body;
-    struct RNode *nd_args;
+    struct RNode_ARGS *nd_args;
 } rb_node_scope_t;
 
 typedef struct RNode_BLOCK {
@@ -261,7 +259,6 @@ typedef struct RNode_UNTIL {
 typedef struct RNode_ITER {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
     struct RNode *nd_iter;
 } rb_node_iter_t;
@@ -269,7 +266,6 @@ typedef struct RNode_ITER {
 typedef struct RNode_FOR {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
     struct RNode *nd_iter;
 } rb_node_for_t;
@@ -278,49 +274,37 @@ typedef struct RNode_FOR_MASGN {
     NODE node;
 
     struct RNode *nd_var;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_for_masgn_t;
 
 /* RNode_BREAK, RNode_NEXT and RNode_RETURN should be same structure */
 typedef struct RNode_BREAK {
     NODE node;
 
+    struct RNode *nd_chain;
     struct RNode *nd_stts;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_break_t;
 
 typedef struct RNode_NEXT {
     NODE node;
 
+    struct RNode *nd_chain;
     struct RNode *nd_stts;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_next_t;
 
 typedef struct RNode_REDO {
     NODE node;
 
-    VALUE not_used;
-    VALUE not_used2;
-    VALUE not_used3;
+    struct RNode *nd_chain;
 } rb_node_redo_t;
 
 typedef struct RNode_RETRY {
     NODE node;
-
-    VALUE not_used;
-    VALUE not_used2;
-    VALUE not_used3;
 } rb_node_retry_t;
 
 typedef struct RNode_BEGIN {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
-    VALUE not_used2;
 } rb_node_begin_t;
 
 typedef struct RNode_RESCUE {
@@ -353,7 +337,6 @@ typedef struct RNode_AND {
 
     struct RNode *nd_1st;
     struct RNode *nd_2nd;
-    VALUE not_used;
 } rb_node_and_t;
 
 typedef struct RNode_OR {
@@ -361,7 +344,6 @@ typedef struct RNode_OR {
 
     struct RNode *nd_1st;
     struct RNode *nd_2nd;
-    VALUE not_used;
 } rb_node_or_t;
 
 typedef struct RNode_MASGN {
@@ -372,13 +354,11 @@ typedef struct RNode_MASGN {
     struct RNode *nd_args;
 } rb_node_masgn_t;
 
-/* RNode_LASGN, RNode_DASGN, RNode_IASGN, RNode_CVASGN and RNode_GASGN should be same structure */
 typedef struct RNode_LASGN {
     NODE node;
 
     ID nd_vid;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_lasgn_t;
 
 typedef struct RNode_DASGN {
@@ -386,7 +366,6 @@ typedef struct RNode_DASGN {
 
     ID nd_vid;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_dasgn_t;
 
 typedef struct RNode_GASGN {
@@ -394,7 +373,6 @@ typedef struct RNode_GASGN {
 
     ID nd_vid;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_gasgn_t;
 
 typedef struct RNode_IASGN {
@@ -402,7 +380,6 @@ typedef struct RNode_IASGN {
 
     ID nd_vid;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_iasgn_t;
 
 typedef struct RNode_CDECL {
@@ -418,7 +395,6 @@ typedef struct RNode_CVASGN {
 
     ID nd_vid;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_cvasgn_t;
 
 typedef struct RNode_OP_ASGN1 {
@@ -444,7 +420,6 @@ typedef struct RNode_OP_ASGN_AND {
 
     struct RNode *nd_head;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_op_asgn_and_t;
 
 typedef struct RNode_OP_ASGN_OR {
@@ -452,7 +427,6 @@ typedef struct RNode_OP_ASGN_OR {
 
     struct RNode *nd_head;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_op_asgn_or_t;
 
 typedef struct RNode_OP_CDECL {
@@ -463,7 +437,6 @@ typedef struct RNode_OP_CDECL {
     ID nd_aid;
 } rb_node_op_cdecl_t;
 
-/* RNode_CALL, RNode_OPCALL and RNode_QCALL should be same structure */
 typedef struct RNode_CALL {
     NODE node;
 
@@ -483,7 +456,6 @@ typedef struct RNode_OPCALL {
 typedef struct RNode_FCALL {
     NODE node;
 
-    VALUE not_used;
     ID nd_mid;
     struct RNode *nd_args;
 } rb_node_fcall_t;
@@ -491,9 +463,7 @@ typedef struct RNode_FCALL {
 typedef struct RNode_VCALL {
     NODE node;
 
-    VALUE not_used;
     ID nd_mid;
-    VALUE not_used2;
 } rb_node_vcall_t;
 
 typedef struct RNode_QCALL {
@@ -507,17 +477,11 @@ typedef struct RNode_QCALL {
 typedef struct RNode_SUPER {
     NODE node;
 
-    VALUE not_used;
-    VALUE not_used2;
     struct RNode *nd_args;
 } rb_node_super_t;
 
 typedef struct RNode_ZSUPER {
     NODE node;
-
-    VALUE not_used;
-    VALUE not_used2;
-    VALUE not_used3;
 } rb_node_zsuper_t;
 
 /*
@@ -545,10 +509,6 @@ typedef struct RNode_LIST {
 
 typedef struct RNode_ZLIST {
     NODE node;
-
-    VALUE not_used;
-    VALUE not_used2; /* Used by p->exits */
-    VALUE not_used3; /* Used by p->exits */
 } rb_node_zlist_t;
 
 typedef struct RNode_VALUES {
@@ -564,89 +524,66 @@ typedef struct RNode_HASH {
 
     struct RNode *nd_head;
     long nd_brace;
-    VALUE not_used;
 } rb_node_hash_t;
 
 typedef struct RNode_RETURN {
     NODE node;
 
     struct RNode *nd_stts;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_return_t;
 
 typedef struct RNode_YIELD {
     NODE node;
 
     struct RNode *nd_head;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_yield_t;
 
-/* RNode_LVAR and RNode_DVAR should be same structure */
 typedef struct RNode_LVAR {
     NODE node;
 
     ID nd_vid;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_lvar_t;
 
 typedef struct RNode_DVAR {
     NODE node;
 
     ID nd_vid;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_dvar_t;
 
-/* RNode_GVAR, RNode_IVAR, RNode_CONST and RNode_CVAR should be same structure */
 typedef struct RNode_GVAR {
     NODE node;
 
     ID nd_vid;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_gvar_t;
 
 typedef struct RNode_IVAR {
     NODE node;
 
     ID nd_vid;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_ivar_t;
 
 typedef struct RNode_CONST {
     NODE node;
 
     ID nd_vid;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_const_t;
 
 typedef struct RNode_CVAR {
     NODE node;
 
     ID nd_vid;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_cvar_t;
 
 typedef struct RNode_NTH_REF {
     NODE node;
 
-    VALUE not_used;
     long nd_nth;
-    VALUE not_used2;
 } rb_node_nth_ref_t;
 
 typedef struct RNode_BACK_REF {
     NODE node;
 
-    VALUE not_used;
     long nd_nth;
-    VALUE not_used2;
 } rb_node_back_ref_t;
 
 /* RNode_MATCH, RNode_LIT, RNode_STR and RNode_XSTR should be same structure */
@@ -654,8 +591,6 @@ typedef struct RNode_MATCH {
     NODE node;
 
     VALUE nd_lit;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_match_t;
 
 typedef struct RNode_MATCH2 {
@@ -671,23 +606,18 @@ typedef struct RNode_MATCH3 {
 
     struct RNode *nd_recv;
     struct RNode *nd_value;
-    VALUE not_used;
 } rb_node_match3_t;
 
 typedef struct RNode_LIT {
     NODE node;
 
     VALUE nd_lit;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_lit_t;
 
 typedef struct RNode_STR {
     NODE node;
 
     VALUE nd_lit;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_str_t;
 
 /* RNode_DSTR, RNode_DXSTR and RNode_DSYM should be same structure */
@@ -706,8 +636,6 @@ typedef struct RNode_XSTR {
     NODE node;
 
     VALUE nd_lit;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_xstr_t;
 
 typedef struct RNode_DXSTR {
@@ -721,9 +649,7 @@ typedef struct RNode_DXSTR {
 typedef struct RNode_EVSTR {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
-    VALUE not_used2;
 } rb_node_evstr_t;
 
 typedef struct RNode_DREGX {
@@ -737,16 +663,12 @@ typedef struct RNode_DREGX {
 typedef struct RNode_ONCE {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
-    VALUE not_used2;
 } rb_node_once_t;
 
 typedef struct RNode_ARGS {
     NODE node;
 
-    VALUE not_used;
-    VALUE not_used2;
     struct rb_args_info *nd_ainfo;
 } rb_node_args_t;
 
@@ -761,17 +683,15 @@ typedef struct RNode_ARGS_AUX {
 typedef struct RNode_OPT_ARG {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
-    struct RNode *nd_next;
+    struct RNode_OPT_ARG *nd_next;
 } rb_node_opt_arg_t;
 
 typedef struct RNode_KW_ARG {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
-    struct RNode *nd_next;
+    struct RNode_KW_ARG *nd_next;
 } rb_node_kw_arg_t;
 
 typedef struct RNode_POSTARG {
@@ -779,7 +699,6 @@ typedef struct RNode_POSTARG {
 
     struct RNode *nd_1st;
     struct RNode *nd_2nd;
-    VALUE not_used;
 } rb_node_postarg_t;
 
 typedef struct RNode_ARGSCAT {
@@ -787,7 +706,6 @@ typedef struct RNode_ARGSCAT {
 
     struct RNode *nd_head;
     struct RNode *nd_body;
-    VALUE not_used;
 } rb_node_argscat_t;
 
 typedef struct RNode_ARGSPUSH {
@@ -795,15 +713,12 @@ typedef struct RNode_ARGSPUSH {
 
     struct RNode *nd_head;
     struct RNode *nd_body;
-    VALUE not_used;
 } rb_node_argspush_t;
 
 typedef struct RNode_SPLAT {
     NODE node;
 
     struct RNode *nd_head;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_splat_t;
 
 typedef struct RNode_BLOCK_PASS {
@@ -811,13 +726,11 @@ typedef struct RNode_BLOCK_PASS {
 
     struct RNode *nd_head;
     struct RNode *nd_body;
-    VALUE not_used;
 } rb_node_block_pass_t;
 
 typedef struct RNode_DEFN {
     NODE node;
 
-    VALUE not_used;
     ID nd_mid;
     struct RNode *nd_defn;
 } rb_node_defn_t;
@@ -863,7 +776,6 @@ typedef struct RNode_MODULE {
 
     struct RNode *nd_cpath;
     struct RNode *nd_body;
-    VALUE not_used;
 } rb_node_module_t;
 
 typedef struct RNode_SCLASS {
@@ -871,7 +783,6 @@ typedef struct RNode_SCLASS {
 
     struct RNode *nd_recv;
     struct RNode *nd_body;
-    VALUE not_used;
 } rb_node_sclass_t;
 
 typedef struct RNode_COLON2 {
@@ -879,15 +790,12 @@ typedef struct RNode_COLON2 {
 
     struct RNode *nd_head;
     ID nd_mid;
-    VALUE not_used;
 } rb_node_colon2_t;
 
 typedef struct RNode_COLON3 {
     NODE node;
 
-    VALUE not_used;
     ID nd_mid;
-    VALUE not_used2;
 } rb_node_colon3_t;
 
 /* RNode_DOT2, RNode_DOT3, RNode_FLIP2 and RNode_FLIP3 should be same structure */
@@ -939,26 +847,18 @@ typedef struct RNode_FALSE {
 
 typedef struct RNode_ERRINFO {
     NODE node;
-
-    VALUE not_used;
-    VALUE not_used2;
-    VALUE not_used3;
 } rb_node_errinfo_t;
 
 typedef struct RNode_DEFINED {
     NODE node;
 
     struct RNode *nd_head;
-    VALUE not_used;
-    VALUE not_used2;
 } rb_node_defined_t;
 
 typedef struct RNode_POSTEXE {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
-    VALUE not_used2;
 } rb_node_postexe_t;
 
 typedef struct RNode_DSYM {
@@ -980,17 +880,16 @@ typedef struct RNode_ATTRASGN {
 typedef struct RNode_LAMBDA {
     NODE node;
 
-    VALUE not_used;
     struct RNode *nd_body;
-    VALUE not_used2;
 } rb_node_lambda_t;
 
 typedef struct RNode_ARYPTN {
     NODE node;
 
     struct RNode *nd_pconst;
-    VALUE not_used;
-    struct rb_ary_pattern_info *nd_apinfo;
+    NODE *pre_args;
+    NODE *rest_arg;
+    NODE *post_args;
 } rb_node_aryptn_t;
 
 typedef struct RNode_HSHPTN {
@@ -1005,16 +904,13 @@ typedef struct RNode_FNDPTN {
     NODE node;
 
     struct RNode *nd_pconst;
-    VALUE not_used;
-    struct rb_fnd_pattern_info *nd_fpinfo;
+    NODE *pre_rest_arg;
+    NODE *args;
+    NODE *post_rest_arg;
 } rb_node_fndptn_t;
 
 typedef struct RNode_ERROR {
     NODE node;
-
-    VALUE not_used;
-    VALUE not_used2;
-    VALUE not_used3;
 } rb_node_error_t;
 
 #define RNODE(obj)  ((struct RNode *)(obj))
@@ -1065,7 +961,6 @@ typedef struct RNode_ERROR {
 #define RNODE_ZSUPER(node) ((struct RNode_ZSUPER *)(node))
 #define RNODE_LIST(node) ((struct RNode_LIST *)(node))
 #define RNODE_ZLIST(node) ((struct RNode_ZLIST *)(node))
-#define RNODE_VALUES(node) ((struct RNode_VALUES *)(node))
 #define RNODE_HASH(node) ((struct RNode_HASH *)(node))
 #define RNODE_RETURN(node) ((struct RNode_RETURN *)(node))
 #define RNODE_YIELD(node) ((struct RNode_YIELD *)(node))
@@ -1156,6 +1051,10 @@ typedef struct RNode_RIPPER_VALUES {
 #define NODE_TYPESHIFT 8
 #define NODE_TYPEMASK  (((VALUE)0x7f)<<NODE_TYPESHIFT)
 
+#define nd_fl_newline(n) (n)->flags & NODE_FL_NEWLINE
+#define nd_set_fl_newline(n) (n)->flags |= NODE_FL_NEWLINE
+#define nd_unset_fl_newline(n) (n)->flags &= ~NODE_FL_NEWLINE
+
 #define nd_type(n) ((int) ((RNODE(n)->flags & NODE_TYPEMASK)>>NODE_TYPESHIFT))
 #define nd_set_type(n,t) \
     rb_node_set_type(n, t)
@@ -1174,25 +1073,13 @@ struct rb_args_info {
     ID rest_arg;
     ID block_arg;
 
-    NODE *kw_args;
+    struct RNode_KW_ARG *kw_args;
     NODE *kw_rest_arg;
 
-    NODE *opt_args;
+    struct RNode_OPT_ARG *opt_args;
     unsigned int no_kwarg: 1;
     unsigned int ruby2_keywords: 1;
     unsigned int forwarding: 1;
-};
-
-struct rb_ary_pattern_info {
-    NODE *pre_args;
-    NODE *rest_arg;
-    NODE *post_args;
-};
-
-struct rb_fnd_pattern_info {
-    NODE *pre_rest_arg;
-    NODE *args;
-    NODE *post_rest_arg;
 };
 
 typedef struct node_buffer_struct node_buffer_t;
@@ -1248,9 +1135,6 @@ typedef struct rb_parser_config_struct {
     void *(*xmalloc_mul_add)(size_t x, size_t y, size_t z);
 
     /* imemo */
-    // TODO: Should it return `rb_strterm_t *'?
-    VALUE (*new_strterm)(VALUE v1, VALUE v2, VALUE v3, VALUE v0, int heredoc);
-    int (*strterm_is_heredoc)(VALUE strterm);
     rb_imemo_tmpbuf_t *(*tmpbuf_parser_heap)(void *buf, rb_imemo_tmpbuf_t *old_heap, size_t cnt);
     rb_ast_t *(*ast_new)(VALUE nb);
 
@@ -1338,6 +1222,7 @@ typedef struct rb_parser_config_struct {
     VALUE (*hash_clear)(VALUE hash);
     VALUE (*hash_new)(void);
     VALUE (*hash_aset)(VALUE hash, VALUE key, VALUE val);
+    VALUE (*hash_delete)(VALUE hash, VALUE key);
     VALUE (*hash_lookup)(VALUE hash, VALUE key);
     VALUE (*ident_hash_new)(void);
 

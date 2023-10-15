@@ -322,6 +322,7 @@ module Prism
       test_prism_eval("a = 1; { a: }")
       test_prism_eval("{ to_s: }")
       test_prism_eval("{ Prism: }")
+      test_prism_eval("[ Prism: [:b, :c]]")
     end
 
     ############################################################################
@@ -338,6 +339,18 @@ module Prism
       test_prism_eval("false || 1")
     end
 
+    def test_IfNode
+      test_prism_eval("if true; 1; end")
+      test_prism_eval("1 if true")
+    end
+
+    def test_ElseNode
+      test_prism_eval("if false; 0; else; 1; end")
+      test_prism_eval("if true; 0; else; 1; end")
+      test_prism_eval("true ? 1 : 0")
+      test_prism_eval("false ? 0 : 1")
+    end
+
     ############################################################################
     #  Calls / arugments                                                       #
     ############################################################################
@@ -350,10 +363,52 @@ module Prism
     # Scopes/statements                                                        #
     ############################################################################
 
+    def test_ClassNode
+      test_prism_eval("class PrismClassA; end")
+      test_prism_eval("class PrismClassA; end; class PrismClassB < PrismClassA; end")
+      test_prism_eval("class PrismClassA; end; class PrismClassA::PrismClassC; end")
+      test_prism_eval(<<-HERE
+        class PrismClassA; end
+        class PrismClassA::PrismClassC; end
+        class PrismClassB; end
+        class PrismClassB::PrismClassD < PrismClassA::PrismClassC; end
+      HERE
+      )
+    end
+
+    def test_ModuleNode
+      test_prism_eval("module M; end")
+      test_prism_eval("module M::N; end")
+      test_prism_eval("module ::O; end")
+    end
+
     def test_ParenthesesNode
       test_prism_eval("()")
       test_prism_eval("(1)")
     end
+
+    ############################################################################
+    # Methods / parameters                                                     #
+    ############################################################################
+
+    def test_UndefNode
+      test_prism_eval("def prism_undef_node_1; end; undef prism_undef_node_1")
+      test_prism_eval(<<-HERE
+        def prism_undef_node_2
+        end
+        def prism_undef_node_3
+        end
+        undef prism_undef_node_2, prism_undef_node_3
+      HERE
+      )
+      test_prism_eval(<<-HERE
+        def prism_undef_node_4
+        end
+        undef :'prism_undef_node_#{4}'
+      HERE
+      )
+    end
+
 
     ############################################################################
     # Pattern matching                                                         #

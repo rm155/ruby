@@ -107,7 +107,6 @@ struct rb_ractor_sync {
 
     VALUE locked_by;
     VALUE locking_thread;
-    rb_nativethread_cond_t cond;
 
     bool incoming_port_closed;
     bool outgoing_port_closed;
@@ -124,7 +123,12 @@ struct rb_ractor_sync {
     struct ractor_wait {
         enum rb_ractor_wait_status status;
         enum rb_ractor_wakeup_status wakeup_status;
+        rb_thread_t *waiting_thread;
     } wait;
+
+#ifndef RUBY_THREAD_PTHREAD_H
+    rb_nativethread_cond_t cond;
+#endif
 };
 
 // created
@@ -351,11 +355,13 @@ static inline void
 rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const char *file, int line)
 {
 #ifdef RB_THREAD_LOCAL_SPECIFIER
+
 # ifdef __APPLE__
     rb_current_ec_set(ec);
 # else
     ruby_current_ec = ec;
 # endif
+
 #else
     native_tls_set(ruby_current_ec_key, ec);
 #endif
