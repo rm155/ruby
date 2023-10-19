@@ -2939,10 +2939,18 @@ rb_assert_sig(void)
     }
 }
 
+struct timer_thread_func_args {
+    rb_vm_t *vm;
+    rb_execution_context_t *ec;
+};
+
 static void *
 timer_thread_func(void *ptr)
 {
-    rb_vm_t *vm = (rb_vm_t *)ptr;
+    struct timer_thread_func_args *args = (struct timer_thread_func_args *)ptr;
+    rb_vm_t *vm = args->vm;
+    rb_ractor_set_current_ec_no_ractor(args->ec);
+    free(args);
 #if defined(RUBY_NT_SERIAL)
     ruby_nt_serial = (rb_atomic_t)-1;
 #endif
@@ -3062,7 +3070,12 @@ rb_thread_create_timer_thread(void)
         timer_thread_setup_nm();
     }
 
-    pthread_create(&timer_th.pthread_id, NULL, timer_thread_func, GET_VM());
+
+    struct timer_thread_func_args *args = xmalloc(sizeof(struct timer_thread_func_args));
+    args->vm = GET_VM();
+    args->ec = GET_EC();
+
+    pthread_create(&timer_th.pthread_id, NULL, timer_thread_func, args);
 }
 
 static int

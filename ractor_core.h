@@ -349,10 +349,8 @@ rb_ractor_thread_switch(rb_ractor_t *cr, rb_thread_t *th)
     VM_ASSERT(cr == GET_RACTOR());
 }
 
-#define rb_ractor_set_current_ec(cr, ec) rb_ractor_set_current_ec_(cr, ec, __FILE__, __LINE__)
-
 static inline void
-rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const char *file, int line)
+rb_ractor_set_current_ec_no_ractor(rb_execution_context_t *ec)
 {
 #ifdef RB_THREAD_LOCAL_SPECIFIER
 
@@ -365,6 +363,14 @@ rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const cha
 #else
     native_tls_set(ruby_current_ec_key, ec);
 #endif
+}
+
+#define rb_ractor_set_current_ec(cr, ec) rb_ractor_set_current_ec_(cr, ec, __FILE__, __LINE__)
+
+static inline void
+rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const char *file, int line)
+{
+    rb_ractor_set_current_ec_no_ractor(ec);
     RUBY_DEBUG_LOG2(file, line, "ec:%p->%p", (void *)cr->threads.running_ec, (void *)ec);
     VM_ASSERT(ec == NULL || cr->threads.running_ec != ec);
     cr->threads.running_ec = ec;
