@@ -987,7 +987,7 @@ rb_thread_create_ractor(rb_ractor_t *r, VALUE args, VALUE proc)
         .proc = proc,
     };
 
-    return rb_run_with_redirected_allocation(g, thread_create_ractor_given_redirected_allocation, (VALUE)&params);
+    return rb_run_with_redirected_allocation(r, thread_create_ractor_given_redirected_allocation, (VALUE)&params);
 }
 
 
