@@ -2857,8 +2857,6 @@ vm_mark_negative_cme(VALUE val, void *dmy)
     return ID_TABLE_CONTINUE;
 }
 
-void rb_thread_sched_mark_zombies(rb_vm_t *vm);
-
 void
 rb_vm_ractor_mark(void *ptr)
 {
@@ -2926,7 +2924,6 @@ rb_vm_mark(void *ptr)
         rb_id_table_foreach_values(vm->negative_cme_table, vm_mark_negative_cme, NULL);
         rb_mark_tbl_no_pin(vm->overloaded_cme_table);
 
-        rb_thread_sched_mark_zombies(vm);
         rb_rjit_mark();
     }
 

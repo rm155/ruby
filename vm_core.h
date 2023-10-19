@@ -676,8 +676,6 @@ typedef struct rb_vm_struct {
             // threads which switch context by timeslice
             struct ccan_list_head timeslice_threads;
 
-            struct ccan_list_head zombie_threads;
-
             // true if timeslice timer is not enable
             bool timeslice_wait_inf;
 
@@ -1799,7 +1797,6 @@ rb_vm_living_threads_init(rb_vm_t *vm)
     ccan_list_head_init(&vm->workqueue);
     ccan_list_head_init(&vm->ractor.set);
     ccan_list_head_init(&vm->objspace_set);
-    ccan_list_head_init(&vm->ractor.sched.zombie_threads);
 }
 
 void rb_thread_fiber_mark(rb_thread_t *th);

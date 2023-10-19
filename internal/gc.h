@@ -135,6 +135,7 @@ typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
 typedef struct rb_thread_struct rb_thread_t; /* in vm_core.h */
 
 void rb_add_to_shareable_tbl(VALUE obj);
+void rb_add_zombie_thread(rb_thread_t *th);
 void rb_add_to_absorbed_threads_tbl(rb_thread_t *th);
 void rb_remove_from_absorbed_threads_tbl(rb_thread_t *th);
 

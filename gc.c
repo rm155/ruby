@@ -926,6 +926,8 @@ typedef struct rb_objspace {
 
     const struct rb_callcache *global_cc_cache_table[VM_GLOBAL_CC_CACHE_TABLE_SIZE]; // vm_eval.c
 
+    struct ccan_list_head zombie_threads;
+
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
 
@@ -4465,6 +4467,8 @@ Init_heap(rb_objspace_t *objspace)
 
     init_mark_stack(&objspace->mark_stack);
 
+    ccan_list_head_init(&objspace->zombie_threads);
+
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
@@ -5338,6 +5342,19 @@ rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm)
 	}
     }
     rb_objspace_call_finalizer(vm->objspace);
+}
+
+void
+rb_add_zombie_thread(rb_thread_t *th)
+{
+    rb_vm_t *vm = th->vm;
+    th->sched.finished = false;
+
+    RB_VM_LOCK_ENTER();
+    {
+	ccan_list_add(&GET_OBJSPACE_OF_VALUE(th->self)->zombie_threads, &th->sched.node.zombie_threads);
+    }
+    RB_VM_LOCK_LEAVE();
 }
 
 void
@@ -7408,6 +7425,22 @@ mark_thread_if_in_objspace(st_data_t key, st_data_t value, st_data_t data)
 }
 
 static void
+mark_zombie_threads(rb_objspace_t *objspace)
+{
+    if (!ccan_list_empty(&objspace->zombie_threads)) {
+        rb_thread_t *zombie_th, *next_zombie_th;
+        ccan_list_for_each_safe(&objspace->zombie_threads, zombie_th, next_zombie_th, sched.node.zombie_threads) {
+            if (zombie_th->sched.finished) {
+                ccan_list_del_init(&zombie_th->sched.node.zombie_threads);
+            }
+            else {
+                rb_gc_mark(zombie_th->self);
+            }
+        }
+    }
+}
+
+static void
 mark_absorbed_threads_tbl(rb_objspace_t *objspace)
 {
     rb_global_space_t *global_space = &rb_global_space;
@@ -8488,6 +8521,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	rb_vm_mark(vm);
 	if (vm->self) gc_mark(objspace, vm->self);
     }
+    mark_zombie_threads(objspace);
     mark_absorbed_threads_tbl(objspace);
 
     MARK_CHECKPOINT("cache_table");
