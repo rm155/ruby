@@ -927,6 +927,7 @@ typedef struct rb_objspace {
     const struct rb_callcache *global_cc_cache_table[VM_GLOBAL_CC_CACHE_TABLE_SIZE]; // vm_eval.c
 
     struct ccan_list_head zombie_threads;
+    rb_nativethread_lock_t zombie_threads_lock;
 
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
@@ -2093,6 +2094,8 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->shareable_tbl);
     st_free_table(objspace->secondary_shareable_tbl);
     rb_nativethread_lock_destroy(&objspace->secondary_shareable_tbl_lock);
+
+    rb_nativethread_lock_destroy(&objspace->zombie_threads_lock);
 
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
@@ -4468,6 +4471,8 @@ Init_heap(rb_objspace_t *objspace)
     init_mark_stack(&objspace->mark_stack);
 
     ccan_list_head_init(&objspace->zombie_threads);
+
+    rb_nativethread_lock_initialize(&objspace->zombie_threads_lock);
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
@@ -7427,6 +7432,7 @@ mark_thread_if_in_objspace(st_data_t key, st_data_t value, st_data_t data)
 static void
 mark_zombie_threads(rb_objspace_t *objspace)
 {
+    rb_native_mutex_lock(&objspace->zombie_threads_lock);
     if (!ccan_list_empty(&objspace->zombie_threads)) {
         rb_thread_t *zombie_th, *next_zombie_th;
         ccan_list_for_each_safe(&objspace->zombie_threads, zombie_th, next_zombie_th, sched.node.zombie_threads) {
@@ -7438,6 +7444,7 @@ mark_zombie_threads(rb_objspace_t *objspace)
             }
         }
     }
+    rb_native_mutex_unlock(&objspace->zombie_threads_lock);
 }
 
 static void
