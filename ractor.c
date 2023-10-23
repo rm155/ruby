@@ -212,8 +212,12 @@ rb_ractor_related_objects_mark(void *ptr)
 {
     rb_ractor_t *r = (rb_ractor_t *)ptr;
 
-    ractor_queue_mark(&r->sync.recv_queue);
-    ractor_queue_mark(&r->sync.takers_queue);
+    RACTOR_LOCK(r);
+    {
+	ractor_queue_mark(&r->sync.recv_queue);
+	ractor_queue_mark(&r->sync.takers_queue);
+    }
+    RACTOR_UNLOCK(r);
 
     rb_gc_mark(r->receiving_mutex);
 
