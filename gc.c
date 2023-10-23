@@ -2690,6 +2690,23 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 }
 
 static void
+transfer_zombie_threads(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace)
+{
+    rb_native_mutex_lock(&receiving_objspace->zombie_threads_lock);
+    //TODO: Assert that the closing objspace has had its pages absorbed (so locking is not needed)
+
+    if (!ccan_list_empty(&closing_objspace->zombie_threads)) {
+        rb_thread_t *zombie_th, *next_zombie_th;
+        ccan_list_for_each_safe(&closing_objspace->zombie_threads, zombie_th, next_zombie_th, sched.node.zombie_threads) {
+	    ccan_list_del_init(&zombie_th->sched.node.zombie_threads);
+	    ccan_list_add(&receiving_objspace->zombie_threads, &zombie_th->sched.node.zombie_threads);
+        }
+    }
+
+    rb_native_mutex_unlock(&receiving_objspace->zombie_threads_lock);
+}
+
+static void
 close_objspace(rb_objspace_t *objspace)
 {
     lock_ractor_set();
@@ -2731,6 +2748,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_borrowing_cache);
     merge_deferred_heap_pages(receiving_objspace, closing_objspace);
     rb_transfer_postponed_jobs(receiving_ractor, closing_ractor);
+    transfer_zombie_threads(receiving_objspace, closing_objspace);
     update_objspace_counts(receiving_objspace, closing_objspace);
 
     //TODO: What if another Ractor tries to access the pointer at this exact moment?
