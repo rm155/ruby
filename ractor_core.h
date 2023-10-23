@@ -103,7 +103,6 @@ struct rb_ractor_sync {
 
     rb_nativethread_cond_t close_cond;
     bool ready_to_close;
-    rb_nativethread_lock_t close_lock;
 
     VALUE locked_by;
     VALUE locking_thread;
@@ -209,7 +208,6 @@ struct rb_ractor_struct {
 	bool page_recently_locked[SIZE_POOL_COUNT];
 
 	int borrower_count;
-	rb_nativethread_lock_t borrower_count_lock;
 	rb_nativethread_cond_t no_borrowers;
     } borrowing_sync;
 

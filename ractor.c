@@ -264,7 +264,6 @@ ractor_free(void *ptr)
     rb_ractor_t *r = (rb_ractor_t *)ptr;
     RUBY_DEBUG_LOG("free r:%d", rb_ractor_id(r));
     rb_native_mutex_destroy(&r->sync.lock);
-    rb_native_mutex_destroy(&r->sync.close_lock);
     rb_native_cond_destroy(&r->sync.close_cond);
 #ifdef RUBY_THREAD_WIN32_H
     rb_native_cond_destroy(&r->sync.cond);
@@ -273,7 +272,6 @@ ractor_free(void *ptr)
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
 	rb_native_mutex_destroy(&r->borrowing_sync.page_lock[i]);
     }
-    rb_native_mutex_destroy(&r->borrowing_sync.borrower_count_lock);
     rb_native_cond_destroy(&r->borrowing_sync.no_borrowers);
     ractor_queue_free(&r->sync.recv_queue);
     ractor_queue_free(&r->sync.takers_queue);
@@ -2100,7 +2098,6 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 
     r->sync.ready_to_close = false;
     rb_native_cond_initialize(&r->sync.close_cond);
-    rb_native_mutex_initialize(&r->sync.close_lock);
 
     rb_native_cond_initialize(&r->barrier_wait_cond);
 
@@ -2118,7 +2115,6 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 	r->borrowing_sync.page_recently_locked[i] = false;
     }
     r->borrowing_sync.borrower_count = 0;
-    rb_native_mutex_initialize(&r->borrowing_sync.borrower_count_lock);
     rb_native_cond_initialize(&r->borrowing_sync.no_borrowers);
 
     // thread management
@@ -2249,12 +2245,10 @@ rb_ractor_teardown(rb_execution_context_t *ec)
 	rb_add_to_absorbed_threads_tbl(cr->threads.main);
 	cr->dropped_main_thread = cr->threads.main;
         cr->threads.main = NULL;
+	cr->sync.ready_to_close = true;
+	rb_native_cond_signal(&cr->sync.close_cond);
     }
     RB_VM_LOCK_LEAVE();
-    rb_native_mutex_lock(&cr->sync.close_lock);
-    cr->sync.ready_to_close = true;
-    rb_native_cond_signal(&cr->sync.close_cond);
-    rb_native_mutex_unlock(&cr->sync.close_lock);
 }
 
 void
