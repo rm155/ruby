@@ -426,7 +426,7 @@ jit_compile(rb_execution_context_t *ec)
 {
     const rb_iseq_t *iseq = ec->cfp->iseq;
     struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
-    bool yjit_enabled = rb_yjit_compile_new_iseqs();
+    bool yjit_enabled = rb_yjit_enabled_p;
     if (!(yjit_enabled || rb_rjit_call_p)) {
         return NULL;
     }
@@ -476,7 +476,7 @@ jit_compile_exception(rb_execution_context_t *ec)
 {
     const rb_iseq_t *iseq = ec->cfp->iseq;
     struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
-    if (!rb_yjit_compile_new_iseqs()) {
+    if (!rb_yjit_enabled_p) {
         return NULL;
     }
 
@@ -4134,6 +4134,7 @@ Init_BareVM(void)
     th->vm = vm;
     th->ractor = vm->ractor.main_ractor = rb_ractor_main_alloc();
     Init_native_thread(th);
+    rb_jit_cont_init();
     th_init(th, 0, vm);
 
     rb_ractor_set_current_ec(th->ractor, th->ec);

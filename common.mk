@@ -444,8 +444,8 @@ Doxyfile: $(srcdir)/template/Doxyfile.tmpl $(PREP) $(tooldir)/generic_erb.rb $(R
 	$(Q) $(MINIRUBY) $(tooldir)/generic_erb.rb -o $@ $(srcdir)/template/Doxyfile.tmpl \
 	--srcdir="$(srcdir)" --miniruby="$(MINIRUBY)"
 
-program: $(SHOWFLAGS) $(PROGRAM)
-wprogram: $(SHOWFLAGS) $(WPROGRAM)
+program: $(SHOWFLAGS) $(DOT_WAIT) $(PROGRAM)
+wprogram: $(SHOWFLAGS) $(DOT_WAIT) $(WPROGRAM)
 mini: PHONY miniruby$(EXEEXT)
 
 $(PROGRAM) $(WPROGRAM): $(LIBRUBY) $(MAINOBJ) $(OBJS) $(EXTOBJS) $(SETUP) $(PREP)
@@ -863,7 +863,8 @@ $(arch:noarch=ignore)-fake.rb: $(srcdir)/template/fake.rb.in $(tooldir)/generic_
 	$(ECHO) generating $@
 	$(Q) $(CPP) -DRUBY_EXPORT $(INCFLAGS) $(CPPFLAGS) "$(srcdir)/version.c" | \
 	$(BOOTSTRAPRUBY) "$(tooldir)/generic_erb.rb" -o $@ "$(srcdir)/template/fake.rb.in" \
-		i=- srcdir="$(srcdir)" BASERUBY="$(BASERUBY)"
+	    i=- srcdir="$(srcdir)" BASERUBY="$(BASERUBY)" \
+	    LIBPATHENV="$(LIBPATHENV)" PRELOADENV="$(PRELOADENV)" LIBRUBY_SO="$(LIBRUBY_SO)"
 
 noarch-fake.rb: # prerequisite of yes-fake
 	$(Q) exit > $@
@@ -928,7 +929,10 @@ test-sample: test-basic # backward compatibility for mswin-build
 test-short: btest-ruby $(DOT_WAIT) test-knownbug $(DOT_WAIT) test-basic
 test: test-short
 
-yes-test-all-precheck: programs encs exts PHONY $(DOT_WAIT)
+# Separate to skip updating encs and exts by `make -o test-precheck`
+# for GNU make.
+test-precheck: encs exts PHONY $(DOT_WAIT)
+yes-test-all-precheck: programs $(DOT_WAIT) test-precheck
 
 # $ make test-all TESTOPTS="--help" displays more detail
 # for example, make test-all TESTOPTS="-j2 -v -n test-name -- test-file-name"
@@ -1032,7 +1036,7 @@ PHONY:
 {$(srcdir)}.y.c:
 	$(ECHO) generating $@
 	$(Q)$(BASERUBY) $(tooldir)/id2token.rb $(SRC_FILE) | \
-	$(YACC) -d $(YFLAGS) -o$@ -h$*.h - parse.y
+	$(YACC) $(YFLAGS) -o$@ -H$*.h - parse.y
 
 $(PLATFORM_D):
 	$(Q) $(MAKEDIRS) $(PLATFORM_DIR) $(@D)
@@ -3426,6 +3430,7 @@ compile.$(OBJEXT): {$(VPATH)}vm_callinfo.h
 compile.$(OBJEXT): {$(VPATH)}vm_core.h
 compile.$(OBJEXT): {$(VPATH)}vm_debug.h
 compile.$(OBJEXT): {$(VPATH)}vm_opts.h
+compile.$(OBJEXT): {$(VPATH)}yjit.h
 complex.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 complex.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 complex.$(OBJEXT): $(CCAN_DIR)/list/list.h

@@ -40,6 +40,7 @@
 #include "vm_core.h"
 #include "vm_callinfo.h"
 #include "vm_debug.h"
+#include "yjit.h"
 
 #include "builtin.h"
 #include "insns.inc"
@@ -968,17 +969,10 @@ rb_iseq_compile_node(rb_iseq_t *iseq, const NODE *node)
     return iseq_setup(iseq, ret);
 }
 
-typedef struct pm_compile_context {
-    pm_parser_t *parser;
-    struct pm_compile_context *previous;
-    ID *constants;
-    st_table *index_lookup_table;
-} pm_compile_context_t;
-
-static VALUE rb_translate_prism(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, pm_compile_context_t *compile_context);
+static VALUE rb_translate_prism(rb_iseq_t *iseq, const pm_scope_node_t *scope_node, LINK_ANCHOR *const ret);
 
 VALUE
-rb_iseq_compile_prism_node(rb_iseq_t * iseq, const pm_node_t *node, pm_parser_t *parser)
+rb_iseq_compile_prism_node(rb_iseq_t * iseq, pm_scope_node_t *scope_node, pm_parser_t *parser)
 {
     DECL_ANCHOR(ret);
     INIT_ANCHOR(ret);
@@ -991,13 +985,9 @@ rb_iseq_compile_prism_node(rb_iseq_t * iseq, const pm_node_t *node, pm_parser_t 
         constants[index] = rb_intern3((const char *) constant->start, constant->length, encoding);
     }
 
-    pm_compile_context_t compile_context = {
-        .parser = parser,
-        .previous = NULL,
-        .constants = constants
-    };
+    scope_node->constants = (void *)constants;
 
-    CHECK(rb_translate_prism(iseq, node, ret, &compile_context));
+    CHECK(rb_translate_prism(iseq, scope_node, ret));
     free(constants);
 
     CHECK(iseq_setup_insn(iseq, ret));
@@ -1020,6 +1010,11 @@ rb_iseq_translate_threaded_code(rb_iseq_t *iseq)
     }
     FL_SET((VALUE)iseq, ISEQ_TRANSLATED);
 #endif
+
+#if USE_YJIT
+    rb_yjit_live_iseq_count++;
+#endif
+
     return COMPILE_OK;
 }
 
@@ -3887,11 +3882,11 @@ iseq_specialized_instruction(rb_iseq_t *iseq, INSN *iobj)
                   case idMin:
                   case idHash:
                     {
-                        rb_num_t num = (rb_num_t)iobj->operands[0];
+                        VALUE num = iobj->operands[0];
                         iobj->insn_id = BIN(opt_newarray_send);
                         iobj->operands = compile_data_calloc2(iseq, insn_len(iobj->insn_id) - 1, sizeof(VALUE));
-                        iobj->operands[0] = (VALUE)num;
-                        iobj->operands[1] = (VALUE)rb_id2sym(vm_ci_mid(ci));
+                        iobj->operands[0] = num;
+                        iobj->operands[1] = rb_id2sym(vm_ci_mid(ci));
                         iobj->operand_size = insn_len(iobj->insn_id) - 1;
                         ELEM_REMOVE(&niobj->link);
                         return COMPILE_OK;
@@ -8719,7 +8714,7 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
     }
     asgnflag = COMPILE_RECV(ret, "NODE_OP_ASGN1 recv", node, RNODE_OP_ASGN1(node)->nd_recv);
     CHECK(asgnflag != -1);
-    switch (nd_type(RNODE_OP_ASGN1(node)->nd_args->nd_head)) {
+    switch (nd_type(RNODE_OP_ASGN1(node)->nd_index)) {
       case NODE_ZLIST:
         argc = INT2FIX(0);
         break;
@@ -8727,7 +8722,7 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
         boff = 1;
         /* fall through */
       default:
-        argc = setup_args(iseq, ret, RNODE_OP_ASGN1(node)->nd_args->nd_head, &flag, NULL);
+        argc = setup_args(iseq, ret, RNODE_OP_ASGN1(node)->nd_index, &flag, NULL);
         CHECK(!NIL_P(argc));
     }
     ADD_INSN1(ret, node, dupn, FIXNUM_INC(argc, 1 + boff));
@@ -8755,7 +8750,7 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
         }
         ADD_INSN(ret, node, pop);
 
-        CHECK(COMPILE(ret, "NODE_OP_ASGN1 args->body: ", RNODE_OP_ASGN1(node)->nd_args->nd_body));
+        CHECK(COMPILE(ret, "NODE_OP_ASGN1 nd_rvalue: ", RNODE_OP_ASGN1(node)->nd_rvalue));
         if (!popped) {
             ADD_INSN1(ret, node, setn, FIXNUM_INC(argc, 2+boff));
         }
@@ -8789,7 +8784,7 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
         ADD_LABEL(ret, lfin);
     }
     else {
-        CHECK(COMPILE(ret, "NODE_OP_ASGN1 args->body: ", RNODE_OP_ASGN1(node)->nd_args->nd_body));
+        CHECK(COMPILE(ret, "NODE_OP_ASGN1 nd_rvalue: ", RNODE_OP_ASGN1(node)->nd_rvalue));
         ADD_SEND(ret, node, id, INT2FIX(1));
         if (!popped) {
             ADD_INSN1(ret, node, setn, FIXNUM_INC(argc, 2+boff));
@@ -13357,35 +13352,36 @@ ibf_load_iseq(const struct ibf_load *load, const rb_iseq_t *index_iseq)
 static void
 ibf_load_setup_bytes(struct ibf_load *load, VALUE loader_obj, const char *bytes, size_t size)
 {
+    struct ibf_header *header = (struct ibf_header *)bytes;
     load->loader_obj = loader_obj;
     load->global_buffer.buff = bytes;
-    load->header = (struct ibf_header *)load->global_buffer.buff;
-    load->global_buffer.size = load->header->size;
-    load->global_buffer.obj_list_offset = load->header->global_object_list_offset;
-    load->global_buffer.obj_list_size = load->header->global_object_list_size;
-    RB_OBJ_WRITE(loader_obj, &load->iseq_list, pinned_list_new(load->header->iseq_list_size));
+    load->header = header;
+    load->global_buffer.size = header->size;
+    load->global_buffer.obj_list_offset = header->global_object_list_offset;
+    load->global_buffer.obj_list_size = header->global_object_list_size;
+    RB_OBJ_WRITE(loader_obj, &load->iseq_list, pinned_list_new(header->iseq_list_size));
     RB_OBJ_WRITE(loader_obj, &load->global_buffer.obj_list, pinned_list_new(load->global_buffer.obj_list_size));
     load->iseq = NULL;
 
     load->current_buffer = &load->global_buffer;
 
-    if (size < load->header->size) {
+    if (size < header->size) {
         rb_raise(rb_eRuntimeError, "broken binary format");
     }
-    if (strncmp(load->header->magic, "YARB", 4) != 0) {
+    if (strncmp(header->magic, "YARB", 4) != 0) {
         rb_raise(rb_eRuntimeError, "unknown binary format");
     }
-    if (load->header->major_version != IBF_MAJOR_VERSION ||
-        load->header->minor_version != IBF_MINOR_VERSION) {
+    if (header->major_version != IBF_MAJOR_VERSION ||
+        header->minor_version != IBF_MINOR_VERSION) {
         rb_raise(rb_eRuntimeError, "unmatched version file (%u.%u for %u.%u)",
-                 load->header->major_version, load->header->minor_version, IBF_MAJOR_VERSION, IBF_MINOR_VERSION);
+                 header->major_version, header->minor_version, IBF_MAJOR_VERSION, IBF_MINOR_VERSION);
     }
     if (strcmp(load->global_buffer.buff + sizeof(struct ibf_header), RUBY_PLATFORM) != 0) {
         rb_raise(rb_eRuntimeError, "unmatched platform");
     }
-    if (load->header->iseq_list_offset % RUBY_ALIGNOF(ibf_offset_t)) {
+    if (header->iseq_list_offset % RUBY_ALIGNOF(ibf_offset_t)) {
         rb_raise(rb_eArgError, "unaligned iseq list offset: %u",
-                 load->header->iseq_list_offset);
+                 header->iseq_list_offset);
     }
     if (load->global_buffer.obj_list_offset % RUBY_ALIGNOF(ibf_offset_t)) {
         rb_raise(rb_eArgError, "unaligned object list offset: %u",
