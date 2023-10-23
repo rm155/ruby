@@ -157,6 +157,68 @@
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
+
+static size_t malloc_offset = 0;
+#if defined(HAVE_MALLOC_USABLE_SIZE)
+static size_t
+gc_compute_malloc_offset(void)
+{
+    // Different allocators use different metadata storage strategies which result in different
+    // ideal sizes.
+    // For instance malloc(64) will waste 8B with glibc, but waste 0B with jemalloc.
+    // But malloc(56) will waste 0B with glibc, but waste 8B with jemalloc.
+    // So we try allocating 64, 56 and 48 bytes and select the first offset that doesn't
+    // waste memory.
+    // This was tested on Linux with glibc 2.35 and jemalloc 5, and for both it result in
+    // no wasted memory.
+    size_t offset = 0;
+    for (offset = 0; offset <= 16; offset += 8) {
+        size_t allocated = (64 - offset);
+        void *test_ptr = malloc(allocated);
+        size_t wasted = malloc_usable_size(test_ptr) - allocated;
+        free(test_ptr);
+
+        if (wasted == 0) {
+            return offset;
+        }
+    }
+    return 0;
+}
+#else
+static size_t
+gc_compute_malloc_offset(void)
+{
+    // If we don't have malloc_usable_size, we use powers of 2.
+    return 0;
+}
+#endif
+
+size_t
+rb_malloc_grow_capa(size_t current, size_t type_size)
+{
+    size_t current_capacity = current;
+    if (current_capacity < 4) {
+        current_capacity = 4;
+    }
+    current_capacity *= type_size;
+
+    // We double the current capacity.
+    size_t new_capacity = (current_capacity * 2);
+
+    // And round up to the next power of 2 if it's not already one.
+    if (rb_popcount64(new_capacity) != 1) {
+        new_capacity = (size_t)(1 << (64 - nlz_int64(new_capacity)));
+    }
+
+    new_capacity -= malloc_offset;
+    new_capacity /= type_size;
+    if (current > new_capacity) {
+        rb_bug("rb_malloc_grow_capa: current_capacity=%zu, new_capacity=%zu, malloc_offset=%zu", current, new_capacity, malloc_offset);
+    }
+    RUBY_ASSERT(new_capacity > current);
+    return new_capacity;
+}
+
 static inline struct rbimpl_size_mul_overflow_tag
 size_add_overflow(size_t x, size_t y)
 {
@@ -930,6 +992,9 @@ typedef struct rb_objspace {
 
     const struct rb_callcache *global_cc_cache_table[VM_GLOBAL_CC_CACHE_TABLE_SIZE]; // vm_eval.c
 
+    struct ccan_list_head zombie_threads;
+    rb_nativethread_lock_t zombie_threads_lock;
+
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
 
@@ -1479,6 +1544,52 @@ static int garbage_collect(rb_objspace_t *, unsigned int reason, bool need_final
 static int  gc_start(rb_objspace_t *objspace, unsigned int reason);
 static void gc_rest(rb_objspace_t *objspace);
 
+static void begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr);
+static void end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr);
+static void begin_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev);
+static void end_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev);
+
+#ifdef RUBY_THREAD_PTHREAD_H
+# define BARRIER_WAITING(vm) (vm->ractor.sched.barrier_waiting)
+#else
+# define BARRIER_WAITING(vm) (vm->ractor.sync.barrier_waiting)
+#endif
+
+#define VM_COND_AND_BARRIER_WAIT(vm, cond, state_to_check) do { \
+    ASSERT_vm_locking(); \
+    while (BARRIER_WAITING(vm)) { \
+	RUBY_DEBUG_LOG("barrier serial:%u", vm->ractor.sched.barrier_serial); \
+	int lock_rec = vm->ractor.sync.lock_rec; \
+	int lock_owner = vm->ractor.sync.lock_owner; \
+	vm->ractor.sync.lock_rec = 0; \
+	vm->ractor.sync.lock_owner = NULL; \
+	rb_ractor_sched_barrier_join(vm, GET_RACTOR()); \
+	vm->ractor.sync.lock_rec = lock_rec; \
+	vm->ractor.sync.lock_owner = lock_owner; \
+    } \
+    if(state_to_check) break; \
+    rb_vm_cond_wait(vm, &cond); \
+} while(!state_to_check)
+
+#define LOCAL_GC_BEGIN(objspace) \
+{ \
+    begin_local_gc_section(GET_VM(), objspace, GET_RACTOR());
+
+#define LOCAL_GC_END(objspace) \
+    end_local_gc_section(GET_VM(), objspace, GET_RACTOR()); \
+}
+
+#define GLOBAL_GC_BEGIN(vm, objspace) \
+{ \
+    unsigned int _lev; \
+    begin_global_gc_section(vm, objspace, &_lev); \
+
+
+#define GLOBAL_GC_END(vm, objspace) \
+    end_global_gc_section(vm, objspace, &_lev); \
+}
+
+
 enum gc_enter_event {
     gc_enter_event_start,
     gc_enter_event_continue,
@@ -1486,47 +1597,6 @@ enum gc_enter_event {
     gc_enter_event_finalizer,
     gc_enter_event_rb_memerror,
 };
-
-#define LOCAL_GC_BEGIN(objspace) \
-{ \
-    if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
-	if (objspace->local_gc_level == 0) { \
-	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
-	    while (objspace->ractor->borrowing_sync.borrower_count != 0) {\
-		rb_ractor_blocking_threads_inc(objspace->ractor, __FILE__, __LINE__); \
-		rb_native_cond_wait(&objspace->ractor->borrowing_sync.no_borrowers, &objspace->ractor->borrowing_sync.borrower_count_lock); \
-		rb_ractor_blocking_threads_dec(objspace->ractor, __FILE__, __LINE__); \
-	    } \
-	    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock); \
-	    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrower_count_lock); \
-	    objspace->ractor->borrowing_sync.lock_owner = GET_RACTOR(); \
-	} \
-	objspace->local_gc_level++; \
-    }
-
-#define LOCAL_GC_END(objspace) \
-    if (GET_VM()->ractor.sync.lock_owner != GET_RACTOR() && !objspace->running_global_gc) { \
-	objspace->local_gc_level--; \
-	if (objspace->local_gc_level == 0) { \
-	    objspace->ractor->borrowing_sync.lock_owner = NULL;\
-	    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.lock); \
-	} \
-    } \
-}
-
-#define GLOBAL_GC_BEGIN(vm, objspace) \
-{ \
-    objspace->running_global_gc = true; \
-    vm->global_gc_underway = true; \
-    RB_VM_LOCK_ENTER(); \
-    rb_vm_barrier();
-
-#define GLOBAL_GC_END(vm, objspace) \
-    RB_VM_LOCK_LEAVE(); \
-    objspace->running_global_gc = false; \
-    vm->global_gc_underway = false; \
-}
-
 
 static inline void gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier);
 static inline void gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
@@ -2136,6 +2206,8 @@ rb_objspace_free(rb_objspace_t *objspace)
     rb_nativethread_lock_destroy(&objspace->shared_reference_tbl_lock);
     st_free_table(objspace->external_reference_tbl);
 
+    rb_nativethread_lock_destroy(&objspace->zombie_threads_lock);
+
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
 
@@ -2624,7 +2696,7 @@ transfer_size_pool(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_obj
     objspace = closing_objspace;
     struct heap_page *page = ccan_list_top(&select_heap(objspace, size_pool_idx, eden)->pages, struct heap_page, page_node);
     while (page) {
-	ccan_list_del(&page->page_node);
+	ccan_list_del_init(&page->page_node);
 	insert_page_into_objspace(receiving_objspace, page, size_pool_idx, eden);
 	page = ccan_list_top(&select_heap(objspace, size_pool_idx, eden)->pages, struct heap_page, page_node);
     }
@@ -2729,6 +2801,23 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 }
 
 static void
+transfer_zombie_threads(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace)
+{
+    rb_native_mutex_lock(&receiving_objspace->zombie_threads_lock);
+    //TODO: Assert that the closing objspace has had its pages absorbed (so locking is not needed)
+
+    if (!ccan_list_empty(&closing_objspace->zombie_threads)) {
+        rb_thread_t *zombie_th, *next_zombie_th;
+        ccan_list_for_each_safe(&closing_objspace->zombie_threads, zombie_th, next_zombie_th, sched.node.zombie_threads) {
+	    ccan_list_del_init(&zombie_th->sched.node.zombie_threads);
+	    ccan_list_add(&receiving_objspace->zombie_threads, &zombie_th->sched.node.zombie_threads);
+        }
+    }
+
+    rb_native_mutex_unlock(&receiving_objspace->zombie_threads_lock);
+}
+
+static void
 close_objspace(rb_objspace_t *objspace)
 {
     lock_ractor_set();
@@ -2750,36 +2839,30 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     VALUE already_disabled = rb_objspace_gc_disable(receiving_objspace);
 
-    rb_ractor_t *cr = GET_RACTOR();
-    rb_ractor_blocking_threads_inc(cr, __FILE__, __LINE__);
-    rb_native_mutex_lock(&closing_ractor->sync.close_lock);
-    while (!closing_ractor->sync.ready_to_close) {
-	rb_native_cond_wait(&closing_ractor->sync.close_cond, &closing_ractor->sync.close_lock);
-    }
-    rb_native_mutex_unlock(&closing_ractor->sync.close_lock);
-    rb_ractor_blocking_threads_dec(cr, __FILE__, __LINE__);
-
     RB_VM_LOCK();
+    {
+	VM_COND_AND_BARRIER_WAIT(GET_VM(), closing_ractor->sync.close_cond, closing_ractor->sync.ready_to_close);
 
-    absorb_objspace_tables(receiving_objspace, closing_objspace);
-    allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, true);
-    allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, false);
-    transfer_all_size_pools(receiving_objspace, closing_objspace, true);
-    transfer_all_size_pools(receiving_objspace, closing_objspace, false);
-    rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_cache);
-    rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_borrowing_cache);
-    merge_deferred_heap_pages(receiving_objspace, closing_objspace);
-    rb_transfer_postponed_jobs(receiving_ractor, closing_ractor);
-    update_objspace_counts(receiving_objspace, closing_objspace);
+	absorb_objspace_tables(receiving_objspace, closing_objspace);
+	allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, true);
+	allocatable_pages_update_for_transfer(receiving_objspace, closing_objspace, false);
+	transfer_all_size_pools(receiving_objspace, closing_objspace, true);
+	transfer_all_size_pools(receiving_objspace, closing_objspace, false);
+	rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_cache);
+	rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_borrowing_cache);
+	merge_deferred_heap_pages(receiving_objspace, closing_objspace);
+	rb_transfer_postponed_jobs(receiving_ractor, closing_ractor);
+	transfer_zombie_threads(receiving_objspace, closing_objspace);
+	update_objspace_counts(receiving_objspace, closing_objspace);
 
-    //TODO: What if another Ractor tries to access the pointer at this exact moment?
-    closing_objspace->self_link->linked_objspace = receiving_objspace->self_link->linked_objspace;
-    closing_objspace->self_link->link_changed = true;
+	//TODO: What if another Ractor tries to access the pointer at this exact moment?
+	closing_objspace->self_link->linked_objspace = receiving_objspace->self_link->linked_objspace;
+	closing_objspace->self_link->link_changed = true;
 
-    close_objspace(closing_objspace);
+	close_objspace(closing_objspace);
 
-    closing_ractor->local_objspace = NULL;
-
+	closing_ractor->local_objspace = NULL;
+    }
     RB_VM_UNLOCK();
 
     if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_objspace);
@@ -3241,19 +3324,23 @@ rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALU
     rb_objspace_t *current_objspace = &rb_objspace;
     bool target_is_not_self = (target_ractor != NULL && target_ractor != current_objspace->ractor);
     if (target_is_not_self) {
-	rb_native_mutex_lock(&target_ractor->borrowing_sync.borrower_count_lock);
-	target_ractor->borrowing_sync.borrower_count++;
-	rb_native_mutex_unlock(&target_ractor->borrowing_sync.borrower_count_lock);
+	RB_VM_LOCK_ENTER();
+	{
+	    target_ractor->borrowing_sync.borrower_count++;
+	}
+	RB_VM_LOCK_LEAVE();
     }
     VALUE old_target = set_current_alloc_target_ractor((VALUE)target_ractor);
     VALUE ret = rb_ensure(func, args, set_current_alloc_target_ractor, old_target);
     if (target_is_not_self) {
-	rb_native_mutex_lock(&target_ractor->borrowing_sync.borrower_count_lock);
-	target_ractor->borrowing_sync.borrower_count--;
-	if (target_ractor->borrowing_sync.borrower_count == 0) {
-	    rb_native_cond_signal(&target_ractor->borrowing_sync.no_borrowers);
+	RB_VM_LOCK_ENTER();
+	{
+	    target_ractor->borrowing_sync.borrower_count--;
+	    if (target_ractor->borrowing_sync.borrower_count == 0) {
+		rb_native_cond_signal(&target_ractor->borrowing_sync.no_borrowers);
+	    }
 	}
-	rb_native_mutex_unlock(&target_ractor->borrowing_sync.borrower_count_lock);
+	RB_VM_LOCK_LEAVE();
     }
     return ret;
 }
@@ -4426,8 +4513,15 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
             RB_DEBUG_COUNTER_INC(obj_imemo_parser_strterm);
             break;
           case imemo_callinfo:
-            RB_DEBUG_COUNTER_INC(obj_imemo_callinfo);
-            break;
+            {
+                const struct rb_callinfo * ci = ((const struct rb_callinfo *)obj);
+                if (ci->kwarg) {
+                    ((struct rb_callinfo_kwarg *)ci->kwarg)->references--;
+                    if (ci->kwarg->references == 0) xfree((void *)ci->kwarg);
+                }
+                RB_DEBUG_COUNTER_INC(obj_imemo_callinfo);
+                break;
+            }
           case imemo_callcache:
             RB_DEBUG_COUNTER_INC(obj_imemo_callcache);
             break;
@@ -4510,6 +4604,10 @@ Init_heap(rb_objspace_t *objspace)
     heap_pages_expand_sorted(objspace);
 
     init_mark_stack(&objspace->mark_stack);
+
+    ccan_list_head_init(&objspace->zombie_threads);
+
+    rb_nativethread_lock_initialize(&objspace->zombie_threads_lock);
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
@@ -5388,6 +5486,22 @@ rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm)
 	}
     }
     rb_objspace_call_finalizer(vm->objspace);
+}
+
+void
+rb_add_zombie_thread(rb_thread_t *th)
+{
+    rb_vm_t *vm = th->vm;
+    th->sched.finished = false;
+
+    RB_VM_LOCK_ENTER();
+    {
+	rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(th->self);
+	rb_native_mutex_lock(&objspace->zombie_threads_lock);
+	ccan_list_add(&objspace->zombie_threads, &th->sched.node.zombie_threads);
+	rb_native_mutex_unlock(&objspace->zombie_threads_lock);
+    }
+    RB_VM_LOCK_LEAVE();
 }
 
 void
@@ -7458,6 +7572,24 @@ mark_thread_if_in_objspace(st_data_t key, st_data_t value, st_data_t data)
 }
 
 static void
+mark_zombie_threads(rb_objspace_t *objspace)
+{
+    rb_native_mutex_lock(&objspace->zombie_threads_lock);
+    if (!ccan_list_empty(&objspace->zombie_threads)) {
+        rb_thread_t *zombie_th, *next_zombie_th;
+        ccan_list_for_each_safe(&objspace->zombie_threads, zombie_th, next_zombie_th, sched.node.zombie_threads) {
+            if (zombie_th->sched.finished) {
+                ccan_list_del_init(&zombie_th->sched.node.zombie_threads);
+            }
+            else {
+                rb_gc_mark(zombie_th->self);
+            }
+        }
+    }
+    rb_native_mutex_unlock(&objspace->zombie_threads_lock);
+}
+
+static void
 mark_absorbed_threads_tbl(rb_objspace_t *objspace)
 {
     rb_global_space_t *global_space = &rb_global_space;
@@ -8138,7 +8270,6 @@ gc_mark_imemo(rb_objspace_t *objspace, VALUE obj)
         rb_ast_mark(&RANY(obj)->as.imemo.ast);
         return;
       case imemo_parser_strterm:
-        rb_strterm_mark(obj);
         return;
       case imemo_callinfo:
         return;
@@ -8263,7 +8394,6 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
         if (RCLASS_SUPER(obj)) {
             gc_mark(objspace, RCLASS_SUPER(obj));
         }
-        if (!RCLASS_EXT(obj)) break;
 
         mark_m_tbl(objspace, RCLASS_M_TBL(obj));
         mark_cvc_tbl(objspace, obj);
@@ -8282,7 +8412,6 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
         if (RCLASS_SUPER(obj)) {
             gc_mark(objspace, RCLASS_SUPER(obj));
         }
-        if (!RCLASS_EXT(obj)) break;
 
         if (RCLASS_INCLUDER(obj)) {
             gc_mark(objspace, RCLASS_INCLUDER(obj));
@@ -8776,6 +8905,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	rb_vm_mark(vm);
 	if (vm->self) gc_mark(objspace, vm->self);
     }
+    mark_zombie_threads(objspace);
     mark_absorbed_threads_tbl(objspace);
 
     MARK_CHECKPOINT("cache_table");
@@ -11072,6 +11202,52 @@ gc_current_status(rb_objspace_t *objspace)
     return buff;
 }
 
+static void
+begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
+{
+    if (vm->ractor.sync.lock_owner != cr && !objspace->running_global_gc) {
+	if (objspace->local_gc_level == 0) {
+	    RB_VM_LOCK_ENTER();
+	    {
+		VM_COND_AND_BARRIER_WAIT(vm, objspace->ractor->borrowing_sync.no_borrowers, objspace->ractor->borrowing_sync.borrower_count == 0);
+		rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock);
+		objspace->ractor->borrowing_sync.lock_owner = cr;
+	    }
+	    RB_VM_LOCK_LEAVE();
+	}
+	objspace->local_gc_level++;
+    }
+}
+
+static void
+end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
+{
+    if (vm->ractor.sync.lock_owner != cr && !objspace->running_global_gc) {
+	objspace->local_gc_level--;
+	if (objspace->local_gc_level == 0) {
+	    objspace->ractor->borrowing_sync.lock_owner = NULL;
+	    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.lock);
+	}
+    }
+}
+
+static void
+begin_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev)
+{
+    objspace->running_global_gc = true;
+    vm->global_gc_underway = true;
+    RB_VM_LOCK_ENTER_LEV(lev);
+    rb_vm_barrier();
+}
+
+static void
+end_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev)
+{
+    RB_VM_LOCK_LEAVE_LEV(lev);
+    objspace->running_global_gc = false;
+    vm->global_gc_underway = false;
+}
+
 #if PRINT_ENTER_EXIT_TICK
 
 static tick_t last_exit_tick;
@@ -12213,7 +12389,6 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
         if (RCLASS_SUPER((VALUE)obj)) {
             UPDATE_IF_MOVED(objspace, RCLASS(obj)->super);
         }
-        if (!RCLASS_EXT(obj)) break;
         update_m_tbl(objspace, RCLASS_M_TBL(obj));
         update_cc_tbl(objspace, obj);
         update_cvc_tbl(objspace, obj);
@@ -12237,7 +12412,6 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
         if (RCLASS_SUPER((VALUE)obj)) {
             UPDATE_IF_MOVED(objspace, RCLASS(obj)->super);
         }
-        if (!RCLASS_EXT(obj)) break;
         update_class_ext(objspace, RCLASS_EXT(obj));
         update_m_tbl(objspace, RCLASS_CALLABLE_M_TBL(obj));
         update_cc_tbl(objspace, obj);
@@ -15762,6 +15936,8 @@ void
 Init_GC(void)
 {
 #undef rb_intern
+    malloc_offset = gc_compute_malloc_offset();
+
     VALUE rb_mObjSpace;
     VALUE rb_mProfiler;
     VALUE gc_constants;

@@ -2870,8 +2870,15 @@ rb_io_descriptor(VALUE io)
         return fptr->fd;
     }
     else {
-        return RB_NUM2INT(rb_funcall(io, id_fileno, 0));
+        VALUE fileno = rb_check_funcall(io, id_fileno, 0, NULL);
+        if (!UNDEF_P(fileno)) {
+            return RB_NUM2INT(fileno);
+        }
     }
+
+    rb_raise(rb_eTypeError, "expected IO or #fileno, %"PRIsVALUE" given", rb_obj_class(io));
+
+    UNREACHABLE_RETURN(-1);
 }
 
 int
@@ -15059,7 +15066,7 @@ set_LAST_READ_LINE(VALUE val, ID _x, VALUE *_y)
  *      # => 41
  *      f.close
  *
- *  - When a stream is read, <tt>#.</tt> is set to the line number for that stream:
+ *  - When a stream is read, <tt>$.</tt> is set to the line number for that stream:
  *
  *      f0 = File.new('t.txt')
  *      f1 = File.new('t.dat')

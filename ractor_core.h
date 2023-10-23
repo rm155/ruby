@@ -103,11 +103,9 @@ struct rb_ractor_sync {
 
     rb_nativethread_cond_t close_cond;
     bool ready_to_close;
-    rb_nativethread_lock_t close_lock;
 
     VALUE locked_by;
     VALUE locking_thread;
-    rb_nativethread_cond_t cond;
 
     bool incoming_port_closed;
     bool outgoing_port_closed;
@@ -124,7 +122,12 @@ struct rb_ractor_sync {
     struct ractor_wait {
         enum rb_ractor_wait_status status;
         enum rb_ractor_wakeup_status wakeup_status;
+        rb_thread_t *waiting_thread;
     } wait;
+
+#ifndef RUBY_THREAD_PTHREAD_H
+    rb_nativethread_cond_t cond;
+#endif
 };
 
 // created
@@ -205,7 +208,6 @@ struct rb_ractor_struct {
 	bool page_recently_locked[SIZE_POOL_COUNT];
 
 	int borrower_count;
-	rb_nativethread_lock_t borrower_count_lock;
 	rb_nativethread_cond_t no_borrowers;
     } borrowing_sync;
 
@@ -345,20 +347,28 @@ rb_ractor_thread_switch(rb_ractor_t *cr, rb_thread_t *th)
     VM_ASSERT(cr == GET_RACTOR());
 }
 
-#define rb_ractor_set_current_ec(cr, ec) rb_ractor_set_current_ec_(cr, ec, __FILE__, __LINE__)
-
 static inline void
-rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const char *file, int line)
+rb_ractor_set_current_ec_no_ractor(rb_execution_context_t *ec)
 {
 #ifdef RB_THREAD_LOCAL_SPECIFIER
+
 # ifdef __APPLE__
     rb_current_ec_set(ec);
 # else
     ruby_current_ec = ec;
 # endif
+
 #else
     native_tls_set(ruby_current_ec_key, ec);
 #endif
+}
+
+#define rb_ractor_set_current_ec(cr, ec) rb_ractor_set_current_ec_(cr, ec, __FILE__, __LINE__)
+
+static inline void
+rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const char *file, int line)
+{
+    rb_ractor_set_current_ec_no_ractor(ec);
     RUBY_DEBUG_LOG2(file, line, "ec:%p->%p", (void *)cr->threads.running_ec, (void *)ec);
     VM_ASSERT(ec == NULL || cr->threads.running_ec != ec);
     cr->threads.running_ec = ec;

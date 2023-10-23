@@ -37,8 +37,8 @@
             │           ├── closing_loc: (1,23)-(1,24) = ")"
             │           ├── block: ∅
             │           ├── flags: ∅
-            │           └── name: "b"
-            ├── locals: [:x, :"..."]
+            │           └── name: :b
+            ├── locals: [:x, :*, :&, :"..."]
             ├── def_keyword_loc: (1,0)-(1,3) = "def"
             ├── operator_loc: ∅
             ├── lparen_loc: (1,5)-(1,6) = "("

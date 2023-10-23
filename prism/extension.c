@@ -10,6 +10,7 @@ VALUE rb_cPrismToken;
 VALUE rb_cPrismLocation;
 
 VALUE rb_cPrismComment;
+VALUE rb_cPrismMagicComment;
 VALUE rb_cPrismParseError;
 VALUE rb_cPrismParseWarning;
 VALUE rb_cPrismParseResult;
@@ -151,6 +152,35 @@ parser_comments(pm_parser_t *parser, VALUE source) {
     }
 
     return comments;
+}
+
+// Extract the magic comments out of the parser into an array.
+static VALUE
+parser_magic_comments(pm_parser_t *parser, VALUE source) {
+    VALUE magic_comments = rb_ary_new();
+
+    for (pm_magic_comment_t *magic_comment = (pm_magic_comment_t *) parser->magic_comment_list.head; magic_comment != NULL; magic_comment = (pm_magic_comment_t *) magic_comment->node.next) {
+        VALUE key_loc_argv[] = {
+            source,
+            LONG2FIX(magic_comment->key_start - parser->start),
+            LONG2FIX(magic_comment->key_length)
+        };
+
+        VALUE value_loc_argv[] = {
+            source,
+            LONG2FIX(magic_comment->value_start - parser->start),
+            LONG2FIX(magic_comment->value_length)
+        };
+
+        VALUE magic_comment_argv[] = {
+            rb_class_new_instance(3, key_loc_argv, rb_cPrismLocation),
+            rb_class_new_instance(3, value_loc_argv, rb_cPrismLocation)
+        };
+
+        rb_ary_push(magic_comments, rb_class_new_instance(2, magic_comment_argv, rb_cPrismMagicComment));
+    }
+
+    return magic_comments;
 }
 
 // Extract the errors out of the parser into an array.
@@ -297,6 +327,7 @@ parse_lex_input(pm_string_t *input, const char *filepath, bool return_nodes) {
     VALUE result_argv[] = {
         value,
         parser_comments(&parser, source),
+        parser_magic_comments(&parser, source),
         parser_errors(&parser, parse_lex_data.encoding, source),
         parser_warnings(&parser, parse_lex_data.encoding, source),
         source
@@ -304,7 +335,7 @@ parse_lex_input(pm_string_t *input, const char *filepath, bool return_nodes) {
 
     pm_node_destroy(&parser, node);
     pm_parser_free(&parser);
-    return rb_class_new_instance(5, result_argv, rb_cPrismParseResult);
+    return rb_class_new_instance(6, result_argv, rb_cPrismParseResult);
 }
 
 // Return an array of tokens corresponding to the given string.
@@ -351,12 +382,13 @@ parse_input(pm_string_t *input, const char *filepath) {
     VALUE result_argv[] = {
         pm_ast_new(&parser, node, encoding),
         parser_comments(&parser, source),
+        parser_magic_comments(&parser, source),
         parser_errors(&parser, encoding, source),
         parser_warnings(&parser, encoding, source),
         source
     };
 
-    VALUE result = rb_class_new_instance(5, result_argv, rb_cPrismParseResult);
+    VALUE result = rb_class_new_instance(6, result_argv, rb_cPrismParseResult);
 
     pm_node_destroy(&parser, node);
     pm_parser_free(&parser);
@@ -461,48 +493,6 @@ named_captures(VALUE self, VALUE source) {
     return names;
 }
 
-// Accepts a source string and a type of unescaping and returns the unescaped
-// version.
-static VALUE
-unescape(VALUE source, pm_unescape_type_t unescape_type) {
-    pm_string_t result;
-
-    if (pm_unescape_string((const uint8_t *) RSTRING_PTR(source), RSTRING_LEN(source), unescape_type, &result)) {
-        VALUE str = rb_str_new((const char *) pm_string_source(&result), pm_string_length(&result));
-        pm_string_free(&result);
-        return str;
-    } else {
-        pm_string_free(&result);
-        return Qnil;
-    }
-}
-
-// Do not unescape anything in the given string. This is here to provide a
-// consistent API.
-static VALUE
-unescape_none(VALUE self, VALUE source) {
-    return unescape(source, PM_UNESCAPE_NONE);
-}
-
-// Minimally unescape the given string. This means effectively unescaping just
-// the quotes of a string. Returns the unescaped string.
-static VALUE
-unescape_minimal(VALUE self, VALUE source) {
-    return unescape(source, PM_UNESCAPE_MINIMAL);
-}
-
-// Escape the given string minimally plus whitespace. Returns the unescaped string.
-static VALUE
-unescape_whitespace(VALUE self, VALUE source) {
-    return unescape(source, PM_UNESCAPE_WHITESPACE);
-}
-
-// Unescape everything in the given string. Return the unescaped string.
-static VALUE
-unescape_all(VALUE self, VALUE source) {
-    return unescape(source, PM_UNESCAPE_ALL);
-}
-
 // Return a hash of information about the given source string's memory usage.
 static VALUE
 memsize(VALUE self, VALUE string) {
@@ -589,6 +579,7 @@ Init_prism(void) {
     rb_cPrismToken = rb_define_class_under(rb_cPrism, "Token", rb_cObject);
     rb_cPrismLocation = rb_define_class_under(rb_cPrism, "Location", rb_cObject);
     rb_cPrismComment = rb_define_class_under(rb_cPrism, "Comment", rb_cObject);
+    rb_cPrismMagicComment = rb_define_class_under(rb_cPrism, "MagicComment", rb_cObject);
     rb_cPrismParseError = rb_define_class_under(rb_cPrism, "ParseError", rb_cObject);
     rb_cPrismParseWarning = rb_define_class_under(rb_cPrism, "ParseWarning", rb_cObject);
     rb_cPrismParseResult = rb_define_class_under(rb_cPrism, "ParseResult", rb_cObject);
@@ -612,10 +603,6 @@ Init_prism(void) {
     // internal tasks. We expose these to make them easier to test.
     VALUE rb_cPrismDebug = rb_define_module_under(rb_cPrism, "Debug");
     rb_define_singleton_method(rb_cPrismDebug, "named_captures", named_captures, 1);
-    rb_define_singleton_method(rb_cPrismDebug, "unescape_none", unescape_none, 1);
-    rb_define_singleton_method(rb_cPrismDebug, "unescape_minimal", unescape_minimal, 1);
-    rb_define_singleton_method(rb_cPrismDebug, "unescape_whitespace", unescape_whitespace, 1);
-    rb_define_singleton_method(rb_cPrismDebug, "unescape_all", unescape_all, 1);
     rb_define_singleton_method(rb_cPrismDebug, "memsize", memsize, 1);
     rb_define_singleton_method(rb_cPrismDebug, "profile_file", profile_file, 1);
     rb_define_singleton_method(rb_cPrismDebug, "parse_serialize_file_metadata", parse_serialize_file_metadata, 2);
