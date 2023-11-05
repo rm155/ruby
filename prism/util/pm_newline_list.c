@@ -1,7 +1,9 @@
 #include "prism/util/pm_newline_list.h"
 
-// Initialize a new newline list with the given capacity. Returns true if the
-// allocation of the offsets succeeds, otherwise returns false.
+/**
+ * Initialize a new newline list with the given capacity. Returns true if the
+ * allocation of the offsets succeeds, otherwise returns false.
+ */
 bool
 pm_newline_list_init(pm_newline_list_t *list, const uint8_t *start, size_t capacity) {
     list->offsets = (size_t *) calloc(capacity, sizeof(size_t));
@@ -14,14 +16,13 @@ pm_newline_list_init(pm_newline_list_t *list, const uint8_t *start, size_t capac
     list->size = 1;
     list->capacity = capacity;
 
-    list->last_index = 0;
-    list->last_offset = 0;
-
     return true;
 }
 
-// Append a new offset to the newline list. Returns true if the reallocation of
-// the offsets succeeds (if one was necessary), otherwise returns false.
+/**
+ * Append a new offset to the newline list. Returns true if the reallocation of
+ * the offsets succeeds (if one was necessary), otherwise returns false.
+ */
 bool
 pm_newline_list_append(pm_newline_list_t *list, const uint8_t *cursor) {
     if (list->size == list->capacity) {
@@ -44,7 +45,10 @@ pm_newline_list_append(pm_newline_list_t *list, const uint8_t *cursor) {
     return true;
 }
 
-// Conditionally append a new offset to the newline list, if the value passed in is a newline.
+/**
+ * Conditionally append a new offset to the newline list, if the value passed in
+ * is a newline.
+ */
 bool
 pm_newline_list_check_append(pm_newline_list_t *list, const uint8_t *cursor) {
     if (*cursor != '\n') {
@@ -53,10 +57,16 @@ pm_newline_list_check_append(pm_newline_list_t *list, const uint8_t *cursor) {
     return pm_newline_list_append(list, cursor);
 }
 
-// Returns the line and column of the given offset, assuming we don't have any
-// information about the previous index that we found.
-static pm_line_column_t
-pm_newline_list_line_column_search(pm_newline_list_t *list, size_t offset) {
+/**
+ * Returns the line and column of the given offset. If the offset is not in the
+ * list, the line and column of the closest offset less than the given offset
+ * are returned.
+ */
+pm_line_column_t
+pm_newline_list_line_column(const pm_newline_list_t *list, const uint8_t *cursor) {
+    assert(cursor >= list->start);
+    size_t offset = (size_t) (cursor - list->start);
+
     size_t left = 0;
     size_t right = list->size - 1;
 
@@ -77,57 +87,9 @@ pm_newline_list_line_column_search(pm_newline_list_t *list, size_t offset) {
     return ((pm_line_column_t) { left - 1, offset - list->offsets[left - 1] });
 }
 
-// Returns the line and column of the given offset, assuming we know the last
-// index that we found.
-static pm_line_column_t
-pm_newline_list_line_column_scan(pm_newline_list_t *list, size_t offset) {
-    if (offset > list->last_offset) {
-        size_t index = list->last_index;
-        while (index < list->size && list->offsets[index] < offset) {
-            index++;
-        }
-
-        if (index == list->size) {
-            return ((pm_line_column_t) { index - 1, offset - list->offsets[index - 1] });
-        }
-
-        return ((pm_line_column_t) { index, 0 });
-    } else {
-        size_t index = list->last_index;
-        while (index > 0 && list->offsets[index] > offset) {
-            index--;
-        }
-
-        if (index == 0) {
-            return ((pm_line_column_t) { 0, offset });
-        }
-
-        return ((pm_line_column_t) { index, offset - list->offsets[index - 1] });
-    }
-}
-
-// Returns the line and column of the given offset. If the offset is not in the
-// list, the line and column of the closest offset less than the given offset
-// are returned.
-pm_line_column_t
-pm_newline_list_line_column(pm_newline_list_t *list, const uint8_t *cursor) {
-    assert(cursor >= list->start);
-    size_t offset = (size_t) (cursor - list->start);
-    pm_line_column_t result;
-
-    if (list->last_offset == 0) {
-        result = pm_newline_list_line_column_search(list, offset);
-    } else {
-        result = pm_newline_list_line_column_scan(list, offset);
-    }
-
-    list->last_index = result.line;
-    list->last_offset = offset;
-
-    return result;
-}
-
-// Free the internal memory allocated for the newline list.
+/**
+ * Free the internal memory allocated for the newline list.
+ */
 void
 pm_newline_list_free(pm_newline_list_t *list) {
     free(list->offsets);

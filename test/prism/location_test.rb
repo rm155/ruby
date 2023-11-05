@@ -224,7 +224,7 @@ module Prism
 
     def test_ClassVariableTargetNode
       assert_location(ClassVariableTargetNode, "@@foo, @@bar = baz", 0...5) do |node|
-        node.targets.first
+        node.lefts.first
       end
     end
 
@@ -252,7 +252,7 @@ module Prism
 
     def test_ConstantPathTargetNode
       assert_location(ConstantPathTargetNode, "::Foo, ::Bar = baz", 0...5) do |node|
-        node.targets.first
+        node.lefts.first
       end
     end
 
@@ -281,7 +281,7 @@ module Prism
 
     def test_ConstantTargetNode
       assert_location(ConstantTargetNode, "Foo, Bar = baz", 0...3) do |node|
-        node.targets.first
+        node.lefts.first
       end
     end
 
@@ -379,7 +379,7 @@ module Prism
 
     def test_GlobalVariableTargetNode
       assert_location(GlobalVariableTargetNode, "$foo, $bar = baz", 0...4) do |node|
-        node.targets.first
+        node.lefts.first
       end
     end
 
@@ -457,7 +457,7 @@ module Prism
 
     def test_InstanceVariableTargetNode
       assert_location(InstanceVariableTargetNode, "@foo, @bar = baz", 0...4) do |node|
-        node.targets.first
+        node.lefts.first
       end
     end
 
@@ -502,16 +502,6 @@ module Prism
       assert_location(KeywordHashNode, "foo(a, b: 1)", 7...11) { |node| node.arguments.arguments[1] }
     end
 
-    def test_KeywordParameterNode
-      assert_location(KeywordParameterNode, "def foo(bar:); end", 8...12) do |node|
-        node.parameters.keywords.first
-      end
-
-      assert_location(KeywordParameterNode, "def foo(bar: nil); end", 8...16) do |node|
-        node.parameters.keywords.first
-      end
-    end
-
     def test_KeywordRestParameterNode
       assert_location(KeywordRestParameterNode, "def foo(**); end", 8...10) do |node|
         node.parameters.keyword_rest
@@ -548,7 +538,7 @@ module Prism
 
     def test_LocalVariableTargetNode
       assert_location(LocalVariableTargetNode, "foo, bar = baz", 0...3) do |node|
-        node.targets.first
+        node.lefts.first
       end
     end
 
@@ -578,7 +568,10 @@ module Prism
 
     def test_MultiTargetNode
       assert_location(MultiTargetNode, "for foo, bar in baz do end", 4...12, &:index)
-      assert_location(MultiTargetNode, "foo, (bar, baz) = qux", 5...15) { |node| node.targets.last }
+      assert_location(MultiTargetNode, "foo, (bar, baz) = qux", 5...15) { |node| node.lefts.last }
+      assert_location(MultiTargetNode, "def foo((bar)); end", 8...13) do |node|
+        node.parameters.requireds.first
+      end
     end
 
     def test_MultiWriteNode
@@ -604,6 +597,12 @@ module Prism
 
     def test_NumberedReferenceReadNode
       assert_location(NumberedReferenceReadNode, "$1")
+    end
+
+    def test_OptionalKeywordParameterNode
+      assert_location(OptionalKeywordParameterNode, "def foo(bar: nil); end", 8...16) do |node|
+        node.parameters.keywords.first
+      end
     end
 
     def test_OptionalParameterNode
@@ -670,14 +669,14 @@ module Prism
       assert_location(RegularExpressionNode, "/foo/")
     end
 
-    def test_RequiredParameterNode
-      assert_location(RequiredParameterNode, "def foo(bar); end", 8...11) do |node|
-        node.parameters.requireds.first
+    def test_RequiredKeywordParameterNode
+      assert_location(RequiredKeywordParameterNode, "def foo(bar:); end", 8...12) do |node|
+        node.parameters.keywords.first
       end
     end
 
-    def test_RequiredDestructuredParameterNode
-      assert_location(RequiredDestructuredParameterNode, "def foo((bar)); end", 8...13) do |node|
+    def test_RequiredParameterNode
+      assert_location(RequiredParameterNode, "def foo(bar); end", 8...11) do |node|
         node.parameters.requireds.first
       end
     end
@@ -736,7 +735,7 @@ module Prism
     end
 
     def test_SplatNode
-      assert_location(SplatNode, "*foo = bar", 0...4) { |node| node.targets.first }
+      assert_location(SplatNode, "*foo = bar", 0...4, &:rest)
     end
 
     def test_StatementsNode

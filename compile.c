@@ -45,7 +45,7 @@
 #include "builtin.h"
 #include "insns.inc"
 #include "insns_info.inc"
-#include "prism/prism.h"
+#include "prism_compile.h"
 
 #undef RUBY_UNTYPED_DATA_WARNING
 #define RUBY_UNTYPED_DATA_WARNING 0
@@ -969,7 +969,7 @@ rb_iseq_compile_node(rb_iseq_t *iseq, const NODE *node)
     return iseq_setup(iseq, ret);
 }
 
-static VALUE rb_translate_prism(rb_iseq_t *iseq, const pm_scope_node_t *scope_node, LINK_ANCHOR *const ret);
+static VALUE rb_translate_prism(pm_parser_t *parser, rb_iseq_t *iseq, pm_scope_node_t *scope_node, LINK_ANCHOR *const ret);
 
 VALUE
 rb_iseq_compile_prism_node(rb_iseq_t * iseq, pm_scope_node_t *scope_node, pm_parser_t *parser)
@@ -977,18 +977,7 @@ rb_iseq_compile_prism_node(rb_iseq_t * iseq, pm_scope_node_t *scope_node, pm_par
     DECL_ANCHOR(ret);
     INIT_ANCHOR(ret);
 
-    ID *constants = calloc(parser->constant_pool.size, sizeof(ID));
-    rb_encoding *encoding = rb_enc_find(parser->encoding.name);
-
-    for (uint32_t index = 0; index < parser->constant_pool.size; index++) {
-        pm_constant_t *constant = &parser->constant_pool.constants[index];
-        constants[index] = rb_intern3((const char *) constant->start, constant->length, encoding);
-    }
-
-    scope_node->constants = (void *)constants;
-
-    CHECK(rb_translate_prism(iseq, scope_node, ret));
-    free(constants);
+    CHECK(rb_translate_prism(parser, iseq, scope_node, ret));
 
     CHECK(iseq_setup_insn(iseq, ret));
     return iseq_setup(iseq, ret);
@@ -1996,7 +1985,7 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *const optargs, const NODE *cons
 
     if (node_args) {
         struct rb_iseq_constant_body *const body = ISEQ_BODY(iseq);
-        struct rb_args_info *args = RNODE_ARGS(node_args)->nd_ainfo;
+        struct rb_args_info *args = &RNODE_ARGS(node_args)->nd_ainfo;
         ID rest_id = 0;
         int last_comma = 0;
         ID block_id = 0;
@@ -8383,7 +8372,7 @@ compile_builtin_mandatory_only_method(rb_iseq_t *iseq, const NODE *node, const N
     };
     rb_node_args_t args_node;
     rb_node_init(RNODE(&args_node), NODE_ARGS);
-    args_node.nd_ainfo = &args;
+    args_node.nd_ainfo = args;
 
     // local table without non-mandatory parameters
     const int skip_local_size = ISEQ_BODY(iseq)->param.size - ISEQ_BODY(iseq)->param.lead_num;

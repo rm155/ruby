@@ -3626,8 +3626,7 @@ rb_class_instance_allocate_internal(VALUE klass, VALUE flags, bool wb_protected)
     }
 
     VALUE obj = newobj_of(GET_RACTOR(), klass, flags, 0, 0, 0, wb_protected, size);
-    RUBY_ASSERT(rb_shape_get_shape(obj)->type == SHAPE_ROOT ||
-            rb_shape_get_shape(obj)->type == SHAPE_INITIAL_CAPACITY);
+    RUBY_ASSERT(rb_shape_get_shape(obj)->type == SHAPE_ROOT);
 
     // Set the shape to the specific T_OBJECT shape which is always
     // SIZE_POOL_COUNT away from the root shape.
@@ -4250,9 +4249,13 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
       case T_CLASS:
         rb_id_table_free(RCLASS_M_TBL(obj));
         cc_table_free(objspace, obj, FALSE);
-        if (RCLASS_IVPTR(obj)) {
+        if (rb_shape_obj_too_complex(obj)) {
+            st_free_table((st_table *)RCLASS_IVPTR(obj));
+        }
+        else if (RCLASS_IVPTR(obj)) {
             xfree(RCLASS_IVPTR(obj));
         }
+
         if (RCLASS_CONST_TBL(obj)) {
             rb_free_const_table(RCLASS_CONST_TBL(obj));
         }
@@ -8334,8 +8337,13 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
         mark_m_tbl(objspace, RCLASS_M_TBL(obj));
         mark_cvc_tbl(objspace, obj);
         cc_table_mark(objspace, obj);
-        for (attr_index_t i = 0; i < RCLASS_IV_COUNT(obj); i++) {
-            gc_mark(objspace, RCLASS_IVPTR(obj)[i]);
+        if (rb_shape_obj_too_complex(obj)) {
+            mark_tbl(objspace, (st_table *)RCLASS_IVPTR(obj));
+        }
+        else {
+            for (attr_index_t i = 0; i < RCLASS_IV_COUNT(obj); i++) {
+                gc_mark(objspace, RCLASS_IVPTR(obj)[i]);
+            }
         }
         if (objspace == GET_VM()->objspace || objspace->flags.during_global_gc) mark_const_tbl(objspace, RCLASS_CONST_TBL(obj));
         gc_mark(objspace, RCLASS_EXT(obj)->classpath);
@@ -9382,7 +9390,7 @@ gc_update_weak_references(rb_objspace_t *objspace)
     size_t retained_weak_references_count = 0;
     VALUE **ptr_ptr;
     rb_darray_foreach(objspace->weak_references, i, ptr_ptr) {
-        if (!ptr_ptr) continue;
+        if (!*ptr_ptr) continue;
 
         VALUE obj = **ptr_ptr;
 

@@ -4,7 +4,9 @@ module Prism
   # This module is used for testing and debugging and is not meant to be used by
   # consumers of this library.
   module Debug
-    class ISeq
+    # A wrapper around a RubyVM::InstructionSequence that provides a more
+    # convenient interface for accessing parts of the iseq.
+    class ISeq # :nodoc:
       attr_reader :parts
 
       def initialize(parts)
@@ -42,6 +44,11 @@ module Prism
       end
     end
 
+    private_constant :ISeq
+
+    # :call-seq:
+    #   Debug::cruby_locals(source) -> Array
+    #
     # For the given source, compiles with CRuby and returns a list of all of the
     # sets of local variables that were encountered.
     def self.cruby_locals(source)
@@ -52,9 +59,21 @@ module Prism
         stack = [ISeq.new(RubyVM::InstructionSequence.compile(source).to_a)]
 
         while (iseq = stack.pop)
-          # For some reason, CRuby occasionally pushes this special local
-          # variable when there are splat arguments. We get rid of that here.
-          locals << (iseq.local_table - [:"#arg_rest"])
+          names = [*iseq.local_table]
+          names.map!.with_index do |name, index|
+            # When an anonymous local variable is present in the iseq's local
+            # table, it is represented as the stack offset from the top.
+            # However, when these are dumped to binary and read back in, they
+            # are replaced with the symbol :#arg_rest. To consistently handle
+            # this, we replace them here with their index.
+            if name == :"#arg_rest"
+              names.length - index + 1
+            else
+              name
+            end
+          end
+
+          locals << names
           iseq.each_child { |child| stack << child }
         end
 
@@ -64,13 +83,19 @@ module Prism
       end
     end
 
+    # Used to hold the place of a local that will be in the local table but
+    # cannot be accessed directly from the source code. For example, the
+    # iteration variable in a for loop or the positional parameter on a method
+    # definition that is destructured.
     AnonymousLocal = Object.new
+    private_constant :AnonymousLocal
 
+    # :call-seq:
+    #   Debug::prism_locals(source) -> Array
+    #
     # For the given source, parses with prism and returns a list of all of the
     # sets of local variables that were encountered.
     def self.prism_locals(source)
-      check_to_debug = ENV["RUBY_ISEQ_DUMP_DEBUG"] == "to_binary"
-
       locals = []
       stack = [Prism.parse(source).value]
 
@@ -104,19 +129,21 @@ module Prism
                   AnonymousLocal
                 end
               end,
-              *params.keywords.reject(&:value).map(&:name),
-              *params.keywords.select(&:value).map(&:name)
+              *params.keywords.grep(RequiredKeywordParameterNode).map(&:name),
+              *params.keywords.grep(OptionalKeywordParameterNode).map(&:name),
             ]
 
-            sorted << AnonymousLocal if params.keywords.any? && !check_to_debug
+            sorted << AnonymousLocal if params.keywords.any?
 
             # Recurse down the parameter tree to find any destructured
             # parameters and add them after the other parameters.
-            param_stack = params.requireds.concat(params.posts).grep(RequiredDestructuredParameterNode).reverse
+            param_stack = params.requireds.concat(params.posts).grep(MultiTargetNode).reverse
             while (param = param_stack.pop)
               case param
-              when RequiredDestructuredParameterNode
-                param_stack.concat(param.parameters.reverse)
+              when MultiTargetNode
+                param_stack.concat(param.rights.reverse)
+                param_stack << param.rest
+                param_stack.concat(param.lefts.reverse)
               when RequiredParameterNode
                 sorted << param.name
               when SplatNode
@@ -129,17 +156,17 @@ module Prism
 
           names.map!.with_index do |name, index|
             if name == AnonymousLocal
-              names.length - index + 1 unless check_to_debug
+              names.length - index + 1
             else
               name
             end
           end
 
-          locals << names.compact
+          locals << names
         when ClassNode, ModuleNode, ProgramNode, SingletonClassNode
           locals << node.locals
         when ForNode
-          locals << (check_to_debug ? [] : [2])
+          locals << [2]
         when PostExecutionNode
           locals.push([], [])
         when InterpolatedRegularExpressionNode
@@ -152,12 +179,13 @@ module Prism
       locals
     end
 
+    # :call-seq:
+    #   Debug::newlines(source) -> Array
+    #
+    # For the given source string, return the byte offsets of every newline in
+    # the source.
     def self.newlines(source)
       Prism.parse(source).source.offsets
-    end
-
-    def self.parse_serialize_file(filepath)
-      parse_serialize_file_metadata(filepath, [filepath.bytesize, filepath.b, 0].pack("LA*L"))
     end
   end
 end

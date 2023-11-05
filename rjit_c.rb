@@ -416,7 +416,6 @@ module RubyVM::RJIT # :nodoc: all
   C::SHAPE_FLAG_SHIFT = Primitive.cexpr! %q{ SIZET2NUM(SHAPE_FLAG_SHIFT) }
   C::SHAPE_FROZEN = Primitive.cexpr! %q{ SIZET2NUM(SHAPE_FROZEN) }
   C::SHAPE_ID_NUM_BITS = Primitive.cexpr! %q{ SIZET2NUM(SHAPE_ID_NUM_BITS) }
-  C::SHAPE_INITIAL_CAPACITY = Primitive.cexpr! %q{ SIZET2NUM(SHAPE_INITIAL_CAPACITY) }
   C::SHAPE_IVAR = Primitive.cexpr! %q{ SIZET2NUM(SHAPE_IVAR) }
   C::SHAPE_MASK = Primitive.cexpr! %q{ SIZET2NUM(SHAPE_MASK) }
   C::SHAPE_ROOT = Primitive.cexpr! %q{ SIZET2NUM(SHAPE_ROOT) }
@@ -1483,6 +1482,7 @@ module RubyVM::RJIT # :nodoc: all
       type: [CType::Immediate.parse("uint8_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), type)")],
       size_pool_index: [CType::Immediate.parse("uint8_t"), Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), size_pool_index)")],
       parent_id: [self.shape_id_t, Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), parent_id)")],
+      ancestor_index: [CType::Pointer.new { self.redblack_node_t }, Primitive.cexpr!("OFFSETOF((*((struct rb_shape *)NULL)), ancestor_index)")],
     )
   end
 
@@ -1639,6 +1639,10 @@ module RubyVM::RJIT # :nodoc: all
 
   def C._Bool
     CType::Bool.new
+  end
+
+  def C.redblack_node_t
+    CType::Stub.new(:redblack_node_t)
   end
 
   def C.ccan_list_node
