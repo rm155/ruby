@@ -5550,6 +5550,52 @@ rb_add_to_shareable_tbl(VALUE obj)
     }
 }
 
+
+void
+rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
+{
+    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+    if (source_objspace == receiving_objspace) return;
+
+    bool need_borrowing_sync_lock = (receiving_objspace->ractor->borrowing_sync.lock_owner != GET_RACTOR());
+    if (need_borrowing_sync_lock) rb_borrowing_sync_lock(receiving_objspace->ractor);
+
+    gc_reference_status_t *rs = get_reference_status(receiving_objspace->external_reference_tbl, obj);
+    bool new_addition = !rs;
+
+    if (new_addition) {
+	rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
+	gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
+	VM_ASSERT(!!local_rs || (GET_RACTOR() == source_objspace->ractor) || current_ractor_is_receiver);
+	if (local_rs) {
+	    ATOMIC_INC(local_rs->refcount->count);
+	}
+	else {
+	    gc_reference_count_t *refcount = malloc(sizeof(gc_reference_count_t));
+	    refcount->count = 1;
+	    refcount->removed_by_global_gc = false;
+
+	    local_rs = malloc(sizeof(gc_reference_status_t));
+	    local_rs->refcount = refcount;
+	    local_rs->status = shared_object_local;
+	    set_reference_status(source_objspace->shared_reference_tbl, obj, local_rs);
+	}
+	rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
+
+	gc_reference_status_t *rs = malloc(sizeof(gc_reference_status_t));
+	rs->refcount = local_rs->refcount;
+	rs->status = shared_object_unmarked;
+	set_reference_status(receiving_objspace->external_reference_tbl, obj, rs);
+    }
+
+    if (need_borrowing_sync_lock) rb_borrowing_sync_unlock(receiving_objspace->ractor);
+    if (new_addition) {
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	global_space->rglobalgc.shared_objects_total++;
+	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+    }
+}
 static inline int
 is_swept_object(VALUE ptr)
 {
