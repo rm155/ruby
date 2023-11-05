@@ -2229,12 +2229,10 @@ void
 rb_ractor_teardown(rb_execution_context_t *ec)
 {
     rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
-    rb_native_mutex_lock(&cr->borrowing_sync.lock);
-    cr->borrowing_sync.lock_owner = cr;
+    rb_borrowing_sync_lock(cr);
     ractor_close_incoming(ec, cr);
     ractor_close_outgoing(ec, cr);
-    cr->borrowing_sync.lock_owner = NULL;
-    rb_native_mutex_unlock(&cr->borrowing_sync.lock);
+    rb_borrowing_sync_unlock(cr);
 
     rb_gc_ractor_teardown_cleanup();
 
@@ -2324,6 +2322,22 @@ unlock_ractor_set(void)
 {
     rb_vm_t *vm = GET_VM();
     rb_native_mutex_unlock(&vm->ractor.ractor_set_lock);
+}
+
+void
+rb_borrowing_sync_lock(rb_ractor_t *r)
+{
+    VM_ASSERT(r->borrowing_sync.lock_owner != GET_RACTOR());
+    rb_native_mutex_lock(&r->borrowing_sync.lock);
+    r->borrowing_sync.lock_owner = GET_RACTOR();
+}
+
+void
+rb_borrowing_sync_unlock(rb_ractor_t *r)
+{
+    VM_ASSERT(r->borrowing_sync.lock_owner == GET_RACTOR());
+    r->borrowing_sync.lock_owner = NULL;
+    rb_native_mutex_unlock(&r->borrowing_sync.lock);
 }
 
 void

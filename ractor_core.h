@@ -259,6 +259,9 @@ void rb_ractor_blocking_threads_dec(rb_ractor_t *r, const char *file, int line);
 void lock_ractor_set(void);
 void unlock_ractor_set(void);
 
+void rb_borrowing_sync_lock(rb_ractor_t *r);
+void rb_borrowing_sync_unlock(rb_ractor_t *r);
+
 void rb_ractor_vm_barrier_interrupt_running_thread(rb_ractor_t *r);
 void rb_ractor_terminate_interrupt_main_thread(rb_ractor_t *r);
 void rb_ractor_terminate_all(void);

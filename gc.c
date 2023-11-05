@@ -1460,7 +1460,7 @@ static inline size_t
 total_allocated_objects(rb_objspace_t *objspace)
 {
     rb_ractor_t *r = objspace->ractor;
-    if (!during_gc) rb_native_mutex_lock(&r->borrowing_sync.lock);
+    if (!during_gc) rb_borrowing_sync_lock(r);
     size_t count = 0;
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
         rb_size_pool_t *size_pool = &size_pools[i];
@@ -1468,7 +1468,7 @@ total_allocated_objects(rb_objspace_t *objspace)
 	size_pool->newly_created_by_borrowing_count = 0;
         count += size_pool->total_allocated_objects;
     }
-    if (!during_gc) rb_native_mutex_unlock(&r->borrowing_sync.lock);
+    if (!during_gc) rb_borrowing_sync_unlock(r);
     return count;
 }
 
@@ -2762,7 +2762,7 @@ update_size_pool_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspa
     objspace = objspace_to_update;
     rb_size_pool_t *size_pool_to_update = &size_pools[size_pool_idx];
 
-    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock);
+    rb_borrowing_sync_lock(objspace->ractor);
 
     size_pool_to_update->total_allocated_pages += total_allocated_pages;
     size_pool_to_update->total_freed_pages += total_freed_pages;
@@ -2771,7 +2771,7 @@ update_size_pool_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspa
     size_pool_to_update->total_allocated_objects += total_allocated_objects;
     size_pool_to_update->total_freed_objects += total_freed_objects;
 
-    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.lock);
+    rb_borrowing_sync_unlock(objspace->ractor);
 }
 
 static void
@@ -3308,12 +3308,10 @@ set_current_alloc_target_ractor(VALUE arg)
     rb_ractor_t *old_target_ractor = current_objspace->alloc_target_ractor;
     current_objspace->alloc_target_ractor = target_ractor;
     if (old_target_ractor) {
-	old_target_ractor->borrowing_sync.lock_owner = NULL;
-	rb_native_mutex_unlock(&old_target_ractor->borrowing_sync.lock);
+	rb_borrowing_sync_unlock(old_target_ractor);
     }
     if (target_ractor) {
-	rb_native_mutex_lock(&target_ractor->borrowing_sync.lock);
-	target_ractor->borrowing_sync.lock_owner = current_objspace->ractor;
+	rb_borrowing_sync_lock(target_ractor);
     }
     return (VALUE)old_target_ractor;
 }
@@ -4788,14 +4786,12 @@ objspace_each_objects_try(VALUE arg)
              * the next page in the buffer. */
             if (pages[i] != page) continue;
 
-	    rb_native_mutex_lock(&r->borrowing_sync.lock);
-	    r->borrowing_sync.lock_owner = r;
+	    rb_borrowing_sync_lock(r);
 	    if (current_borrowable_page(r, size_pool_idx) == page) {
 		lock_own_borrowable_page(r, size_pool_idx);
 		data->using_borrowable_page[size_pool_idx] = true;
 	    }
-	    r->borrowing_sync.lock_owner = NULL;
-	    rb_native_mutex_unlock(&r->borrowing_sync.lock);
+	    rb_borrowing_sync_unlock(r);
 
             uintptr_t pstart = (uintptr_t)page->start;
             uintptr_t pend = pstart + (page->total_slots * size_pool->slot_size);
@@ -6144,14 +6140,12 @@ count_objects(int argc, VALUE *argv, VALUE os)
 
 	int size_pool_idx = get_size_pool_idx(objspace, page->size_pool);
 	bool using_borrowable_page = false;
-	rb_native_mutex_lock(&r->borrowing_sync.lock);
-	r->borrowing_sync.lock_owner = r;
+	rb_borrowing_sync_lock(r);
 	if (current_borrowable_page(r, size_pool_idx) == page) {
 	    lock_own_borrowable_page(r, size_pool_idx);
 	    using_borrowable_page = true;
 	}
-	r->borrowing_sync.lock_owner = NULL;
-	rb_native_mutex_unlock(&r->borrowing_sync.lock);
+	rb_borrowing_sync_unlock(r);
 
         short stride = page->slot_size;
 
@@ -11210,8 +11204,7 @@ begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 	    RB_VM_LOCK_ENTER();
 	    {
 		VM_COND_AND_BARRIER_WAIT(vm, objspace->ractor->borrowing_sync.no_borrowers, objspace->ractor->borrowing_sync.borrower_count == 0);
-		rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock);
-		objspace->ractor->borrowing_sync.lock_owner = cr;
+		rb_borrowing_sync_lock(objspace->ractor);
 	    }
 	    RB_VM_LOCK_LEAVE();
 	}
@@ -11225,8 +11218,7 @@ end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
     if (vm->ractor.sync.lock_owner != cr && !objspace->running_global_gc) {
 	objspace->local_gc_level--;
 	if (objspace->local_gc_level == 0) {
-	    objspace->ractor->borrowing_sync.lock_owner = NULL;
-	    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.lock);
+	    rb_borrowing_sync_unlock(objspace->ractor);
 	}
     }
 }
@@ -13352,10 +13344,10 @@ gc_stat_heap_internal(int size_pool_idx, VALUE hash_or_sym)
 
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
 
-    if (!during_gc) rb_native_mutex_lock(&objspace->ractor->borrowing_sync.lock);
+    if (!during_gc) rb_borrowing_sync_lock(objspace->ractor);
     size_pool->total_allocated_objects += size_pool->newly_created_by_borrowing_count;
     size_pool->newly_created_by_borrowing_count = 0;
-    if (!during_gc) rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.lock);
+    if (!during_gc) rb_borrowing_sync_unlock(objspace->ractor);
 
 #define SET(name, attr) \
     if (key == gc_stat_heap_symbols[gc_stat_heap_sym_##name]) \
