@@ -9797,7 +9797,7 @@ gc_marks_finish(rb_objspace_t *objspace)
 
     gc_update_weak_references(objspace);
 
-    update_shared_object_references(objspace);
+    if (using_local_limits(objspace)) update_shared_object_references(objspace);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
