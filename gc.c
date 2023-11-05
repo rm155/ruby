@@ -5550,6 +5550,22 @@ rb_add_to_shareable_tbl(VALUE obj)
     }
 }
 
+void
+cross_ractor_const_access(VALUE c, VALUE klass, ID id)
+{
+    if (!rb_multi_ractor_p() || rb_special_const_p(c)) return;
+
+    if (rb_ractor_shareable_p(c)) {
+	if (GET_RACTOR_OF_VALUE(c) != GET_RACTOR()) {
+	    rb_register_new_external_reference(GET_RACTOR()->local_objspace, c); //TODO: Don't repeat this
+	}
+    }
+    else {
+	if (UNLIKELY(!rb_ractor_main_p())) {
+	    rb_raise(rb_eRactorIsolationError, "can not access non-shareable objects in constant %"PRIsVALUE"::%s by non-main Ractor.", rb_class_path(klass), rb_id2name(id));
+	}
+    }
+}
 
 void
 rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
