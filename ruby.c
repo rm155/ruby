@@ -56,7 +56,7 @@
 #include "internal/thread.h"
 #include "internal/ruby_parser.h"
 #include "internal/variable.h"
-#include "prism/prism.h"
+#include "prism_compile.h"
 #include "ruby/encoding.h"
 #include "ruby/thread.h"
 #include "ruby/util.h"
@@ -154,7 +154,7 @@ enum feature_flag_bits {
     SEP \
     X(parsetree_with_comment) \
     SEP \
-    X(prism) \
+    X(prism_parsetree) \
     SEP \
     X(insns) \
     SEP \
@@ -169,7 +169,7 @@ enum dump_flag_bits {
                                 DUMP_BIT(parsetree_with_comment)),
     dump_exit_bits = (DUMP_BIT(yydebug) | DUMP_BIT(syntax) |
                       DUMP_BIT(parsetree) | DUMP_BIT(parsetree_with_comment) |
-                      DUMP_BIT(prism) | DUMP_BIT(insns) | DUMP_BIT(insns_without_opt))
+                      DUMP_BIT(prism_parsetree) | DUMP_BIT(insns) | DUMP_BIT(insns_without_opt))
 };
 
 static inline void
@@ -356,7 +356,7 @@ usage(const char *name, int help, int highlight, int columns)
 
     static const struct ruby_opt_message help_msg[] = {
         M("--copyright",                            "", "print the copyright"),
-        M("--dump={insns|parsetree|prism|...}[,...]",     "",
+        M("--dump={insns|parsetree|prism_parsetree|...}[,...]",     "",
           "dump debug information. see below for available dump list"),
         M("--enable={jit|rubyopt|...}[,...]", ", --disable={jit|rubyopt|...}[,...]",
           "enable or disable features. see below for available features"),
@@ -375,7 +375,7 @@ usage(const char *name, int help, int highlight, int columns)
         M("yydebug(+error-tolerant)", "", "yydebug of yacc parser generator"),
         M("parsetree(+error-tolerant)","", "AST"),
         M("parsetree_with_comment(+error-tolerant)", "", "AST with comments"),
-        M("prism", "", "Prism AST with comments"),
+        M("prism_parsetree", "", "Prism AST with comments"),
     };
     static const struct ruby_opt_message features[] = {
         M("gems",    "",        "rubygems (only for debugging, default: "DEFAULT_RUBYGEMS_ENABLED")"),
@@ -1793,8 +1793,7 @@ ruby_opt_init(ruby_cmdline_options_t *opt)
         rb_rjit_init(&opt->rjit);
 #endif
 #if USE_YJIT
-    if (opt->yjit)
-        rb_yjit_init();
+    rb_yjit_init(opt->yjit);
 #endif
 
     ruby_set_script_name(opt->script_name);
@@ -2335,23 +2334,34 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
         rb_define_global_function("chomp", rb_f_chomp, -1);
     }
 
-    if (dump & (DUMP_BIT(prism))) {
-        pm_parser_t parser;
+    if (dump & (DUMP_BIT(prism_parsetree))) {
+        pm_string_t input;
+        pm_options_t options = { 0 };
+
         if (opt->e_script) {
-            size_t len = RSTRING_LEN(opt->e_script);
-            pm_parser_init(&parser, (const uint8_t *) RSTRING_PTR(opt->e_script), len, "-e");
-        }
-        else {
-            pm_string_t input;
-            char *filepath = RSTRING_PTR(opt->script_name);
-            pm_string_mapped_init(&input, filepath);
-            pm_parser_init(&parser, pm_string_source(&input), pm_string_length(&input), filepath);
+            pm_string_constant_init(&input, RSTRING_PTR(opt->e_script), RSTRING_LEN(opt->e_script));
+            pm_options_filepath_set(&options, "-e");
+        } else {
+            pm_string_mapped_init(&input, RSTRING_PTR(opt->script_name));
+            pm_options_filepath_set(&options, RSTRING_PTR(opt->script_name));
         }
 
+        pm_parser_t parser;
+        pm_parser_init(&parser, pm_string_source(&input), pm_string_length(&input), &options);
+
         pm_node_t *node = pm_parse(&parser);
-        pm_print_node(&parser, node);
+        pm_buffer_t output_buffer = { 0 };
+
+        pm_prettyprint(&output_buffer, &parser, node);
+        rb_io_write(rb_stdout, rb_str_new((const char *) output_buffer.value, output_buffer.length));
+        rb_io_flush(rb_stdout);
+
+        pm_buffer_free(&output_buffer);
         pm_node_destroy(&parser, node);
         pm_parser_free(&parser);
+
+        pm_string_free(&input);
+        pm_options_free(&options);
     }
 
     if (dump & (DUMP_BIT(parsetree)|DUMP_BIT(parsetree_with_comment))) {

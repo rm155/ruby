@@ -911,7 +911,7 @@ static rb_node_xstr_t *rb_node_xstr_new(struct parser_params *p, VALUE nd_lit, c
 static rb_node_dxstr_t *rb_node_dxstr_new(struct parser_params *p, VALUE nd_lit, long nd_alen, NODE *nd_next, const YYLTYPE *loc);
 static rb_node_evstr_t *rb_node_evstr_new(struct parser_params *p, NODE *nd_body, const YYLTYPE *loc);
 static rb_node_once_t *rb_node_once_new(struct parser_params *p, NODE *nd_body, const YYLTYPE *loc);
-static rb_node_args_t *rb_node_args_new(struct parser_params *p, struct rb_args_info *nd_ainfo, const YYLTYPE *loc);
+static rb_node_args_t *rb_node_args_new(struct parser_params *p, const YYLTYPE *loc);
 static rb_node_args_aux_t *rb_node_args_aux_new(struct parser_params *p, ID nd_pid, long nd_plen, const YYLTYPE *loc);
 static rb_node_opt_arg_t *rb_node_opt_arg_new(struct parser_params *p, NODE *nd_body, const YYLTYPE *loc);
 static rb_node_kw_arg_t *rb_node_kw_arg_new(struct parser_params *p, NODE *nd_body, const YYLTYPE *loc);
@@ -1012,7 +1012,7 @@ static rb_node_error_t *rb_node_error_new(struct parser_params *p, const YYLTYPE
 #define NEW_DXSTR(s,l,n,loc) (NODE *)rb_node_dxstr_new(p,s,l,n,loc)
 #define NEW_EVSTR(n,loc) (NODE *)rb_node_evstr_new(p,n,loc)
 #define NEW_ONCE(b,loc) (NODE *)rb_node_once_new(p,b,loc)
-#define NEW_ARGS(a,loc) rb_node_args_new(p,a,loc)
+#define NEW_ARGS(loc) rb_node_args_new(p,loc)
 #define NEW_ARGS_AUX(r,b,loc) rb_node_args_aux_new(p,r,b,loc)
 #define NEW_OPT_ARG(v,loc) rb_node_opt_arg_new(p,v,loc)
 #define NEW_KW_ARG(v,loc) rb_node_kw_arg_new(p,v,loc)
@@ -4784,7 +4784,7 @@ f_larglist	: '(' f_args opt_bv_decl ')'
                     {
                         p->ctxt.in_argdef = 0;
                     /*%%%*/
-                        if (!args_info_empty_p($1->nd_ainfo))
+                        if (!args_info_empty_p(&$1->nd_ainfo))
                             p->max_numparam = ORDINAL_PARAM;
                     /*% %*/
                         $$ = $1;
@@ -6148,7 +6148,7 @@ args_tail	: f_kwarg ',' f_kwrest opt_f_block_arg
                         add_forwarding_args(p);
                         $$ = new_args_tail(p, Qnone, $1, arg_FWD_BLOCK, &@1);
                     /*%%%*/
-                        $$->nd_ainfo->forwarding = 1;
+                        $$->nd_ainfo.forwarding = 1;
                     /*% %*/
                     }
                 ;
@@ -7965,7 +7965,7 @@ tokadd_utf8(struct parser_params *p, rb_encoding **encp,
 #define ESCAPE_META    2
 
 static int
-read_escape(struct parser_params *p, int flags, rb_encoding **encp)
+read_escape(struct parser_params *p, int flags)
 {
     int c;
     size_t numlen;
@@ -8024,7 +8024,7 @@ read_escape(struct parser_params *p, int flags, rb_encoding **encp)
                 nextc(p);
                 goto eof;
             }
-            return read_escape(p, flags|ESCAPE_META, encp) | 0x80;
+            return read_escape(p, flags|ESCAPE_META) | 0x80;
         }
         else if (c == -1 || !ISASCII(c)) goto eof;
         else {
@@ -8053,7 +8053,7 @@ read_escape(struct parser_params *p, int flags, rb_encoding **encp)
                 nextc(p);
                 goto eof;
             }
-            c = read_escape(p, flags|ESCAPE_CONTROL, encp);
+            c = read_escape(p, flags|ESCAPE_CONTROL);
         }
         else if (c == '?')
             return 0177;
@@ -8101,7 +8101,7 @@ tokaddmbc(struct parser_params *p, int c, rb_encoding *enc)
 }
 
 static int
-tokadd_escape(struct parser_params *p, rb_encoding **encp)
+tokadd_escape(struct parser_params *p)
 {
     int c;
     size_t numlen;
@@ -8341,7 +8341,7 @@ tokadd_string(struct parser_params *p,
                       case 'C':
                       case 'M': {
                         pushback(p, c);
-                        c = read_escape(p, 0, enc);
+                        c = read_escape(p, 0);
 
                         char *t = tokspace(p, rb_strlen_lit("\\x00"));
                         *t++ = '\\';
@@ -8357,7 +8357,7 @@ tokadd_string(struct parser_params *p,
                         continue;
                     }
                     pushback(p, c);
-                    if ((c = tokadd_escape(p, enc)) < 0)
+                    if ((c = tokadd_escape(p)) < 0)
                         return -1;
                     if (*enc && *enc != *encp) {
                         mixed_escape(p->lex.ptok+2, *enc, *encp);
@@ -8367,7 +8367,7 @@ tokadd_string(struct parser_params *p,
                 else if (func & STR_FUNC_EXPAND) {
                     pushback(p, c);
                     if (func & STR_FUNC_ESCAPE) tokadd(p, '\\');
-                    c = read_escape(p, 0, enc);
+                    c = read_escape(p, 0);
                 }
                 else if ((func & STR_FUNC_QWORDS) && ISSPACE(c)) {
                     /* ignore backslashed spaces in %w */
@@ -9908,7 +9908,7 @@ parse_qmark(struct parser_params *p, int space_seen)
             if (tokadd_mbchar(p, c) == -1) return 0;
         }
         else {
-            c = read_escape(p, 0, &enc);
+            c = read_escape(p, 0);
             tokadd(p, c);
         }
     }
@@ -11945,10 +11945,10 @@ rb_node_once_new(struct parser_params *p, NODE *nd_body, const YYLTYPE *loc)
 }
 
 static rb_node_args_t *
-rb_node_args_new(struct parser_params *p, struct rb_args_info *nd_ainfo, const YYLTYPE *loc)
+rb_node_args_new(struct parser_params *p, const YYLTYPE *loc)
 {
     rb_node_args_t *n = NODE_NEWNODE(NODE_ARGS, rb_node_args_t, loc);
-    n->nd_ainfo = nd_ainfo;
+    MEMZERO(&n->nd_ainfo, struct rb_args_info, 1);
 
     return n;
 }
@@ -12291,14 +12291,6 @@ block_append(struct parser_params *p, NODE *head, NODE *tail)
 
     if (h == 0) return tail;
     switch (nd_type(h)) {
-      case NODE_LIT:
-      case NODE_STR:
-      case NODE_SELF:
-      case NODE_TRUE:
-      case NODE_FALSE:
-      case NODE_NIL:
-        parser_warning(p, h, "unused literal ignored");
-        return tail;
       default:
         h = end = NEW_BLOCK(head, &head->nd_loc);
         RNODE_BLOCK(end)->nd_end = end;
@@ -14317,7 +14309,7 @@ args_info_empty_p(struct rb_args_info *args)
 static rb_node_args_t *
 new_args(struct parser_params *p, rb_node_args_aux_t *pre_args, rb_node_opt_arg_t *opt_args, ID rest_arg, rb_node_args_aux_t *post_args, rb_node_args_t *tail, const YYLTYPE *loc)
 {
-    struct rb_args_info *args = tail->nd_ainfo;
+    struct rb_args_info *args = &tail->nd_ainfo;
 
     if (args->forwarding) {
         if (rest_arg) {
@@ -14352,9 +14344,8 @@ new_args(struct parser_params *p, rb_node_args_aux_t *pre_args, rb_node_opt_arg_
 static rb_node_args_t *
 new_args_tail(struct parser_params *p, rb_node_kw_arg_t *kw_args, ID kw_rest_arg, ID block, const YYLTYPE *kw_rest_loc)
 {
-    rb_node_args_t *node = NEW_ARGS(0, &NULL_LOC);
-    struct rb_args_info *args = ZALLOC(struct rb_args_info);
-    node->nd_ainfo = args;
+    rb_node_args_t *node = NEW_ARGS(&NULL_LOC);
+    struct rb_args_info *args = &node->nd_ainfo;
     if (p->error_p) return node;
 
     args->block_arg      = block;
@@ -14416,7 +14407,7 @@ args_with_numbered(struct parser_params *p, rb_node_args_t *args, int max_numpar
             args = new_args_tail(p, 0, 0, 0, 0);
             nd_set_loc(RNODE(args), &loc);
         }
-        args->nd_ainfo->pre_args_num = max_numparam;
+        args->nd_ainfo.pre_args_num = max_numparam;
     }
     return args;
 }
@@ -14551,15 +14542,18 @@ remove_duplicate_keys(struct parser_params *p, NODE *hash)
     NODE *result = 0;
     NODE *last_expr = 0;
     rb_code_location_t loc = hash->nd_loc;
-    while (hash && RNODE_LIST(hash)->nd_head && RNODE_LIST(hash)->nd_next) {
+    while (hash && RNODE_LIST(hash)->nd_next) {
         NODE *head = RNODE_LIST(hash)->nd_head;
         NODE *value = RNODE_LIST(hash)->nd_next;
         NODE *next = RNODE_LIST(value)->nd_next;
         st_data_t key = (st_data_t)head;
         st_data_t data;
         RNODE_LIST(value)->nd_next = 0;
-        if (nd_type_p(head, NODE_LIT) &&
-            st_delete(literal_keys, (key = (st_data_t)RNODE_LIT(head)->nd_lit, &key), &data)) {
+        if (!head) {
+            key = (st_data_t)value;
+        }
+        else if (nd_type_p(head, NODE_LIT) &&
+                 st_delete(literal_keys, (key = (st_data_t)RNODE_LIT(head)->nd_lit, &key), &data)) {
             NODE *dup_value = (RNODE_LIST((NODE *)data))->nd_next;
             rb_compile_warn(p->ruby_sourcefile, nd_line((NODE *)data),
                             "key %+"PRIsVALUE" is duplicated and overwritten on line %d",
@@ -14572,7 +14566,7 @@ remove_duplicate_keys(struct parser_params *p, NODE *hash)
             }
         }
         st_insert(literal_keys, (st_data_t)key, (st_data_t)hash);
-        last_expr = nd_type_p(head, NODE_LIT) ? value : head;
+        last_expr = !head || nd_type_p(head, NODE_LIT) ? value : head;
         hash = next;
     }
     st_foreach(literal_keys, append_literal_keys, (st_data_t)&result);

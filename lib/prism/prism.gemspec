@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name = "prism"
-  spec.version = "0.15.1"
+  spec.version = "0.17.1"
   spec.authors = ["Shopify"]
   spec.email = ["ruby@shopify.com"]
 
@@ -28,8 +28,9 @@ Gem::Specification.new do |spec|
     "docs/encoding.md",
     "docs/fuzzing.md",
     "docs/heredocs.md",
+    "docs/javascript.md",
     "docs/mapping.md",
-    "docs/prism.png",
+    "docs/releasing.md",
     "docs/ripper.md",
     "docs/ruby_api.md",
     "docs/serialization.md",
@@ -44,8 +45,10 @@ Gem::Specification.new do |spec|
     "include/prism/diagnostic.h",
     "include/prism/enc/pm_encoding.h",
     "include/prism/node.h",
+    "include/prism/options.h",
     "include/prism/pack.h",
     "include/prism/parser.h",
+    "include/prism/prettyprint.h",
     "include/prism/regexp.h",
     "include/prism/util/pm_buffer.h",
     "include/prism/util/pm_char.h",
@@ -54,6 +57,7 @@ Gem::Specification.new do |spec|
     "include/prism/util/pm_memchr.h",
     "include/prism/util/pm_newline_list.h",
     "include/prism/util/pm_state_stack.h",
+    "include/prism/util/pm_strncasecmp.h",
     "include/prism/util/pm_string.h",
     "include/prism/util/pm_string_list.h",
     "include/prism/util/pm_strpbrk.h",
@@ -103,8 +107,13 @@ Gem::Specification.new do |spec|
     "src/util/pm_string_list.c",
     "src/util/pm_strncasecmp.c",
     "src/util/pm_strpbrk.c",
+    "src/options.c",
     "src/prism.c",
     "prism.gemspec",
+    "sig/prism.rbs",
+    "sig/prism_static.rbs",
+    "rbi/prism.rbi",
+    "rbi/prism_static.rbi"
   ]
 
   spec.extensions = ["ext/prism/extconf.rb"]

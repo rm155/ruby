@@ -6,8 +6,10 @@ return unless defined?(RubyVM::InstructionSequence)
 
 module Prism
   class NewlineTest < TestCase
-    base = File.dirname(__dir__)
-    Dir["{lib,test}/**/*.rb", base: base].each do |relative|
+    base = File.expand_path("../", __FILE__)
+    filepaths = Dir["*.rb", base: base] - %w[unescape_test.rb]
+
+    filepaths.each do |relative|
       define_method("test_newline_flags_#{relative}") do
         assert_newlines(base, relative)
       end

@@ -38,6 +38,8 @@ module Prism
     # Raised when the query given to a pattern is either invalid Ruby syntax or
     # is using syntax that we don't yet support.
     class CompilationError < StandardError
+      # Create a new CompilationError with the given representation of the node
+      # that caused the error.
       def initialize(repr)
         super(<<~ERROR)
           prism was unable to compile the pattern you provided into a usable
@@ -53,18 +55,27 @@ module Prism
       end
     end
 
+    # The query that this pattern was initialized with.
     attr_reader :query
 
+    # Create a new pattern with the given query. The query should be a string
+    # containing a Ruby pattern matching expression.
     def initialize(query)
       @query = query
       @compiled = nil
     end
 
+    # Compile the query into a callable object that can be used to match against
+    # nodes.
     def compile
       result = Prism.parse("case nil\nin #{query}\nend")
       compile_node(result.value.statements.body.last.conditions.last.pattern)
     end
 
+    # Scan the given node and all of its children for nodes that match the
+    # pattern. If a block is given, it will be called with each node that
+    # matches the pattern. If no block is given, an enumerator will be returned
+    # that will yield each node that matches the pattern.
     def scan(root)
       return to_enum(__method__, root) unless block_given?
 
@@ -158,12 +169,12 @@ module Prism
     # in InstanceVariableReadNode[name: Symbol]
     # in { name: Symbol }
     def compile_hash_pattern_node(node)
-      compile_error(node) unless node.kwrest.nil?
+      compile_error(node) if node.rest
       compiled_constant = compile_node(node.constant) if node.constant
 
       preprocessed =
-        node.assocs.to_h do |assoc|
-          [assoc.key.unescaped.to_sym, compile_node(assoc.value)]
+        node.elements.to_h do |element|
+          [element.key.unescaped.to_sym, compile_node(element.value)]
         end
 
       compiled_keywords = ->(other) do

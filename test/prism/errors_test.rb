@@ -85,7 +85,7 @@ module Prism
             nil,
             Location(),
             nil,
-            ArgumentsNode([MissingNode()]),
+            ArgumentsNode([MissingNode()], 0),
             nil,
             nil,
             0,
@@ -346,7 +346,7 @@ module Prism
         ArgumentsNode([
           KeywordHashNode([AssocSplatNode(expression("kwargs"), Location())]),
           SplatNode(Location(), expression("args"))
-        ]),
+        ], 1),
         Location(),
         nil,
         0,
@@ -364,7 +364,7 @@ module Prism
         nil,
         Location(),
         Location(),
-        ArgumentsNode([expression("foo")]),
+        ArgumentsNode([expression("foo")], 0),
         Location(),
         BlockArgumentNode(expression("block"), Location()),
         0,
@@ -399,7 +399,7 @@ module Prism
             )]
           ),
           SplatNode(Location(), expression("args"))
-        ]),
+        ], 0),
         Location(),
         nil,
         0,
@@ -746,7 +746,7 @@ module Prism
           [],
           nil,
           [RequiredParameterNode(:a)],
-          [KeywordParameterNode(:b, Location(), nil)],
+          [RequiredKeywordParameterNode(:b, Location())],
           nil,
           nil
         ),
@@ -774,7 +774,7 @@ module Prism
           [],
           nil,
           [],
-          [KeywordParameterNode(:b, Location(), nil)],
+          [RequiredKeywordParameterNode(:b, Location())],
           KeywordRestParameterNode(:rest, Location(), Location()),
           nil
         ),
@@ -824,7 +824,7 @@ module Prism
           [],
           nil,
           [RequiredParameterNode(:a)],
-          [KeywordParameterNode(:b, Location(), nil)],
+          [RequiredKeywordParameterNode(:b, Location())],
           KeywordRestParameterNode(:args, Location(), Location()),
           nil
         ),
@@ -854,7 +854,7 @@ module Prism
           [],
           nil,
           [RequiredParameterNode(:a)],
-          [KeywordParameterNode(:b, Location(), nil)],
+          [RequiredKeywordParameterNode(:b, Location())],
           KeywordRestParameterNode(:args, Location(), Location()),
           nil
         ),
@@ -884,7 +884,7 @@ module Prism
           [],
           nil,
           [RequiredParameterNode(:a)],
-          [KeywordParameterNode(:b, Location(), nil)],
+          [RequiredKeywordParameterNode(:b, Location())],
           KeywordRestParameterNode(:args, Location(), Location()),
           nil
         ),
@@ -1202,7 +1202,7 @@ module Prism
     def test_invalid_global_variable_write
       assert_errors expression("$',"), "$',", [
         ["Immutable variable as a write target", 0..2],
-        ["Unexpected write target", 0..3]
+        ["Unexpected write target", 0..2]
       ]
     end
 
@@ -1390,17 +1390,21 @@ module Prism
     end
 
     def test_assign_to_numbered_parameter
-      source = "
+      source = <<~RUBY
         a in _1
         a => _1
         1 => a, _1
         1 in a, _1
-      "
+        /(?<_1>)/ =~ a
+      RUBY
+
+      message = "Token reserved for a numbered parameter"
       assert_errors expression(source), source, [
-        ["Token reserved for a numbered parameter", 14..16],
-        ["Token reserved for a numbered parameter", 30..32],
-        ["Token reserved for a numbered parameter", 49..51],
-        ["Token reserved for a numbered parameter", 68..70],
+        [message, 5..7],
+        [message, 13..15],
+        [message, 24..26],
+        [message, 35..37],
+        [message, 42..44]
       ]
     end
 

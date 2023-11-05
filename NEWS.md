@@ -49,6 +49,10 @@ Note: We're only listing outstanding class updates.
       The class use equality semantic to lookup keys like a regular hash,
       but it doesn't hold strong references on the keys. [[Feature #18498]]
 
+* Proc
+    * Now Proc#dup and Proc#clone call `#initialize_dup` and `#initialize_clone`
+      hooks respectively.  [[Feature #19362]]
+
 * Process.warmup
 
     * Notify the Ruby virtual machine that the boot sequence is finished,
@@ -104,7 +108,7 @@ Note: We're only listing outstanding class updates.
 
 The following default gem is added.
 
-* prism 0.15.1
+* prism 0.17.1
 
 The following default gems are updated.
 
@@ -113,6 +117,7 @@ The following default gems are updated.
 * bundler 2.5.0.dev
 * csv 3.2.8
 * erb 4.0.3
+* etc 1.4.3.dev.1
 * fiddle 1.1.2
 * fileutils 1.7.1
 * io-console 0.6.1.dev
@@ -131,15 +136,16 @@ The following default gems are updated.
 
 The following bundled gem is promoted from default gems.
 
-* racc 1.7.1
+* racc 1.7.3
 
 The following bundled gems are updated.
 
 * minitest 5.20.0
+* rake 13.1.0
 * test-unit 3.6.1
 * rexml 3.2.6
 * rss 0.3.0
-* net-imap 0.4.1
+* net-imap 0.4.4
 * net-smtp 0.4.0
 * rbs 3.2.2
 * typeprof 0.21.8
@@ -220,6 +226,7 @@ changelog for details of the default gems or bundled gems.
 [Feature #19314]: https://bugs.ruby-lang.org/issues/19314
 [Feature #19347]: https://bugs.ruby-lang.org/issues/19347
 [Feature #19351]: https://bugs.ruby-lang.org/issues/19351
+[Feature #19362]: https://bugs.ruby-lang.org/issues/19362
 [Feature #19521]: https://bugs.ruby-lang.org/issues/19521
 [Feature #19538]: https://bugs.ruby-lang.org/issues/19538
 [Feature #19591]: https://bugs.ruby-lang.org/issues/19591
