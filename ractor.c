@@ -989,6 +989,9 @@ ractor_basket_prepare_contents(VALUE args)
     if (rb_ractor_shareable_p(obj)) {
         type = basket_type_ref;
         v = obj;
+	rb_ractor_t * rb_current_allocating_ractor(void);
+	rb_ractor_t *tr = rb_current_allocating_ractor();
+	if (!rb_special_const_p(obj)) rb_register_new_external_reference(tr->local_objspace, obj);
     }
     else if (!RTEST(p->move)) {
         v = ractor_copy(obj);
