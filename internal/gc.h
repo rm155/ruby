@@ -140,6 +140,9 @@ void rb_add_zombie_thread(rb_thread_t *th);
 void rb_add_to_absorbed_threads_tbl(rb_thread_t *th);
 void rb_remove_from_absorbed_threads_tbl(rb_thread_t *th);
 
+void rb_register_new_external_wmap_reference(VALUE *ptr);
+void rb_remove_from_external_weak_tables(VALUE *ptr);
+
 void rb_global_tables_init(void);
 
 void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);

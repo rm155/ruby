@@ -41,6 +41,9 @@ wmap_free_entry(VALUE *key, VALUE *val)
 {
     assert(key + 1 == val);
 
+    rb_remove_from_external_weak_tables(key);
+    rb_remove_from_external_weak_tables(val);
+
     /* We only need to free key because val is allocated beside key on in the
      * same malloc call. */
     ruby_sized_xfree(key, sizeof(VALUE) * 2);
@@ -395,6 +398,15 @@ wmap_aset_replace(st_data_t *key, st_data_t *val, st_data_t new_key_ptr, int exi
 
     *(VALUE *)*key = new_key;
     *(VALUE *)*val = new_val;
+    rb_ractor_t *key_ractor = get_ractor_of_value(new_key);
+    rb_ractor_t *val_ractor = get_ractor_of_value(new_val);
+    rb_ractor_t *current_ractor = GET_RACTOR();
+    if (key_ractor && current_ractor != key_ractor) {
+	    rb_register_new_external_wmap_reference((VALUE *)*key);
+    }
+    if (val_ractor && current_ractor != val_ractor) {
+	    rb_register_new_external_wmap_reference((VALUE *)*val);
+    }
 
     return ST_CONTINUE;
 }
@@ -518,6 +530,14 @@ struct weakkeymap {
     st_table *table;
 };
 
+static void
+wkmap_free_entry(VALUE *key)
+{
+    rb_remove_from_external_weak_tables(key);
+
+    ruby_sized_xfree(key, sizeof(VALUE));
+}
+
 static int
 wkmap_mark_table_i(st_data_t key, st_data_t val_obj, st_data_t _)
 {
@@ -530,7 +550,7 @@ wkmap_mark_table_i(st_data_t key, st_data_t val_obj, st_data_t _)
         return ST_CONTINUE;
     }
     else {
-        ruby_sized_xfree((VALUE *)key, sizeof(VALUE));
+	wkmap_free_entry(key);
 
         return ST_DELETE;
     }
@@ -548,7 +568,7 @@ wkmap_mark(void *ptr)
 static int
 wkmap_free_table_i(st_data_t key, st_data_t _val, st_data_t _arg)
 {
-    ruby_sized_xfree((VALUE *)key, sizeof(VALUE));
+    wkmap_free_entry(key);
     return ST_CONTINUE;
 }
 
@@ -586,7 +606,7 @@ wkmap_compact_table_i(st_data_t key, st_data_t val_obj, st_data_t _data, int _er
         }
     }
     else {
-        ruby_sized_xfree((VALUE *)key, sizeof(VALUE));
+	wkmap_free_entry(key);
 
         return ST_DELETE;
     }
@@ -706,6 +726,12 @@ wkmap_aset_replace(st_data_t *key, st_data_t *val, st_data_t data_args, int exis
     *(VALUE *)*key = args->new_key;
     *val = (st_data_t)args->new_val;
 
+    rb_ractor_t *key_ractor = get_ractor_of_value(args->new_key);
+    rb_ractor_t *current_ractor = GET_RACTOR();
+    if (key_ractor && current_ractor != key_ractor) {
+	rb_register_new_external_wmap_reference((VALUE *)*key);
+    }
+
     return ST_CONTINUE;
 }
 
@@ -786,7 +812,7 @@ wkmap_delete(VALUE self, VALUE key)
 
         rb_gc_remove_weak(self, (VALUE *)orig_key_data);
 
-        ruby_sized_xfree((VALUE *)orig_key_data, sizeof(VALUE));
+	wkmap_free_entry(orig_key_data);
 
         return orig_val;
     }

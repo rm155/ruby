@@ -889,6 +889,9 @@ typedef struct rb_objspace {
     rb_nativethread_lock_t shared_reference_tbl_lock;
     st_table *external_reference_tbl;
 
+    st_table *wmap_referenced_obj_tbl;
+    rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
+
     struct {
         int run;
         unsigned int latest_gc_info;
@@ -1078,6 +1081,14 @@ absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 
     //Shared object tables
     absorb_shared_object_tables(objspace_to_update, objspace_to_copy_from);
+
+    rb_native_mutex_lock(&objspace_to_copy_from->wmap_referenced_obj_tbl_lock);
+    rb_native_mutex_lock(&objspace_to_update->wmap_referenced_obj_tbl_lock);
+
+    absorb_table_contents(objspace_to_update->wmap_referenced_obj_tbl, objspace_to_copy_from->wmap_referenced_obj_tbl);
+
+    rb_native_mutex_unlock(&objspace_to_copy_from->wmap_referenced_obj_tbl_lock);
+    rb_native_mutex_unlock(&objspace_to_update->wmap_referenced_obj_tbl_lock);
 
     //Object ID tables
     rb_native_mutex_lock(&objspace_to_copy_from->obj_id_lock);
@@ -2205,6 +2216,9 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->shared_reference_tbl);
     rb_nativethread_lock_destroy(&objspace->shared_reference_tbl_lock);
     st_free_table(objspace->external_reference_tbl);
+
+    st_free_table(objspace->wmap_referenced_obj_tbl);
+    rb_nativethread_lock_destroy(&objspace->wmap_referenced_obj_tbl_lock);
 
     rb_nativethread_lock_destroy(&objspace->zombie_threads_lock);
 
@@ -4616,6 +4630,9 @@ Init_heap(rb_objspace_t *objspace)
     rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
     objspace->external_reference_tbl = st_init_numtable();
 
+    objspace->wmap_referenced_obj_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->wmap_referenced_obj_tbl_lock);
+
     rb_nativethread_lock_initialize(&objspace->secondary_shareable_tbl_lock);
 
     objspace->alloc_target_ractor = NULL;
@@ -5612,6 +5629,29 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
 	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
     }
 }
+
+void
+rb_register_new_external_wmap_reference(VALUE *ptr)
+{
+    VALUE obj = *ptr;
+    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+    rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
+    st_insert(source_objspace->wmap_referenced_obj_tbl, ptr, INT2FIX(0));
+    rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
+}
+
+void
+rb_remove_from_external_weak_tables(VALUE *ptr)
+{
+    VALUE obj = *ptr;
+    if (obj == Qundef || !FL_TEST_RAW(obj, FL_SHAREABLE)) return;
+
+    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+    rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
+    st_delete(source_objspace->wmap_referenced_obj_tbl, &ptr, NULL);
+    rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
+}
+
 static inline int
 is_swept_object(VALUE ptr)
 {
@@ -8199,7 +8239,7 @@ rb_gc_mark_weak(VALUE *ptr)
     if (UNLIKELY(!during_gc)) return;
 
     VALUE obj = *ptr;
-    if (RB_SPECIAL_CONST_P(obj)) return;
+    if (RB_SPECIAL_CONST_P(obj) || GET_OBJSPACE_OF_VALUE(obj) != objspace) return;
 
     GC_ASSERT(objspace->rgengc.parent_object == 0 || FL_TEST(objspace->rgengc.parent_object, FL_WB_PROTECTED));
 
@@ -9769,6 +9809,28 @@ gc_update_weak_references(rb_objspace_t *objspace)
     rb_darray_resize_capa_without_gc(&objspace->weak_references, retained_weak_references_count);
 }
 
+static int
+update_external_weak_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    VALUE *ptr = (VALUE *)key;
+    VALUE obj = *ptr;
+    if (RVALUE_MARKED(obj)) {
+	return ST_CONTINUE;
+    }
+    else {
+	*ptr = Qundef;
+	return ST_DELETE;
+    }
+}
+
+static void
+gc_update_external_weak_references(rb_objspace_t *objspace)
+{
+    rb_native_mutex_lock(&objspace->wmap_referenced_obj_tbl_lock);
+    st_foreach(objspace->wmap_referenced_obj_tbl, update_external_weak_references_i, (st_data_t)objspace);
+    rb_native_mutex_unlock(&objspace->wmap_referenced_obj_tbl_lock);
+}
+
 static void
 gc_marks_finish(rb_objspace_t *objspace)
 {
@@ -9796,7 +9858,7 @@ gc_marks_finish(rb_objspace_t *objspace)
     }
 
     gc_update_weak_references(objspace);
-
+    gc_update_external_weak_references(objspace);
     if (using_local_limits(objspace)) update_shared_object_references(objspace);
 
 #if RGENGC_CHECK_MODE >= 2
