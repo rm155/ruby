@@ -9821,7 +9821,10 @@ update_external_weak_references_i(st_data_t key, st_data_t value, st_data_t argp
 {
     VALUE *ptr = (VALUE *)key;
     VALUE obj = *ptr;
-    if (RVALUE_MARKED(obj)) {
+    if (obj == Qundef) {
+	return ST_DELETE;
+    }
+    else if (RVALUE_MARKED(obj)) {
 	return ST_CONTINUE;
     }
     else {
