@@ -3139,7 +3139,7 @@ rb_ractor_classify_as_shareable(VALUE obj)
 static enum obj_traverse_iterator_result
 mark_shareable_in_traversal(VALUE obj)
 {
-    rb_ractor_classify_as_shareable(obj);
+    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
     return traverse_cont;
 }
 
