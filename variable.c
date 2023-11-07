@@ -1592,11 +1592,11 @@ generic_ivar_set_shape_ivptr(VALUE obj, void *data)
 
     struct gen_ivar_lookup_ensure_size *ivar_lookup = data;
 
-    RB_VM_LOCK_ENTER();
+    GENERIC_IVTBL_ENTER();
     {
         st_update(generic_ivtbl(obj, ivar_lookup->id, false), (st_data_t)obj, generic_ivar_lookup_ensure_size, (st_data_t)ivar_lookup);
     }
-    RB_VM_LOCK_LEAVE();
+    GENERIC_IVTBL_LEAVE();
 
     FL_SET_RAW(obj, FL_EXIVAR);
 
