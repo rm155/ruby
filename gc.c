@@ -8902,14 +8902,10 @@ insert_external_reference_row(st_data_t key, st_data_t val, st_data_t arg)
     rb_objspace_t *objspace_to_copy_from = objspaces[1];
     st_table *target_tbl = objspace_to_update->external_reference_tbl;
 
-    if (GET_OBJSPACE_OF_VALUE(obj) == objspace_to_update) {
-	drop_external_reference_usage(objspace_to_copy_from, obj, rs);
-    }
-    else {
-	bool replaced = !!st_insert(target_tbl, key, val);
-	if (replaced) {
-	    ATOMIC_DEC(rs->refcount->count);
-	}
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) != objspace_to_update);
+    bool replaced = !!st_insert(target_tbl, key, val);
+    if (replaced) {
+	ATOMIC_DEC(rs->refcount->count);
     }
     return ST_CONTINUE;
 }
@@ -8923,9 +8919,41 @@ absorb_external_references(rb_objspace_t *objspace_to_update, rb_objspace_t *obj
     st_foreach(objspace_to_copy_from->external_reference_tbl, insert_external_reference_row, (st_data_t)objspaces);
 }
 
+static int
+prepare_for_reference_tbl_absorption_i(st_data_t key, st_data_t val, st_data_t arg)
+{
+    VALUE obj = (VALUE)key;
+    gc_reference_status_t *rs = (gc_reference_status_t *)val;
+    rb_objspace_t **objspaces = (rb_objspace_t **)arg;
+
+    rb_objspace_t *tbl_objspace = objspaces[0];
+    rb_objspace_t *comparison_objspace = objspaces[1];
+    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+
+    if (source_objspace == comparison_objspace) {
+	drop_external_reference_usage(tbl_objspace, obj, rs);
+	return ST_DELETE;
+    }
+    return ST_CONTINUE;
+}
+
+static void
+prepare_for_reference_tbl_absorption(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
+{
+    rb_objspace_t *objspaces[2];
+    objspaces[0] = objspace_to_copy_from;
+    objspaces[1] = objspace_to_update;
+    st_foreach(objspace_to_copy_from->external_reference_tbl, prepare_for_reference_tbl_absorption_i, (st_data_t)objspaces);
+
+    objspaces[0] = objspace_to_update;
+    objspaces[1] = objspace_to_copy_from;
+    st_foreach(objspace_to_update->external_reference_tbl, prepare_for_reference_tbl_absorption_i, (st_data_t)objspaces);
+}
+
 static void
 absorb_shared_object_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
 {
+    prepare_for_reference_tbl_absorption(objspace_to_update, objspace_to_copy_from);
     rb_native_mutex_lock(&objspace_to_copy_from->shared_reference_tbl_lock);
     rb_native_mutex_lock(&objspace_to_update->shared_reference_tbl_lock);
 
