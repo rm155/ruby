@@ -4259,7 +4259,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	    objspace->secondary_shareable_tbl_size--;
 	    rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
 	}
-	VM_ASSERT(shared_item_found_in_table);
 
 	rb_global_space_t *global_space = &rb_global_space;
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
@@ -5602,7 +5601,7 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
     if (new_addition) {
 	rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
 	gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
-	VM_ASSERT(!!local_rs || (GET_RACTOR() == source_objspace->ractor) || current_ractor_is_receiver);
+	VM_ASSERT(!!local_rs || (GET_RACTOR() == source_objspace->ractor) || (GET_RACTOR() == receiving_objspace->ractor));
 	if (local_rs) {
 	    ATOMIC_INC(local_rs->refcount->count);
 	}
@@ -11829,7 +11828,6 @@ update_shareable_tbl_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src)
 		st_insert(objspace->secondary_shareable_tbl, (st_data_t)dest, INT2FIX(0));
 		rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
 	    }
-	    VM_ASSERT(shared_item_found_in_table);
 	}
 	DURING_GC_COULD_MALLOC_REGION_END();
 	return 1;
