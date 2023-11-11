@@ -1063,7 +1063,6 @@ vm_get_ev_const(rb_execution_context_t *ec, VALUE orig_klass, ID id, bool allow_
                             return 1;
                         }
                         else {
-			    void cross_ractor_const_access(VALUE c, VALUE klass, ID id);
 			    cross_ractor_const_access(val, klass, id);
 			    return val;
                         }

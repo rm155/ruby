@@ -3107,7 +3107,6 @@ rb_const_get_0(VALUE klass, ID id, int exclude, int recurse, int visibility)
 {
     VALUE c = rb_const_search(klass, id, exclude, recurse, visibility);
     if (!UNDEF_P(c)) {
-	void cross_ractor_const_access(VALUE c, VALUE klass, ID id);
 	cross_ractor_const_access(c, klass, id);
 	return c;
     }
