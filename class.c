@@ -248,7 +248,7 @@ class_alloc_given_redirected_allocation(VALUE args)
     RCLASS_SET_ALLOCATOR((VALUE)obj, 0);
 
     VALUE class_obj = (VALUE)obj;
-    rb_ractor_classify_as_shareable(class_obj);
+    FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
     return class_obj;
 }
 

@@ -3194,7 +3194,7 @@ shareable_p_enter(VALUE obj)
              RB_TYPE_P(obj, T_MODULE) ||
              RB_TYPE_P(obj, T_ICLASS)) {
         // TODO: remove it
-        rb_ractor_classify_as_shareable(obj);
+	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
         return traverse_skip;
     }
     else if (RB_OBJ_FROZEN_RAW(obj) &&
