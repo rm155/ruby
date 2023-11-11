@@ -892,6 +892,9 @@ typedef struct rb_objspace {
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
+    st_table *contained_ractor_tbl;
+    rb_nativethread_lock_t contained_ractor_tbl_lock;
+
     struct {
         int run;
         unsigned int latest_gc_info;
@@ -1072,6 +1075,15 @@ absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 {
     //Finalizer table
     absorb_table_contents(objspace_to_update->finalizer_table, objspace_to_copy_from->finalizer_table);
+
+    //Contained ractor table
+    rb_native_mutex_lock(&objspace_to_copy_from->contained_ractor_tbl_lock);
+    rb_native_mutex_lock(&objspace_to_update->contained_ractor_tbl_lock);
+
+    absorb_table_contents(objspace_to_update->contained_ractor_tbl, objspace_to_copy_from->contained_ractor_tbl);
+
+    rb_native_mutex_unlock(&objspace_to_copy_from->contained_ractor_tbl_lock);
+    rb_native_mutex_unlock(&objspace_to_update->contained_ractor_tbl_lock);
 
     //Shareable tables
     absorb_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->shareable_tbl);
@@ -2219,6 +2231,9 @@ rb_objspace_free(rb_objspace_t *objspace)
 
     st_free_table(objspace->wmap_referenced_obj_tbl);
     rb_nativethread_lock_destroy(&objspace->wmap_referenced_obj_tbl_lock);
+
+    st_free_table(objspace->contained_ractor_tbl);
+    rb_nativethread_lock_destroy(&objspace->contained_ractor_tbl_lock);
 
     rb_nativethread_lock_destroy(&objspace->zombie_threads_lock);
 
@@ -4627,6 +4642,7 @@ Init_heap(rb_objspace_t *objspace)
     finalizer_table = st_init_numtable();
     objspace->shareable_tbl = st_init_numtable();
     objspace->secondary_shareable_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->secondary_shareable_tbl_lock);
 
     objspace->shared_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
@@ -4635,7 +4651,8 @@ Init_heap(rb_objspace_t *objspace)
     objspace->wmap_referenced_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->wmap_referenced_obj_tbl_lock);
 
-    rb_nativethread_lock_initialize(&objspace->secondary_shareable_tbl_lock);
+    objspace->contained_ractor_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->contained_ractor_tbl_lock);
 
     objspace->alloc_target_ractor = NULL;
 
@@ -5535,6 +5552,28 @@ rb_remove_from_absorbed_threads_tbl(rb_thread_t *th)
     rb_native_mutex_lock(&global_space->absorbed_thread_tbl_lock);
     st_delete(global_space->absorbed_thread_tbl, (st_data_t *) &th, NULL);
     rb_native_mutex_unlock(&global_space->absorbed_thread_tbl_lock);
+}
+
+void
+rb_add_to_contained_ractor_tbl(rb_ractor_t *r)
+{
+    VALUE ractor_obj = r->pub.self;
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(ractor_obj);
+
+    rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
+    st_insert(objspace->contained_ractor_tbl, (st_data_t)ractor_obj, INT2FIX(0));
+    rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
+}
+
+void
+rb_remove_from_contained_ractor_tbl(rb_ractor_t *r)
+{
+    VALUE ractor_obj = r->pub.self;
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(ractor_obj);
+
+    rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
+    st_delete(objspace->contained_ractor_tbl, (st_data_t *) &ractor_obj, NULL);
+    rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
 }
 
 void
@@ -9044,6 +9083,9 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 
     MARK_CHECKPOINT("ractor");
     if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(objspace->ractor);
+    rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
+    mark_set(objspace, objspace->contained_ractor_tbl);
+    rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
 
     MARK_CHECKPOINT("finalizers");
     mark_finalizer_tbl(objspace, finalizer_table);

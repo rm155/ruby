@@ -2031,6 +2031,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         ractor_status_set(cr, ractor_terminated);
 	
 	unlock_ractor_set();
+	rb_remove_from_contained_ractor_tbl(cr);
     }
     RB_VM_UNLOCK();
 }
@@ -2042,6 +2043,7 @@ ractor_alloc(VALUE klass)
     VALUE rv = TypedData_Make_Struct(klass, rb_ractor_t, &ractor_data_type, r);
     rb_ractor_classify_as_shareable(rv);
     r->pub.self = rv;
+    rb_add_to_contained_ractor_tbl(r);
     VM_ASSERT(ractor_status_p(r, ractor_created));
     return rv;
 }
