@@ -2041,9 +2041,9 @@ ractor_alloc(VALUE klass)
 {
     rb_ractor_t *r;
     VALUE rv = TypedData_Make_Struct(klass, rb_ractor_t, &ractor_data_type, r);
-    rb_ractor_classify_as_shareable(rv);
     r->pub.self = rv;
     rb_add_to_contained_ractor_tbl(r);
+    FL_SET_RAW(rv, RUBY_FL_SHAREABLE);
     VM_ASSERT(ractor_status_p(r, ractor_created));
     return rv;
 }
@@ -2140,7 +2140,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->name = name;
     r->loc = loc;
     r->during_teardown_cleanup = false;
-    rb_ractor_classify_as_shareable(r->pub.self);
+    FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
 
     rb_ractor_postponed_job_initialize(r);
 }
@@ -2150,7 +2150,7 @@ rb_ractor_main_setup(rb_vm_t *vm, rb_ractor_t *r, rb_thread_t *th)
 {
     r->pub.self = TypedData_Wrap_Struct(rb_cRactor, &ractor_data_type, r);
     rb_assign_main_ractor_objspace(r);
-    rb_ractor_classify_as_shareable(r->pub.self);
+    FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
     ractor_init(r, Qnil, Qnil);
     r->threads.main = th;
     rb_ractor_living_threads_insert(r, th);
