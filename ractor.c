@@ -3618,6 +3618,7 @@ move_enter(VALUE obj, struct obj_traverse_replace_data *data)
     }
     else {
         data->replacement = rb_obj_alloc(RBASIC_CLASS(obj));
+	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, rb_class_of(obj));
         return traverse_cont;
     }
 }
@@ -3669,6 +3670,7 @@ copy_enter(VALUE obj, struct obj_traverse_replace_data *data)
     }
     else {
         data->replacement = rb_obj_clone(obj);
+	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, rb_class_of(obj));
         return traverse_cont;
     }
 }
