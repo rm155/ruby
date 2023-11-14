@@ -3646,6 +3646,11 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
           newobj_slowpath_wb_unprotected(klass, flags, objspace, cr, size_pool_idx, borrowing);
     }
 
+    if (objspace != GET_VM()->objspace) {
+	if (klass && !rb_special_const_p(klass) && BUILTIN_TYPE(klass) == T_CLASS) {
+	    rb_register_new_external_reference(objspace, klass);
+	}
+    }
     return obj;
 }
 
