@@ -888,6 +888,7 @@ typedef struct rb_objspace {
     st_table *shared_reference_tbl;
     rb_nativethread_lock_t shared_reference_tbl_lock;
     st_table *external_reference_tbl;
+    rb_nativethread_lock_t external_reference_tbl_lock;
 
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
@@ -2228,6 +2229,7 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->shared_reference_tbl);
     rb_nativethread_lock_destroy(&objspace->shared_reference_tbl_lock);
     st_free_table(objspace->external_reference_tbl);
+    rb_nativethread_lock_destroy(&objspace->external_reference_tbl_lock);
 
     st_free_table(objspace->wmap_referenced_obj_tbl);
     rb_nativethread_lock_destroy(&objspace->wmap_referenced_obj_tbl_lock);
@@ -4646,6 +4648,7 @@ Init_heap(rb_objspace_t *objspace)
 
     objspace->shared_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
+    rb_nativethread_lock_initialize(&objspace->external_reference_tbl_lock);
     objspace->external_reference_tbl = st_init_numtable();
 
     objspace->wmap_referenced_obj_tbl = st_init_numtable();
@@ -5631,8 +5634,7 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
     if (source_objspace == receiving_objspace) return;
 
-    bool need_borrowing_sync_lock = (receiving_objspace->ractor->borrowing_sync.lock_owner != GET_RACTOR());
-    if (need_borrowing_sync_lock) rb_borrowing_sync_lock(receiving_objspace->ractor);
+    rb_native_mutex_lock(&receiving_objspace->external_reference_tbl_lock);
 
     gc_reference_status_t *rs = get_reference_status(receiving_objspace->external_reference_tbl, obj);
     bool new_addition = !rs;
@@ -5662,7 +5664,7 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
 	set_reference_status(receiving_objspace->external_reference_tbl, obj, rs);
     }
 
-    if (need_borrowing_sync_lock) rb_borrowing_sync_unlock(receiving_objspace->ractor);
+    rb_native_mutex_unlock(&receiving_objspace->external_reference_tbl_lock);
     if (new_addition) {
 	rb_global_space_t *global_space = &rb_global_space;
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
