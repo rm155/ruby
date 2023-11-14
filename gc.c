@@ -8234,6 +8234,7 @@ static inline void
 gc_mark(rb_objspace_t *objspace, VALUE obj)
 {
     if (!is_markable_object(obj)) return;
+    if (RB_TYPE_P(obj, T_CLASS)) gc_pin(objspace, obj);
     gc_mark_ptr(objspace, obj);
 }
 
@@ -8268,6 +8269,7 @@ rb_gc_mark_and_move(VALUE *ptr)
         *ptr = rb_gc_location(*ptr);
     }
     else {
+	if (RB_TYPE_P(*ptr, T_CLASS)) gc_pin(objspace, *ptr);
         gc_mark_ptr(objspace, *ptr);
     }
 }
