@@ -4139,6 +4139,7 @@ Init_BareVM(void)
     th->nt = ZALLOC(struct rb_native_thread);
     th->vm = vm;
     th->ractor = vm->ractor.main_ractor = rb_ractor_main_alloc();
+    rb_assign_main_ractor_objspace(th->ractor);
     Init_native_thread(th);
     rb_jit_cont_init();
     th_init(th, 0, vm);
