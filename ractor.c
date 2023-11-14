@@ -3613,6 +3613,7 @@ move_enter(VALUE obj, struct obj_traverse_replace_data *data)
 {
     if (rb_ractor_shareable_p(obj)) {
         data->replacement = obj;
+	if (!rb_special_const_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
         return traverse_skip;
     }
     else {
@@ -3663,6 +3664,7 @@ copy_enter(VALUE obj, struct obj_traverse_replace_data *data)
 {
     if (rb_ractor_shareable_p(obj)) {
         data->replacement = obj;
+	if (!rb_special_const_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
         return traverse_skip;
     }
     else {
