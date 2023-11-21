@@ -2797,7 +2797,11 @@ rb_vm_update_references(void *ptr)
     if (ptr) {
         rb_vm_t *vm = ptr;
 
-        rb_gc_update_tbl_refs(vm->frozen_strings);
+	RB_FSTRING_TABLE_ENTER();
+	{
+	    rb_gc_update_tbl_refs(vm->frozen_strings.table);
+	}
+	RB_FSTRING_TABLE_LEAVE();
         vm->mark_object_ary = rb_gc_location(vm->mark_object_ary);
         vm->load_path = rb_gc_location(vm->load_path);
         vm->load_path_snapshot = rb_gc_location(vm->load_path_snapshot);
@@ -2984,9 +2988,11 @@ ruby_vm_destruct(rb_vm_t *vm)
             st_free_table(vm->loading_table);
             vm->loading_table = 0;
         }
-        if (vm->frozen_strings) {
-            st_free_table(vm->frozen_strings);
-            vm->frozen_strings = 0;
+
+        if (vm->frozen_strings.table) {
+            st_free_table(vm->frozen_strings.table);
+            vm->frozen_strings.table = 0;
+	    rb_native_mutex_destroy(&vm->frozen_strings.lock);
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
 	rb_global_space_free(vm->global_space);
@@ -3063,6 +3069,13 @@ vm_memsize(const void *ptr)
 {
     rb_vm_t *vm = GET_VM();
 
+    size_t fstring_table_size;
+    RB_FSTRING_TABLE_ENTER();
+    {
+        fstring_table_size = rb_st_memsize(vm->frozen_strings.table);
+    }
+    RB_FSTRING_TABLE_LEAVE();
+
     return (
         sizeof(rb_vm_t) +
         rb_vm_memsize_waiting_fds(&vm->waiting_fds) +
@@ -3073,7 +3086,7 @@ vm_memsize(const void *ptr)
         rb_vm_memsize_workqueue(&vm->workqueue) +
         rb_st_memsize(vm->defined_module_hash) +
         vm_memsize_at_exit_list(vm->at_exit) +
-        rb_st_memsize(vm->frozen_strings) +
+        fstring_table_size +
         vm_memsize_builtin_function_table(vm->builtin_function_table) +
         rb_id_table_memsize(vm->negative_cme_table) +
         rb_st_memsize(vm->overloaded_cme_table) +
@@ -4174,7 +4187,10 @@ Init_vm_objects(void)
     /* initialize mark object array, hash */
     vm->mark_object_ary = rb_ary_hidden_new(128);
     vm->loading_table = st_init_strtable();
-    vm->frozen_strings = st_init_table_with_size(&rb_fstring_hash_type, 10000);
+    vm->frozen_strings.table = st_init_table_with_size(&rb_fstring_hash_type, 10000);
+    rb_native_mutex_initialize(&vm->frozen_strings.lock);
+    vm->frozen_strings.lock_owner = NULL;
+    vm->frozen_strings.lock_lev = 0;
 }
 
 /* Stub for builtin function when not building YJIT units*/
@@ -4228,7 +4244,9 @@ VALUE rb_insn_operand_intern(const rb_iseq_t *iseq,
 st_table *
 rb_vm_fstring_table(void)
 {
-    return GET_VM()->frozen_strings;
+    rb_vm_t *vm = GET_VM();
+    VM_ASSERT(!rb_multi_ractor_p() || vm->frozen_strings.lock_owner == GET_RACTOR());
+    return vm->frozen_strings.table;
 }
 
 #if VM_COLLECT_USAGE_DETAILS

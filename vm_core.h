@@ -751,7 +751,12 @@ typedef struct rb_vm_struct {
 
     rb_at_exit_list *at_exit;
 
-    st_table *frozen_strings;
+    struct {
+	rb_nativethread_lock_t lock;
+	int lock_lev;
+	struct rb_ractor_struct *lock_owner;
+	st_table *table;
+    } frozen_strings;
 
     const struct rb_builtin_function *builtin_function_table;
     int builtin_inline_index;

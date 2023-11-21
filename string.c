@@ -452,7 +452,7 @@ register_fstring(VALUE str, bool copy)
     struct fstr_update_arg args;
     args.copy = copy;
 
-    RB_VM_LOCK_ENTER();
+    RB_FSTRING_TABLE_ENTER();
     {
         st_table *frozen_strings = rb_vm_fstring_table();
         do {
@@ -460,7 +460,7 @@ register_fstring(VALUE str, bool copy)
             st_update(frozen_strings, (st_data_t)str, fstr_update_callback, (st_data_t)&args);
         } while (UNDEF_P(args.fstr));
     }
-    RB_VM_LOCK_LEAVE();
+    RB_FSTRING_TABLE_LEAVE();
 
     assert(OBJ_FROZEN(args.fstr));
     assert(!FL_TEST_RAW(args.fstr, STR_FAKESTR));
@@ -1531,12 +1531,12 @@ rb_str_free(VALUE str)
     if (FL_TEST(str, RSTRING_FSTR)) {
         st_data_t fstr = (st_data_t)str;
 
-        RB_VM_LOCK_ENTER();
+        RB_FSTRING_TABLE_ENTER();
         {
             st_delete(rb_vm_fstring_table(), &fstr, NULL);
             RB_DEBUG_COUNTER_INC(obj_str_fstr);
         }
-        RB_VM_LOCK_LEAVE();
+        RB_FSTRING_TABLE_LEAVE();
     }
 
     if (STR_EMBED_P(str)) {
