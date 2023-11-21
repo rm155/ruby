@@ -35,6 +35,7 @@
 #include "internal/variable.h"
 #include "variable.h"
 #include "probes.h"
+#include "ractor_core.h"
 #include "ruby/encoding.h"
 #include "ruby/st.h"
 #include "ruby/util.h"
@@ -2536,6 +2537,9 @@ rb_mod_const_set(VALUE mod, VALUE name, VALUE value)
 {
     ID id = id_for_var(mod, name, const);
     if (!id) id = rb_intern_str(name);
+    rb_ractor_t *mod_ractor = get_ractor_of_value(mod);
+    rb_ractor_t *value_ractor = get_ractor_of_value(value);
+    if (mod_ractor && value_ractor && mod_ractor != value_ractor) rb_register_new_external_reference(mod_ractor->local_objspace, value);
     rb_const_set(mod, id, value);
 
     return value;

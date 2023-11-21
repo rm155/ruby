@@ -420,27 +420,31 @@ rb_fstring(VALUE str)
     if (!bare) {
         if (STR_EMBED_P(str)) {
             OBJ_FREEZE_RAW(str);
-	    rb_ractor_classify_as_shareable(str);
+	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
             return str;
         }
 
         if (FL_TEST_RAW(str, STR_SHARED_ROOT | STR_SHARED) == STR_SHARED_ROOT) {
             assert(OBJ_FROZEN(str));
-	    rb_ractor_classify_as_shareable(str);
+	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
             return str;
         }
     }
+
+    rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
+    rb_ractor_t *str_ractor = get_ractor_of_value(str);
+    if (str_ractor && allocating_ractor != str_ractor) rb_register_new_external_reference(allocating_ractor->local_objspace, str);
 
     if (!OBJ_FROZEN(str))
         rb_str_resize(str, RSTRING_LEN(str));
 
     fstr = register_fstring(str, FALSE);
-    rb_ractor_classify_as_shareable(fstr);
+    FL_SET_RAW(fstr, RUBY_FL_SHAREABLE);
 
     if (!bare) {
         str_replace_shared_without_enc(str, fstr);
         OBJ_FREEZE_RAW(str);
-	rb_ractor_classify_as_shareable(str);
+	FL_SET_RAW(str, RUBY_FL_SHAREABLE);
         return str;
     }
     return fstr;
@@ -508,7 +512,7 @@ rb_fstring_new(const char *ptr, long len)
 {
     struct RString fake_str;
     VALUE str = register_fstring(setup_fake_str(&fake_str, ptr, len, ENCINDEX_US_ASCII), FALSE);
-    rb_ractor_classify_as_shareable(str);
+    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
     return str;
 }
 

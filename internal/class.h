@@ -213,6 +213,12 @@ RCLASS_SET_CLASSPATH(VALUE klass, VALUE classpath, bool permanent)
     assert(BUILTIN_TYPE(klass) == T_CLASS || BUILTIN_TYPE(klass) == T_MODULE);
     assert(classpath == 0 || BUILTIN_TYPE(classpath) == T_STRING);
 
+    rb_vm_t *vm = GET_VM();
+    assert(get_ractor_of_value(klass) == vm->ractor.main_ractor);
+
+    rb_ractor_t *classpath_ractor = get_ractor_of_value(classpath);
+    if (classpath_ractor && classpath_ractor != vm->ractor.main_ractor) rb_register_new_external_reference(vm->objspace, classpath);
+
     RB_OBJ_WRITE(klass, &(RCLASS_EXT(klass)->classpath), classpath);
     RCLASS_EXT(klass)->permanent_classpath = permanent;
 }
