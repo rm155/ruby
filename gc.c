@@ -3315,7 +3315,7 @@ size_pool_idx_for_size(size_t size)
     size_t size_pool_idx = 64 - nlz_int64(slot_count - 1);
 
     if (size_pool_idx >= SIZE_POOL_COUNT) {
-        rb_bug("size_pool_idx_for_size: allocation size too large");
+        rb_bug("size_pool_idx_for_size: allocation size too large (size=%lu, size_pool_idx=%lu)", size, size_pool_idx);
     }
 
 #if RGENGC_CHECK_MODE
@@ -3907,19 +3907,42 @@ rb_data_object_zalloc(VALUE klass, size_t size, RUBY_DATA_FUNC dmark, RUBY_DATA_
     return obj;
 }
 
-VALUE
-rb_data_typed_object_wrap(VALUE klass, void *datap, const rb_data_type_t *type)
+static VALUE
+typed_data_alloc(VALUE klass, VALUE typed_flag, void *datap, const rb_data_type_t *type, size_t size)
 {
     RBIMPL_NONNULL_ARG(type);
     if (klass) rb_data_object_check(klass);
     bool wb_protected = (type->flags & RUBY_FL_WB_PROTECTED) || !type->function.dmark;
-    return newobj_of(GET_RACTOR(), klass, T_DATA, (VALUE)type, (VALUE)1, (VALUE)datap, wb_protected, sizeof(struct RTypedData));
+    return newobj_of(GET_RACTOR(), klass, T_DATA, (VALUE)type, 1 | typed_flag, (VALUE)datap, wb_protected, size);
+}
+
+VALUE
+rb_data_typed_object_wrap(VALUE klass, void *datap, const rb_data_type_t *type)
+{
+    if (UNLIKELY(type->flags & RUBY_TYPED_EMBEDDABLE)) {
+        rb_raise(rb_eTypeError, "Cannot wrap an embeddable TypedData");
+    }
+
+    return typed_data_alloc(klass, 0, datap, type, sizeof(struct RTypedData));
 }
 
 VALUE
 rb_data_typed_object_zalloc(VALUE klass, size_t size, const rb_data_type_t *type)
 {
-    VALUE obj = rb_data_typed_object_wrap(klass, 0, type);
+    if (type->flags & RUBY_TYPED_EMBEDDABLE) {
+        if (!(type->flags & RUBY_TYPED_FREE_IMMEDIATELY)) {
+            rb_raise(rb_eTypeError, "Embeddable TypedData must be freed immediately");
+        }
+
+        size_t embed_size = offsetof(struct RTypedData, data) + size;
+        if (rb_gc_size_allocatable_p(embed_size)) {
+            VALUE obj = typed_data_alloc(klass, TYPED_DATA_EMBEDDED, 0, type, embed_size);
+            memset((char *)obj + offsetof(struct RTypedData, data), 0, size);
+            return obj;
+        }
+    }
+
+    VALUE obj = typed_data_alloc(klass, 0, NULL, type, sizeof(struct RTypedData));
     DATA_PTR(obj) = xcalloc(1, size);
     return obj;
 }
@@ -3927,14 +3950,23 @@ rb_data_typed_object_zalloc(VALUE klass, size_t size, const rb_data_type_t *type
 size_t
 rb_objspace_data_type_memsize(VALUE obj)
 {
+    size_t size = 0;
     if (RTYPEDDATA_P(obj)) {
         const rb_data_type_t *type = RTYPEDDATA_TYPE(obj);
-        const void *ptr = RTYPEDDATA_DATA(obj);
+        const void *ptr = RTYPEDDATA_GET_DATA(obj);
+
+        if (RTYPEDDATA_TYPE(obj)->flags & RUBY_TYPED_EMBEDDABLE && !RTYPEDDATA_EMBEDDED_P(obj)) {
+#ifdef HAVE_MALLOC_USABLE_SIZE
+            size += malloc_usable_size((void *)ptr);
+#endif
+        }
+
         if (ptr && type->function.dsize) {
-            return type->function.dsize(ptr);
+            size += type->function.dsize(ptr);
         }
     }
-    return 0;
+
+    return size;
 }
 
 const char *
@@ -4215,10 +4247,10 @@ obj_free_object_id(rb_objspace_t *objspace, VALUE obj)
 static bool
 rb_data_free(rb_objspace_t *objspace, VALUE obj)
 {
-    if (DATA_PTR(obj)) {
+    void *data = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
+    if (data) {
         int free_immediately = false;
         void (*dfree)(void *);
-        void *data = DATA_PTR(obj);
 
         if (RTYPEDDATA_P(obj)) {
             free_immediately = (RANY(obj)->as.typeddata.type->flags & RUBY_TYPED_FREE_IMMEDIATELY) != 0;
@@ -4230,17 +4262,23 @@ rb_data_free(rb_objspace_t *objspace, VALUE obj)
 
         if (dfree) {
             if (dfree == RUBY_DEFAULT_FREE) {
-                xfree(data);
-                RB_DEBUG_COUNTER_INC(obj_data_xfree);
+                if (!RTYPEDDATA_EMBEDDED_P(obj)) {
+                    xfree(data);
+                    RB_DEBUG_COUNTER_INC(obj_data_xfree);
+                }
             }
             else if (free_immediately) {
                 (*dfree)(data);
+                if (RTYPEDDATA_TYPE(obj)->flags & RUBY_TYPED_EMBEDDABLE && !RTYPEDDATA_EMBEDDED_P(obj)) {
+                    xfree(data);
+                }
+
                 RB_DEBUG_COUNTER_INC(obj_data_imm_free);
             }
             else {
-                RB_DEBUG_COUNTER_INC(obj_data_zombie);
                 make_zombie(objspace, obj, dfree, data);
-                return false;
+                RB_DEBUG_COUNTER_INC(obj_data_zombie);
+                return FALSE;
             }
         }
         else {
@@ -6063,24 +6101,22 @@ obj_memsize_of(VALUE obj, int use_all_types)
         break;
       case T_MODULE:
       case T_CLASS:
-        if (RCLASS_EXT(obj)) {
-            if (RCLASS_M_TBL(obj)) {
-                size += rb_id_table_memsize(RCLASS_M_TBL(obj));
-            }
-            // class IV sizes are allocated as powers of two
-            size += SIZEOF_VALUE << bit_length(RCLASS_IV_COUNT(obj));
-            if (RCLASS_CVC_TBL(obj)) {
-                size += rb_id_table_memsize(RCLASS_CVC_TBL(obj));
-            }
-            if (RCLASS_EXT(obj)->const_tbl) {
-                size += rb_id_table_memsize(RCLASS_EXT(obj)->const_tbl);
-            }
-            if (RCLASS_CC_TBL(obj)) {
-                size += cc_table_memsize(RCLASS_CC_TBL(obj));
-            }
-            if (FL_TEST_RAW(obj, RCLASS_SUPERCLASSES_INCLUDE_SELF)) {
-                size += (RCLASS_SUPERCLASS_DEPTH(obj) + 1) * sizeof(VALUE);
-            }
+        if (RCLASS_M_TBL(obj)) {
+            size += rb_id_table_memsize(RCLASS_M_TBL(obj));
+        }
+        // class IV sizes are allocated as powers of two
+        size += SIZEOF_VALUE << bit_length(RCLASS_IV_COUNT(obj));
+        if (RCLASS_CVC_TBL(obj)) {
+            size += rb_id_table_memsize(RCLASS_CVC_TBL(obj));
+        }
+        if (RCLASS_EXT(obj)->const_tbl) {
+            size += rb_id_table_memsize(RCLASS_EXT(obj)->const_tbl);
+        }
+        if (RCLASS_CC_TBL(obj)) {
+            size += cc_table_memsize(RCLASS_CC_TBL(obj));
+        }
+        if (FL_TEST_RAW(obj, RCLASS_SUPERCLASSES_INCLUDE_SELF)) {
+            size += (RCLASS_SUPERCLASS_DEPTH(obj) + 1) * sizeof(VALUE);
         }
         break;
       case T_ICLASS:
@@ -6089,7 +6125,7 @@ obj_memsize_of(VALUE obj, int use_all_types)
                 size += rb_id_table_memsize(RCLASS_M_TBL(obj));
             }
         }
-        if (RCLASS_EXT(obj) && RCLASS_CC_TBL(obj)) {
+        if (RCLASS_CC_TBL(obj)) {
             size += cc_table_memsize(RCLASS_CC_TBL(obj));
         }
         break;
@@ -8464,33 +8500,6 @@ gc_declarative_marking_p(const rb_data_type_t *type)
     return (type->flags & RUBY_TYPED_DECL_MARKING) != 0;
 }
 
-#define EDGE (VALUE *)((char *)data_struct + offset)
-
-static inline void
-gc_mark_from_offset(rb_objspace_t *objspace, VALUE obj)
-{
-    // we are overloading the dmark callback to contain a list of offsets
-    size_t *offset_list = (size_t *)RANY(obj)->as.typeddata.type->function.dmark;
-    void *data_struct = RANY(obj)->as.typeddata.data;
-
-    for (size_t offset = *offset_list; *offset_list != RUBY_REF_END; offset = *offset_list++) {
-        rb_gc_mark_movable(*EDGE);
-    }
-}
-
-static inline void
-gc_ref_update_from_offset(rb_objspace_t *objspace, VALUE obj)
-{
-    // we are overloading the dmark callback to contain a list of offsets
-    size_t *offset_list = (size_t *)RANY(obj)->as.typeddata.type->function.dmark;
-    void *data_struct = RANY(obj)->as.typeddata.data;
-
-    for (size_t offset = *offset_list; *offset_list != RUBY_REF_END; offset = *offset_list++) {
-        if (SPECIAL_CONST_P(*EDGE)) continue;
-        *EDGE = rb_gc_location(*EDGE);
-    }
-}
-
 static void mark_cvc_tbl(rb_objspace_t *objspace, VALUE klass);
 
 static void
@@ -8597,10 +8606,15 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
 
       case T_DATA:
         {
-            void *const ptr = DATA_PTR(obj);
+            void *const ptr = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
+
             if (ptr) {
                 if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(any->as.typeddata.type)) {
-                    gc_mark_from_offset(objspace, obj);
+                    size_t *offset_list = (size_t *)RANY(obj)->as.typeddata.type->function.dmark;
+
+                    for (size_t offset = *offset_list; *offset_list != RUBY_REF_END; offset = *offset_list++) {
+                        rb_gc_mark_movable(*(VALUE *)((char *)ptr + offset));
+                    }
                 }
                 else {
                     RUBY_DATA_FUNC mark_func = RTYPEDDATA_P(obj) ?
@@ -12598,8 +12612,10 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
         update_cvc_tbl(objspace, obj);
         update_superclasses(objspace, obj);
 
-        for (attr_index_t i = 0; i < RCLASS_IV_COUNT(obj); i++) {
-            UPDATE_IF_MOVED(objspace, RCLASS_IVPTR(obj)[i]);
+        if (!rb_shape_obj_too_complex(obj)) {
+            for (attr_index_t i = 0; i < RCLASS_IV_COUNT(obj); i++) {
+                UPDATE_IF_MOVED(objspace, RCLASS_IVPTR(obj)[i]);
+            }
         }
 
         update_class_ext(objspace, RCLASS_EXT(obj));
@@ -12664,10 +12680,16 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
       case T_DATA:
         /* Call the compaction callback, if it exists */
         {
-            void *const ptr = DATA_PTR(obj);
+            void *const ptr = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
             if (ptr) {
                 if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(any->as.typeddata.type)) {
-                    gc_ref_update_from_offset(objspace, obj);
+                    size_t *offset_list = (size_t *)RANY(obj)->as.typeddata.type->function.dmark;
+
+                    for (size_t offset = *offset_list; *offset_list != RUBY_REF_END; offset = *offset_list++) {
+                        VALUE *ref = (VALUE *)((char *)ptr + offset);
+                        if (SPECIAL_CONST_P(*ref)) continue;
+                        *ref = rb_gc_location(*ref);
+                    }
                 }
                 else if (RTYPEDDATA_P(obj)) {
                     RUBY_DATA_FUNC compact_func = any->as.typeddata.type->function.dcompact;

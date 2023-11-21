@@ -432,12 +432,16 @@ rb_shape_alloc_new_child(ID id, rb_shape_t * shape, enum shape_type shape_type)
 
     switch (shape_type) {
       case SHAPE_IVAR:
+        if (UNLIKELY(shape->next_iv_index >= shape->capacity)) {
+            RUBY_ASSERT(shape->next_iv_index == shape->capacity);
+            new_shape->capacity = (uint32_t)rb_malloc_grow_capa(shape->capacity, sizeof(VALUE));
+        }
+        RUBY_ASSERT(new_shape->capacity > shape->next_iv_index);
         new_shape->next_iv_index = shape->next_iv_index + 1;
         if (new_shape->next_iv_index > ANCESTOR_CACHE_THRESHOLD) {
             redblack_cache_ancestors(new_shape);
         }
         break;
-      case SHAPE_CAPACITY_CHANGE:
       case SHAPE_FROZEN:
       case SHAPE_T_OBJECT:
         new_shape->next_iv_index = shape->next_iv_index;
@@ -524,29 +528,8 @@ rb_shape_frozen_shape_p(rb_shape_t* shape)
     return SHAPE_FROZEN == (enum shape_type)shape->type;
 }
 
-static void
-move_iv(VALUE obj, ID id, attr_index_t from, attr_index_t to)
-{
-    switch(BUILTIN_TYPE(obj)) {
-      case T_CLASS:
-      case T_MODULE:
-        RCLASS_IVPTR(obj)[to] = RCLASS_IVPTR(obj)[from];
-        break;
-      case T_OBJECT:
-        RUBY_ASSERT(!rb_shape_obj_too_complex(obj));
-        ROBJECT_IVPTR(obj)[to] = ROBJECT_IVPTR(obj)[from];
-        break;
-      default: {
-        struct gen_ivtbl *ivtbl;
-        rb_gen_ivtbl_get(obj, id, &ivtbl);
-        ivtbl->as.shape.ivptr[to] = ivtbl->as.shape.ivptr[from];
-        break;
-      }
-    }
-}
-
 static rb_shape_t *
-remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
+remove_shape_recursive(rb_shape_t *shape, ID id, rb_shape_t **removed_shape)
 {
     if (shape->parent_id == INVALID_SHAPE_ID) {
         // We've hit the top of the shape tree and couldn't find the
@@ -555,30 +538,13 @@ remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
     }
     else {
         if (shape->type == SHAPE_IVAR && shape->edge_name == id) {
-            // We've hit the edge we wanted to remove, return it's _parent_
-            // as the new parent while we go back down the stack.
-            attr_index_t index = shape->next_iv_index - 1;
+            *removed_shape = shape;
 
-            switch(BUILTIN_TYPE(obj)) {
-              case T_CLASS:
-              case T_MODULE:
-                *removed = RCLASS_IVPTR(obj)[index];
-                break;
-              case T_OBJECT:
-                *removed = ROBJECT_IVPTR(obj)[index];
-                break;
-              default: {
-                struct gen_ivtbl *ivtbl;
-                rb_gen_ivtbl_get(obj, id, &ivtbl);
-                *removed = ivtbl->as.shape.ivptr[index];
-                break;
-              }
-            }
             return rb_shape_get_parent(shape);
         }
         else {
             // This isn't the IV we want to remove, keep walking up.
-            rb_shape_t * new_parent = remove_shape_recursive(obj, id, rb_shape_get_parent(shape), removed);
+            rb_shape_t *new_parent = remove_shape_recursive(rb_shape_get_parent(shape), id, removed_shape);
 
             // We found a new parent.  Create a child of the new parent that
             // has the same attributes as this shape.
@@ -588,15 +554,12 @@ remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
                 }
 
                 bool dont_care;
-                rb_shape_t * new_child = get_next_shape_internal(new_parent, shape->edge_name, shape->type, &dont_care, true);
+                rb_shape_t *new_child = get_next_shape_internal(new_parent, shape->edge_name, shape->type, &dont_care, true);
                 if (UNLIKELY(new_child->type == SHAPE_OBJ_TOO_COMPLEX)) {
                     return new_child;
                 }
 
-                new_child->capacity = shape->capacity;
-                if (new_child->type == SHAPE_IVAR) {
-                    move_iv(obj, id, shape->next_iv_index - 1, new_child->next_iv_index - 1);
-                }
+                RUBY_ASSERT(new_child->capacity <= shape->capacity);
 
                 return new_child;
             }
@@ -610,17 +573,44 @@ remove_shape_recursive(VALUE obj, ID id, rb_shape_t * shape, VALUE * removed)
 }
 
 bool
-rb_shape_transition_shape_remove_ivar(VALUE obj, ID id, rb_shape_t *shape, VALUE * removed)
+rb_shape_transition_shape_remove_ivar(VALUE obj, ID id, rb_shape_t *shape, VALUE *removed)
 {
     if (UNLIKELY(shape->type == SHAPE_OBJ_TOO_COMPLEX)) {
         return false;
     }
 
-    rb_shape_t * new_shape = remove_shape_recursive(obj, id, shape, removed);
+    rb_shape_t *removed_shape = NULL;
+    rb_shape_t *new_shape = remove_shape_recursive(shape, id, &removed_shape);
     if (new_shape) {
+        RUBY_ASSERT(removed_shape != NULL);
+
         if (UNLIKELY(new_shape->type == SHAPE_OBJ_TOO_COMPLEX)) {
             return false;
         }
+
+        RUBY_ASSERT(new_shape->next_iv_index == shape->next_iv_index - 1);
+
+        VALUE *ivptr;
+        switch(BUILTIN_TYPE(obj)) {
+          case T_CLASS:
+          case T_MODULE:
+            ivptr = RCLASS_IVPTR(obj);
+            break;
+          case T_OBJECT:
+            ivptr = ROBJECT_IVPTR(obj);
+            break;
+          default: {
+            struct gen_ivtbl *ivtbl;
+            rb_gen_ivtbl_get(obj, id, &ivtbl);
+            ivptr = ivtbl->as.shape.ivptr;
+            break;
+          }
+        }
+
+        *removed = ivptr[removed_shape->next_iv_index - 1];
+
+        memmove(&ivptr[removed_shape->next_iv_index - 1], &ivptr[removed_shape->next_iv_index],
+                ((new_shape->next_iv_index + 1) - removed_shape->next_iv_index) * sizeof(VALUE));
 
         rb_shape_set_shape(obj, new_shape);
     }
@@ -667,7 +657,9 @@ rb_shape_t *
 rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
 {
     RUBY_ASSERT(!is_instance_id(id) || RTEST(rb_sym2str(ID2SYM(id))));
-    RUBY_ASSERT(shape->type != SHAPE_OBJ_TOO_COMPLEX);
+    if (UNLIKELY(shape->type == SHAPE_OBJ_TOO_COMPLEX)) {
+        return shape;
+    }
 
     bool allow_new_shape = true;
 
@@ -677,7 +669,7 @@ rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
     }
 
     bool variation_created = false;
-    rb_shape_t * new_shape = get_next_shape_internal(shape, id, SHAPE_IVAR, &variation_created, allow_new_shape);
+    rb_shape_t *new_shape = get_next_shape_internal(shape, id, SHAPE_IVAR, &variation_created, allow_new_shape);
 
     // Check if we should update max_iv_count on the object's class
     if (BUILTIN_TYPE(obj) == T_OBJECT) {
@@ -702,26 +694,6 @@ rb_shape_get_next(rb_shape_t* shape, VALUE obj, ID id)
     }
 
     return new_shape;
-}
-
-static inline rb_shape_t *
-rb_shape_transition_shape_capa_create(rb_shape_t* shape, size_t new_capacity)
-{
-    RUBY_ASSERT(new_capacity < (size_t)MAX_IVARS);
-
-    ID edge_name = rb_make_temporary_id(new_capacity);
-    bool dont_care;
-    rb_shape_t * new_shape = get_next_shape_internal(shape, edge_name, SHAPE_CAPACITY_CHANGE, &dont_care, true);
-    if (rb_shape_id(new_shape) != OBJ_TOO_COMPLEX_SHAPE_ID) {
-        new_shape->capacity = (uint32_t)new_capacity;
-    }
-    return new_shape;
-}
-
-rb_shape_t *
-rb_shape_transition_shape_capa(rb_shape_t* shape)
-{
-    return rb_shape_transition_shape_capa_create(shape, rb_malloc_grow_capa(shape->capacity, sizeof(VALUE)));
 }
 
 // Same as rb_shape_get_iv_index, but uses a provided valid shape id and index
@@ -810,7 +782,6 @@ rb_shape_get_iv_index(rb_shape_t * shape, ID id, attr_index_t *value)
                     RUBY_ASSERT(shape->next_iv_index > 0);
                     *value = shape->next_iv_index - 1;
                     return true;
-                  case SHAPE_CAPACITY_CHANGE:
                   case SHAPE_ROOT:
                   case SHAPE_T_OBJECT:
                     return false;
@@ -877,7 +848,6 @@ rb_shape_traverse_from_new_root(rb_shape_t *initial_shape, rb_shape_t *dest_shap
         }
         break;
       case SHAPE_ROOT:
-      case SHAPE_CAPACITY_CHANGE:
       case SHAPE_T_OBJECT:
         break;
       case SHAPE_OBJ_TOO_COMPLEX:
@@ -910,18 +880,10 @@ rb_shape_rebuild_shape(rb_shape_t * initial_shape, rb_shape_t * dest_shape)
 
     switch ((enum shape_type)dest_shape->type) {
       case SHAPE_IVAR:
-        if (midway_shape->capacity <= midway_shape->next_iv_index) {
-            // There isn't enough room to write this IV, so we need to increase the capacity
-            midway_shape = rb_shape_transition_shape_capa(midway_shape);
-        }
-
-        if (LIKELY(rb_shape_id(midway_shape) != OBJ_TOO_COMPLEX_SHAPE_ID)) {
-            midway_shape = rb_shape_get_next_iv_shape(midway_shape, dest_shape->edge_name);
-        }
+        midway_shape = rb_shape_get_next_iv_shape(midway_shape, dest_shape->edge_name);
         break;
       case SHAPE_ROOT:
       case SHAPE_FROZEN:
-      case SHAPE_CAPACITY_CHANGE:
       case SHAPE_T_OBJECT:
         break;
       case SHAPE_OBJ_TOO_COMPLEX:
@@ -936,13 +898,6 @@ RUBY_FUNC_EXPORTED bool
 rb_shape_obj_too_complex(VALUE obj)
 {
     return rb_shape_get_shape_id(obj) == OBJ_TOO_COMPLEX_SHAPE_ID;
-}
-
-void
-rb_shape_set_too_complex(VALUE obj)
-{
-    RUBY_ASSERT(!rb_shape_obj_too_complex(obj));
-    rb_shape_set_shape_id(obj, OBJ_TOO_COMPLEX_SHAPE_ID);
 }
 
 size_t

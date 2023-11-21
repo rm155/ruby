@@ -19,6 +19,18 @@ class TestTimeout < Test::Unit::TestCase
     end
   end
 
+  def test_allows_zero_seconds
+    assert_nothing_raised do
+      assert_equal :ok, Timeout.timeout(0){:ok}
+    end
+  end
+
+  def test_allows_nil_seconds
+    assert_nothing_raised do
+      assert_equal :ok, Timeout.timeout(nil){:ok}
+    end
+  end
+
   def test_included
     c = Class.new do
       include Timeout
@@ -96,7 +108,7 @@ class TestTimeout < Test::Unit::TestCase
       raised_exception = e
     end
 
-    assert_equal 'inner message', e.message
+    assert_equal 'inner message', raised_exception.message
   end
 
   def test_cannot_convert_into_time_interval

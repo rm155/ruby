@@ -207,6 +207,8 @@ class TestShapes < Test::Unit::TestCase
       tc.instance_variable_set(:@very_unique2, 4)
       assert_equal 3, tc.instance_variable_get(:@very_unique)
       assert_equal 4, tc.instance_variable_get(:@very_unique2)
+
+      assert_equal [:@very_unique, :@very_unique2], tc.instance_variables
     end;
   end
 
@@ -271,6 +273,28 @@ class TestShapes < Test::Unit::TestCase
 
       assert_raise(NameError) do
         c.remove_instance_variable(:@a)
+      end
+    end;
+  end
+
+  def test_gc_stress_during_evacuate_generic_ivar
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
+    begin;
+      [].instance_variable_set(:@a, 1)
+
+      i = 0
+      o = Object.new
+      while RubyVM::Shape.shapes_available > 0
+        o.instance_variable_set(:"@i#{i}", 1)
+        i += 1
+      end
+
+      ary = 10.times.map { [] }
+
+      GC.stress = true
+      ary.each do |o|
+        o.instance_variable_set(:@a, 1)
+        o.instance_variable_set(:@b, 1)
       end
     end;
   end
@@ -414,6 +438,27 @@ class TestShapes < Test::Unit::TestCase
       assert_equal true, A.instance_variable_defined?(:@a)
     end;
   end
+
+  def test_run_out_of_shape_during_remove_instance_variable
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
+    begin;
+      o = Object.new
+      10.times { |i| o.instance_variable_set(:"@a#{i}", i) }
+
+      i = 0
+      a = Object.new
+      while RubyVM::Shape.shapes_available > 2
+        a.instance_variable_set(:"@i#{i}", 1)
+        i += 1
+      end
+
+      o.remove_instance_variable(:@a0)
+      (1...10).each do |i|
+        assert_equal(i, o.instance_variable_get(:"@a#{i}"))
+      end
+    end;
+  end
+
   def test_run_out_of_shape_remove_instance_variable
     assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
     begin;
@@ -692,6 +737,39 @@ class TestShapes < Test::Unit::TestCase
         object.instance_variable_get("@ivar_#{i}")
       end
       assert_equal [0, 1, nil, 3, 4], ivars
+    end;
+  end
+
+  def test_remove_instance_variable_capacity_transition
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
+    begin;
+      t_object_shape = RubyVM::Shape.find_by_id(GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT])
+      assert_equal(RubyVM::Shape::SHAPE_T_OBJECT, t_object_shape.type)
+
+      initial_capacity = t_object_shape.capacity
+
+      # a does not transition in capacity
+      a = Class.new.new
+      initial_capacity.times do |i|
+        a.instance_variable_set(:"@ivar#{i + 1}", i)
+      end
+
+      # b transitions in capacity
+      b = Class.new.new
+      (initial_capacity + 1).times do |i|
+        b.instance_variable_set(:"@ivar#{i}", i)
+      end
+
+      assert_operator(RubyVM::Shape.of(a).capacity, :<, RubyVM::Shape.of(b).capacity)
+
+      # b will now have the same tree as a
+      b.remove_instance_variable(:@ivar0)
+
+      a.instance_variable_set(:@foo, 1)
+      a.instance_variable_set(:@bar, 1)
+
+      # Check that there is no heap corruption
+      GC.verify_internal_consistency
     end;
   end
 

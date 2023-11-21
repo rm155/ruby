@@ -67,6 +67,7 @@ Gem::Specification.new do |spec|
     "lib/prism/debug.rb",
     "lib/prism/desugar_compiler.rb",
     "lib/prism/dispatcher.rb",
+    "lib/prism/dot_visitor.rb",
     "lib/prism/dsl.rb",
     "lib/prism/ffi.rb",
     "lib/prism/lex_compat.rb",
@@ -84,6 +85,7 @@ Gem::Specification.new do |spec|
     "lib/prism/visitor.rb",
     "src/diagnostic.c",
     "src/enc/pm_big5.c",
+    "src/enc/pm_cp51932.c",
     "src/enc/pm_euc_jp.c",
     "src/enc/pm_gbk.c",
     "src/enc/pm_shift_jis.c",
@@ -118,4 +120,6 @@ Gem::Specification.new do |spec|
 
   spec.extensions = ["ext/prism/extconf.rb"]
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
+  spec.metadata["source_code_uri"] = "https://github.com/ruby/prism"
+  spec.metadata["changelog_uri"] = "https://github.com/ruby/prism/blob/main/CHANGELOG.md"
 end

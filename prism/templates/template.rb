@@ -378,6 +378,14 @@ module Prism
         (contents = contents.b).gsub!(/[^\t-~]/) {|c| "\\x%.2x" % c.ord}
       end
 
+      if (extension == ".c" || extension == ".h") && !contents.ascii_only?
+        # Enforce that we only have ASCII characters here. This is necessary
+        # for some locales that only allow ASCII characters in C source files.
+        contents.each_line.with_index(1) do |line, line_number|
+          raise "Non-ASCII character on line #{line_number} of #{write_to}" unless line.ascii_only?
+        end
+      end
+
       FileUtils.mkdir_p(File.dirname(write_to))
       File.write(write_to, contents)
     end
@@ -420,11 +428,13 @@ module Prism
     "include/prism/ast.h",
     "javascript/src/deserialize.js",
     "javascript/src/nodes.js",
+    "javascript/src/visitor.js",
     "java/org/prism/Loader.java",
     "java/org/prism/Nodes.java",
     "java/org/prism/AbstractNodeVisitor.java",
     "lib/prism/compiler.rb",
     "lib/prism/dispatcher.rb",
+    "lib/prism/dot_visitor.rb",
     "lib/prism/dsl.rb",
     "lib/prism/mutation_compiler.rb",
     "lib/prism/node.rb",

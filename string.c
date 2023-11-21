@@ -435,7 +435,7 @@ rb_fstring(VALUE str)
     rb_ractor_t *str_ractor = get_ractor_of_value(str);
     if (str_ractor && allocating_ractor != str_ractor) rb_register_new_external_reference(allocating_ractor->local_objspace, str);
 
-    if (!OBJ_FROZEN(str))
+    if (!FL_TEST_RAW(str, FL_FREEZE | STR_NOFREE))
         rb_str_resize(str, RSTRING_LEN(str));
 
     fstr = register_fstring(str, FALSE);
@@ -1779,6 +1779,18 @@ VALUE
 rb_str_dup(VALUE str)
 {
     return str_duplicate(rb_obj_class(str), str);
+}
+
+/* :nodoc: */
+VALUE
+rb_str_dup_m(VALUE str)
+{
+    if (LIKELY(BARE_STRING_P(str))) {
+        return str_duplicate(rb_obj_class(str), str);
+    }
+    else {
+        return rb_obj_dup(str);
+    }
 }
 
 VALUE
@@ -10854,7 +10866,23 @@ static VALUE
 rb_str_force_encoding(VALUE str, VALUE enc)
 {
     str_modifiable(str);
-    rb_enc_associate(str, rb_to_encoding(enc));
+
+    rb_encoding *encoding = rb_to_encoding(enc);
+    int idx = rb_enc_to_index(encoding);
+
+    // If the encoding is unchanged, we do nothing.
+    if (ENCODING_GET(str) == idx) {
+        return str;
+    }
+
+    rb_enc_associate_index(str, idx);
+
+    // If the coderange was 7bit and the new encoding is ASCII-compatible
+    // we can keep the coderange.
+    if (ENC_CODERANGE(str) == ENC_CODERANGE_7BIT && encoding && rb_enc_asciicompat(encoding)) {
+        return str;
+    }
+
     ENC_CODERANGE_CLEAR(str);
     return str;
 }
@@ -12079,6 +12107,7 @@ Init_String(void)
     rb_define_method(rb_cString, "freeze", rb_str_freeze, 0);
     rb_define_method(rb_cString, "+@", str_uplus, 0);
     rb_define_method(rb_cString, "-@", str_uminus, 0);
+    rb_define_method(rb_cString, "dup", rb_str_dup_m, 0);
     rb_define_alias(rb_cString, "dedup", "-@");
 
     rb_define_method(rb_cString, "to_i", rb_str_to_i, -1);

@@ -358,18 +358,18 @@ class TestSetTraceFunc < Test::Unit::TestCase
 
   def test_thread_trace
     events = {:set => [], :add => []}
+    name = "#{self.class}\##{__method__}"
     prc = Proc.new { |event, file, lineno, mid, binding, klass|
-      events[:set] << [event, lineno, mid, klass, :set]
+      events[:set] << [event, lineno, mid, klass, :set] if file == name
     }
     prc = prc # suppress warning
     prc2 = Proc.new { |event, file, lineno, mid, binding, klass|
-      events[:add] << [event, lineno, mid, klass, :add]
+      events[:add] << [event, lineno, mid, klass, :add] if file == name
     }
     prc2 = prc2 # suppress warning
 
     th = Thread.new do
       th = Thread.current
-      name = "#{self.class}\##{__method__}"
       eval <<-EOF.gsub(/^.*?: /, ""), nil, name
        1: th.set_trace_func(prc)
        2: th.add_trace_func(prc2)
@@ -1923,7 +1923,11 @@ CODE
 
   def tp_return_value mid
     ary = []
-    TracePoint.new(:return, :b_return){|tp| next if !target_thread?; ary << [tp.event, tp.method_id, tp.return_value]}.enable{
+    TracePoint.new(:return, :b_return){|tp|
+      next if !target_thread?
+      next if tp.path != __FILE__
+      ary << [tp.event, tp.method_id, tp.return_value]
+    }.enable{
       send mid
     }
     ary.pop # last b_return event is not required.
@@ -2132,7 +2136,7 @@ CODE
     q = Thread::Queue.new
     t = Thread.new{
       Thread.current.add_trace_func proc{|ev, file, line, *args|
-        events << [ev, line]
+        events << [ev, line] if file == __FILE__
       } # do not stop trace. They will be stopped at Thread termination.
       q.push 1
       _x = 1
