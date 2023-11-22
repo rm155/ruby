@@ -611,6 +611,8 @@ register_static_symid_str(ID id, VALUE str)
     VALUE sym = STATIC_ID2SYM(id);
 
     OBJ_FREEZE(str);
+    rb_vm_t *vm = GET_VM();
+    if (rb_current_allocating_ractor() != vm->ractor.main_ractor) rb_register_new_external_reference(vm->objspace, str);
     str = rb_fstring(str);
 
     RUBY_DTRACE_CREATE_HOOK(SYMBOL, RSTRING_PTR(str));

@@ -439,7 +439,6 @@ rb_fstring(VALUE str)
         rb_str_resize(str, RSTRING_LEN(str));
 
     fstr = register_fstring(str, FALSE);
-    FL_SET_RAW(fstr, RUBY_FL_SHAREABLE);
 
     if (!bare) {
         str_replace_shared_without_enc(str, fstr);
@@ -470,6 +469,9 @@ register_fstring(VALUE str, bool copy)
     assert(!FL_TEST_RAW(args.fstr, STR_FAKESTR));
     assert(!FL_TEST_RAW(args.fstr, FL_EXIVAR));
     assert(RBASIC_CLASS(args.fstr) == rb_cString);
+
+    FL_SET_RAW(args.fstr, RUBY_FL_SHAREABLE);
+
     return args.fstr;
 }
 
