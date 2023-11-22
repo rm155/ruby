@@ -12816,7 +12816,6 @@ gc_ref_update(void *vstart, void *vend, size_t stride, rb_objspace_t * objspace,
 }
 
 extern rb_symbols_t ruby_global_symbols;
-#define global_symbols ruby_global_symbols
 
 static void
 gc_update_references(rb_objspace_t *objspace)
@@ -12853,10 +12852,13 @@ gc_update_references(rb_objspace_t *objspace)
 
     bool shareable_objects_moved = !using_local_limits(objspace);
 
-    if (shareable_objects_moved) {
-	global_symbols.ids = rb_gc_location(global_symbols.ids);
-	global_symbols.dsymbol_fstr_hash = rb_gc_location(global_symbols.dsymbol_fstr_hash);
+    GLOBAL_SYMBOLS_ENTER(global_symbols);
+    {
+	global_symbols->ids = rb_gc_location(global_symbols->ids);
+	global_symbols->dsymbol_fstr_hash = rb_gc_location(global_symbols->dsymbol_fstr_hash);
+	gc_update_table_refs(objspace, global_symbols->str_sym);
     }
+    GLOBAL_SYMBOLS_LEAVE(global_symbols);
 
     rb_native_mutex_lock(&objspace->obj_id_lock);
     gc_update_tbl_refs(objspace, objspace->obj_to_id_tbl);
@@ -12864,7 +12866,6 @@ gc_update_references(rb_objspace_t *objspace)
     rb_native_mutex_unlock(&objspace->obj_id_lock);
 
     if (shareable_objects_moved) {
-	gc_update_table_refs(objspace, global_symbols.str_sym);
 	gc_update_table_refs(objspace, objspace->shareable_tbl);
 	rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
 	gc_update_table_refs(objspace, objspace->secondary_shareable_tbl);

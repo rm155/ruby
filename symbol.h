@@ -108,6 +108,13 @@ sym_type(VALUE sym)
 #define is_class_sym(sym) (sym_type(sym)==ID_CLASS)
 #define is_junk_sym(sym) (sym_type(sym)==ID_JUNK)
 
+void rb_enter_sym_lock(rb_symbols_t *symbols);
+void rb_leave_sym_lock(rb_symbols_t *symbols);
+
+#define GLOBAL_SYMBOLS_ENTER(symbols) { rb_symbols_t *symbols = &ruby_global_symbols; rb_enter_sym_lock(symbols);
+#define GLOBAL_SYMBOLS_LEAVE(symbols) rb_leave_sym_lock(symbols); }
+#define ASSERT_global_symbols_locking(symbols) VM_ASSERT(!rb_multi_ractor_p() || symbols->sym_sync.lock_owner == GET_RACTOR());
+
 RUBY_FUNC_EXPORTED const uint_least32_t ruby_global_name_punct_bits[(0x7e - 0x20 + 31) / 32];
 
 static inline int

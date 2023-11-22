@@ -121,8 +121,8 @@ WARN_UNUSED_RESULT(static VALUE lookup_str_sym(const VALUE str));
 WARN_UNUSED_RESULT(static VALUE lookup_id_str(ID id));
 WARN_UNUSED_RESULT(static ID intern_str(VALUE str, int mutable));
 
-static void
-enter_sym_lock(rb_symbols_t *symbols)
+void
+rb_enter_sym_lock(rb_symbols_t *symbols)
 {
     rb_ractor_t *cr = GET_RACTOR();
     if (symbols->sym_sync.lock_owner != cr) {
@@ -132,8 +132,8 @@ enter_sym_lock(rb_symbols_t *symbols)
     symbols->sym_sync.lock_lev++;
 }
 
-static void
-leave_sym_lock(rb_symbols_t *symbols)
+void
+rb_leave_sym_lock(rb_symbols_t *symbols)
 {
     symbols->sym_sync.lock_lev--;
     if (symbols->sym_sync.lock_lev == 0) {
@@ -141,10 +141,6 @@ leave_sym_lock(rb_symbols_t *symbols)
 	rb_native_mutex_unlock(&symbols->sym_sync.lock);
     }
 }
-
-#define GLOBAL_SYMBOLS_ENTER(symbols) { rb_symbols_t *symbols = &ruby_global_symbols; enter_sym_lock(symbols);
-#define GLOBAL_SYMBOLS_LEAVE(symbols) leave_sym_lock(symbols); }
-#define ASSERT_global_symbols_locking(symbols) VM_ASSERT(!rb_multi_ractor_p() || symbols->sym_sync.lock_owner == GET_RACTOR());
 
 ID
 rb_id_attrset(ID id)
