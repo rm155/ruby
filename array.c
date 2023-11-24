@@ -6297,16 +6297,9 @@ rb_ary_count(int argc, VALUE *argv, VALUE ary)
 static VALUE
 flatten(VALUE ary, int level)
 {
-    static const rb_data_type_t flatten_memo_data_type = {
-        .wrap_struct_name = "array_flatten_memo_data_type",
-        .function = { NULL, (RUBY_DATA_FUNC)st_free_table },
-        NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
-    };
-
     long i;
-    VALUE stack, result, tmp = 0, elt, vmemo;
-    st_table *memo = 0;
-    st_data_t id;
+    VALUE stack, result, tmp = 0, elt;
+    VALUE memo = Qfalse;
 
     for (i = 0; i < RARRAY_LEN(ary); i++) {
         elt = RARRAY_AREF(ary, i);
@@ -6328,10 +6321,9 @@ flatten(VALUE ary, int level)
     rb_ary_push(stack, LONG2NUM(i + 1));
 
     if (level < 0) {
-        memo = st_init_numtable();
-        vmemo = TypedData_Wrap_Struct(0, &flatten_memo_data_type, memo);
-        st_insert(memo, (st_data_t)ary, (st_data_t)Qtrue);
-        st_insert(memo, (st_data_t)tmp, (st_data_t)Qtrue);
+        memo = rb_obj_hide(rb_ident_hash_new());
+        rb_hash_aset(memo, ary, Qtrue);
+        rb_hash_aset(memo, tmp, Qtrue);
     }
 
     ary = tmp;
@@ -6346,9 +6338,8 @@ flatten(VALUE ary, int level)
             }
             tmp = rb_check_array_type(elt);
             if (RBASIC(result)->klass) {
-                if (memo) {
-                    RB_GC_GUARD(vmemo);
-                    st_clear(memo);
+                if (RTEST(memo)) {
+                    rb_hash_clear(memo);
                 }
                 rb_raise(rb_eRuntimeError, "flatten reentered");
             }
@@ -6357,12 +6348,11 @@ flatten(VALUE ary, int level)
             }
             else {
                 if (memo) {
-                    id = (st_data_t)tmp;
-                    if (st_is_member(memo, id)) {
-                        st_clear(memo);
+                    if (rb_hash_aref(memo, tmp) == Qtrue) {
+                        rb_hash_clear(memo);
                         rb_raise(rb_eArgError, "tried to flatten recursive array");
                     }
-                    st_insert(memo, id, (st_data_t)Qtrue);
+                    rb_hash_aset(memo, tmp, Qtrue);
                 }
                 rb_ary_push(stack, ary);
                 rb_ary_push(stack, LONG2NUM(i));
@@ -6374,8 +6364,7 @@ flatten(VALUE ary, int level)
             break;
         }
         if (memo) {
-            id = (st_data_t)ary;
-            st_delete(memo, &id, 0);
+            rb_hash_delete(memo, ary);
         }
         tmp = rb_ary_pop(stack);
         i = NUM2LONG(tmp);
@@ -6383,7 +6372,7 @@ flatten(VALUE ary, int level)
     }
 
     if (memo) {
-        st_clear(memo);
+        rb_hash_clear(memo);
     }
 
     RBASIC_SET_CLASS(result, rb_cArray);

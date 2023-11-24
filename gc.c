@@ -8555,7 +8555,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
         mark_cvc_tbl(objspace, obj);
         cc_table_mark(objspace, obj);
         if (rb_shape_obj_too_complex(obj)) {
-            mark_tbl(objspace, (st_table *)RCLASS_IVPTR(obj));
+            mark_tbl_no_pin(objspace, (st_table *)RCLASS_IVPTR(obj));
         }
         else {
             for (attr_index_t i = 0; i < RCLASS_IV_COUNT(obj); i++) {
@@ -12122,13 +12122,15 @@ gc_ref_update_array(rb_objspace_t * objspace, VALUE v)
     }
 }
 
+static void gc_ref_update_table_values_only(rb_objspace_t *objspace, st_table *tbl);
+
 static void
 gc_ref_update_object(rb_objspace_t *objspace, VALUE v)
 {
     VALUE *ptr = ROBJECT_IVPTR(v);
 
     if (rb_shape_obj_too_complex(v)) {
-        rb_gc_update_tbl_refs(ROBJECT_IV_HASH(v));
+        gc_ref_update_table_values_only(objspace, ROBJECT_IV_HASH(v));
         return;
     }
 
@@ -12206,7 +12208,7 @@ hash_foreach_replace_value(st_data_t key, st_data_t value, st_data_t argp, int e
 }
 
 static void
-gc_update_tbl_refs(rb_objspace_t * objspace, st_table *tbl)
+gc_ref_update_table_values_only(rb_objspace_t *objspace, st_table *tbl)
 {
     if (!tbl || tbl->num_entries == 0) return;
 
@@ -12225,7 +12227,7 @@ gc_update_table_refs(rb_objspace_t * objspace, st_table *tbl)
     }
 }
 
-/* Update MOVED references in an st_table */
+/* Update MOVED references in a VALUE=>VALUE st_table */
 void
 rb_gc_update_tbl_refs(st_table *ptr)
 {
@@ -12607,7 +12609,10 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
         update_cvc_tbl(objspace, obj);
         update_superclasses(objspace, obj);
 
-        if (!rb_shape_obj_too_complex(obj)) {
+        if (rb_shape_obj_too_complex(obj)) {
+            gc_ref_update_table_values_only(objspace, RCLASS_IV_HASH(obj));
+        }
+        else {
             for (attr_index_t i = 0; i < RCLASS_IV_COUNT(obj); i++) {
                 UPDATE_IF_MOVED(objspace, RCLASS_IVPTR(obj)[i]);
             }
@@ -12856,7 +12861,7 @@ gc_update_references(rb_objspace_t *objspace)
     GLOBAL_SYMBOLS_LEAVE(global_symbols);
 
     rb_native_mutex_lock(&objspace->obj_id_lock);
-    gc_update_tbl_refs(objspace, objspace->obj_to_id_tbl);
+    gc_ref_update_table_values_only(objspace, objspace->obj_to_id_tbl);
     gc_update_table_refs(objspace, objspace->id_to_obj_tbl);
     rb_native_mutex_unlock(&objspace->obj_id_lock);
 
@@ -15824,14 +15829,20 @@ rb_raw_obj_info_buitin_type(char *const buff, const size_t buff_size, const VALU
             }
           case T_OBJECT:
             {
-                uint32_t len = ROBJECT_IV_CAPACITY(obj);
-
-                if (RANY(obj)->as.basic.flags & ROBJECT_EMBED) {
-                    APPEND_F("(embed) len:%d", len);
+                if (rb_shape_obj_too_complex(obj)) {
+                    size_t hash_len = rb_st_table_size(ROBJECT_IV_HASH(obj));
+                    APPEND_F("(too_complex) len:%zu", hash_len);
                 }
                 else {
-                    VALUE *ptr = ROBJECT_IVPTR(obj);
-                    APPEND_F("len:%d ptr:%p", len, (void *)ptr);
+                    uint32_t len = ROBJECT_IV_CAPACITY(obj);
+
+                    if (RANY(obj)->as.basic.flags & ROBJECT_EMBED) {
+                        APPEND_F("(embed) len:%d", len);
+                    }
+                    else {
+                        VALUE *ptr = ROBJECT_IVPTR(obj);
+                        APPEND_F("len:%d ptr:%p", len, (void *)ptr);
+                    }
                 }
             }
             break;

@@ -1324,7 +1324,7 @@ pm_setup_args(pm_arguments_node_t *arguments_node, int *flags, struct rb_callinf
     else {
         pm_node_list_t arguments_node_list = arguments_node->arguments;
 
-        bool has_keyword_splat = (arguments_node->base.flags & PM_ARGUMENTS_NODE_FLAGS_KEYWORD_SPLAT);
+        bool has_keyword_splat = (arguments_node->base.flags & PM_ARGUMENTS_NODE_FLAGS_CONTAINS_KEYWORD_SPLAT);
         bool has_splat = false;
 
         // We count the number of elements post the splat node that are not keyword elements to
@@ -3683,15 +3683,6 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         }
         else {
             PM_PUTNIL;
-        }
-        return;
-      }
-      case PM_STRING_CONCAT_NODE: {
-        pm_string_concat_node_t *str_concat_node = (pm_string_concat_node_t *)node;
-        PM_COMPILE(str_concat_node->left);
-        PM_COMPILE(str_concat_node->right);
-        if (!popped) {
-            ADD_INSN1(ret, &dummy_line_node, concatstrings, INT2FIX(2));
         }
         return;
       }

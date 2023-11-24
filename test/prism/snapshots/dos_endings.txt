@@ -6,31 +6,32 @@
         ├── @ CallNode (location: (1,0)-(2,12))
         │   ├── receiver: ∅
         │   ├── call_operator_loc: ∅
+        │   ├── name: :puts
         │   ├── message_loc: (1,0)-(1,4) = "puts"
         │   ├── opening_loc: ∅
         │   ├── arguments:
         │   │   @ ArgumentsNode (location: (1,5)-(2,12))
         │   │   ├── arguments: (length: 1)
-        │   │   │   └── @ StringConcatNode (location: (1,5)-(2,12))
-        │   │   │       ├── left:
-        │   │   │       │   @ StringNode (location: (1,5)-(1,9))
-        │   │   │       │   ├── flags: ∅
-        │   │   │       │   ├── opening_loc: (1,5)-(1,6) = "\""
-        │   │   │       │   ├── content_loc: (1,6)-(1,8) = "hi"
-        │   │   │       │   ├── closing_loc: (1,8)-(1,9) = "\""
-        │   │   │       │   └── unescaped: "hi"
-        │   │   │       └── right:
-        │   │   │           @ StringNode (location: (2,5)-(2,12))
-        │   │   │           ├── flags: ∅
-        │   │   │           ├── opening_loc: (2,5)-(2,6) = "\""
-        │   │   │           ├── content_loc: (2,6)-(2,11) = "there"
-        │   │   │           ├── closing_loc: (2,11)-(2,12) = "\""
-        │   │   │           └── unescaped: "there"
+        │   │   │   └── @ InterpolatedStringNode (location: (1,5)-(2,12))
+        │   │   │       ├── opening_loc: ∅
+        │   │   │       ├── parts: (length: 2)
+        │   │   │       │   ├── @ StringNode (location: (1,5)-(1,9))
+        │   │   │       │   │   ├── flags: ∅
+        │   │   │       │   │   ├── opening_loc: (1,5)-(1,6) = "\""
+        │   │   │       │   │   ├── content_loc: (1,6)-(1,8) = "hi"
+        │   │   │       │   │   ├── closing_loc: (1,8)-(1,9) = "\""
+        │   │   │       │   │   └── unescaped: "hi"
+        │   │   │       │   └── @ StringNode (location: (2,5)-(2,12))
+        │   │   │       │       ├── flags: ∅
+        │   │   │       │       ├── opening_loc: (2,5)-(2,6) = "\""
+        │   │   │       │       ├── content_loc: (2,6)-(2,11) = "there"
+        │   │   │       │       ├── closing_loc: (2,11)-(2,12) = "\""
+        │   │   │       │       └── unescaped: "there"
+        │   │   │       └── closing_loc: ∅
         │   │   └── flags: ∅
         │   ├── closing_loc: ∅
         │   ├── block: ∅
-        │   ├── flags: ∅
-        │   └── name: :puts
+        │   └── flags: ∅
         ├── @ ArrayNode (location: (4,0)-(5,2))
         │   ├── elements: (length: 1)
         │   │   └── @ SymbolNode (location: (4,3)-(5,1))
@@ -39,7 +40,8 @@
         │   │       ├── closing_loc: ∅
         │   │       └── unescaped: "a\nb"
         │   ├── opening_loc: (4,0)-(4,3) = "%I{"
-        │   └── closing_loc: (5,1)-(5,2) = "}"
+        │   ├── closing_loc: (5,1)-(5,2) = "}"
+        │   └── flags: ∅
         ├── @ StringNode (location: (7,0)-(7,4))
         │   ├── flags: ∅
         │   ├── opening_loc: (7,0)-(7,4) = "<<-E"
@@ -66,6 +68,7 @@
             │   @ CallNode (location: (17,4)-(17,20))
             │   ├── receiver: ∅
             │   ├── call_operator_loc: ∅
+            │   ├── name: :foo
             │   ├── message_loc: (17,4)-(17,7) = "foo"
             │   ├── opening_loc: (17,7)-(17,8) = "("
             │   ├── arguments:
@@ -90,16 +93,15 @@
             │   │   │       │   │       └── unescaped: "baz\r\n"
             │   │   │       │   └── closing_loc: (20,0)-(21,0) = "  EOF\r\n"
             │   │   │       ├── call_operator_loc: (17,14)-(17,15) = "."
+            │   │   │       ├── name: :chop
             │   │   │       ├── message_loc: (17,15)-(17,19) = "chop"
             │   │   │       ├── opening_loc: ∅
             │   │   │       ├── arguments: ∅
             │   │   │       ├── closing_loc: ∅
             │   │   │       ├── block: ∅
-            │   │   │       ├── flags: ∅
-            │   │   │       └── name: :chop
+            │   │   │       └── flags: ∅
             │   │   └── flags: ∅
             │   ├── closing_loc: (17,19)-(17,20) = ")"
             │   ├── block: ∅
-            │   ├── flags: ∅
-            │   └── name: :foo
+            │   └── flags: ∅
             └── operator_loc: (17,2)-(17,3) = "="
