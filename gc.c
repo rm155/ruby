@@ -10412,12 +10412,6 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
 
     rb_vm_t *vm = GET_VM();
     rb_vm_ractor_mark(vm);
-    if(vm->ractor.cnt > 0){
-	os = NULL;
-	ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
-	    rb_gc_mark(os->ractor->pub.self);
-	}
-    }
 
     os = NULL;
     ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
