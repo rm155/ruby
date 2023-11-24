@@ -1584,7 +1584,7 @@ static void end_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned
     while (BARRIER_WAITING(vm)) { \
 	RUBY_DEBUG_LOG("barrier serial:%u", vm->ractor.sched.barrier_serial); \
 	int lock_rec = vm->ractor.sync.lock_rec; \
-	int lock_owner = vm->ractor.sync.lock_owner; \
+	rb_ractor_t *lock_owner = vm->ractor.sync.lock_owner; \
 	vm->ractor.sync.lock_rec = 0; \
 	vm->ractor.sync.lock_owner = NULL; \
 	rb_ractor_sched_barrier_join(vm, GET_RACTOR()); \
