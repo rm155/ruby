@@ -2893,6 +2893,7 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 	close_objspace(closing_objspace);
 
 	closing_ractor->local_objspace = NULL;
+	if (rb_ractor_status_p(closing_ractor, ractor_terminated)) rb_remove_from_contained_ractor_tbl(closing_ractor);
     }
     RB_VM_UNLOCK();
 

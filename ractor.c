@@ -2031,7 +2031,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         ractor_status_set(cr, ractor_terminated);
 	
 	unlock_ractor_set();
-	rb_remove_from_contained_ractor_tbl(cr);
+	if (!cr->local_objspace) rb_remove_from_contained_ractor_tbl(cr);
     }
     RB_VM_UNLOCK();
 }
