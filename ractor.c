@@ -242,6 +242,8 @@ rb_ractor_related_objects_mark(void *ptr)
     }
 
     ractor_local_storage_mark(r);
+
+    rb_gc_mark(r->result_value);
 }
 
 static void
@@ -2122,6 +2124,8 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->borrowing_sync.borrower_count = 0;
     rb_native_cond_initialize(&r->borrowing_sync.no_borrowers);
 
+    r->result_value = Qnil;
+
     // thread management
     rb_thread_sched_init(&r->threads.sched, false);
     rb_ractor_living_threads_init(r);
@@ -2219,6 +2223,7 @@ void
 rb_ractor_atexit(rb_execution_context_t *ec, VALUE result)
 {
     rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
+    cr->result_value = result;
     ractor_yield_atexit(ec, cr, result, false);
 }
 

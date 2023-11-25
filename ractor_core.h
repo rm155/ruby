@@ -222,6 +222,8 @@ struct rb_ractor_struct {
     } *mfd;
 
     struct rb_objspace *local_objspace;
+
+    VALUE result_value;
 }; // rb_ractor_t is defined in vm_core.h
 
 
