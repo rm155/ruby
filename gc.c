@@ -8178,9 +8178,10 @@ gc_grey(rb_objspace_t *objspace, VALUE obj)
 }
 
 static void
-gc_aging(rb_objspace_t *objspace, VALUE obj)
+gc_aging(VALUE obj)
 {
     struct heap_page *page = GET_HEAP_PAGE(obj);
+    rb_objspace_t *objspace = page->objspace;
 
     GC_ASSERT(RVALUE_MARKING(obj) == FALSE);
     check_rvalue_consistency(obj);
@@ -8244,7 +8245,7 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
             rp(obj);
             rb_bug("try to mark T_NONE object"); /* check here will help debugging */
         }
-        gc_aging(objspace, obj);
+        gc_aging(obj);
         gc_grey(objspace, obj);
     }
     else {
@@ -10642,7 +10643,7 @@ gc_mark_from(rb_objspace_t *objspace, VALUE obj, VALUE parent)
     gc_mark_set_parent(objspace, parent);
     rgengc_check_relation(objspace, obj);
     if (gc_mark_set(objspace, obj) == FALSE) return;
-    gc_aging(objspace, obj);
+    gc_aging(obj);
     gc_grey(objspace, obj);
 }
 
@@ -10715,7 +10716,7 @@ rb_gc_writebarrier_unprotect(VALUE obj)
         return;
     }
     else {
-        rb_objspace_t *objspace = &rb_objspace;
+        rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
 
         gc_report(2, objspace, "rb_gc_writebarrier_unprotect: %s %s\n", obj_info(obj),
                   RVALUE_REMEMBERED(obj) ? " (already remembered)" : "");
