@@ -5686,7 +5686,7 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
     if (new_addition) {
 	rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
 	gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
-	VM_ASSERT(!!local_rs || (GET_RACTOR() == source_objspace->ractor) || (GET_RACTOR() == receiving_objspace->ractor));
+	VM_ASSERT(!!local_rs || (rb_current_allocating_ractor() == source_objspace->ractor) || (rb_current_allocating_ractor() == receiving_objspace->ractor));
 	if (local_rs) {
 	    ATOMIC_INC(local_rs->refcount->count);
 	}
