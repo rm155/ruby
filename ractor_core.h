@@ -159,6 +159,7 @@ struct rb_ractor_struct {
     struct rb_ractor_sync sync;
     VALUE receiving_mutex;
     bool during_teardown_cleanup;
+    bool teardown_cleanup_done;
     rb_ractor_t *receiver_before_exit;
 
     // vm wide barrier synchronization

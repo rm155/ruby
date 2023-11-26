@@ -2144,6 +2144,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->name = name;
     r->loc = loc;
     r->during_teardown_cleanup = false;
+    r->teardown_cleanup_done = false;
     FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
 
     rb_ractor_postponed_job_initialize(r);
@@ -2244,6 +2245,7 @@ rb_ractor_teardown(rb_execution_context_t *ec)
     rb_borrowing_sync_unlock(cr);
 
     rb_gc_ractor_teardown_cleanup();
+    cr->teardown_cleanup_done = true;
 
     // sync with rb_ractor_terminate_interrupt_main_thread()
     RB_VM_LOCK_ENTER();
