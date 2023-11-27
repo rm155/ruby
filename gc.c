@@ -8878,7 +8878,9 @@ static bool
 shared_references_all_marked(rb_objspace_t *objspace)
 {
     bool all_marked = true;
+    rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
     st_foreach(objspace->shared_reference_tbl, shared_references_all_marked_i, (st_data_t)&all_marked);
+    rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
     return all_marked;
 }
 
