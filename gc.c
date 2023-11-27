@@ -1044,6 +1044,9 @@ typedef struct gc_reference_status {
     int status;
 } gc_reference_status_t;
 
+
+static int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
+
 static void mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace);
 static bool external_references_all_unmarked(rb_objspace_t *objspace);
 static gc_reference_status_t *get_reference_status(st_table *tbl, VALUE obj);
@@ -1061,7 +1064,7 @@ static int
 insert_table_row(st_data_t key, st_data_t val, st_data_t arg)
 {
     st_table *tbl = (st_table *)arg;
-    st_insert(tbl, key, val);
+    st_insert_no_gc(tbl, key, val);
     return ST_CONTINUE;
 }
 
@@ -5583,12 +5586,21 @@ rb_add_zombie_thread(rb_thread_t *th)
     RB_VM_LOCK_LEAVE();
 }
 
+static int
+st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    VALUE already_disabled = gc_disable_no_rest(objspace);
+    st_insert(tab, key, value);
+    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+}
+
 void
 rb_add_to_absorbed_threads_tbl(rb_thread_t *th)
 {
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->absorbed_thread_tbl_lock);
-    st_insert(global_space->absorbed_thread_tbl, (st_data_t)th, INT2FIX(0));
+    st_insert_no_gc(global_space->absorbed_thread_tbl, (st_data_t)th, INT2FIX(0));
     rb_native_mutex_unlock(&global_space->absorbed_thread_tbl_lock);
 }
 
@@ -5608,7 +5620,7 @@ rb_add_to_contained_ractor_tbl(rb_ractor_t *r)
     rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(ractor_obj);
 
     rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
-    st_insert(objspace->contained_ractor_tbl, (st_data_t)ractor_obj, INT2FIX(0));
+    st_insert_no_gc(objspace->contained_ractor_tbl, (st_data_t)ractor_obj, INT2FIX(0));
     rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
 }
 
@@ -5639,9 +5651,7 @@ rb_add_to_shareable_tbl(VALUE obj)
     else {
 	rb_native_mutex_lock(&value_objspace->secondary_shareable_tbl_lock);
 
-	VALUE already_disabled = rb_gc_disable_no_rest();
-	new_addition = !st_insert(value_objspace->secondary_shareable_tbl, (st_data_t)obj, INT2FIX(0));
-	if (already_disabled == Qfalse) rb_objspace_gc_enable(current_objspace);
+	new_addition = !st_insert_no_gc(value_objspace->secondary_shareable_tbl, (st_data_t)obj, INT2FIX(0));
 
 	value_objspace->secondary_shareable_tbl_size++;
 	rb_native_mutex_unlock(&value_objspace->secondary_shareable_tbl_lock);
@@ -5723,7 +5733,7 @@ rb_register_new_external_wmap_reference(VALUE *ptr)
     VALUE obj = *ptr;
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
     rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
-    st_insert(source_objspace->wmap_referenced_obj_tbl, ptr, INT2FIX(0));
+    st_insert_no_gc(source_objspace->wmap_referenced_obj_tbl, ptr, INT2FIX(0));
     rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
 }
 
@@ -8827,7 +8837,7 @@ get_reference_status(st_table *tbl, VALUE obj)
 static void
 set_reference_status(st_table *tbl, VALUE obj, gc_reference_status_t *rs)
 {
-    st_insert(tbl, (st_data_t)obj, (st_data_t)rs);
+    st_insert_no_gc(tbl, (st_data_t)obj, (st_data_t)rs);
 }
 
 static void
