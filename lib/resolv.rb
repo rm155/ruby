@@ -84,8 +84,8 @@ class Resolv
   ##
   # Creates a new Resolv using +resolvers+.
 
-  def initialize(resolvers=[Hosts.new, DNS.new])
-    @resolvers = resolvers
+  def initialize(resolvers=nil, use_ipv6: nil)
+    @resolvers = resolvers || [Hosts.new, DNS.new(DNS::Config.default_config_hash.merge(use_ipv6: use_ipv6))]
   end
 
   ##
@@ -312,6 +312,8 @@ class Resolv
     # String:: Path to a file using /etc/resolv.conf's format.
     # Hash:: Must contain :nameserver, :search and :ndots keys.
     # :nameserver_port can be used to specify port number of nameserver address.
+    # :raise_timeout_errors can be used to raise timeout errors
+    # as exceptions instead of treating the same as an NXDOMAIN response.
     #
     # The value of :nameserver should be an address string or
     # an array of address strings.
@@ -408,6 +410,11 @@ class Resolv
     end
 
     def use_ipv6? # :nodoc:
+      use_ipv6 = @config.use_ipv6?
+      unless use_ipv6.nil?
+        return use_ipv6
+      end
+
       begin
         list = Socket.ip_address_list
       rescue NotImplementedError
@@ -750,7 +757,7 @@ class Resolv
               next if @socks_hash[bind_host]
               begin
                 sock = UDPSocket.new(af)
-              rescue Errno::EAFNOSUPPORT
+              rescue Errno::EAFNOSUPPORT, Errno::EPROTONOSUPPORT
                 next # The kernel doesn't support the address family.
               end
               @socks << sock
@@ -1006,6 +1013,7 @@ class Resolv
         @mutex.synchronize {
           unless @initialized
             @nameserver_port = []
+            @use_ipv6 = nil
             @search = nil
             @ndots = 1
             case @config_info
@@ -1030,8 +1038,12 @@ class Resolv
             if config_hash.include? :nameserver_port
               @nameserver_port = config_hash[:nameserver_port].map {|ns, port| [ns, (port || Port)] }
             end
+            if config_hash.include? :use_ipv6
+              @use_ipv6 = config_hash[:use_ipv6]
+            end
             @search = config_hash[:search] if config_hash.include? :search
             @ndots = config_hash[:ndots] if config_hash.include? :ndots
+            @raise_timeout_errors = config_hash[:raise_timeout_errors]
 
             if @nameserver_port.empty?
               @nameserver_port << ['0.0.0.0', Port]
@@ -1085,6 +1097,10 @@ class Resolv
         @nameserver_port
       end
 
+      def use_ipv6?
+        @use_ipv6
+      end
+
       def generate_candidates(name)
         candidates = nil
         name = Name.create(name)
@@ -1118,6 +1134,7 @@ class Resolv
       def resolv(name)
         candidates = generate_candidates(name)
         timeouts = @timeouts || generate_timeouts
+        timeout_error = false
         begin
           candidates.each {|candidate|
             begin
@@ -1129,11 +1146,13 @@ class Resolv
                   end
                 }
               }
+              timeout_error = true
               raise ResolvError.new("DNS resolv timeout: #{name}")
             rescue NXDomain
             end
           }
         rescue ResolvError
+          raise if @raise_timeout_errors && timeout_error
         end
       end
 
@@ -1520,13 +1539,15 @@ class Resolv
           id, flag, qdcount, ancount, nscount, arcount =
             msg.get_unpack('nnnnnn')
           o.id = id
+          o.tc = (flag >> 9) & 1
+          o.rcode = flag & 15
+          return o unless o.tc.zero?
+
           o.qr = (flag >> 15) & 1
           o.opcode = (flag >> 11) & 15
           o.aa = (flag >> 10) & 1
-          o.tc = (flag >> 9) & 1
           o.rd = (flag >> 8) & 1
           o.ra = (flag >> 7) & 1
-          o.rcode = flag & 15
           (1..qdcount).each {
             name, typeclass = msg.get_question
             o.add_question(name, typeclass)

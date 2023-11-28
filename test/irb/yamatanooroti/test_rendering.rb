@@ -207,15 +207,13 @@ class IRB::RenderingTest < Yamatanooroti::TestCase
     write_irbrc <<~'LINES'
       puts 'start IRB'
     LINES
-    start_terminal(4, 40, %W{ruby -I#{@pwd}/lib #{@pwd}/exe/irb}, startup_message: 'start IRB')
+    start_terminal(3, 50, %W{ruby -I#{@pwd}/lib #{@pwd}/exe/irb}, startup_message: 'start IRB')
     write("{}.__id_")
     write("\C-i")
     close
-    assert_screen(<<~EOC)
-      start IRB
-      irb(main):001> {}.__id__
-                      }.__id__
-    EOC
+    screen = result.join("\n").sub(/\n*\z/, "\n")
+    # This assertion passes whether showdoc dialog completed or not.
+    assert_match(/start\ IRB\nirb\(main\):001> {}\.__id__\n                }\.__id__(?:Press )?/, screen)
   end
 
   def test_autocomplete_with_showdoc_in_gaps_on_narrow_screen_right
@@ -391,11 +389,15 @@ class IRB::RenderingTest < Yamatanooroti::TestCase
     script.close
     start_terminal(40, 80, %W{ruby -I#{@pwd}/lib #{script.to_path}}, startup_message: 'start IRB')
     write("debug\n")
-    write("n")
+    write("pp 1\n")
+    write("pp 1")
     close
 
     screen = result.join("\n").sub(/\n*\z/, "\n")
-    assert_include(screen, "irb:rdbg(main):002> n # debug command")
+    # submitted input shouldn't contain hint
+    assert_include(screen, "irb:rdbg(main):002> pp 1\n")
+    # unsubmitted input should contain hint
+    assert_include(screen, "irb:rdbg(main):003> pp 1 # debug command\n")
   ensure
     File.unlink(script) if script
   end

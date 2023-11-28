@@ -238,6 +238,74 @@ module Prism
       assert_prism_eval("$pit = 1")
     end
 
+    def test_IndexAndWriteNode
+      assert_prism_eval("[0][0] &&= 1")
+      assert_prism_eval("[nil][0] &&= 1")
+
+      # Testing `[]` with a block passed in
+      assert_prism_eval(<<-CODE)
+        class CustomHash < Hash
+          def []=(key, value, &block)
+            block ? super(block.call(key), value) : super(key, value)
+          end
+        end
+
+        hash = CustomHash.new
+
+        # Call the custom method with a block that modifies
+        # the key before assignment
+        hash["KEY"] = "test"
+        hash["key", &(Proc.new { _1.upcase })] &&= "value"
+        hash
+      CODE
+    end
+
+    def test_IndexOrWriteNode
+      assert_prism_eval("[0][0] ||= 1")
+      assert_prism_eval("[nil][0] ||= 1")
+
+      # Testing `[]` with a block passed in
+      assert_prism_eval(<<-CODE)
+        class CustomHash < Hash
+          def []=(key, value, &block)
+            super(block.call(key), value)
+          end
+        end
+
+        hash = CustomHash.new
+
+        # Call the custom method with a block that modifies
+        # the key before assignment
+        hash["key", &(Proc.new { _1.upcase })] ||= "value"
+        hash
+      CODE
+    end
+
+    def test_IndexOperatorWriteNode
+      assert_prism_eval("[0][0] += 1")
+
+      # Testing `[]` with a block passed in
+      assert_prism_eval(<<-CODE)
+        class CustomHash < Hash
+          def [](key, &block)
+            block ? super(block.call(key)) : super(key)
+          end
+
+          def []=(key, value, &block)
+            block ? super(block.call(key), value) : super(key, value)
+          end
+        end
+
+        hash = CustomHash.new
+
+        # Call the custom method with a block that modifies
+        # the key before assignment
+        hash["KEY"] = "test"
+        hash["key", &(Proc.new { _1.upcase })] &&= "value"
+        hash
+      CODE
+    end
+
     def test_InstanceVariableAndWriteNode
       assert_prism_eval("@pit = 0; @pit &&= 1")
     end
@@ -488,6 +556,13 @@ module Prism
       assert_prism_eval("[1, 2, 3]")
       assert_prism_eval("%i[foo bar baz]")
       assert_prism_eval("%w[foo bar baz]")
+      assert_prism_eval("[*1..2]")
+      assert_prism_eval("[*1..2, 3, 4, *5..6, 7, 8]")
+      assert_prism_eval("[*1..2, 3, 4, *5..6, 7, 8, *9..11]")
+      assert_prism_eval("[0, *1..2, 3, 4, *5..6, 7, 8, *9..11]")
+      assert_prism_eval("[-1, true, 0, *1..2, 3, 4, *5..6, 7, 8, *9..11]")
+      assert_prism_eval("a = [1,2]; [0, *a, 3, 4, *5..6, 7, 8, *9..11]")
+      assert_prism_eval("[[*1..2], 3, *4..5]")
     end
 
     def test_AssocNode
@@ -712,6 +787,15 @@ module Prism
                        )
     end
 
+    def test_method_parameters
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_method_parameters(a, b=1, *c, d:, e: 2, **f, &g)
+        end
+
+        method(:prism_test_method_parameters).parameters
+      CODE
+    end
+
     def test_LambdaNode
       assert_prism_eval("-> { to_s }.call")
     end
@@ -804,6 +888,15 @@ module Prism
 
       # with arguments and popped
       assert_prism_eval("eval '1'; 1")
+
+      # With different types of calling arguments
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_call_node(**); end
+        prism_test_call_node(b: 1, **{})
+      CODE
+      assert_prism_eval(<<-CODE)
+        prism_test_call_node(:b => 1)
+      CODE
     end
 
     def test_CallAndWriteNode

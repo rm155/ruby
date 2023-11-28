@@ -1511,7 +1511,7 @@ total_freed_objects(rb_objspace_t *objspace)
 }
 
 #define gc_mode(objspace)                gc_mode_verify((enum gc_mode)(objspace)->flags.mode)
-#define gc_mode_set(objspace, mode)      ((objspace)->flags.mode = (unsigned int)gc_mode_verify(mode))
+#define gc_mode_set(objspace, m)         ((objspace)->flags.mode = (unsigned int)gc_mode_verify(m))
 
 #define is_marking(objspace)             (gc_mode(objspace) == gc_mode_marking)
 #define is_sweeping(objspace)            (gc_mode(objspace) == gc_mode_sweeping)
@@ -5451,6 +5451,36 @@ gc_finalize_deferred_register(rb_objspace_t *objspace)
     }
 }
 
+static int pop_mark_stack(mark_stack_t *stack, VALUE *data);
+
+static void
+gc_abort(rb_objspace_t *objspace)
+{
+    if (is_incremental_marking(objspace)) {
+        /* Remove all objects from the mark stack. */
+        VALUE obj;
+        while (pop_mark_stack(&objspace->mark_stack, &obj));
+
+        objspace->flags.during_incremental_marking = FALSE;
+    }
+
+    if (is_lazy_sweeping(objspace)) {
+        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+            rb_size_pool_t *size_pool = &size_pools[i];
+            rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
+
+            heap->sweeping_page = NULL;
+            struct heap_page *page = NULL;
+
+            ccan_list_for_each(&heap->pages, page, page_node) {
+                page->flags.before_sweep = false;
+            }
+        }
+    }
+
+    gc_mode_set(objspace, gc_mode_none);
+}
+
 struct force_finalize_list {
     VALUE obj;
     VALUE table;
@@ -5479,15 +5509,12 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
 #endif
-    gc_rest(objspace);
-
     if (ATOMIC_EXCHANGE(finalizing, 1)) return;
 
     /* run finalizers */
     finalize_deferred(objspace);
     GC_ASSERT(heap_pages_deferred_final == 0);
 
-    gc_rest(objspace);
     /* prohibit incremental GC */
     objspace->flags.dont_incremental = 1;
 
@@ -5504,6 +5531,9 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
             xfree(curr);
         }
     }
+
+    /* Abort incremental marking and lazy sweeping to speed up shutdown. */
+    gc_abort(objspace);
 
     /* prohibit GC because force T_DATA finalizers can break an object graph consistency */
     dont_gc_on();
@@ -8483,12 +8513,13 @@ gc_mark_imemo(rb_objspace_t *objspace, VALUE obj)
          * - On the multi-Ractors, cme will be collected with global GC
          *   so that it is safe if GC is not interleaving while accessing
          *   cc and cme.
-         * - However, cc_type_super is not chained from cc so the cc->cme
-         *   should be marked.
+         * - However, cc_type_super and cc_type_refinement are not chained
+         *   from ccs so cc->cme should be marked; the cme might be
+         *   reachable only through cc in these cases.
          */
         {
             const struct rb_callcache *cc = (const struct rb_callcache *)obj;
-            if (vm_cc_super_p(cc)) {
+            if (vm_cc_super_p(cc) || vm_cc_refinement_p(cc)) {
                 gc_mark(objspace, (VALUE)cc->cme_);
             }
         }
@@ -8521,7 +8552,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
     gc_mark_set_parent(objspace, obj);
 
     if (FL_TEST(obj, FL_EXIVAR)) {
-        rb_mark_and_update_generic_ivar(obj);
+        rb_mark_generic_ivar(obj);
     }
 
     switch (BUILTIN_TYPE(obj)) {
@@ -11179,14 +11210,6 @@ gc_set_flags_start(rb_objspace_t *objspace, unsigned int reason, unsigned int *d
     objspace->flags.immediate_sweep = !!(reason & GPR_FLAG_IMMEDIATE_SWEEP);
 
     objspace->flags.during_global_gc = !!(reason & GPR_FLAG_GLOBAL);
-
-    /* Explicitly enable compaction (GC.compact) */
-    if (*do_full_mark && ruby_enable_autocompact) {
-        objspace->flags.during_compacting = TRUE;
-    }
-    else {
-        objspace->flags.during_compacting = !!(reason & GPR_FLAG_COMPACT);
-    }
 }
 
 static void
@@ -11218,11 +11241,21 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
         reason |= GPR_FLAG_MAJOR_BY_FORCE; /* GC by CAPI, METHOD, and so on. */
     }
 
-    if (objspace->flags.dont_incremental || *immediate_mark) {
+    if (objspace->flags.dont_incremental ||
+	    *immediate_mark ||
+            ruby_gc_stressful) {
         objspace->flags.during_incremental_marking = FALSE;
     }
     else {
         objspace->flags.during_incremental_marking = *do_full_mark;
+    }
+
+    /* Explicitly enable compaction (GC.compact) */
+    if (do_full_mark && ruby_enable_autocompact) {
+        objspace->flags.during_compacting = TRUE;
+    }
+    else {
+        objspace->flags.during_compacting = !!(reason & GPR_FLAG_COMPACT);
     }
 
     if (!GC_ENABLE_LAZY_SWEEP || objspace->flags.dont_incremental) {
@@ -12230,6 +12263,12 @@ gc_ref_update_table_values_only(rb_objspace_t *objspace, st_table *tbl)
     }
 }
 
+void
+rb_gc_ref_update_table_values_only(st_table *tbl)
+{
+    gc_ref_update_table_values_only(&rb_objspace, tbl);
+}
+
 static void
 gc_update_table_refs(rb_objspace_t * objspace, st_table *tbl)
 {
@@ -12604,7 +12643,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
     gc_report(4, objspace, "update-refs: %p ->\n", (void *)obj);
 
     if (FL_TEST(obj, FL_EXIVAR)) {
-        rb_mark_and_update_generic_ivar(obj);
+        rb_ref_update_generic_ivar(obj);
     }
 
     switch (BUILTIN_TYPE(obj)) {
