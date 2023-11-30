@@ -2796,16 +2796,12 @@ update_size_pool_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspa
     objspace = objspace_to_update;
     rb_size_pool_t *size_pool_to_update = &size_pools[size_pool_idx];
 
-    rb_borrowing_sync_lock(objspace->ractor);
-
     size_pool_to_update->total_allocated_pages += total_allocated_pages;
     size_pool_to_update->total_freed_pages += total_freed_pages;
     size_pool_to_update->force_major_gc_count += force_major_gc_count;
     size_pool_to_update->force_incremental_marking_finish_count += force_incremental_marking_finish_count;
     size_pool_to_update->total_allocated_objects += total_allocated_objects;
     size_pool_to_update->total_freed_objects += total_freed_objects;
-
-    rb_borrowing_sync_unlock(objspace->ractor);
 }
 
 static void
@@ -2873,6 +2869,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     VALUE already_disabled = rb_objspace_gc_disable(receiving_objspace);
 
+    rb_borrowing_sync_lock(receiving_objspace->ractor);
+
     RB_VM_LOCK();
     {
 	VM_COND_AND_BARRIER_WAIT(GET_VM(), closing_ractor->sync.close_cond, closing_ractor->sync.ready_to_close);
@@ -2899,6 +2897,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 	if (rb_ractor_status_p(closing_ractor, ractor_terminated)) rb_remove_from_contained_ractor_tbl(closing_ractor);
     }
     RB_VM_UNLOCK();
+
+    rb_borrowing_sync_unlock(receiving_objspace->ractor);
 
     if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_objspace);
 }
@@ -3343,10 +3343,10 @@ set_current_alloc_target_ractor(VALUE arg)
     rb_ractor_t *old_target_ractor = current_objspace->alloc_target_ractor;
     current_objspace->alloc_target_ractor = target_ractor;
     if (old_target_ractor) {
-	rb_borrowing_sync_unlock(old_target_ractor);
+	rb_active_borrowing_end(old_target_ractor);
     }
     if (target_ractor) {
-	rb_borrowing_sync_lock(target_ractor);
+	rb_active_borrowing_begin(target_ractor);
     }
     return (VALUE)old_target_ractor;
 }
@@ -11472,9 +11472,10 @@ begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 	    RB_VM_LOCK_ENTER();
 	    {
 		VM_COND_AND_BARRIER_WAIT(vm, objspace->ractor->borrowing_sync.no_borrowers, objspace->ractor->borrowing_sync.borrower_count == 0);
-		rb_borrowing_sync_lock(objspace->ractor);
+		objspace->ractor->borrowing_sync.borrowing_allowed = false;
 	    }
 	    RB_VM_LOCK_LEAVE();
+	    rb_borrowing_sync_lock(objspace->ractor);
 	}
 	objspace->local_gc_level++;
     }
@@ -11487,6 +11488,12 @@ end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 	objspace->local_gc_level--;
 	if (objspace->local_gc_level == 0) {
 	    rb_borrowing_sync_unlock(objspace->ractor);
+	    RB_VM_LOCK_ENTER();
+	    {
+		objspace->ractor->borrowing_sync.borrowing_allowed = true;
+		rb_native_cond_broadcast(&objspace->ractor->borrowing_sync.borrowing_allowed_cond);
+	    }
+	    RB_VM_LOCK_LEAVE();
 	}
     }
 }

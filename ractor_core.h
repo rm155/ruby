@@ -210,6 +210,9 @@ struct rb_ractor_struct {
 
 	int borrower_count;
 	rb_nativethread_cond_t no_borrowers;
+
+	bool borrowing_allowed;
+	rb_nativethread_cond_t borrowing_allowed_cond;
     } borrowing_sync;
 
     /* postponed_job (async-signal-safe, NOT thread-safe) */
