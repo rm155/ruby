@@ -1354,6 +1354,7 @@ ractor_sched_signal_possible_waiters(rb_vm_t *vm)
 	rb_native_cond_signal(&r->sync.close_cond);
 	rb_native_cond_signal(&r->borrowing_sync.no_borrowers);
     }
+    rb_native_cond_broadcast(&vm->global_gc_finished);
 }
 
 void

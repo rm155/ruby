@@ -2113,6 +2113,8 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     rb_native_cond_initialize(&r->barrier_wait_cond);
 #endif
 
+    r->borrower_mode_levels = 0;
+
     rb_native_mutex_initialize(&r->borrowing_sync.lock);
     r->borrowing_sync.lock_owner = NULL;
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {

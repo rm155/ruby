@@ -1596,7 +1596,7 @@ static void end_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned
     } \
     if(state_to_check) break; \
     rb_vm_cond_wait(vm, &cond); \
-} while(!state_to_check)
+} while(!state_to_check || BARRIER_WAITING(vm))
 
 #define LOCAL_GC_BEGIN(objspace) \
 { \
@@ -3331,10 +3331,9 @@ size_pool_idx_for_size(size_t size)
     return size_pool_idx;
 }
 
-static VALUE
-set_current_alloc_target_ractor(VALUE arg)
+static rb_ractor_t *
+set_current_alloc_target_ractor(rb_ractor_t *target_ractor)
 {
-    rb_ractor_t *target_ractor = (rb_ractor_t *)arg;
     ASSERT_vm_unlocking();
     rb_objspace_t *current_objspace = &rb_objspace;
     if (target_ractor == current_objspace->ractor) {
@@ -3348,34 +3347,85 @@ set_current_alloc_target_ractor(VALUE arg)
     if (target_ractor) {
 	rb_active_borrowing_begin(target_ractor);
     }
-    return (VALUE)old_target_ractor;
+    return old_target_ractor;
+}
+
+struct borrowing_state_args {
+    rb_ractor_t *borrower;
+    rb_ractor_t *target_ractor;
+    rb_ractor_t *old_target;
+};
+
+static VALUE
+borrowing_enter(VALUE args)
+{
+    struct borrowing_state_args *borrowing_info = (struct borrowing_state_args *)args;
+
+    if (borrowing_info->borrower->borrower_mode_levels == 0) {
+	RB_VM_LOCK_ENTER();
+	{
+	    rb_vm_t *vm = GET_VM();
+	    VM_COND_AND_BARRIER_WAIT(vm, vm->global_gc_finished, !vm->global_gc_underway);
+	    vm->borrower_mode_count++;
+	}
+	RB_VM_LOCK_LEAVE();
+    }
+    borrowing_info->borrower->borrower_mode_levels++;
+
+    if (borrowing_info->target_ractor != NULL && borrowing_info->target_ractor != borrowing_info->borrower) {
+	RB_VM_LOCK_ENTER();
+	{
+	    borrowing_info->target_ractor->borrowing_sync.borrower_count++;
+	}
+	RB_VM_LOCK_LEAVE();
+    }
+
+    borrowing_info->old_target = set_current_alloc_target_ractor(borrowing_info->target_ractor);
+    return Qnil;
+}
+
+static VALUE
+borrowing_exit(VALUE args)
+{
+    struct borrowing_state_args *borrowing_info = (struct borrowing_state_args *)args;
+
+    set_current_alloc_target_ractor(borrowing_info->old_target);
+    if (borrowing_info->target_ractor != NULL && borrowing_info->target_ractor != borrowing_info->borrower) {
+	RB_VM_LOCK_ENTER();
+	{
+	    borrowing_info->target_ractor->borrowing_sync.borrower_count--;
+	    if (borrowing_info->target_ractor->borrowing_sync.borrower_count == 0) {
+		rb_native_cond_signal(&borrowing_info->target_ractor->borrowing_sync.no_borrowers);
+	    }
+	}
+	RB_VM_LOCK_LEAVE();
+    }
+
+    borrowing_info->borrower->borrower_mode_levels--;
+    if (borrowing_info->borrower->borrower_mode_levels == 0) {
+	RB_VM_LOCK_ENTER();
+	{
+	    rb_vm_t *vm = GET_VM();
+	    vm->borrower_mode_count--;
+	    if (vm->borrower_mode_count == 0) {
+		rb_native_cond_broadcast(&vm->no_borrower_mode);
+	    }
+	}
+	RB_VM_LOCK_LEAVE();
+    }
+    return Qnil;
 }
 
 VALUE
 rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE args)
 {
-    rb_objspace_t *current_objspace = &rb_objspace;
-    bool target_is_not_self = (target_ractor != NULL && target_ractor != current_objspace->ractor);
-    if (target_is_not_self) {
-	RB_VM_LOCK_ENTER();
-	{
-	    target_ractor->borrowing_sync.borrower_count++;
-	}
-	RB_VM_LOCK_LEAVE();
-    }
-    VALUE old_target = set_current_alloc_target_ractor((VALUE)target_ractor);
-    VALUE ret = rb_ensure(func, args, set_current_alloc_target_ractor, old_target);
-    if (target_is_not_self) {
-	RB_VM_LOCK_ENTER();
-	{
-	    target_ractor->borrowing_sync.borrower_count--;
-	    if (target_ractor->borrowing_sync.borrower_count == 0) {
-		rb_native_cond_signal(&target_ractor->borrowing_sync.no_borrowers);
-	    }
-	}
-	RB_VM_LOCK_LEAVE();
-    }
-    return ret;
+    struct borrowing_state_args borrowing_info = {
+	.borrower = GET_RACTOR(),
+	.target_ractor = target_ractor,
+	.old_target = NULL,
+    };
+    borrowing_enter((VALUE)&borrowing_info);
+    return rb_ensure(func, args, borrowing_exit, (VALUE)&borrowing_info);
 }
 
 bool
@@ -11501,18 +11551,21 @@ end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 static void
 begin_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev)
 {
+    RB_VM_LOCK_ENTER_LEV(lev);
+    VM_COND_AND_BARRIER_WAIT(vm, vm->global_gc_finished, !vm->global_gc_underway);
     objspace->running_global_gc = true;
     vm->global_gc_underway = true;
-    RB_VM_LOCK_ENTER_LEV(lev);
+    VM_COND_AND_BARRIER_WAIT(vm, vm->no_borrower_mode, vm->borrower_mode_count == 0);
     rb_vm_barrier();
 }
 
 static void
 end_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev)
 {
-    RB_VM_LOCK_LEAVE_LEV(lev);
     objspace->running_global_gc = false;
     vm->global_gc_underway = false;
+    rb_native_cond_broadcast(&vm->global_gc_finished);
+    RB_VM_LOCK_LEAVE_LEV(lev);
 }
 
 #if PRINT_ENTER_EXIT_TICK

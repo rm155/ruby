@@ -197,6 +197,8 @@ struct rb_ractor_struct {
     VALUE verbose;
     VALUE debug;
 
+    int borrower_mode_levels;
+
     rb_ractor_newobj_cache_t newobj_cache;
     rb_ractor_newobj_cache_t newobj_borrowing_cache;
     struct {
