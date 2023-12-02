@@ -2128,6 +2128,10 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->borrowing_sync.borrowing_allowed = true;
     rb_native_cond_initialize(&r->borrowing_sync.borrowing_allowed_cond);
 
+#if VM_CHECK_MODE > 0
+    r->late_to_barrier = false;
+#endif
+
     r->result_value = Qnil;
 
     // thread management
@@ -2148,7 +2152,10 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->name = name;
     r->loc = loc;
     r->during_teardown_cleanup = false;
+#if VM_CHECK_MODE > 0
     r->teardown_cleanup_done = false;
+#endif
+
     FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
 
     rb_ractor_postponed_job_initialize(r);
@@ -2249,7 +2256,10 @@ rb_ractor_teardown(rb_execution_context_t *ec)
     rb_borrowing_sync_unlock(cr);
 
     rb_gc_ractor_teardown_cleanup();
+
+#if VM_CHECK_MODE > 0
     cr->teardown_cleanup_done = true;
+#endif
 
     // sync with rb_ractor_terminate_interrupt_main_thread()
     RB_VM_LOCK_ENTER();

@@ -159,7 +159,9 @@ struct rb_ractor_struct {
     struct rb_ractor_sync sync;
     VALUE receiving_mutex;
     bool during_teardown_cleanup;
+#if VM_CHECK_MODE > 0
     bool teardown_cleanup_done;
+#endif
     rb_ractor_t *receiver_before_exit;
 
     // vm wide barrier synchronization
@@ -228,6 +230,10 @@ struct rb_ractor_struct {
     } *mfd;
 
     struct rb_objspace *local_objspace;
+
+#if VM_CHECK_MODE > 0
+    bool late_to_barrier;
+#endif
 
     VALUE result_value;
 }; // rb_ractor_t is defined in vm_core.h

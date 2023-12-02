@@ -624,12 +624,19 @@ thread_sched_setup_running_threads(struct rb_thread_sched *sched, rb_ractor_t *c
 #if VM_CHECK_MODE
         lock_owner = sched->lock_owner;
 #endif
+#if VM_CHECK_MODE > 0
+	rb_ractor_t *cr = GET_RACTOR();
+	cr->late_to_barrier = true;
+#endif
         thread_sched_unlock(sched, lock_owner);
         {
             RB_VM_LOCK_ENTER();
             RB_VM_LOCK_LEAVE();
         }
         thread_sched_lock(sched, lock_owner);
+#if VM_CHECK_MODE > 0
+	cr->late_to_barrier = false;
+#endif
     }
 
     //RUBY_DEBUG_LOG("+:%u -:%u +ts:%u -ts:%u run:%u->%u",
