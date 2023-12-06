@@ -8297,6 +8297,26 @@ in_marking_range(rb_objspace_t *objspace, VALUE obj)
     return !FL_TEST_RAW(obj, FL_SHAREABLE) || GET_OBJSPACE_OF_VALUE(obj) == objspace;
 }
 
+static void
+check_not_tnone(VALUE obj)
+{
+    if (UNLIKELY(RB_TYPE_P(obj, T_NONE))) { /* check here will help debugging */
+	rp(obj);
+	if (rb_multi_ractor_p()) {
+	    rb_objspace_t *objspace = &rb_objspace;
+	    if (objspace->flags.during_global_gc) {
+		rb_bug("try to mark T_NONE object (belonging to Ractor #%d) from global GC", GET_RACTOR_OF_VALUE(obj)->pub.id);
+	    }
+	    else {
+		rb_bug("try to mark T_NONE object from local GC of Ractor #%d", objspace->ractor->pub.id);
+	    }
+	}
+	else {
+	    rb_bug("try to mark T_NONE object");
+	}
+    }
+}
+
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
 static void reachable_objects_from_callback(VALUE obj);
 
@@ -8307,10 +8327,7 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 
     if (using_local_limits(objspace) && !in_marking_range(objspace, obj)) {
 	if (LIKELY(during_gc)) {
-	    if (UNLIKELY(RB_TYPE_P(obj, T_NONE))) {
-		rp(obj);
-		rb_bug("try to mark T_NONE object"); /* check here will help debugging */
-	    }
+	    check_not_tnone(obj);
 	    mark_in_external_reference_tbl(objspace, obj);
 	}
 	return;
@@ -8331,10 +8348,7 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
             }
         }
 
-        if (UNLIKELY(RB_TYPE_P(obj, T_NONE))) {
-            rp(obj);
-            rb_bug("try to mark T_NONE object"); /* check here will help debugging */
-        }
+	check_not_tnone(obj);
         gc_aging(obj);
         gc_grey(objspace, obj);
     }
