@@ -585,11 +585,11 @@ register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 void
 rb_free_static_symid_str(void)
 {
-    GLOBAL_SYMBOLS_ENTER(symbols)
+    GLOBAL_SYMBOLS_ENTER(symbols);
     {
         st_free_table(symbols->str_sym);
     }
-    GLOBAL_SYMBOLS_LEAVE();
+    GLOBAL_SYMBOLS_LEAVE(symbols);
 }
 
 static void

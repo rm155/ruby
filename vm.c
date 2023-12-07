@@ -3027,7 +3027,6 @@ ruby_vm_destruct(rb_vm_t *vm)
             st_free_table(vm->static_ext_inits);
             st_free_table(vm->ensure_rollback_table);
 
-            ruby_xfree(vm->postponed_job_buffer);
             st_free_table(vm->defined_module_hash);
 
             rb_id_table_free(vm->constant_cache);
