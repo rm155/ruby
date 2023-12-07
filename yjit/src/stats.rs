@@ -743,20 +743,17 @@ fn rb_yjit_gen_stats_dict(context: bool) -> VALUE {
         }
 
         // Create a hash for the cfunc call counts
+        let calls_hash = rb_hash_new();
+        rb_hash_aset(hash, rust_str_to_sym("cfunc_calls"), calls_hash);
         if let Some(cfunc_name_to_idx) = CFUNC_NAME_TO_IDX.as_mut() {
             let call_counts = CFUNC_CALL_COUNT.as_mut().unwrap();
-            let calls_hash = rb_hash_new();
 
             for (name, idx) in cfunc_name_to_idx {
                 let count = call_counts[*idx];
-                println!("{}: {}", name, count);
-
                 let key = rust_str_to_sym(name);
                 let value = VALUE::fixnum_from_usize(count as usize);
                 rb_hash_aset(calls_hash, key, value);
             }
-
-            rb_hash_aset(hash, rust_str_to_sym("cfunc_calls"), calls_hash);
         }
     }
 

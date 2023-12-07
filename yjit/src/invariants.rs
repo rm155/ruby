@@ -11,6 +11,7 @@ use crate::utils::IntoUsize;
 use crate::yjit::yjit_enabled_p;
 
 use std::collections::{HashMap, HashSet};
+use std::os::raw::c_void;
 use std::mem;
 
 // Invariants to track:
@@ -517,6 +518,17 @@ pub extern "C" fn rb_yjit_tracing_invalidate_all() {
 
         let cb = CodegenGlobals::get_inline_cb();
 
+        // Prevent on-stack frames from jumping to the caller on jit_exec_exception
+        extern "C" {
+            fn rb_yjit_cancel_jit_return(leave_exit: *mut c_void, leave_exception: *mut c_void) -> VALUE;
+        }
+        unsafe {
+            rb_yjit_cancel_jit_return(
+                CodegenGlobals::get_leave_exit_code().raw_ptr(cb) as _,
+                CodegenGlobals::get_leave_exception_code().raw_ptr(cb) as _,
+            );
+        }
+
         // Apply patches
         let old_pos = cb.get_write_pos();
         let old_dropped_bytes = cb.has_dropped_bytes();
@@ -524,7 +536,11 @@ pub extern "C" fn rb_yjit_tracing_invalidate_all() {
         patches.sort_by_cached_key(|patch| patch.inline_patch_pos.raw_ptr(cb));
         let mut last_patch_end = std::ptr::null();
         for patch in &patches {
-            assert!(last_patch_end <= patch.inline_patch_pos.raw_ptr(cb), "patches should not overlap");
+            let patch_pos = patch.inline_patch_pos.raw_ptr(cb);
+            assert!(
+                last_patch_end <= patch_pos,
+                "patches should not overlap (last_patch_end: {last_patch_end:?}, patch_pos: {patch_pos:?})",
+            );
 
             cb.set_write_ptr(patch.inline_patch_pos);
             cb.set_dropped_bytes(false);

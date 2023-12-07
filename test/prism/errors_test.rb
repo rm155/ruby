@@ -81,15 +81,15 @@ module Prism
       expected = PreExecutionNode(
         StatementsNode([
           CallNode(
+            0,
             expression("1"),
             nil,
             :+,
             Location(),
             nil,
-            ArgumentsNode([MissingNode()], 0),
+            ArgumentsNode(0, [MissingNode()]),
             nil,
-            nil,
-            0
+            nil
           )
         ]),
         Location(),
@@ -110,25 +110,25 @@ module Prism
 
     def test_unterminated_i_list
       assert_errors expression("%i["), "%i[", [
-        ["expected a closing delimiter for the `%i` list", 3..3]
+        ["expected a closing delimiter for the `%i` list", 0..3]
       ]
     end
 
     def test_unterminated_w_list
       assert_errors expression("%w["), "%w[", [
-        ["expected a closing delimiter for the `%w` list", 3..3]
+        ["expected a closing delimiter for the `%w` list", 0..3]
       ]
     end
 
     def test_unterminated_W_list
       assert_errors expression("%W["), "%W[", [
-        ["expected a closing delimiter for the `%W` list", 3..3]
+        ["expected a closing delimiter for the `%W` list", 0..3]
       ]
     end
 
     def test_unterminated_regular_expression
       assert_errors expression("/hello"), "/hello", [
-        ["expected a closing delimiter for the regular expression", 1..1]
+        ["expected a closing delimiter for the regular expression", 0..1]
       ]
     end
 
@@ -136,20 +136,32 @@ module Prism
       source = "<<-END + /b\nEND\n"
 
       assert_errors expression(source), source, [
-        ["expected a closing delimiter for the regular expression", 16..16]
+        ["expected a closing delimiter for the regular expression", 9..10]
       ]
     end
 
     def test_unterminated_xstring
       assert_errors expression("`hello"), "`hello", [
-        ["expected a closing delimiter for the `%x` or backtick string", 1..1]
+        ["expected a closing delimiter for the `%x` or backtick string", 0..1]
       ]
     end
 
-    def test_unterminated_string
-      assert_errors expression('"hello'), '"hello', [
-        ["expected a closing delimiter for the interpolated string", 1..1]
+    def test_unterminated_interpolated_string
+      expr = expression('"hello')
+      assert_errors expr, '"hello', [
+        ["expected a closing delimiter for the string literal", 6..6]
       ]
+      assert_equal expr.unescaped, "hello"
+      assert_equal expr.closing, ""
+    end
+
+    def test_unterminated_string
+      expr = expression("'hello")
+      assert_errors expr, "'hello", [
+        ["expected a closing delimiter for the string literal", 0..1]
+      ]
+      assert_equal expr.unescaped, "hello"
+      assert_equal expr.closing, ""
     end
 
     def test_incomplete_instance_var_string
@@ -161,7 +173,7 @@ module Prism
 
     def test_unterminated_s_symbol
       assert_errors expression("%s[abc"), "%s[abc", [
-        ["expected a closing delimiter for the dynamic symbol", 3..3]
+        ["expected a closing delimiter for the dynamic symbol", 0..3]
       ]
     end
 
@@ -339,18 +351,18 @@ module Prism
 
     def test_double_splat_followed_by_splat_argument
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
         Location(),
         Location(),
-        ArgumentsNode([
+        ArgumentsNode(1, [
           KeywordHashNode([AssocSplatNode(expression("kwargs"), Location())]),
           SplatNode(Location(), expression("args"))
-        ], 1),
+        ]),
         Location(),
-        nil,
-        0
+        nil
       )
 
       assert_errors expected, "a(**kwargs, *args)", [
@@ -360,15 +372,15 @@ module Prism
 
     def test_arguments_after_block
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
         Location(),
         Location(),
-        ArgumentsNode([expression("foo")], 0),
+        ArgumentsNode(0, [expression("foo")]),
         Location(),
-        BlockArgumentNode(expression("block"), Location()),
-        0
+        BlockArgumentNode(expression("block"), Location())
       )
 
       assert_errors expected, "a(&block, foo)", [
@@ -386,12 +398,13 @@ module Prism
 
     def test_splat_argument_after_keyword_argument
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
         Location(),
         Location(),
-        ArgumentsNode([
+        ArgumentsNode(0, [
           KeywordHashNode(
             [AssocNode(
               SymbolNode(nil, Location(), Location(), "foo"),
@@ -400,10 +413,9 @@ module Prism
             )]
           ),
           SplatNode(Location(), expression("args"))
-        ], 0),
+        ]),
         Location(),
-        nil,
-        0
+        nil
       )
 
       assert_errors expected, "a(foo: bar, *args)", [
@@ -419,6 +431,7 @@ module Prism
         nil,
         StatementsNode([ModuleNode([], Location(), ConstantReadNode(:A), nil, Location(), :A)]),
         [],
+        0,
         Location(),
         nil,
         nil,
@@ -428,7 +441,7 @@ module Prism
       )
 
       assert_errors expected, "def foo;module A;end;end", [
-        ["unexpected module definition in a method body", 8..14]
+        ["unexpected module definition in a method definition", 8..14]
       ]
     end
 
@@ -440,6 +453,7 @@ module Prism
         nil,
         StatementsNode(
           [CallNode(
+            0,
             nil,
             nil,
             :bar,
@@ -449,15 +463,16 @@ module Prism
             nil,
             BlockNode(
               [],
+              0,
               nil,
               StatementsNode([ModuleNode([], Location(), ConstantReadNode(:Foo), nil, Location(), :Foo)]),
               Location(),
               Location()
-            ),
-            0
+            )
           )]
         ),
         [],
+        0,
         Location(),
         nil,
         nil,
@@ -466,13 +481,27 @@ module Prism
         Location()
       )
 
-      assert_errors expected, <<~RUBY, [["unexpected module definition in a method body", 21..27]]
+      assert_errors expected, <<~RUBY, [["unexpected module definition in a method definition", 21..27]]
         def foo
           bar do
             module Foo;end
           end
         end
       RUBY
+    end
+
+    def test_module_definition_in_method_defs
+      source = <<~RUBY
+        def foo(bar = module A;end);end
+        def foo;rescue;module A;end;end
+        def foo;ensure;module A;end;end
+      RUBY
+      message = "unexpected module definition in a method definition"
+      assert_errors expression(source), source, [
+        [message, 14..20],
+        [message, 47..53],
+        [message, 79..85],
+      ]
     end
 
     def test_class_definition_in_method_body
@@ -494,6 +523,7 @@ module Prism
           )]
         ),
         [],
+        0,
         Location(),
         nil,
         nil,
@@ -503,7 +533,21 @@ module Prism
       )
 
       assert_errors expected, "def foo;class A;end;end", [
-        ["unexpected class definition in a method body", 8..13]
+        ["unexpected class definition in a method definition", 8..13]
+      ]
+    end
+
+    def test_class_definition_in_method_defs
+      source = <<~RUBY
+        def foo(bar = class A;end);end
+        def foo;rescue;class A;end;end
+        def foo;ensure;class A;end;end
+      RUBY
+      message = "unexpected class definition in a method definition"
+      assert_errors expression(source), source, [
+        [message, 14..19],
+        [message, 46..51],
+        [message, 77..82],
       ]
     end
 
@@ -520,6 +564,7 @@ module Prism
         ], [], nil, [], [], nil, nil),
         nil,
         [:A, :@a, :$A, :@@a],
+        4,
         Location(),
         nil,
         Location(),
@@ -591,6 +636,7 @@ module Prism
         ),
         nil,
         [:a, :b, :c],
+        3,
         Location(),
         nil,
         Location(),
@@ -607,6 +653,7 @@ module Prism
     def test_do_not_allow_trailing_commas_in_lambda_parameters
       expected = LambdaNode(
         [:a, :b],
+        2,
         Location(),
         Location(),
         Location(),
@@ -624,7 +671,7 @@ module Prism
     end
 
     def test_do_not_allow_multiple_codepoints_in_a_single_character_literal
-      expected = StringNode(0, Location(), Location(), nil, "\u0001\u0002")
+      expected = StringNode(StringFlags::FORCED_UTF8_ENCODING, Location(), Location(), nil, "\u0001\u0002")
 
       assert_errors expected, '?\u{0001 0002}', [
         ["invalid Unicode escape sequence; multiple codepoints are not allowed in a character literal", 9..12]
@@ -675,6 +722,7 @@ module Prism
         ),
         nil,
         [:block, :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -695,6 +743,7 @@ module Prism
         ParametersNode([], [], nil, [RequiredParameterNode(:a)], [], nil, BlockParameterNode(nil, nil, Location())),
         nil,
         [:&, :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -724,6 +773,7 @@ module Prism
         ),
         nil,
         [:"...", :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -752,6 +802,7 @@ module Prism
         ),
         nil,
         [:b, :a],
+        2,
         Location(),
         nil,
         Location(),
@@ -780,6 +831,7 @@ module Prism
         ),
         nil,
         [:rest, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -801,6 +853,7 @@ module Prism
         ParametersNode([], [], nil, [], [], ForwardingParameterNode(), nil),
         nil,
         [:"..."],
+        1,
         Location(),
         nil,
         Location(),
@@ -830,6 +883,7 @@ module Prism
         ),
         nil,
         [:args, :a, :b],
+        3,
         Location(),
         nil,
         Location(),
@@ -860,6 +914,7 @@ module Prism
         ),
         nil,
         [:args, :a, :b],
+        3,
         Location(),
         nil,
         Location(),
@@ -890,6 +945,7 @@ module Prism
         ),
         nil,
         [:args, :a, :b],
+        3,
         Location(),
         nil,
         Location(),
@@ -923,6 +979,7 @@ module Prism
         ),
         nil,
         [:a, :b, :c, :d, :e],
+        5,
         Location(),
         nil,
         Location(),
@@ -972,6 +1029,7 @@ module Prism
         nil,
         StatementsNode([IntegerNode(IntegerBaseFlags::DECIMAL)]),
         [],
+        0,
         Location(),
         nil,
         Location(),
@@ -988,6 +1046,7 @@ module Prism
     def test_do_not_allow_forward_arguments_in_lambda_literals
       expected = LambdaNode(
         [],
+        0,
         Location(),
         Location(),
         Location(),
@@ -1002,6 +1061,7 @@ module Prism
 
     def test_do_not_allow_forward_arguments_in_blocks
       expected = CallNode(
+        0,
         nil,
         nil,
         :a,
@@ -1011,12 +1071,12 @@ module Prism
         nil,
         BlockNode(
           [],
+          0,
           BlockParametersNode(ParametersNode([], [], nil, [], [], ForwardingParameterNode(), nil), [], Location(), Location()),
           nil,
           Location(),
           Location()
-        ),
-        0
+        )
       )
 
       assert_errors expected, "a {|...|}", [
@@ -1086,6 +1146,7 @@ module Prism
           ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b), RequiredParameterNode(:a)], [], nil, [], [], nil, nil),
           nil,
           [:a, :b],
+          2,
           Location(),
           nil,
           Location(),
@@ -1106,6 +1167,7 @@ module Prism
         ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], RestParameterNode(:a, Location(), Location()), [], [], nil, nil),
         nil,
         [:a, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -1125,6 +1187,7 @@ module Prism
         ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], nil, [], [], KeywordRestParameterNode(:a, Location(), Location()), nil),
         nil,
         [:a, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -1144,6 +1207,7 @@ module Prism
         ParametersNode([RequiredParameterNode(:a), RequiredParameterNode(:b)], [], nil, [], [], nil, BlockParameterNode(:a, Location(), Location())),
         nil,
         [:a, :b],
+        2,
         Location(),
         nil,
         Location(),
@@ -1163,6 +1227,7 @@ module Prism
         ParametersNode([], [OptionalParameterNode(:a, Location(), Location(), IntegerNode(IntegerBaseFlags::DECIMAL))], RestParameterNode(:c, Location(), Location()), [RequiredParameterNode(:b)], [], nil, nil),
         nil,
         [:a, :b, :c],
+        3,
         Location(),
         nil,
         Location(),
@@ -1632,6 +1697,28 @@ module Prism
       ], compare_ripper: false # Ripper does not check 'void value expression'.
     end
 
+    def test_void_value_expression_in_array
+      source = <<~RUBY
+        [return]
+        [1, return]
+        [ return => 1 ]
+        [ 1 => return ]
+        [ a: return ]
+        [ *return ]
+        [ **return ]
+      RUBY
+      message = 'unexpected void value expression'
+      assert_errors expression(source), source, [
+        [message, 1..7],
+        [message, 13..19],
+        [message, 23..29],
+        [message, 44..50],
+        [message, 58..64],
+        [message, 70..76],
+        [message, 83..89],
+      ], compare_ripper: false # Ripper does not check 'void value expression'.
+    end
+
     def test_void_value_expression_in_hash
       source = <<~RUBY
         { return => 1 }
@@ -1826,6 +1913,68 @@ module Prism
         [message2, 3..3],
         [message1, 10..10],
         [message2, 10..10],
+      ]
+    end
+
+    def test_circular_param
+      source = <<~RUBY
+        def foo(bar = bar) = 42
+        def foo(bar: bar) = 42
+        proc { |foo = foo| }
+        proc { |foo: foo| }
+      RUBY
+      message = 'parameter default value references itself'
+      assert_errors expression(source), source, [
+        [message, 14..17],
+        [message, 37..40],
+        [message, 61..64],
+        [message, 81..84],
+      ], compare_ripper: false # Ripper does not check 'circular reference'.
+    end
+
+    def test_command_calls
+      sources = <<~RUBY.lines
+        [a b]
+        {a: b c}
+        ...a b
+        if ...a b; end
+        a b, c d
+        a(b, c d)
+        a(*b c)
+        a(**b c)
+        a(&b c)
+        +a b
+        a + b c
+        a && b c
+        a =~ b c
+        a = b, c d
+        a = *b c
+        a, b = c = d f
+        a ? b c : d e
+        defined? a b
+        ! ! a b
+        def f a = b c; end
+        def f(a = b c); end
+        a = b rescue c d
+        def a = b rescue c d
+        ->a=b c{}
+        ->(a=b c){}
+        case; when a b; end
+        case; in a if a b; end
+        case; in a unless a b; end
+        begin; rescue a b; end
+        begin; rescue a b => c; end
+      RUBY
+      sources.each do |source|
+        assert_nil Ripper.sexp_raw(source)
+        assert_false(Prism.parse(source).success?)
+      end
+    end
+
+    def test_constant_assignment_in_method
+      source = 'def foo();A=1;end'
+      assert_errors expression(source), source, [
+        ['dynamic constant assignment', 10..13]
       ]
     end
 

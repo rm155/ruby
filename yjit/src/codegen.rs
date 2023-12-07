@@ -245,13 +245,13 @@ impl JITState {
     fn perf_symbol_range_start(&self, asm: &mut Assembler, symbol_name: &str) {
         let symbol_name = symbol_name.to_string();
         let syms = self.perf_map.clone();
-        asm.pos_marker(move |start| syms.borrow_mut().push((start, None, symbol_name.clone())));
+        asm.pos_marker(move |start, _| syms.borrow_mut().push((start, None, symbol_name.clone())));
     }
 
     /// Mark the end address of a symbol to be reported to perf
     fn perf_symbol_range_end(&self, asm: &mut Assembler) {
         let syms = self.perf_map.clone();
-        asm.pos_marker(move |end| {
+        asm.pos_marker(move |end, _| {
             if let Some((_, ref mut end_store, _)) = syms.borrow_mut().last_mut() {
                 assert_eq!(None, *end_store);
                 *end_store = Some(end);
@@ -362,9 +362,13 @@ fn jit_prepare_routine_call(
 /// Record the current codeblock write position for rewriting into a jump into
 /// the outlined block later. Used to implement global code invalidation.
 fn record_global_inval_patch(asm: &mut Assembler, outline_block_target_pos: CodePtr) {
+    // We add a padding before pos_marker so that the previous patch will not overlap this.
+    // jump_to_next_insn() puts a patch point at the end of the block in fallthrough cases.
+    // In the fallthrough case, the next block should start with the same Context, so the
+    // patch is fine, but it should not overlap another patch.
     asm.pad_inval_patch();
-    asm.pos_marker(move |code_ptr| {
-        CodegenGlobals::push_global_inval_patch(code_ptr, outline_block_target_pos);
+    asm.pos_marker(move |code_ptr, cb| {
+        CodegenGlobals::push_global_inval_patch(code_ptr, outline_block_target_pos, cb);
     });
 }
 
@@ -4945,6 +4949,31 @@ fn jit_rb_ary_empty_p(
     return true;
 }
 
+// Codegen for rb_ary_length()
+fn jit_rb_ary_length(
+    _jit: &mut JITState,
+    asm: &mut Assembler,
+    _ocb: &mut OutlinedCb,
+    _ci: *const rb_callinfo,
+    _cme: *const rb_callable_method_entry_t,
+    _block: Option<BlockHandler>,
+    _argc: i32,
+    _known_recv_class: *const VALUE,
+) -> bool {
+    let array_opnd = asm.stack_pop(1);
+    let array_reg = asm.load(array_opnd);
+    let len_opnd = get_array_len(asm, array_reg);
+
+    // Convert the length to a fixnum
+    let shifted_val = asm.lshift(len_opnd, Opnd::UImm(1));
+    let out_val = asm.or(shifted_val, Opnd::UImm(RUBY_FIXNUM_FLAG as u64));
+
+    let out_opnd = asm.stack_push(Type::Fixnum);
+    asm.store(out_opnd, out_val);
+
+    return true;
+}
+
 fn jit_rb_ary_push(
     jit: &mut JITState,
     asm: &mut Assembler,
@@ -5212,13 +5241,12 @@ struct ControlFrame {
 //   * Provided sp should point to the new frame's sp, immediately following locals and the environment
 //   * At entry, CFP points to the caller (not callee) frame
 //   * At exit, ec->cfp is updated to the pushed CFP
-//   * CFP and SP registers are updated only if set_sp_cfp is set
+//   * SP register is updated only if frame.iseq is set
 //   * Stack overflow is not checked (should be done by the caller)
 //   * Interrupts are not checked (should be done by the caller)
 fn gen_push_frame(
     jit: &mut JITState,
     asm: &mut Assembler,
-    set_sp_cfp: bool, // if true CFP and SP will be switched to the callee
     frame: ControlFrame,
 ) {
     let sp = frame.sp;
@@ -5310,7 +5338,7 @@ fn gen_push_frame(
     asm.mov(cfp_opnd(RUBY_OFFSET_CFP_SELF), frame.recv);
     asm.mov(cfp_opnd(RUBY_OFFSET_CFP_BLOCK_CODE), 0.into());
 
-    if set_sp_cfp {
+    if frame.iseq.is_some() {
         // Spill stack temps to let the callee use them (must be done before changing the SP register)
         asm.spill_temps();
 
@@ -5320,16 +5348,6 @@ fn gen_push_frame(
     }
     let ep = asm.sub(sp, SIZEOF_VALUE.into());
     asm.mov(cfp_opnd(RUBY_OFFSET_CFP_EP), ep);
-
-    let new_cfp = asm.lea(cfp_opnd(0));
-    if set_sp_cfp {
-        asm_comment!(asm, "switch to new CFP");
-        asm.mov(CFP, new_cfp);
-        asm.store(Opnd::mem(64, EC, RUBY_OFFSET_EC_CFP), CFP);
-    } else {
-        asm_comment!(asm, "set ec->cfp");
-        asm.store(Opnd::mem(64, EC, RUBY_OFFSET_EC_CFP), new_cfp);
-    }
 }
 
 fn gen_send_cfunc(
@@ -5557,7 +5575,7 @@ fn gen_send_cfunc(
         frame_type |= VM_FRAME_FLAG_CFRAME_KW
     }
 
-    gen_push_frame(jit, asm, false, ControlFrame {
+    gen_push_frame(jit, asm, ControlFrame {
         frame_type,
         specval,
         cme,
@@ -5570,6 +5588,10 @@ fn gen_send_cfunc(
         },
         iseq: None,
     });
+
+    asm_comment!(asm, "set ec->cfp");
+    let new_cfp = asm.lea(Opnd::mem(64, CFP, -(RUBY_SIZEOF_CONTROL_FRAME as i32)));
+    asm.store(Opnd::mem(64, EC, RUBY_OFFSET_EC_CFP), new_cfp);
 
     if !kw_arg.is_null() {
         // Build a hash from all kwargs passed
@@ -6655,7 +6677,7 @@ fn gen_send_iseq(
     };
 
     // Setup the new frame
-    gen_push_frame(jit, asm, true, ControlFrame {
+    gen_push_frame(jit, asm, ControlFrame {
         frame_type,
         specval,
         cme,
@@ -6716,6 +6738,12 @@ fn gen_send_iseq(
         None,
         BranchGenFn::JITReturn,
     );
+
+    // ec->cfp is updated after cfp->jit_return for rb_profile_frames() safety
+    asm_comment!(asm, "switch to new CFP");
+    let new_cfp = asm.sub(CFP, RUBY_SIZEOF_CONTROL_FRAME.into());
+    asm.mov(CFP, new_cfp);
+    asm.store(Opnd::mem(64, EC, RUBY_OFFSET_EC_CFP), CFP);
 
     // Directly jump to the entry point of the callee
     gen_direct_jump(
@@ -7069,6 +7097,8 @@ fn gen_send_general(
     let recv_idx = argc + if flags & VM_CALL_ARGS_BLOCKARG != 0 { 1 } else { 0 };
     let comptime_recv = jit.peek_at_stack(&asm.ctx, recv_idx as isize);
     let comptime_recv_klass = comptime_recv.class_of();
+    assert_eq!(RUBY_T_CLASS, comptime_recv_klass.builtin_type(),
+        "objects visible to ruby code should have a T_CLASS in their klass field");
 
     // Points to the receiver operand on the stack
     let recv = asm.stack_opnd(recv_idx);
@@ -8789,6 +8819,8 @@ pub fn yjit_reg_method_codegen_fns() {
         yjit_reg_method(rb_cString, "+@", jit_rb_str_uplus);
 
         yjit_reg_method(rb_cArray, "empty?", jit_rb_ary_empty_p);
+        yjit_reg_method(rb_cArray, "length", jit_rb_ary_length);
+        yjit_reg_method(rb_cArray, "size", jit_rb_ary_length);
         yjit_reg_method(rb_cArray, "<<", jit_rb_ary_push);
 
         yjit_reg_method(rb_mKernel, "respond_to?", jit_obj_respond_to);
@@ -8874,7 +8906,6 @@ impl CodegenGlobals {
     pub fn init() {
         // Executable memory and code page size in bytes
         let mem_size = get_option!(exec_mem_size);
-
 
         #[cfg(not(test))]
         let (mut cb, mut ocb) = {
@@ -8987,10 +9018,18 @@ impl CodegenGlobals {
         CodegenGlobals::get_instance().stub_exit_code
     }
 
-    pub fn push_global_inval_patch(i_pos: CodePtr, o_pos: CodePtr) {
+    pub fn push_global_inval_patch(inline_pos: CodePtr, outlined_pos: CodePtr, cb: &CodeBlock) {
+        if let Some(last_patch) = CodegenGlobals::get_instance().global_inval_patches.last() {
+            let patch_offset = inline_pos.as_offset() - last_patch.inline_patch_pos.as_offset();
+            assert!(
+                patch_offset < 0 || cb.jmp_ptr_bytes() as i64 <= patch_offset,
+                "patches should not overlap (patch_offset: {patch_offset})",
+            );
+        }
+
         let patch = CodepagePatch {
-            inline_patch_pos: i_pos,
-            outlined_target_pos: o_pos,
+            inline_patch_pos: inline_pos,
+            outlined_target_pos: outlined_pos,
         };
         CodegenGlobals::get_instance()
             .global_inval_patches

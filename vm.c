@@ -919,8 +919,6 @@ static VALUE
 vm_make_env_each(const rb_execution_context_t * const ec, rb_control_frame_t *const cfp)
 {
     const VALUE * const ep = cfp->ep;
-    const rb_env_t *env;
-    const rb_iseq_t *env_iseq;
     VALUE *env_body, *env_ep;
     int local_size, env_size;
 
@@ -972,8 +970,25 @@ vm_make_env_each(const rb_execution_context_t * const ec, rb_control_frame_t *co
 
     env_size = local_size +
                1 /* envval */;
+
+    // Careful with order in the following sequence. Each allocation can move objects.
     env_body = ALLOC_N(VALUE, env_size);
+    rb_env_t *env = (rb_env_t *)rb_imemo_new(imemo_env, 0, 0, 0, 0);
+
+    // Set up env without WB since it's brand new (similar to newobj_init(), newobj_fill())
     MEMCPY(env_body, ep - (local_size - 1 /* specval */), VALUE, local_size);
+
+    env_ep = &env_body[local_size - 1 /* specval */];
+    env_ep[VM_ENV_DATA_INDEX_ENV] = (VALUE)env;
+
+    env->iseq = (rb_iseq_t *)(VM_FRAME_RUBYFRAME_P(cfp) ? cfp->iseq : NULL);
+    env->ep = env_ep;
+    env->env = env_body;
+    env->env_size = env_size;
+
+    cfp->ep = env_ep;
+    VM_ENV_FLAGS_SET(env_ep, VM_ENV_FLAG_ESCAPED | VM_ENV_FLAG_WB_REQUIRED);
+    VM_STACK_ENV_WRITE(ep, 0, (VALUE)env);		/* GC mark */
 
 #if 0
     for (i = 0; i < local_size; i++) {
@@ -984,14 +999,6 @@ vm_make_env_each(const rb_execution_context_t * const ec, rb_control_frame_t *co
     }
 #endif
 
-    env_iseq = VM_FRAME_RUBYFRAME_P(cfp) ? cfp->iseq : NULL;
-    env_ep = &env_body[local_size - 1 /* specval */];
-
-    env = vm_env_new(env_ep, env_body, env_size, env_iseq);
-
-    cfp->ep = env_ep;
-    VM_ENV_FLAGS_SET(env_ep, VM_ENV_FLAG_ESCAPED | VM_ENV_FLAG_WB_REQUIRED);
-    VM_STACK_ENV_WRITE(ep, 0, (VALUE)env);		/* GC mark */
     return (VALUE)env;
 }
 
@@ -1212,7 +1219,14 @@ env_copy(const VALUE *src_ep, VALUE read_only_variables)
 
     VALUE *env_body = ZALLOC_N(VALUE, src_env->env_size); // fill with Qfalse
     VALUE *ep = &env_body[src_env->env_size - 2];
-    volatile VALUE prev_env = Qnil;
+    const rb_env_t *copied_env = vm_shareable_env_new(ep, env_body, src_env->env_size, src_env->iseq);
+
+    // Copy after allocations above, since they can move objects in src_ep.
+    RB_OBJ_WRITE(copied_env, &ep[VM_ENV_DATA_INDEX_ME_CREF], src_ep[VM_ENV_DATA_INDEX_ME_CREF]);
+    ep[VM_ENV_DATA_INDEX_FLAGS] = src_ep[VM_ENV_DATA_INDEX_FLAGS] | VM_ENV_FLAG_ISOLATED;
+    if (!VM_ENV_LOCAL_P(src_ep)) {
+        VM_ENV_FLAGS_SET(ep, VM_ENV_FLAG_LOCAL);
+    }
 
     if (read_only_variables) {
         for (int i=RARRAY_LENINT(read_only_variables)-1; i>=0; i--) {
@@ -1231,7 +1245,7 @@ env_copy(const VALUE *src_ep, VALUE read_only_variables)
                             rb_str_cat_cstr(msg, "a hidden variable");
                         rb_exc_raise(rb_exc_new_str(rb_eRactorIsolationError, msg));
                     }
-                    env_body[j] = v;
+                    RB_OBJ_WRITE((VALUE)copied_env, &env_body[j], v);
                     rb_ary_delete_at(read_only_variables, i);
                     break;
                 }
@@ -1239,22 +1253,17 @@ env_copy(const VALUE *src_ep, VALUE read_only_variables)
         }
     }
 
-    ep[VM_ENV_DATA_INDEX_ME_CREF] = src_ep[VM_ENV_DATA_INDEX_ME_CREF];
-    ep[VM_ENV_DATA_INDEX_FLAGS]   = src_ep[VM_ENV_DATA_INDEX_FLAGS] | VM_ENV_FLAG_ISOLATED;
-
     if (!VM_ENV_LOCAL_P(src_ep)) {
         const VALUE *prev_ep = VM_ENV_PREV_EP(src_env->ep);
         const rb_env_t *new_prev_env = env_copy(prev_ep, read_only_variables);
-        prev_env = (VALUE)new_prev_env;
         ep[VM_ENV_DATA_INDEX_SPECVAL] = VM_GUARDED_PREV_EP(new_prev_env->ep);
+        RB_OBJ_WRITTEN(copied_env, Qundef, new_prev_env);
+        VM_ENV_FLAGS_UNSET(ep, VM_ENV_FLAG_LOCAL);
     }
     else {
         ep[VM_ENV_DATA_INDEX_SPECVAL] = VM_BLOCK_HANDLER_NONE;
     }
 
-    const rb_env_t *copied_env = vm_shareable_env_new(ep, env_body, src_env->env_size, src_env->iseq);
-
-    RB_GC_GUARD(prev_env);
     return copied_env;
 }
 

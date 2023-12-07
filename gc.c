@@ -3319,7 +3319,8 @@ size_pool_idx_for_size(size_t size)
     size_t size_pool_idx = 64 - nlz_int64(slot_count - 1);
 
     if (size_pool_idx >= SIZE_POOL_COUNT) {
-        rb_bug("size_pool_idx_for_size: allocation size too large (size=%lu, size_pool_idx=%lu)", size, size_pool_idx);
+        rb_bug("size_pool_idx_for_size: allocation size too large "
+               "(size=%"PRIuSIZE"u, size_pool_idx=%"PRIuSIZE"u)", size, size_pool_idx);
     }
 
 #if RGENGC_CHECK_MODE
@@ -3735,12 +3736,6 @@ VALUE
 rb_newobj(void)
 {
     return newobj_of(GET_RACTOR(), 0, T_NONE, 0, 0, 0, FALSE, RVALUE_SIZE);
-}
-
-static size_t
-rb_obj_embedded_size(uint32_t numiv)
-{
-    return offsetof(struct RObject, as.ary) + (sizeof(VALUE) * numiv);
 }
 
 static VALUE
@@ -4834,6 +4829,7 @@ Init_gc_stress(void)
 }
 
 typedef int each_obj_callback(void *, void *, size_t, void *);
+typedef int each_page_callback(struct heap_page *, void *);
 
 static void objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void *data, bool protected);
 static void objspace_reachable_objects_from_root(rb_objspace_t *, void (func)(const char *, VALUE, void *), void *);
@@ -4842,7 +4838,8 @@ struct each_obj_data {
     rb_objspace_t *objspace;
     bool reenable_incremental;
 
-    each_obj_callback *callback;
+    each_obj_callback *each_obj_callback;
+    each_page_callback *each_page_callback;
     void *data;
 
     struct heap_page **pages[SIZE_POOL_COUNT];
@@ -4932,9 +4929,15 @@ objspace_each_objects_try(VALUE arg)
             uintptr_t pstart = (uintptr_t)page->start;
             uintptr_t pend = pstart + (page->total_slots * size_pool->slot_size);
 
-            if (!__asan_region_is_poisoned((void *)pstart, pend - pstart) &&
-                (*data->callback)((void *)pstart, (void *)pend, size_pool->slot_size, data->data)) {
-                break;
+            if (!__asan_region_is_poisoned((void *)pstart, pend - pstart)) {
+                if (data->each_obj_callback &&
+                    (*data->each_obj_callback)((void *)pstart, (void *)pend, size_pool->slot_size, data->data)) {
+                    break;
+                }
+                if (data->each_page_callback &&
+                    (*data->each_page_callback)(page, data->data)) {
+                    break;
+                }
             }
 
 	    if (data->using_borrowable_page[size_pool_idx]) {
@@ -4999,9 +5002,10 @@ rb_objspace_each_objects(each_obj_callback *callback, void *data)
 }
 
 static void
-objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void *data, bool protected)
+objspace_each_exec(bool protected, struct each_obj_data *each_obj_data)
 {
     /* Disable incremental GC */
+    rb_objspace_t *objspace = each_obj_data->objspace;
     bool reenable_incremental = FALSE;
     if (protected) {
         reenable_incremental = !objspace->flags.dont_incremental;
@@ -5010,21 +5014,38 @@ objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void
         objspace->flags.dont_incremental = TRUE;
     }
 
+    each_obj_data->reenable_incremental = reenable_incremental;
+    memset(&each_obj_data->pages, 0, sizeof(each_obj_data->pages));
+    memset(&each_obj_data->pages_counts, 0, sizeof(each_obj_data->pages_counts));
+    rb_ensure(objspace_each_objects_try, (VALUE)each_obj_data,
+              objspace_each_objects_ensure, (VALUE)each_obj_data);
+}
+
+static void
+objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void *data, bool protected)
+{
     struct each_obj_data each_obj_data = {
         .objspace = objspace,
-        .reenable_incremental = reenable_incremental,
-
-        .callback = callback,
+        .each_obj_callback = callback,
+        .each_page_callback = NULL,
         .data = data,
+    };
+    objspace_each_exec(protected, &each_obj_data);
+}
 
-        .pages = {NULL},
-        .pages_counts = {0},
+static void
+objspace_each_pages(rb_objspace_t *objspace, each_page_callback *callback, void *data, bool protected)
+{
+    struct each_obj_data each_obj_data = {
+        .objspace = objspace,
+        .each_obj_callback = NULL,
+        .each_page_callback = callback,
+        .data = data,
     };
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
 	each_obj_data.using_borrowable_page[i] = false;
     }
-    rb_ensure(objspace_each_objects_try, (VALUE)&each_obj_data,
-              objspace_each_objects_ensure, (VALUE)&each_obj_data);
+    objspace_each_exec(protected, &each_obj_data);
 }
 
 void
@@ -7966,7 +7987,6 @@ mark_method_entry(rb_objspace_t *objspace, const rb_method_entry_t *me)
             return;
           case VM_METHOD_TYPE_REFINED:
             gc_mark(objspace, (VALUE)def->body.refined.orig_me);
-            gc_mark(objspace, (VALUE)def->body.refined.owner);
             break;
           case VM_METHOD_TYPE_CFUNC:
           case VM_METHOD_TYPE_ZSUPER:
@@ -8707,7 +8727,16 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
 
       case T_STRING:
         if (STR_SHARED_P(obj)) {
-            gc_mark(objspace, any->as.string.as.heap.aux.shared);
+            if (STR_EMBED_P(any->as.string.as.heap.aux.shared)) {
+                /* Embedded shared strings cannot be moved because this string
+                 * points into the slot of the shared string. There may be code
+                 * using the RSTRING_PTR on the stack, which would pin this
+                 * string but not pin the shared string, causing it to move. */
+                gc_mark_and_pin(objspace, any->as.string.as.heap.aux.shared);
+            }
+            else {
+                gc_mark(objspace, any->as.string.as.heap.aux.shared);
+            }
         }
         break;
 
@@ -11288,18 +11317,17 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
 
         objspace->flags.immediate_sweep = !(flag & (1<<gc_stress_no_immediate_sweep));
     }
-    else {
-        if (objspace->rgengc.need_major_gc) {
-            reason |= objspace->rgengc.need_major_gc;
-            *do_full_mark = TRUE;
-        }
-        else if (RGENGC_FORCE_MAJOR_GC) {
-            reason = GPR_FLAG_MAJOR_BY_FORCE;
-            *do_full_mark = TRUE;
-        }
 
-        objspace->rgengc.need_major_gc = GPR_FLAG_NONE;
+    if (objspace->rgengc.need_major_gc) {
+        reason |= objspace->rgengc.need_major_gc;
+        *do_full_mark = TRUE;
     }
+    else if (RGENGC_FORCE_MAJOR_GC) {
+        reason = GPR_FLAG_MAJOR_BY_FORCE;
+        *do_full_mark = TRUE;
+    }
+
+    objspace->rgengc.need_major_gc = GPR_FLAG_NONE;
 
     if (*do_full_mark && (reason & GPR_FLAG_MAJOR_MASK) == 0) {
         reason |= GPR_FLAG_MAJOR_BY_FORCE; /* GC by CAPI, METHOD, and so on. */
@@ -12395,7 +12423,6 @@ gc_ref_update_method_entry(rb_objspace_t *objspace, rb_method_entry_t *me)
             return;
           case VM_METHOD_TYPE_REFINED:
             TYPED_UPDATE_IF_MOVED(objspace, struct rb_method_entry_struct *, def->body.refined.orig_me);
-            UPDATE_IF_MOVED(objspace, def->body.refined.owner);
             break;
           case VM_METHOD_TYPE_CFUNC:
           case VM_METHOD_TYPE_ZSUPER:
@@ -12787,10 +12814,7 @@ gc_update_object_references(rb_objspace_t *objspace, VALUE obj)
       case T_STRING:
         {
             if (STR_SHARED_P(obj)) {
-                VALUE old_root = any->as.string.as.heap.aux.shared;
                 UPDATE_IF_MOVED(objspace, any->as.string.as.heap.aux.shared);
-                VALUE new_root = any->as.string.as.heap.aux.shared;
-                rb_str_update_shared_ary(obj, old_root, new_root);
             }
 
             /* If, after move the string is not embedded, and can fit in the
@@ -13134,6 +13158,39 @@ gc_compact(VALUE self)
 #endif
 
 #if GC_CAN_COMPILE_COMPACTION
+
+struct desired_compaction_pages_i_data {
+    rb_objspace_t *objspace;
+    size_t required_slots[SIZE_POOL_COUNT];
+};
+
+static int
+desired_compaction_pages_i(struct heap_page *page, void *data)
+{
+    struct desired_compaction_pages_i_data *tdata = data;
+    rb_objspace_t *objspace = tdata->objspace;
+    VALUE vstart = (VALUE)page->start;
+    VALUE vend = vstart + (VALUE)(page->total_slots * page->size_pool->slot_size);
+
+
+    for (VALUE v = vstart; v != vend; v += page->size_pool->slot_size) {
+        /* skip T_NONEs; they won't be moved */
+        void *poisoned = asan_unpoison_object_temporary(v);
+        if (BUILTIN_TYPE(v) == T_NONE) {
+            if (poisoned) {
+                asan_poison_object(v);
+            }
+            continue;
+        }
+
+        rb_size_pool_t *dest_pool = gc_compact_destination_pool(objspace, page->size_pool, v);
+        size_t dest_pool_idx = dest_pool - size_pools;
+        tdata->required_slots[dest_pool_idx]++;
+    }
+
+    return 0;
+}
+
 static VALUE
 gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE double_heap, VALUE expand_heap, VALUE toward_empty)
 {
@@ -13151,18 +13208,55 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
         gc_rest(objspace);
 
         /* if both double_heap and expand_heap are set, expand_heap takes precedence */
-        if (RTEST(double_heap) || RTEST(expand_heap)) {
+        if (RTEST(expand_heap)) {
+            struct desired_compaction_pages_i_data desired_compaction = {
+                .objspace = objspace,
+                .required_slots = {0},
+            };
+            /* Work out how many objects want to be in each size pool, taking account of moves */
+            objspace_each_pages(objspace, desired_compaction_pages_i, &desired_compaction, TRUE);
+
+            /* Find out which pool has the most pages */
+            size_t max_existing_pages = 0;
+            for(int i = 0; i < SIZE_POOL_COUNT; i++) {
+                rb_size_pool_t *size_pool = &size_pools[i];
+                rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
+                max_existing_pages = MAX(max_existing_pages, heap->total_pages);
+            }
+            /* Add pages to each size pool so that compaction is guaranteed to move every object */
             for (int i = 0; i < SIZE_POOL_COUNT; i++) {
                 rb_size_pool_t *size_pool = &size_pools[i];
                 rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
 
-                size_t minimum_pages = 0;
-                if (RTEST(expand_heap)) {
-                    minimum_pages = minimum_pages_for_size_pool(objspace, size_pool);
-                }
+                size_t pages_to_add = 0;
+                /*
+                 * Step 1: Make sure every pool has the same number of pages, by adding empty pages
+                 * to smaller pools. This is required to make sure the compact cursor can advance
+                 * through all of the pools in `gc_sweep_compact` without hitting the "sweep &
+                 * compact cursors met" condition on some pools before fully compacting others
+                 */
+                pages_to_add += max_existing_pages - heap->total_pages;
+                /*
+                 * Step 2: Now add additional free pages to each size pool sufficient to hold all objects
+                 * that want to be in that size pool, whether moved into it or moved within it
+                 */
+                pages_to_add += slots_to_pages_for_size_pool(objspace, size_pool, desired_compaction.required_slots[i]);
+                /*
+                 * Step 3: Add two more pages so that the compact & sweep cursors will meet _after_ all objects
+                 * have been moved, and not on the last iteration of the `gc_sweep_compact` loop
+                 */
+                pages_to_add += 2;
 
-                heap_add_pages(objspace, size_pool, heap, MAX(minimum_pages, heap->total_pages));
+                heap_add_pages(objspace, size_pool, heap, pages_to_add);
             }
+        }
+        else if (RTEST(double_heap)) {
+            for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+                rb_size_pool_t *size_pool = &size_pools[i];
+                rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
+                heap_add_pages(objspace, size_pool, heap, heap->total_pages);
+            }
+
         }
 
         if (RTEST(toward_empty)) {
@@ -15434,7 +15528,7 @@ gc_profile_record_get(VALUE _)
         gc_profile_record *record = &objspace->profile.records[i];
 
         prof = rb_hash_new();
-        rb_hash_aset(prof, ID2SYM(rb_intern("GC_FLAGS")), gc_info_decode(0, rb_hash_new(), record->flags));
+        rb_hash_aset(prof, ID2SYM(rb_intern("GC_FLAGS")), gc_info_decode(objspace, rb_hash_new(), record->flags));
         rb_hash_aset(prof, ID2SYM(rb_intern("GC_TIME")), DBL2NUM(record->gc_time));
         rb_hash_aset(prof, ID2SYM(rb_intern("GC_INVOKE_TIME")), DBL2NUM(record->gc_invoke_time));
         rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_USE_SIZE")), SIZET2NUM(record->heap_use_size));

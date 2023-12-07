@@ -603,6 +603,10 @@ class TestParse < Test::Unit::TestCase
     assert_equal(' ^~~~~'"\n", e.message.lines.last)
     e = assert_syntax_error('"\M-\U0000"', 'Invalid escape character syntax')
     assert_equal(' ^~~~~'"\n", e.message.lines.last)
+
+    e = assert_syntax_error(%["\\C-\u3042"], 'Invalid escape character syntax')
+    assert_match(/^\s \^(?# \\ ) ~(?# C ) ~(?# - ) ~+(?# U+3042 )$/x, e.message.lines.last)
+    assert_not_include(e.message, "invalid multibyte char")
   end
 
   def test_question
@@ -1060,20 +1064,20 @@ x = __ENCODING__
   end
 
   def test_named_capture_in_block
-    [
+    all_assertions_foreach(nil,
       '(/(?<a>.*)/)',
       '(;/(?<a>.*)/)',
       '(%s();/(?<a>.*)/)',
       '(%w();/(?<a>.*)/)',
       '(1; (2; 3; (4; /(?<a>.*)/)))',
       '(1+1; /(?<a>.*)/)',
-    ].each do |code|
+      '/#{""}(?<a>.*)/',
+    ) do |code, pass|
       token = Random.bytes(4).unpack1("H*")
-      begin
-        $VERBOSE, verbose_bak = nil, $VERBOSE
+      if pass
         assert_equal(token, eval("#{code} =~ #{token.dump}; a"))
-      ensure
-        $VERBOSE = verbose_bak
+      else
+        assert_nil(eval("#{code} =~ #{token.dump}; defined?(a)"), code)
       end
     end
   end
