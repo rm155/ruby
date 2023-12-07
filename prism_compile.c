@@ -1757,10 +1757,16 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         return;
       }
       case PM_ARGUMENTS_NODE: {
+        // These are ArgumentsNodes that are not compiled directly by their
+        // parent call nodes, used in the cases of NextNodes, ReturnNodes
+        // and BreakNodes
         pm_arguments_node_t *arguments_node = (pm_arguments_node_t *) node;
         pm_node_list_t node_list = arguments_node->arguments;
         for (size_t index = 0; index < node_list.size; index++) {
             PM_COMPILE(node_list.nodes[index]);
+        }
+        if (node_list.size > 1) {
+            ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(node_list.size));
         }
         return;
       }
@@ -2678,6 +2684,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       case PM_FOR_NODE: {
         pm_for_node_t *for_node = (pm_for_node_t *)node;
 
+        ISEQ_COMPILE_DATA(iseq)->catch_except_p = true;
+
         const rb_iseq_t *child_iseq;
         const rb_iseq_t *prevblock = ISEQ_COMPILE_DATA(iseq)->current_block;
 
@@ -2700,15 +2708,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         ISEQ_COMPILE_DATA(iseq)->current_block = child_iseq;
         ADD_SEND_WITH_BLOCK(ret, &dummy_line_node, idEach, INT2FIX(0), child_iseq);
 
-        INSN *iobj;
-        LINK_ELEMENT *last_elem = LAST_ELEMENT(ret);
-        iobj = IS_INSN(last_elem) ? (INSN *)last_elem : (INSN *)get_prev_insn((INSN*)last_elem);
-        while (INSN_OF(iobj) != BIN(send) &&
-                INSN_OF(iobj) != BIN(invokesuper)) {
-            iobj = (INSN *)get_prev_insn(iobj);
-        }
-        ELEM_INSERT_NEXT(&iobj->link, (LINK_ELEMENT*)retry_end_l);
-
+        ADD_LABEL(ret, retry_end_l);
         PM_POP_IF_POPPED;
 
         ISEQ_COMPILE_DATA(iseq)->current_block = prevblock;
@@ -3584,7 +3584,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             ADD_ADJUST(ret, &dummy_line_node, ISEQ_COMPILE_DATA(iseq)->start_label);
 
             if (next_node->arguments) {
-                PM_COMPILE((pm_node_t *)next_node->arguments);
+                PM_COMPILE_NOT_POPPED((pm_node_t *)next_node->arguments);
             }
             else {
                 PM_PUTNIL;
@@ -3624,7 +3624,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             }
             if (ip != 0) {
                 if (next_node->arguments) {
-                    PM_COMPILE((pm_node_t *)next_node->arguments);
+                    PM_COMPILE_NOT_POPPED((pm_node_t *)next_node->arguments);
                 }
                 else {
                     PM_PUTNIL;
@@ -4327,6 +4327,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             ISEQ_COMPILE_DATA(iseq)->last_line = body->location.code_location.end_pos.lineno;
 
             /* wide range catch handler must put at last */
+            ISEQ_COMPILE_DATA(iseq)->catch_except_p = true;
             ADD_CATCH_ENTRY(CATCH_TYPE_REDO, start, end, NULL, start);
             ADD_CATCH_ENTRY(CATCH_TYPE_NEXT, start, end, NULL, end);
             break;
