@@ -3659,6 +3659,8 @@ newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace
     return newobj_slowpath(klass, flags, objspace, cr, FALSE, size_pool_idx, borrowing);
 }
 
+static inline int gc_mark_set(rb_objspace_t *objspace, VALUE obj);
+
 static inline VALUE
 newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t alloc_size)
 {
@@ -3705,6 +3707,10 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
 	if (klass && !rb_special_const_p(klass) && BUILTIN_TYPE(klass) == T_CLASS) {
 	    rb_register_new_external_reference(objspace, klass);
 	}
+    }
+    
+    if (borrowing && is_incremental_marking(objspace)) {
+	gc_mark_set(objspace, obj);
     }
     return obj;
 }
