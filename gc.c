@@ -8388,7 +8388,7 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
 
     if (using_local_limits(objspace) && !in_marking_range(objspace, obj)) {
-	if (LIKELY(during_gc)) {
+	if (LIKELY(during_gc) && is_full_marking(objspace)) {
 	    check_not_tnone(obj);
 	    mark_in_external_reference_tbl(objspace, obj);
 	}
@@ -10142,7 +10142,7 @@ gc_marks_finish(rb_objspace_t *objspace)
 
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace);
-    if (using_local_limits(objspace)) update_shared_object_references(objspace);
+    if (using_local_limits(objspace) && is_full_marking(objspace)) update_shared_object_references(objspace);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
