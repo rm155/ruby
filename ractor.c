@@ -3173,12 +3173,6 @@ rb_ractor_make_shareable(VALUE obj)
 }
 
 VALUE
-rb_ractor_copy_with_alloc_target(VALUE obj, rb_ractor_t *r)
-{
-    return rb_run_with_redirected_allocation(r, ractor_copy, obj);
-}
-
-VALUE
 rb_ractor_make_shareable_copy(VALUE obj)
 {
     VALUE copy = ractor_copy(obj);
