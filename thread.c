@@ -974,10 +974,10 @@ thread_create_ractor_given_redirected_allocation(VALUE args)
     VALUE th;
     VALUE allocated_thread = rb_thread_alloc_for_ractor(rb_cThread, p->g);
     th = thread_create_core(allocated_thread, p);
-    return th;
+    return Qnil;
 }
 
-VALUE
+void
 rb_thread_create_ractor(rb_ractor_t *r, VALUE args, VALUE proc)
 {
     struct thread_create_params params = {
@@ -987,7 +987,7 @@ rb_thread_create_ractor(rb_ractor_t *r, VALUE args, VALUE proc)
         .proc = proc,
     };
 
-    return rb_run_with_redirected_allocation(r, thread_create_ractor_given_redirected_allocation, (VALUE)&params);
+    rb_run_with_redirected_allocation(r, thread_create_ractor_given_redirected_allocation, (VALUE)&params);
 }
 
 

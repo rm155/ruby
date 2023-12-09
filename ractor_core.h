@@ -258,7 +258,7 @@ void rb_create_ractor_local_objspace(rb_ractor_t *ractor);
 
 void rb_ractor_postponed_job_initialize(rb_ractor_t *r);
 
-VALUE rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc); // defined in thread.c
+void rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc); // defined in thread.c
 
 int rb_ractor_living_thread_num(const rb_ractor_t *);
 VALUE rb_ractor_thread_list(void);

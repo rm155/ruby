@@ -3351,18 +3351,23 @@ set_current_alloc_target_ractor(rb_ractor_t *target_ractor)
     return old_target_ractor;
 }
 
-struct borrowing_state_args {
+struct borrowing_data_args {
     rb_ractor_t *borrower;
     rb_ractor_t *target_ractor;
     rb_ractor_t *old_target;
+    VALUE (*func)(VALUE);
+    VALUE func_args;
 };
 
 static VALUE
 borrowing_enter(VALUE args)
 {
-    struct borrowing_state_args *borrowing_info = (struct borrowing_state_args *)args;
+    struct borrowing_data_args *borrowing_data = (struct borrowing_data_args *)args;
 
-    if (borrowing_info->borrower->borrower_mode_levels == 0) {
+    rb_ractor_t *borrower = borrowing_data->borrower;
+    rb_ractor_t *target_ractor = borrowing_data->target_ractor;
+
+    if (borrower->borrower_mode_levels == 0) {
 	RB_VM_LOCK_ENTER();
 	{
 	    rb_vm_t *vm = GET_VM();
@@ -3371,39 +3376,42 @@ borrowing_enter(VALUE args)
 	}
 	RB_VM_LOCK_LEAVE();
     }
-    borrowing_info->borrower->borrower_mode_levels++;
+    borrower->borrower_mode_levels++;
 
-    if (borrowing_info->target_ractor != NULL && borrowing_info->target_ractor != borrowing_info->borrower) {
+    if (target_ractor != NULL && target_ractor != borrower) {
 	RB_VM_LOCK_ENTER();
 	{
-	    borrowing_info->target_ractor->borrowing_sync.borrower_count++;
+	    target_ractor->borrowing_sync.borrower_count++;
 	}
 	RB_VM_LOCK_LEAVE();
     }
 
-    borrowing_info->old_target = set_current_alloc_target_ractor(borrowing_info->target_ractor);
+    borrowing_data->old_target = set_current_alloc_target_ractor(target_ractor);
     return Qnil;
 }
 
 static VALUE
 borrowing_exit(VALUE args)
 {
-    struct borrowing_state_args *borrowing_info = (struct borrowing_state_args *)args;
+    struct borrowing_data_args *borrowing_data = (struct borrowing_data_args *)args;
 
-    set_current_alloc_target_ractor(borrowing_info->old_target);
-    if (borrowing_info->target_ractor != NULL && borrowing_info->target_ractor != borrowing_info->borrower) {
+    rb_ractor_t *borrower = borrowing_data->borrower;
+    rb_ractor_t *target_ractor = borrowing_data->target_ractor;
+    VM_ASSERT(!target_ractor || rb_current_allocating_ractor() == target_ractor);
+    set_current_alloc_target_ractor(borrowing_data->old_target);
+    if (target_ractor != NULL && target_ractor != borrower) {
 	RB_VM_LOCK_ENTER();
 	{
-	    borrowing_info->target_ractor->borrowing_sync.borrower_count--;
-	    if (borrowing_info->target_ractor->borrowing_sync.borrower_count == 0) {
-		rb_native_cond_signal(&borrowing_info->target_ractor->borrowing_sync.no_borrowers);
+	    target_ractor->borrowing_sync.borrower_count--;
+	    if (target_ractor->borrowing_sync.borrower_count == 0) {
+		rb_native_cond_signal(&target_ractor->borrowing_sync.no_borrowers);
 	    }
 	}
 	RB_VM_LOCK_LEAVE();
     }
 
-    borrowing_info->borrower->borrower_mode_levels--;
-    if (borrowing_info->borrower->borrower_mode_levels == 0) {
+    borrower->borrower_mode_levels--;
+    if (borrower->borrower_mode_levels == 0) {
 	RB_VM_LOCK_ENTER();
 	{
 	    rb_vm_t *vm = GET_VM();
@@ -3417,16 +3425,32 @@ borrowing_exit(VALUE args)
     return Qnil;
 }
 
-VALUE
-rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE args)
+static VALUE
+run_redirected_func(VALUE args)
 {
-    struct borrowing_state_args borrowing_info = {
+    struct borrowing_data_args *borrowing_data = (struct borrowing_data_args *)args;
+    VALUE result = borrowing_data->func(borrowing_data->func_args);
+    rb_objspace_t *borrower_objspace = borrowing_data->borrower->local_objspace;
+    if (!SPECIAL_CONST_P(result) && GET_OBJSPACE_OF_VALUE(result) != borrower_objspace) {
+	VM_ASSERT(FL_TEST(result, FL_SHAREABLE));
+	rb_register_new_external_reference(borrower_objspace, result);
+    }
+    return result;
+}
+
+VALUE
+rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args)
+{
+    struct borrowing_data_args borrowing_data = {
 	.borrower = GET_RACTOR(),
 	.target_ractor = target_ractor,
 	.old_target = NULL,
+	.func = func,
+	.func_args = func_args,
     };
-    borrowing_enter((VALUE)&borrowing_info);
-    return rb_ensure(func, args, borrowing_exit, (VALUE)&borrowing_info);
+    VALUE bd_args = (VALUE)&borrowing_data;
+    borrowing_enter(bd_args);
+    return rb_ensure(run_redirected_func, bd_args, borrowing_exit, bd_args);
 }
 
 bool

@@ -250,10 +250,6 @@ class_alloc_given_redirected_allocation(VALUE args)
     VALUE class_obj = (VALUE)obj;
     FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
 
-    rb_ractor_t *cr = GET_RACTOR();
-    if (cr != GET_VM()->ractor.main_ractor) {
-	rb_register_new_external_reference(cr->local_objspace, class_obj);
-    }
     return class_obj;
 }
 
