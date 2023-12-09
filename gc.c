@@ -3660,6 +3660,8 @@ newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace
 }
 
 static inline int gc_mark_set(rb_objspace_t *objspace, VALUE obj);
+static void gc_grey(rb_objspace_t *objspace, VALUE obj);
+static void gc_aging(VALUE obj);
 
 static inline VALUE
 newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t alloc_size)
@@ -3710,7 +3712,10 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
     }
     
     if (borrowing && is_incremental_marking(objspace)) {
-	gc_mark_set(objspace, obj);
+	if (gc_mark_set(objspace, obj)) {
+    	    gc_aging(obj);
+    	    gc_grey(objspace, obj);
+	}
     }
     return obj;
 }
@@ -10795,6 +10800,10 @@ NOINLINE(static void gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_
 static void
 gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
 {
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(b) == objspace);
+
+    if (GET_OBJSPACE_OF_VALUE(a) != objspace) return;
+
     if (RGENGC_CHECK_MODE) {
         if (!RVALUE_OLD_P(a)) rb_bug("gc_writebarrier_generational: %s is not an old object.", obj_info(a));
         if ( RVALUE_OLD_P(b)) rb_bug("gc_writebarrier_generational: %s is an old object.", obj_info(b));
@@ -10818,6 +10827,7 @@ gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
 static void
 gc_mark_from(rb_objspace_t *objspace, VALUE obj, VALUE parent)
 {
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
     gc_mark_set_parent(objspace, parent);
     rgengc_check_relation(objspace, obj);
     if (gc_mark_set(objspace, obj) == FALSE) return;
@@ -10832,32 +10842,58 @@ gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t *objspace)
 {
     gc_report(2, objspace, "gc_writebarrier_incremental: [LG] %p -> %s\n", (void *)a, obj_info(b));
 
-    if (RVALUE_BLACK_P(a)) {
-        if (RVALUE_WHITE_P(b)) {
-            if (!RVALUE_WB_UNPROTECTED(a)) {
-                gc_report(2, objspace, "gc_writebarrier_incremental: [IN] %p -> %s\n", (void *)a, obj_info(b));
-                gc_mark_from(objspace, b, a);
-            }
-        }
-        else if (RVALUE_OLD_P(a) && !RVALUE_OLD_P(b)) {
-            rgengc_remember(objspace, a);
-        }
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(b) == objspace);
+    VM_ASSERT(is_incremental_marking(objspace));
 
-        if (UNLIKELY(objspace->flags.during_compacting)) {
-            MARK_IN_BITMAP(GET_HEAP_PINNED_BITS(b), b);
+    if (LIKELY(GET_OBJSPACE_OF_VALUE(a) == objspace)) {
+	if (RVALUE_BLACK_P(a)) {
+	    if (RVALUE_WHITE_P(b)) {
+		if (!RVALUE_WB_UNPROTECTED(a)) {
+		    gc_report(2, objspace, "gc_writebarrier_incremental: [IN] %p -> %s\n", (void *)a, obj_info(b));
+		    gc_mark_from(objspace, b, a);
+		}
+	    }
+	    else if (RVALUE_OLD_P(a) && !RVALUE_OLD_P(b)) {
+		rgengc_remember(objspace, a);
+	    }
+
+	    if (UNLIKELY(objspace->flags.during_compacting)) {
+		MARK_IN_BITMAP(GET_HEAP_PINNED_BITS(b), b);
+	    }
+	}
+    }
+    else {
+	if (RVALUE_WHITE_P(b)) {
+	    if (gc_mark_set(objspace, b)) {
+		gc_aging(b);
+		gc_grey(objspace, b);
+	    }
+	}
+    }
+}
+
+static void
+gc_writebarrier_safe_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
+{
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(b) == objspace);
+
+    if (is_incremental_marking(objspace)) {
+	gc_writebarrier_incremental(a, b, objspace);
+    }
+    else {
+        if (!RVALUE_OLD_P(a) || RVALUE_OLD_P(b)) {
+            // do nothing
+        }
+        else {
+            gc_writebarrier_generational(a, b, objspace);
         }
     }
 }
 
-void
-rb_gc_writebarrier(VALUE a, VALUE b)
+static void
+gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
 {
-    rb_objspace_t *objspace = &rb_objspace;
-
-    if (RGENGC_CHECK_MODE) {
-        if (SPECIAL_CONST_P(a)) rb_bug("rb_gc_writebarrier: a is special const: %"PRIxVALUE, a);
-        if (SPECIAL_CONST_P(b)) rb_bug("rb_gc_writebarrier: b is special const: %"PRIxVALUE, b);
-    }
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(b) == objspace);
 
   retry:
     if (!is_incremental_marking(objspace)) {
@@ -10870,7 +10906,6 @@ rb_gc_writebarrier(VALUE a, VALUE b)
     }
     else {
         bool retry = false;
-        /* slow path */
         RB_VM_LOCK_ENTER_NO_BARRIER();
         {
             if (is_incremental_marking(objspace)) {
@@ -10885,6 +10920,25 @@ rb_gc_writebarrier(VALUE a, VALUE b)
         if (retry) goto retry;
     }
     return;
+}
+
+void
+rb_gc_writebarrier(VALUE a, VALUE b)
+{
+    if (RGENGC_CHECK_MODE) {
+        if (SPECIAL_CONST_P(a)) rb_bug("rb_gc_writebarrier: a is special const: %"PRIxVALUE, a);
+        if (SPECIAL_CONST_P(b)) rb_bug("rb_gc_writebarrier: b is special const: %"PRIxVALUE, b);
+    }
+    
+    rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
+    rb_objspace_t *b_objspace = GET_OBJSPACE_OF_VALUE(b);
+    if (LIKELY(b_objspace == GET_RACTOR()->local_objspace || b_objspace == allocating_ractor->local_objspace)) {
+	gc_writebarrier_safe_objspace(a, b, b_objspace);
+    }
+    else {
+	VM_ASSERT(FL_TEST(b, FL_SHAREABLE)); //TODO: Assert that it is actually shared, not just shareable
+	gc_writebarrier_parallel_objspace(a, b, b_objspace);
+    }
 }
 
 void
