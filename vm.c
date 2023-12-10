@@ -3027,6 +3027,7 @@ ruby_vm_destruct(rb_vm_t *vm)
             st_free_table(vm->static_ext_inits);
             st_free_table(vm->ensure_rollback_table);
 
+            rb_vm_postponed_job_free();
             st_free_table(vm->defined_module_hash);
 
             rb_id_table_free(vm->constant_cache);
@@ -3084,7 +3085,6 @@ ruby_vm_destruct(rb_vm_t *vm)
 }
 
 size_t rb_vm_memsize_waiting_fds(struct ccan_list_head *waiting_fds); // thread.c
-size_t rb_vm_memsize_postponed_job_buffer(void); // vm_trace.c
 size_t rb_vm_memsize_workqueue(struct ccan_list_head *workqueue); // vm_trace.c
 
 // Used for VM memsize reporting. Returns the size of the at_exit list by
@@ -3150,7 +3150,7 @@ vm_memsize(const void *ptr)
         rb_st_memsize(vm->loaded_features_index) +
         rb_st_memsize(vm->loading_table) +
         rb_st_memsize(vm->ensure_rollback_table) +
-        rb_vm_memsize_postponed_job_buffer() +
+        rb_vm_memsize_postponed_job_queue() +
         rb_vm_memsize_workqueue(&vm->workqueue) +
         rb_st_memsize(vm->defined_module_hash) +
         vm_memsize_at_exit_list(vm->at_exit) +
@@ -3453,6 +3453,10 @@ thread_free(void *ptr)
     }
     if (th->keeping_mutexes != NULL) {
         rb_bug("thread_free: keeping_mutexes must be NULL (%p:%p)", (void *)th, (void *)th->keeping_mutexes);
+    }
+
+    if (th->specific_storage) {
+        ruby_xfree(th->specific_storage);
     }
 
     rb_threadptr_root_fiber_release(th);
@@ -4207,6 +4211,9 @@ Init_BareVM(void)
     MEMZERO(th, rb_thread_t, 1);
     vm_init2(vm);
 
+    rb_vm_postponed_job_queue_init(vm);
+    ruby_current_vm_ptr = vm;
+
     vm->global_space = rb_global_space_init();
     vm->objspace = ruby_single_main_objspace = rb_objspace_alloc();
 
@@ -4215,7 +4222,6 @@ Init_BareVM(void)
     vm->global_gc_underway = false;
     rb_native_cond_initialize(&vm->global_gc_finished);
 
-    ruby_current_vm_ptr = vm;
     vm->negative_cme_table = rb_id_table_create(16);
     vm->overloaded_cme_table = st_init_numtable();
     vm->constant_cache = rb_id_table_create(0);

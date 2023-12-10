@@ -407,7 +407,7 @@ module Prism
         ArgumentsNode(0, [
           KeywordHashNode(
             [AssocNode(
-              SymbolNode(nil, Location(), Location(), "foo"),
+              SymbolNode(0, nil, Location(), Location(), "foo"),
               expression("bar"),
               nil
             )]
@@ -585,16 +585,16 @@ module Prism
       expected = BeginNode(
         Location(),
         StatementsNode([
-          LocalVariableWriteNode(:_1, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_2, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_3, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_4, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_5, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_6, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_7, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_8, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_9, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location()),
-          LocalVariableWriteNode(:_10, 0, Location(), SymbolNode(Location(), Location(), nil, "a"), Location())
+          LocalVariableWriteNode(:_1, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_2, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_3, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_4, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_5, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_6, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_7, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_8, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_9, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location()),
+          LocalVariableWriteNode(:_10, 0, Location(), SymbolNode(0, Location(), Location(), nil, "a"), Location())
         ]),
         nil,
         nil,
@@ -608,15 +608,15 @@ module Prism
       end
       RUBY
       assert_errors expected, source, [
-        ["_1 is reserved for a numbered parameter", 8..10],
-        ["_2 is reserved for a numbered parameter", 14..16],
-        ["_3 is reserved for a numbered parameter", 20..22],
-        ["_4 is reserved for a numbered parameter", 26..28],
-        ["_5 is reserved for a numbered parameter", 32..34],
-        ["_6 is reserved for a numbered parameter", 40..42],
-        ["_7 is reserved for a numbered parameter", 46..48],
-        ["_8 is reserved for a numbered parameter", 52..54],
-        ["_9 is reserved for a numbered parameter", 58..60],
+        ["_1 is reserved for numbered parameters", 8..10],
+        ["_2 is reserved for numbered parameters", 14..16],
+        ["_3 is reserved for numbered parameters", 20..22],
+        ["_4 is reserved for numbered parameters", 26..28],
+        ["_5 is reserved for numbered parameters", 32..34],
+        ["_6 is reserved for numbered parameters", 40..42],
+        ["_7 is reserved for numbered parameters", 46..48],
+        ["_8 is reserved for numbered parameters", 52..54],
+        ["_9 is reserved for numbered parameters", 58..60],
       ]
     end
 
@@ -995,7 +995,7 @@ module Prism
 
     def test_case_without_when_clauses_errors_on_else_clause
       expected = CaseMatchNode(
-        SymbolNode(Location(), Location(), nil, "a"),
+        SymbolNode(0, Location(), Location(), nil, "a"),
         [],
         ElseNode(Location(), nil, Location()),
         Location(),
@@ -1009,7 +1009,7 @@ module Prism
 
     def test_case_without_clauses
       expected = CaseNode(
-        SymbolNode(Location(), Location(), nil, "a"),
+        SymbolNode(0, Location(), Location(), nil, "a"),
         [],
         nil,
         Location(),
@@ -1350,18 +1350,18 @@ module Prism
 
     def test_writing_numbered_parameter
       assert_errors expression("-> { _1 = 0 }"), "-> { _1 = 0 }", [
-        ["_1 is reserved for a numbered parameter", 5..7]
+        ["_1 is reserved for numbered parameters", 5..7]
       ]
     end
 
     def test_targeting_numbered_parameter
       assert_errors expression("-> { _1, = 0 }"), "-> { _1, = 0 }", [
-        ["_1 is reserved for a numbered parameter", 5..7]
+        ["_1 is reserved for numbered parameters", 5..7]
       ]
     end
 
     def test_defining_numbered_parameter
-      error_messages = ["_1 is reserved for a numbered parameter"]
+      error_messages = ["_1 is reserved for numbered parameters"]
 
       assert_error_messages "def _1; end", error_messages
       assert_error_messages "def self._1; end", error_messages
@@ -1416,16 +1416,16 @@ module Prism
     def test_numbered_parameters_in_block_arguments
       source = "foo { |_1| }"
       assert_errors expression(source), source, [
-        ["_1 is reserved for a numbered parameter", 7..9],
+        ["_1 is reserved for numbered parameters", 7..9],
       ]
     end
 
     def test_conditional_predicate_closed
       source = "if 0 0; elsif 0 0; end\nunless 0 0; end"
       assert_errors expression(source), source, [
-        ["expected `then` or `;` or '\n" + "'", 5..6],
-        ["expected `then` or `;` or '\n" + "'", 16..17],
-        ["expected `then` or `;` or '\n" + "'", 32..33],
+        ["expected `then` or `;` or '\\n" + "'", 5..6],
+        ["expected `then` or `;` or '\\n" + "'", 16..17],
+        ["expected `then` or `;` or '\\n" + "'", 32..33],
       ]
     end
 
@@ -1463,7 +1463,7 @@ module Prism
     def test_semicolon_after_inheritance_operator
       source = "class Foo < Bar end"
       assert_errors expression(source), source, [
-        ["unexpected `end`, expecting ';' or '\n'", 15..15],
+        ["unexpected `end`, expecting ';' or '\\n'", 15..15],
       ]
     end
 
@@ -1502,7 +1502,7 @@ module Prism
         /(?<_1>)/ =~ a
       RUBY
 
-      message = "_1 is reserved for a numbered parameter"
+      message = "_1 is reserved for numbered parameters"
       assert_errors expression(source), source, [
         [message, 5..7],
         [message, 13..15],
