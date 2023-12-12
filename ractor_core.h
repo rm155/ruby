@@ -219,10 +219,6 @@ struct rb_ractor_struct {
 	rb_nativethread_cond_t borrowing_allowed_cond;
     } borrowing_sync;
 
-    /* postponed_job (async-signal-safe, NOT thread-safe) */
-    struct rb_postponed_job_struct *postponed_job_buffer;
-    rb_atomic_t postponed_job_index;
-
     // gc.c rb_objspace_reachable_objects_from
     struct gc_mark_func_data_struct {
         void *data;
@@ -255,8 +251,6 @@ void rb_ractor_send_parameters(rb_execution_context_t *ec, rb_ractor_t *g, VALUE
 
 void rb_assign_main_ractor_objspace(rb_ractor_t *ractor);
 void rb_create_ractor_local_objspace(rb_ractor_t *ractor);
-
-void rb_ractor_postponed_job_initialize(rb_ractor_t *r);
 
 void rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc); // defined in thread.c
 

@@ -2891,7 +2891,6 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 	rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_cache);
 	rb_gc_ractor_newobj_cache_clear(&closing_ractor->newobj_borrowing_cache);
 	merge_deferred_heap_pages(receiving_objspace, closing_objspace);
-	rb_transfer_postponed_jobs(receiving_ractor, closing_ractor);
 	transfer_zombie_threads(receiving_objspace, closing_objspace);
 	update_objspace_counts(receiving_objspace, closing_objspace);
 
@@ -5547,8 +5546,7 @@ finalize_deferred(rb_objspace_t *objspace)
 static void
 gc_finalize_deferred(void *dmy)
 {
-    rb_objspace_link_t *os_link = dmy;
-    rb_objspace_t *objspace = os_link->linked_objspace;
+    rb_objspace_t *objspace = dmy;
     if (ATOMIC_EXCHANGE(finalizing, 1)) return;
 
     finalize_deferred(objspace);
@@ -11353,7 +11351,7 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason, bool need_f
 		rb_objspace_t *os;
 		ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 		    objspace->global_gc_current_target = os;
-		    gc_finalize_deferred(os->self_link);
+		    gc_finalize_deferred(os);
 		}
 		objspace->global_gc_current_target = NULL;
 	    }
@@ -11388,7 +11386,7 @@ garbage_collect_local(rb_objspace_t *objspace, unsigned int reason, bool need_fi
 	ret = gc_start(objspace, reason);
 
 	if (need_finalize_deferred) {
-	    gc_finalize_deferred(objspace->self_link);
+	    gc_finalize_deferred(objspace);
 	}
     }
     LOCAL_GC_END(objspace);
@@ -11536,10 +11534,6 @@ static void
 gc_update_objspace_links(rb_vm_t *vm)
 {
     rb_update_all_end_proc_objspace_links();
-    rb_ractor_t *r = NULL;
-    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
-	rb_update_postponed_job_objspace_links(r);
-    }
     gc_delete_outdated_objspace_links();
 }
 

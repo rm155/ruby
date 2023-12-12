@@ -2225,9 +2225,6 @@ extern void rb_resume_coverages(void);
 extern void rb_suspend_coverages(void);
 
 void rb_update_all_end_proc_objspace_links(void);
-void rb_update_postponed_job_objspace_links(rb_ractor_t *r);
-
-void rb_transfer_postponed_jobs(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);
 
 void rb_postponed_job_flush(rb_vm_t *vm);
 

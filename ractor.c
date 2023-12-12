@@ -2157,8 +2157,6 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 #endif
 
     FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
-
-    rb_ractor_postponed_job_initialize(r);
 }
 
 void
