@@ -78,8 +78,8 @@ pm_iseq_new_with_opt(pm_scope_node_t *scope_node, pm_parser_t *parser, VALUE nam
 static VALUE
 parse_integer(const pm_integer_node_t *node)
 {
-    const char *start = (const char *) node->base.location.start;
-    const char *end = (const char *) node->base.location.end;
+    char *start = (char *) node->base.location.start;
+    char *end = (char *) node->base.location.end;
 
     size_t length = end - start;
     int base = -10;
@@ -101,7 +101,7 @@ parse_integer(const pm_integer_node_t *node)
         rb_bug("Unexpected integer base");
     }
 
-    return rb_int_parse_cstr(start, length, NULL, NULL, base, RB_INT_PARSE_DEFAULT);
+    return rb_int_parse_cstr(start, length, &end, NULL, base, RB_INT_PARSE_DEFAULT);
 }
 
 static VALUE
@@ -727,7 +727,7 @@ pm_lookup_local_index_any_scope(rb_iseq_t *iseq, pm_scope_node_t *scope_node, pm
         return pm_lookup_local_index_any_scope(iseq, scope_node->previous, constant_id);
     }
 
-    return scope_node->hidden_variable_count + (int)scope_node->index_lookup_table->num_entries - (int)local_index;
+    return scope_node->local_table_for_iseq_size - (int)local_index;
 }
 
 static int
@@ -735,13 +735,11 @@ pm_lookup_local_index(rb_iseq_t *iseq, pm_scope_node_t *scope_node, pm_constant_
 {
     st_data_t local_index;
 
-    int locals_size = (int) scope_node->locals.size;
-
     if (!st_lookup(scope_node->index_lookup_table, constant_id, &local_index)) {
         rb_bug("This local does not exist");
     }
 
-    return scope_node->hidden_variable_count + locals_size - (int)local_index;
+    return scope_node->local_table_for_iseq_size - (int)local_index;
 }
 
 static int
@@ -765,7 +763,7 @@ static ID
 pm_constant_id_lookup(pm_scope_node_t *scope_node, pm_constant_id_t constant_id)
 {
     if (constant_id < 1 || constant_id > scope_node->parser->constant_pool.size) {
-        rb_raise(rb_eArgError, "[PRISM] constant_id out of range: %u", (unsigned int)constant_id);
+        rb_bug("[PRISM] constant_id out of range: %u", (unsigned int)constant_id);
     }
     return scope_node->constants[constant_id - 1];
 }
@@ -993,16 +991,38 @@ pm_setup_args(pm_arguments_node_t *arguments_node, int *flags, struct rb_callinf
                       break;
                   }
                   else {
-                      *kw_arg = rb_xmalloc_mul_add(len, sizeof(VALUE), sizeof(struct rb_callinfo_kwarg));
-                      *flags = VM_CALL_KWARG;
-                      (*kw_arg)->keyword_len = (int) len;
+                    // We need to first figure out if all elements of the KeywordHashNode are AssocNodes
+                    // with static literal keys.
+                    bool all_keys_static_literals = PM_NODE_FLAG_P(keyword_arg, PM_KEYWORD_HASH_NODE_FLAGS_STATIC_KEYS);
 
-                      // TODO: Method callers like `foo(a => b)`
-                      for (size_t i = 0; i < len; i++) {
-                          pm_assoc_node_t *assoc = (pm_assoc_node_t *)keyword_arg->elements.nodes[i];
-                          (*kw_arg)->keywords[i] = pm_static_literal_value(assoc->key, scope_node, parser);
-                          PM_COMPILE_NOT_POPPED(assoc->value);
-                      }
+                    if (all_keys_static_literals) {
+                        // If they are all static literal keys then we can pass them as keyword arguments.
+                        *kw_arg = rb_xmalloc_mul_add(len, sizeof(VALUE), sizeof(struct rb_callinfo_kwarg));
+                        *flags = VM_CALL_KWARG;
+                        VALUE *keywords = (*kw_arg)->keywords;
+                        (*kw_arg)->references = 0;
+                        (*kw_arg)->keyword_len = (int)len;
+
+                        for (size_t i = 0; i < len; i++) {
+                            pm_assoc_node_t *assoc = (pm_assoc_node_t *)keyword_arg->elements.nodes[i];
+                            pm_node_t *key = assoc->key;
+                            keywords[i] = pm_static_literal_value(key, scope_node, parser);
+                            PM_COMPILE_NOT_POPPED(assoc->value);
+                        }
+                    } else {
+                        // If they aren't all static literal keys then we need to construct a new hash
+                        // and pass that as an argument.
+                        orig_argc++;
+                        *flags |= VM_CALL_KW_SPLAT | VM_CALL_KW_SPLAT_MUT;
+
+                        for (size_t i = 0; i < len; i++) {
+                            pm_assoc_node_t *assoc = (pm_assoc_node_t *)keyword_arg->elements.nodes[i];
+                            PM_COMPILE_NOT_POPPED(assoc->key);
+                            PM_COMPILE_NOT_POPPED(assoc->value);
+                        }
+
+                        ADD_INSN1(ret, &dummy_line_node, newhash, INT2FIX(len * 2));
+                    }
                   }
                   break;
               }
@@ -1360,7 +1380,8 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
     scope->body = NULL;
     scope->constants = NULL;
     scope->local_depth_offset = 0;
-    scope->hidden_variable_count = 0;
+    scope->local_table_for_iseq_size = 0;
+
     if (previous) {
         scope->constants = previous->constants;
         scope->local_depth_offset = previous->local_depth_offset;
@@ -1372,12 +1393,10 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
     switch (PM_NODE_TYPE(node)) {
         case PM_BLOCK_NODE: {
             pm_block_node_t *cast = (pm_block_node_t *) node;
-            if (cast->parameters != NULL && PM_NODE_TYPE_P(cast->parameters, PM_BLOCK_PARAMETERS_NODE)) {
-                scope->parameters = ((pm_block_parameters_node_t *) cast->parameters)->parameters;
-            }
             scope->body = cast->body;
             scope->locals = cast->locals;
             scope->local_depth_offset = 0;
+            scope->parameters = cast->parameters;
             break;
         }
         case PM_CLASS_NODE: {
@@ -1388,7 +1407,7 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         }
         case PM_DEF_NODE: {
             pm_def_node_t *cast = (pm_def_node_t *) node;
-            scope->parameters = cast->parameters;
+            scope->parameters = (pm_node_t *)cast->parameters;
             scope->body = cast->body;
             scope->locals = cast->locals;
             break;
@@ -1407,13 +1426,12 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
             RUBY_ASSERT(node->flags & PM_REGULAR_EXPRESSION_FLAGS_ONCE);
             scope->body = (pm_node_t *)node;
+            scope->local_depth_offset += 1;
             break;
         }
         case PM_LAMBDA_NODE: {
             pm_lambda_node_t *cast = (pm_lambda_node_t *) node;
-            if (cast->parameters != NULL && PM_NODE_TYPE_P(cast->parameters, PM_BLOCK_PARAMETERS_NODE)) {
-                scope->parameters = ((pm_block_parameters_node_t *) cast->parameters)->parameters;
-            }
+            scope->parameters = cast->parameters;
             scope->body = cast->body;
             scope->locals = cast->locals;
             break;
@@ -1465,7 +1483,7 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
     }
 }
 
-static void pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node, ID method_id);
+static void pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node, ID method_id, LABEL *start);
 
 void
 pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node,  NODE dummy_line_node, int lineno, bool in_condition, LABEL **lfinish, bool explicit_receiver)
@@ -1638,7 +1656,7 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *co
             if (PM_NODE_TYPE_P(call_node->receiver, PM_CALL_NODE)) {
                 ADD_INSNL(ret, &dummy_line_node, branchunless, lfinish[2]);
                 ID method_id = pm_constant_id_lookup(scope_node, call_node->name);
-                pm_compile_call(iseq, (const pm_call_node_t *)call_node->receiver, ret, src, popped, scope_node, method_id);
+                pm_compile_call(iseq, (const pm_call_node_t *)call_node->receiver, ret, src, popped, scope_node, method_id, NULL);
             }
             else {
                 ADD_INSNL(ret, &dummy_line_node, branchunless, lfinish[1]);
@@ -1652,7 +1670,7 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *co
             ADD_INSN3(ret, &dummy_line_node, defined, INT2FIX(DEFINED_METHOD), rb_id2sym(method_id), PUSH_VAL(DEFINED_METHOD));
         }
         else {
-            ADD_INSN(ret, &dummy_line_node, putself);
+            PM_PUTSELF;
             if (explicit_receiver) {
                 PM_DUP;
             }
@@ -1754,11 +1772,11 @@ pm_compile_defined_expr(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *con
 
     if (lfinish[1]) {
         ELEM_INSERT_NEXT(last, &new_insn_body(iseq, &dummy_line_node, BIN(putnil), 0)->link);
-        ADD_INSN(ret, &dummy_line_node, swap);
+        PM_SWAP;
         if (lfinish[2]) {
             ADD_LABEL(ret, lfinish[2]);
         }
-        ADD_INSN(ret, &dummy_line_node, pop);
+        PM_POP;
         ADD_LABEL(ret, lfinish[1]);
 
     }
@@ -1766,12 +1784,15 @@ pm_compile_defined_expr(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *con
 }
 
 static void
-pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node, ID method_id)
+pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node, ID method_id, LABEL *start)
 {
     pm_parser_t *parser = scope_node->parser;
     pm_newline_list_t newline_list = parser->newline_list;
     int lineno = (int)pm_newline_list_line_column(&newline_list, ((pm_node_t *)call_node)->location.start).line;
     NODE dummy_line_node = generate_dummy_line_node(lineno, lineno);
+    LABEL *end = NEW_LABEL(lineno);
+
+    pm_node_t *pm_node = (pm_node_t *)call_node;
 
     int flags = 0;
     struct rb_callinfo_kwarg *kw_arg = NULL;
@@ -1785,10 +1806,13 @@ pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *c
         pm_scope_node_init(call_node->block, &next_scope_node, scope_node, parser);
 
         block_iseq = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+        if (ISEQ_BODY(block_iseq)->catch_table) {
+            ADD_CATCH_ENTRY(CATCH_TYPE_BREAK, start, end, block_iseq, end);
+        }
         ISEQ_COMPILE_DATA(iseq)->current_block = block_iseq;
     }
     else {
-        if (((pm_node_t *)call_node)->flags & PM_CALL_NODE_FLAGS_VARIABLE_CALL) {
+        if (pm_node->flags & PM_CALL_NODE_FLAGS_VARIABLE_CALL) {
             flags |= VM_CALL_VCALL;
         }
 
@@ -1802,21 +1826,124 @@ pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *c
         }
     }
 
-    if (call_node->receiver == NULL) {
+    if (call_node->receiver == NULL || PM_NODE_TYPE_P(call_node->receiver, PM_SELF_NODE)) {
         flags |= VM_CALL_FCALL;
     }
 
-    if (rb_is_attrset_id(method_id)) {
+    if (pm_node->flags & PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE) {
         ADD_INSN1(ret, &dummy_line_node, setn, INT2FIX(orig_argc + 1));
-    }
-
-    ADD_SEND_R(ret, &dummy_line_node, method_id, INT2FIX(orig_argc), block_iseq, INT2FIX(flags), kw_arg);
-
-    if (rb_is_attrset_id(method_id)) {
+        ADD_SEND_R(ret, &dummy_line_node, method_id, INT2FIX(orig_argc), block_iseq, INT2FIX(flags), kw_arg);
         PM_POP;
     }
+    else {
+        ADD_SEND_R(ret, &dummy_line_node, method_id, INT2FIX(orig_argc), block_iseq, INT2FIX(flags), kw_arg);
+    }
+    ADD_LABEL(ret, end);
 
     PM_POP_IF_POPPED;
+}
+
+// This is exactly the same as add_ensure_iseq, except it compiled
+// the node as a Prism node, and not a CRuby node
+static void
+pm_add_ensure_iseq(LINK_ANCHOR *const ret, rb_iseq_t *iseq, int is_return, const uint8_t *src, pm_scope_node_t *scope_node)
+{
+    assert(can_add_ensure_iseq(iseq));
+
+    struct iseq_compile_data_ensure_node_stack *enlp =
+        ISEQ_COMPILE_DATA(iseq)->ensure_node_stack;
+    struct iseq_compile_data_ensure_node_stack *prev_enlp = enlp;
+    DECL_ANCHOR(ensure);
+
+    INIT_ANCHOR(ensure);
+    while (enlp) {
+        if (enlp->erange != NULL) {
+            DECL_ANCHOR(ensure_part);
+            LABEL *lstart = NEW_LABEL(0);
+            LABEL *lend = NEW_LABEL(0);
+            INIT_ANCHOR(ensure_part);
+
+            add_ensure_range(iseq, enlp->erange, lstart, lend);
+
+            ISEQ_COMPILE_DATA(iseq)->ensure_node_stack = enlp->prev;
+            ADD_LABEL(ensure_part, lstart);
+            bool popped = true;
+            PM_COMPILE_INTO_ANCHOR(ensure_part, (pm_node_t *)enlp->ensure_node);
+            ADD_LABEL(ensure_part, lend);
+            ADD_SEQ(ensure, ensure_part);
+        }
+        else {
+            if (!is_return) {
+                break;
+            }
+        }
+        enlp = enlp->prev;
+    }
+    ISEQ_COMPILE_DATA(iseq)->ensure_node_stack = prev_enlp;
+    ADD_SEQ(ret, ensure);
+}
+
+static void
+pm_insert_local_index(pm_constant_id_t constant_id, int local_index, st_table *index_lookup_table, rb_ast_id_table_t *local_table_for_iseq, pm_scope_node_t *scope_node)
+{
+    ID local = pm_constant_id_lookup(scope_node, constant_id);
+    local_table_for_iseq->ids[local_index] = local;
+    st_insert(index_lookup_table, constant_id, local_index);
+}
+
+static int
+pm_compile_multi_assign_params(pm_multi_target_node_t *multi, st_table *index_lookup_table, rb_ast_id_table_t *local_table_for_iseq, pm_scope_node_t *scope_node, int local_index)
+{
+    for (size_t m = 0; m < multi->lefts.size; m++) {
+        pm_node_t *multi_node = multi->lefts.nodes[m];
+
+        switch (PM_NODE_TYPE(multi_node)) {
+          case PM_REQUIRED_PARAMETER_NODE: {
+            pm_required_parameter_node_t *req = (pm_required_parameter_node_t *)multi_node;
+            pm_insert_local_index(req->name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+            local_index++;
+            break;
+          }
+          case PM_MULTI_TARGET_NODE: {
+              local_index = pm_compile_multi_assign_params((pm_multi_target_node_t *)multi_node, index_lookup_table, local_table_for_iseq, scope_node, local_index);
+              break;
+          }
+          default: {
+              rb_bug("Parameter within a MultiTargetNode isn't allowed");
+          }
+        }
+    }
+
+    if (multi->rest && PM_NODE_TYPE_P(multi->rest, PM_SPLAT_NODE)) {
+        pm_splat_node_t *rest = (pm_splat_node_t *)multi->rest;
+        if (rest->expression && PM_NODE_TYPE_P(rest->expression, PM_REQUIRED_PARAMETER_NODE)) {
+            pm_required_parameter_node_t *req = (pm_required_parameter_node_t *)rest->expression;
+            pm_insert_local_index(req->name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+            local_index++;
+        }
+    }
+
+    for (size_t m = 0; m < multi->rights.size; m++) {
+        pm_node_t *multi_node = multi->rights.nodes[m];
+
+        switch (PM_NODE_TYPE(multi_node)) {
+          case PM_REQUIRED_PARAMETER_NODE: {
+            pm_required_parameter_node_t *req = (pm_required_parameter_node_t *)multi_node;
+            pm_insert_local_index(req->name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+            local_index++;
+            break;
+          }
+          case PM_MULTI_TARGET_NODE: {
+              local_index = pm_compile_multi_assign_params((pm_multi_target_node_t *)multi_node, index_lookup_table, local_table_for_iseq, scope_node, local_index);
+              break;
+          }
+          default: {
+              rb_bug("Parameter within a MultiTargetNode isn't allowed");
+          }
+        }
+    }
+
+    return local_index;
 }
 
 /*
@@ -2088,7 +2215,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 }
             }
             ADD_LABEL(ret, eend);
-            PM_NOP;
+            if (!popped) {
+                PM_NOP;
+            }
             pm_statements_node_t *statements = begin_node->ensure_clause->statements;
             if (statements) {
                 PM_COMPILE((pm_node_t *)statements);
@@ -2103,7 +2232,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             er.begin = estart;
             er.end = eend;
             er.next = 0;
-            push_ensure_entry(iseq, &enl, &er, (void *)&begin_node->ensure_clause);
+            push_ensure_entry(iseq, &enl, &er, (void *)begin_node->ensure_clause);
 
             pm_scope_node_t next_scope_node;
             pm_scope_node_init((pm_node_t *)begin_node->ensure_clause, &next_scope_node, scope_node, parser);
@@ -2144,22 +2273,74 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       }
       case PM_BREAK_NODE: {
         pm_break_node_t *break_node = (pm_break_node_t *) node;
-        if (break_node->arguments) {
-            PM_COMPILE_NOT_POPPED((pm_node_t *)break_node->arguments);
-        }
-        else {
-            PM_PUTNIL;
-        }
+        unsigned long throw_flag = 0;
+        if (ISEQ_COMPILE_DATA(iseq)->redo_label != 0 && can_add_ensure_iseq(iseq)) {
+            /* while/until */
+            LABEL *splabel = NEW_LABEL(0);
+            ADD_LABEL(ret, splabel);
+            ADD_ADJUST(ret, &dummy_line_node, ISEQ_COMPILE_DATA(iseq)->redo_label);
+            if (break_node->arguments) {
+                PM_COMPILE_NOT_POPPED((pm_node_t *)break_node->arguments);
+            }
+            else {
+                PM_PUTNIL;
+            }
+            ADD_INSNL(ret, &dummy_line_node, jump, ISEQ_COMPILE_DATA(iseq)->end_label);
+            ADD_ADJUST_RESTORE(ret, splabel);
 
-        ADD_INSNL(ret, &dummy_line_node, jump, ISEQ_COMPILE_DATA(iseq)->end_label);
+            PM_PUTNIL_UNLESS_POPPED;
+        } else {
+            const rb_iseq_t *ip = iseq;
 
+            while (ip) {
+                if (!ISEQ_COMPILE_DATA(ip)) {
+                    ip = 0;
+                    break;
+                }
+
+                if (ISEQ_COMPILE_DATA(ip)->redo_label != 0) {
+                    throw_flag = VM_THROW_NO_ESCAPE_FLAG;
+                }
+                else if (ISEQ_BODY(ip)->type == ISEQ_TYPE_BLOCK) {
+                    throw_flag = 0;
+                }
+                else if (ISEQ_BODY(ip)->type == ISEQ_TYPE_EVAL) {
+                    COMPILE_ERROR(ERROR_ARGS "Can't escape from eval with break");
+                    rb_bug("Can't escape from eval with break");
+                }
+                else {
+                    ip = ISEQ_BODY(ip)->parent_iseq;
+                    continue;
+                }
+
+                /* escape from block */
+                if (break_node->arguments) {
+                    PM_COMPILE_NOT_POPPED((pm_node_t *)break_node->arguments);
+                }
+                else {
+                    PM_PUTNIL;
+                }
+
+                ADD_INSN1(ret, &dummy_line_node, throw, INT2FIX(throw_flag | TAG_BREAK));
+                PM_POP_IF_POPPED;
+
+                return;
+            }
+            COMPILE_ERROR(ERROR_ARGS "Invalid break");
+            rb_bug("");
+        }
         return;
       }
       case PM_CALL_NODE: {
         pm_call_node_t *call_node = (pm_call_node_t *) node;
+        LABEL *start = NEW_LABEL(lineno);
+
+        if (call_node->block) {
+            ADD_LABEL(ret, start);
+        }
 
         ID method_id = pm_constant_id_lookup(scope_node, call_node->name);
-        if (rb_is_attrset_id(method_id)) {
+        if (node->flags & PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE) {
             PM_PUTNIL;
         }
 
@@ -2169,7 +2350,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             PM_COMPILE_NOT_POPPED(call_node->receiver);
         }
 
-        pm_compile_call(iseq, call_node, ret, src, popped, scope_node, method_id);
+        pm_compile_call(iseq, call_node, ret, src, popped, scope_node, method_id, start);
         return;
       }
       case PM_CALL_AND_WRITE_NODE: {
@@ -2255,9 +2436,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             PM_POP;
 
             if (case_node->consequent) {
-                if (!popped || !PM_NODE_TYPE_P(((pm_node_t *)case_node->consequent), PM_ELSE_NODE)) {
-                    PM_COMPILE_NOT_POPPED((pm_node_t *)case_node->consequent);
-                }
+                 PM_COMPILE((pm_node_t *)case_node->consequent);
             }
             else {
                 PM_PUTNIL_UNLESS_POPPED;
@@ -2759,7 +2938,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
               PM_COMPILE((pm_node_t *)cast->statements);
           }
           else {
-              PM_PUTNIL;
+              PM_PUTNIL_UNLESS_POPPED;
           }
           return;
       }
@@ -2802,8 +2981,6 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         pm_constant_id_list_t locals;
         pm_constant_id_list_init(&locals);
-        pm_constant_id_list_append(&locals, TEMP_CONSTANT_IDENTIFIER);
-        next_scope_node.locals = locals;
 
         ADD_LABEL(ret, retry_label);
 
@@ -2837,7 +3014,105 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             RB_OBJ_WRITTEN(iseq, Qundef, (VALUE)block);
         }
 
-        ADD_INSN2(ret, &dummy_line_node, invokesuper, new_callinfo(iseq, 0, 0, flag, NULL, block != NULL), block);
+        DECL_ANCHOR(args);
+        INIT_ANCHOR(args);
+
+        struct rb_iseq_constant_body *const body = ISEQ_BODY(iseq);
+
+        const rb_iseq_t *local_iseq = body->local_iseq;
+        const struct rb_iseq_constant_body *const local_body = ISEQ_BODY(local_iseq);
+
+        int argc = 0;
+        int depth = get_lvar_level(iseq);
+
+        if (local_body->param.flags.has_lead) {
+            /* required arguments */
+            for (int i = 0; i < local_body->param.lead_num; i++) {
+                int idx = local_body->local_table_size - i;
+                ADD_GETLOCAL(args, &dummy_line_node, idx, depth);
+            }
+            argc += local_body->param.lead_num;
+        }
+
+
+        if (local_body->param.flags.has_opt) {
+            /* optional arguments */
+            for (int j = 0; j < local_body->param.opt_num; j++) {
+                int idx = local_body->local_table_size - (argc + j);
+                ADD_GETLOCAL(args, &dummy_line_node, idx, depth);
+            }
+            argc += local_body->param.opt_num;
+        }
+
+        if (local_body->param.flags.has_rest) {
+            /* rest argument */
+            int idx = local_body->local_table_size - local_body->param.rest_start;
+            ADD_GETLOCAL(args, &dummy_line_node, idx, depth);
+            ADD_INSN1(args, &dummy_line_node, splatarray, Qfalse);
+
+            argc = local_body->param.rest_start + 1;
+            flag |= VM_CALL_ARGS_SPLAT;
+        }
+
+        if (local_body->param.flags.has_post) {
+            /* post arguments */
+            int post_len = local_body->param.post_num;
+            int post_start = local_body->param.post_start;
+
+            int j = 0;
+            for (; j < post_len; j++) {
+                int idx = local_body->local_table_size - (post_start + j);
+                ADD_GETLOCAL(args, &dummy_line_node, idx, depth);
+            }
+
+            if (local_body->param.flags.has_rest) {
+                // argc remains unchanged from rest branch
+                ADD_INSN1(args, &dummy_line_node, newarray, INT2FIX(j));
+                ADD_INSN (args, &dummy_line_node, concatarray);
+            }
+            else {
+                argc = post_len + post_start;
+            }
+        }
+
+        const struct rb_iseq_param_keyword *const local_keyword = local_body->param.keyword;
+        if (local_body->param.flags.has_kw) {
+            int local_size = local_body->local_table_size;
+            argc++;
+
+            ADD_INSN1(args, &dummy_line_node, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
+
+            if (local_body->param.flags.has_kwrest) {
+                int idx = local_body->local_table_size - local_keyword->rest_start;
+                ADD_GETLOCAL(args, &dummy_line_node, idx, depth);
+                if (local_keyword->num > 0) {
+                    ADD_SEND(args, &dummy_line_node, rb_intern("dup"), INT2FIX(0));
+                    flag |= VM_CALL_KW_SPLAT_MUT;
+                }
+            }
+            else {
+                ADD_INSN1(args, &dummy_line_node, newhash, INT2FIX(0));
+                flag |= VM_CALL_KW_SPLAT_MUT;
+            }
+            int i = 0;
+            for (; i < local_keyword->num; ++i) {
+                ID id = local_keyword->table[i];
+                int idx = local_size - get_local_var_idx(local_iseq, id);
+                ADD_INSN1(args, &dummy_line_node, putobject, ID2SYM(id));
+                ADD_GETLOCAL(args, &dummy_line_node, idx, depth);
+            }
+            ADD_SEND(args, &dummy_line_node, id_core_hash_merge_ptr, INT2FIX(i * 2 + 1));
+            flag |= VM_CALL_KW_SPLAT;
+        }
+        else if (local_body->param.flags.has_kwrest) {
+            int idx = local_body->local_table_size - local_keyword->rest_start;
+            ADD_GETLOCAL(args, &dummy_line_node, idx, depth);
+            argc++;
+            flag |= VM_CALL_KW_SPLAT | VM_CALL_KW_SPLAT_MUT;
+        }
+
+        ADD_SEQ(ret, args);
+        ADD_INSN2(ret, &dummy_line_node, invokesuper, new_callinfo(iseq, 0, argc, flag, NULL, block != NULL), block);
         PM_POP_IF_POPPED;
         return;
       }
@@ -3582,19 +3857,39 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         PM_POP_IF_POPPED;
         return;
       }
+      case PM_REQUIRED_PARAMETER_NODE: {
+        pm_required_parameter_node_t *required_parameter_node = (pm_required_parameter_node_t *)node;
+        int index = pm_lookup_local_index(iseq, scope_node, required_parameter_node->name);
+
+        ADD_SETLOCAL(ret, &dummy_line_node, index, 0);
+        return;
+      }
       case PM_MULTI_TARGET_NODE: {
         pm_multi_target_node_t *cast = (pm_multi_target_node_t *) node;
+        bool has_rest_expression = (cast->rest &&
+                PM_NODE_TYPE_P(cast->rest, PM_SPLAT_NODE) &&
+                (((pm_splat_node_t *)cast->rest)->expression));
 
         if (cast->lefts.size) {
-            int flag = (int) (bool) cast->rights.size;
+            int flag = (int) (bool) cast->rights.size || has_rest_expression;
             ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(cast->lefts.size), INT2FIX(flag));
             for (size_t index = 0; index < cast->lefts.size; index++) {
                 PM_COMPILE_NOT_POPPED(cast->lefts.nodes[index]);
             }
         }
 
+        if (has_rest_expression) {
+            if (cast->rights.size) {
+                ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(cast->rights.size), INT2FIX(3));
+            }
+            pm_node_t *expression = ((pm_splat_node_t *)cast->rest)->expression;
+            PM_COMPILE_NOT_POPPED(expression);
+        }
+
         if (cast->rights.size) {
-            ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(cast->rights.size), INT2FIX(2));
+            if (!has_rest_expression) {
+                ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(cast->rights.size), INT2FIX(2));
+            }
             for (size_t index = 0; index < cast->rights.size; index++) {
                 PM_COMPILE_NOT_POPPED(cast->rights.nodes[index]);
             }
@@ -3674,7 +3969,13 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
             ADD_LABEL(ret, splabel);
 
-            add_ensure_iseq(ret, iseq, 0);
+            if (next_node->arguments) {
+                PM_COMPILE_NOT_POPPED((pm_node_t *)next_node->arguments);
+            }
+            else {
+                PM_PUTNIL;
+            }
+            pm_add_ensure_iseq(ret, iseq, 0, src, scope_node);
 
             ADD_ADJUST(ret, &dummy_line_node, ISEQ_COMPILE_DATA(iseq)->redo_label);
             ADD_INSNL(ret, &dummy_line_node, jump, ISEQ_COMPILE_DATA(iseq)->start_label);
@@ -3695,7 +3996,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 PM_PUTNIL;
             }
 
-            add_ensure_iseq(ret, iseq, 0);
+            pm_add_ensure_iseq(ret, iseq, 0, src, scope_node);
             ADD_INSNL(ret, &dummy_line_node, jump, ISEQ_COMPILE_DATA(iseq)->end_label);
             ADD_ADJUST_RESTORE(ret, splabel);
             splabel->unremovable = FALSE;
@@ -3904,7 +4205,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
             ADD_ADJUST(ret, &dummy_line_node, ISEQ_COMPILE_DATA(iseq)->redo_label);
 
-            add_ensure_iseq(ret, iseq, 0);
+            pm_add_ensure_iseq(ret, iseq, 0, src, scope_node);
             ADD_INSNL(ret, &dummy_line_node, jump, ISEQ_COMPILE_DATA(iseq)->redo_label);
             ADD_ADJUST_RESTORE(ret, splabel);
             PM_PUTNIL_UNLESS_POPPED;
@@ -3913,7 +4214,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             LABEL *splabel = NEW_LABEL(0);
 
             ADD_LABEL(ret, splabel);
-            add_ensure_iseq(ret, iseq, 0);
+            pm_add_ensure_iseq(ret, iseq, 0, src, scope_node);
             ADD_ADJUST(ret, &dummy_line_node, ISEQ_COMPILE_DATA(iseq)->start_label);
             ADD_INSNL(ret, &dummy_line_node, jump, ISEQ_COMPILE_DATA(iseq)->start_label);
             ADD_ADJUST_RESTORE(ret, splabel);
@@ -4083,7 +4384,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             }
 
             if (type == ISEQ_TYPE_METHOD && can_add_ensure_iseq(iseq)) {
-                add_ensure_iseq(ret, iseq, 1);
+                pm_add_ensure_iseq(ret, iseq, 1, src, scope_node);
                 ADD_TRACE(ret, RUBY_EVENT_RETURN);
                 ADD_INSN(ret, &dummy_line_node, leave);
                 ADD_ADJUST_RESTORE(ret, splabel);
@@ -4114,29 +4415,54 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         pm_scope_node_t *scope_node = (pm_scope_node_t *)node;
         pm_constant_id_list_t *locals = &scope_node->locals;
 
-        pm_parameters_node_t *parameters_node = (pm_parameters_node_t *) scope_node->parameters;
+        pm_parameters_node_t *parameters_node = NULL;
         pm_node_list_t *keywords_list = NULL;
         pm_node_list_t *optionals_list = NULL;
         pm_node_list_t *posts_list = NULL;
         pm_node_list_t *requireds_list = NULL;
-
-        struct rb_iseq_param_keyword *keyword = NULL;
+        pm_node_list_t *block_locals = NULL;
 
         struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
+
+        if (scope_node->parameters) {
+            switch (PM_NODE_TYPE(scope_node->parameters)) {
+              case PM_BLOCK_PARAMETERS_NODE: {
+                pm_block_parameters_node_t *block_parameters_node = (pm_block_parameters_node_t *)scope_node->parameters;
+                parameters_node = block_parameters_node->parameters;
+                block_locals = &block_parameters_node->locals;
+                break;
+              }
+              case PM_PARAMETERS_NODE: {
+                parameters_node = (pm_parameters_node_t *) scope_node->parameters;
+                break;
+              }
+              case PM_NUMBERED_PARAMETERS_NODE: {
+                body->param.lead_num = ((pm_numbered_parameters_node_t *) scope_node->parameters)->maximum;
+                break;
+              }
+              default:
+                rb_bug("Unexpected node type for parameters: %s", pm_node_type_to_str(PM_NODE_TYPE(node)));
+            }
+        }
+
+        struct rb_iseq_param_keyword *keyword = NULL;
 
         if (parameters_node) {
             optionals_list = &parameters_node->optionals;
             requireds_list = &parameters_node->requireds;
             keywords_list = &parameters_node->keywords;
             posts_list = &parameters_node->posts;
-        } else if (PM_NODE_TYPE_P(scope_node->ast_node, PM_FOR_NODE)) {
-            body->param.lead_num = 1;
+        } else if (scope_node->parameters && PM_NODE_TYPE_P(scope_node->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
             body->param.opt_num = 0;
-        } else {
+        }
+        else {
             body->param.lead_num = 0;
             body->param.opt_num = 0;
         }
 
+        //********STEP 1**********
+        // Goal: calculate the table size for the locals, accounting for
+        // hidden variables and multi target nodes
         size_t locals_size = locals->size;
 
         // Index lookup table buffer size is only the number of the locals
@@ -4144,102 +4470,194 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         int table_size = (int) locals_size;
 
+        if (PM_NODE_TYPE_P(scope_node->ast_node, PM_FOR_NODE)) {
+            table_size++;
+        }
+
         if (keywords_list && keywords_list->size) {
             table_size++;
-            scope_node->hidden_variable_count = 1;
         }
 
-        VALUE idtmp = 0;
-        rb_ast_id_table_t *tbl = ALLOCV(idtmp, sizeof(rb_ast_id_table_t) + table_size * sizeof(ID));
-        tbl->size = table_size;
-
-        for (size_t i = 0; i < locals_size; i++) {
-            pm_constant_id_t constant_id = locals->ids[i];
-            ID local;
-            if (constant_id & TEMP_CONSTANT_IDENTIFIER) {
-                local = rb_make_temporary_id(i);
-            }
-            else {
-                local = pm_constant_id_lookup(scope_node, constant_id);
-            }
-            tbl->ids[i] = local;
-            st_insert(index_lookup_table, constant_id, i);
-        }
-
-        // We have keywords and so we need to allocate
-        // space for another variable
-        if (table_size > (int) locals_size) {
-            tbl->ids[locals_size] = rb_make_temporary_id(locals_size);
-        }
-
-        scope_node->index_lookup_table = index_lookup_table;
-
-        int arg_size = 0;
-
-        if (optionals_list && optionals_list->size) {
-            body->param.opt_num = (int) optionals_list->size;
-            arg_size += body->param.opt_num;
-            LABEL **opt_table = (LABEL **)ALLOC_N(VALUE, optionals_list->size + 1);
-            LABEL *label;
-
-            // TODO: Should we make an api for NEW_LABEL where you can pass
-            // a pointer to the label it should fill out?  We already
-            // have a list of labels allocated above so it seems wasteful
-            // to do the copies.
-            for (size_t i = 0; i < optionals_list->size; i++) {
-                label = NEW_LABEL(lineno);
-                opt_table[i] = label;
-                ADD_LABEL(ret, label);
-                pm_node_t *optional_node = optionals_list->nodes[i];
-                PM_COMPILE_NOT_POPPED(optional_node);
-            }
-
-            // Set the last label
-            label = NEW_LABEL(lineno);
-            opt_table[optionals_list->size] = label;
-            ADD_LABEL(ret, label);
-
-            body->param.flags.has_opt = TRUE;
-            body->param.opt_table = (const VALUE *)opt_table;
-        }
-
-        if (requireds_list && requireds_list->size) {
-            body->param.lead_num = (int) requireds_list->size;
-            arg_size += body->param.lead_num;
-            body->param.flags.has_lead = true;
-
+        if (requireds_list) {
             for (size_t i = 0; i < requireds_list->size; i++) {
-                pm_node_t *required_param = requireds_list->nodes[i];
-                // TODO: Fix MultiTargetNodes
-                if (PM_NODE_TYPE_P(required_param, PM_MULTI_TARGET_NODE)) {
-                    PM_COMPILE(required_param);
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *required = requireds_list->nodes[i];
+                if (PM_NODE_TYPE_P(required, PM_MULTI_TARGET_NODE)) {
+                    table_size++;
                 }
             }
         }
 
-        if (parameters_node && parameters_node->rest) {
-            // If there's a trailing comma, we'll have an implicit rest node,
-            // and we don't want it to impact the rest variables on param
-            if (!(PM_NODE_TYPE_P(parameters_node->rest, PM_IMPLICIT_REST_NODE))) {
-                body->param.rest_start = arg_size++;
-                body->param.flags.has_rest = true;
-                assert(body->param.rest_start != -1);
+        if (posts_list) {
+            for (size_t i = 0; i < posts_list->size; i++) {
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *required = posts_list->nodes[i];
+                if (PM_NODE_TYPE_P(required, PM_MULTI_TARGET_NODE)) {
+                    table_size++;
+                }
             }
         }
 
-        if (posts_list && posts_list->size) {
-            body->param.post_num = (int) posts_list->size;
-            body->param.post_start = arg_size;
-            body->param.flags.has_post = true;
-            arg_size += body->param.post_num;
+        // When we have a `...` as the keyword_rest, it's a forwarding_parameter_node and
+        // we need to leave space for 2 more locals on the locals table (`*` and `&`)
+        if (parameters_node && parameters_node->keyword_rest &&
+                PM_NODE_TYPE_P(parameters_node->keyword_rest, PM_FORWARDING_PARAMETER_NODE)) {
+            table_size += 2;
         }
 
+        // We can create local_table_for_iseq with the correct size
+        VALUE idtmp = 0;
+        rb_ast_id_table_t *local_table_for_iseq = ALLOCV(idtmp, sizeof(rb_ast_id_table_t) + table_size * sizeof(ID));
+        local_table_for_iseq->size = table_size;
+
+        //********END OF STEP 1**********
+
+        //********STEP 2**********
+        // Goal: populate iv index table as well as local table, keeping the
+        // layout of the local table consistent with the layout of the
+        // stack when calling the method
+        //
+        // Do a first pass on all of the parameters, setting their values in
+        // the local_table_for_iseq, _except_ for Multis who get a hidden
+        // variable in this step, and will get their names inserted in step 3
+
+        // local_index is a cursor that keeps track of the current
+        // index into local_table_for_iseq. The local table is actually a list,
+        // and the order of that list must match the order of the items pushed
+        // on the stack.  We need to take in to account things pushed on the
+        // stack that _might not have a name_ (for example array destructuring).
+        // This index helps us know which item we're dealing with and also give
+        // those anonymous items temporary names (as below)
+        int local_index = 0;
+
+        // We will assign these values now, if applicable, and use them for
+        // the ISEQs on these multis
+        int required_multis_hidden_index = 0;
+        int post_multis_hidden_index = 0;
+
+        // Here we figure out local table indices and insert them in to the
+        // index lookup table and local tables.
+        //
+        // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+        //         ^^^^^^^^^^^^^
+        if (requireds_list && requireds_list->size) {
+            for (size_t i = 0; i < requireds_list->size; i++, local_index++) {
+                ID local;
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *required = requireds_list->nodes[i];
+                switch (PM_NODE_TYPE(required)) {
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                  //            ^^^^^^^^^^
+                  case PM_MULTI_TARGET_NODE: {
+                      required_multis_hidden_index = local_index;
+                      local = rb_make_temporary_id(local_index);
+                      local_table_for_iseq->ids[local_index] = local;
+                      break;
+                  }
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                  //         ^
+                  case PM_REQUIRED_PARAMETER_NODE: {
+                      pm_required_parameter_node_t * param = (pm_required_parameter_node_t *)required;
+
+                      pm_insert_local_index(param->name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                      break;
+                  }
+                  default: {
+                      rb_bug("Unsupported node %s", pm_node_type_to_str(PM_NODE_TYPE(node)));
+                  }
+                }
+            }
+
+            body->param.lead_num = (int) requireds_list->size;
+            body->param.flags.has_lead = true;
+        }
+
+        // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+        //                        ^^^^^
+        if (optionals_list && optionals_list->size) {
+            body->param.opt_num = (int) optionals_list->size;
+            body->param.flags.has_opt = true;
+
+            for (size_t i = 0; i < optionals_list->size; i++, local_index++) {
+                pm_constant_id_t name = ((pm_optional_parameter_node_t *)optionals_list->nodes[i])->name;
+                pm_insert_local_index(name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+            }
+        }
+
+        // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+        //                               ^^
+        if (parameters_node && parameters_node->rest) {
+            body->param.rest_start = local_index;
+            // If there's a trailing comma, we'll have an implicit rest node,
+            // and we don't want it to impact the rest variables on param
+            if (!(PM_NODE_TYPE_P(parameters_node->rest, PM_IMPLICIT_REST_NODE))) {
+                body->param.flags.has_rest = true;
+                assert(body->param.rest_start != -1);
+
+                pm_constant_id_t name = ((pm_rest_parameter_node_t *)parameters_node->rest)->name;
+                if (name) {
+                    // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                    //                               ^^
+                    pm_insert_local_index(name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                }
+                else {
+                    // def foo(a, (b, *c, d), e = 1, *, g, (h, *i, j),  k:, l: 1, **m, &n)
+                    //                               ^
+                    local_table_for_iseq->ids[local_index] = idMULT;
+                }
+                local_index++;
+            }
+        }
+
+        // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+        //                                   ^^^^^^^^^^^^^
+        if (posts_list && posts_list->size) {
+            body->param.post_num = (int) posts_list->size;
+            body->param.post_start = local_index;
+            body->param.flags.has_post = true;
+
+            for (size_t i = 0; i < posts_list->size; i++, local_index++) {
+                ID local;
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *post_node = posts_list->nodes[i];
+                switch (PM_NODE_TYPE(post_node)) {
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                  //                                      ^^^^^^^^^^
+                  case PM_MULTI_TARGET_NODE: {
+                      post_multis_hidden_index = local_index;
+                      local = rb_make_temporary_id(local_index);
+                      local_table_for_iseq->ids[local_index] = local;
+                      break;
+                  }
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                  //                                   ^
+                  case PM_REQUIRED_PARAMETER_NODE: {
+                      pm_required_parameter_node_t * param = (pm_required_parameter_node_t *)post_node;
+
+                      pm_insert_local_index(param->name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                      break;
+                  }
+                  default: {
+                      rb_bug("Unsupported node %s", pm_node_type_to_str(PM_NODE_TYPE(node)));
+                  }
+                }
+            }
+        }
+
+        // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+        //                                                   ^^^^^^^^
         // Keywords create an internal variable on the parse tree
         if (keywords_list && keywords_list->size) {
             body->param.keyword = keyword = ZALLOC_N(struct rb_iseq_param_keyword, 1);
             keyword->num = (int) keywords_list->size;
-            arg_size += keyword->num;
-            keyword->bits_start = arg_size++;
 
             body->param.flags.has_kw = true;
             const VALUE default_values = rb_ary_hidden_new(1);
@@ -4247,51 +4665,56 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
             ID *ids = calloc(keywords_list->size, sizeof(ID));
 
-            for (size_t i = 0; i < keywords_list->size; i++) {
+            for (size_t i = 0; i < keywords_list->size; i++, local_index++) {
                 pm_node_t *keyword_parameter_node = keywords_list->nodes[i];
                 pm_constant_id_t name;
 
-                switch PM_NODE_TYPE(keyword_parameter_node) {
+                switch (PM_NODE_TYPE(keyword_parameter_node)) {
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                  //                                                       ^^^^
                   case PM_OPTIONAL_KEYWORD_PARAMETER_NODE: {
-                      pm_optional_keyword_parameter_node_t *cast = ((pm_optional_keyword_parameter_node_t *)keyword_parameter_node);
+                    pm_optional_keyword_parameter_node_t *cast = ((pm_optional_keyword_parameter_node_t *)keyword_parameter_node);
 
-                      pm_node_t *value = cast->value;
-                      name = cast->name;
+                    pm_node_t *value = cast->value;
+                    name = cast->name;
 
-                      if (pm_static_literal_p(value)) {
-                          rb_ary_push(default_values, pm_static_literal_value(value, scope_node, parser));
-                      }
-                      else {
-                          LABEL *end_label = NEW_LABEL(nd_line(&dummy_line_node));
+                    if (pm_static_literal_p(value)) {
+                        rb_ary_push(default_values, pm_static_literal_value(value, scope_node, parser));
+                    }
+                    else {
+                        LABEL *end_label = NEW_LABEL(nd_line(&dummy_line_node));
 
-                          int index = pm_lookup_local_index(iseq, scope_node, name);
-                          int kw_bits_idx = table_size - body->param.keyword->bits_start;
-                          int keyword_idx = (int)(i + scope_node->hidden_variable_count);
+                        int index = pm_lookup_local_index(iseq, scope_node, name);
+                        int kw_bits_idx = table_size - body->param.keyword->bits_start;
+                        ADD_INSN2(ret, &dummy_line_node, checkkeyword, INT2FIX(kw_bits_idx + VM_ENV_DATA_SIZE - 1), INT2FIX(i - 1));
+                        ADD_INSNL(ret, &dummy_line_node, branchif, end_label);
+                        PM_COMPILE(value);
+                        ADD_SETLOCAL(ret, &dummy_line_node, index, 0);
 
-                          ADD_INSN2(ret, &dummy_line_node, checkkeyword, INT2FIX(kw_bits_idx + VM_ENV_DATA_SIZE - 1), INT2FIX(keyword_idx - 1));
-                          ADD_INSNL(ret, &dummy_line_node, branchif, end_label);
-                          PM_COMPILE(value);
-                          ADD_SETLOCAL(ret, &dummy_line_node, index, 0);
+                        ADD_LABEL(ret, end_label);
+                        rb_ary_push(default_values, complex_mark);
+                    }
 
-                          ADD_LABEL(ret, end_label);
-                          rb_ary_push(default_values, complex_mark);
-                      }
-
-                      break;
+                    break;
                   }
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                  //                                                   ^^
                   case PM_REQUIRED_KEYWORD_PARAMETER_NODE: {
-                      name = ((pm_required_keyword_parameter_node_t *)keyword_parameter_node)->name;
-                      keyword->required_num++;
-                      break;
+                    name = ((pm_required_keyword_parameter_node_t *)keyword_parameter_node)->name;
+                    keyword->required_num++;
+                    break;
                   }
                   default: {
-                      rb_bug("Unexpected keyword parameter node type");
+                    rb_bug("Unexpected keyword parameter node type");
                   }
                 }
 
-                ids[i] = pm_constant_id_lookup(scope_node, name);
+                ID local = pm_constant_id_lookup(scope_node, name);
+                pm_insert_local_index(name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                ids[i] = local;
             }
 
+            keyword->bits_start = local_index;
             keyword->table = ids;
 
             VALUE *dvs = ALLOC_N(VALUE, RARRAY_LEN(default_values));
@@ -4306,66 +4729,240 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             }
 
             keyword->default_values = dvs;
+
+            // Hidden local for keyword arguments
+            ID local = rb_make_temporary_id(local_index);
+            local_table_for_iseq->ids[local_index] = local;
+            local_index++;
         }
 
-        if (parameters_node) {
-            if (parameters_node->keyword_rest) {
-                if (PM_NODE_TYPE_P(parameters_node->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE)) {
-                    body->param.flags.accepts_no_kwarg = true;
-                }
-                else {
-                    if (body->param.flags.has_kw) {
-                        arg_size--;
-                    }
-                    else {
-                        body->param.keyword = keyword = ZALLOC_N(struct rb_iseq_param_keyword, 1);
-                    }
-
-                    keyword->rest_start = arg_size++;
-                    body->param.flags.has_kwrest = true;
-                }
-            }
-
-            if (parameters_node->block) {
-                body->param.block_start = arg_size;
-                body->param.flags.has_block = true;
-            }
-        }
-
-        // If there's only one required element in the parameters
-        // CRuby needs to recognize it as an ambiguous parameter
-        if (body->type == ISEQ_TYPE_BLOCK && arg_size == 1 && requireds_list && requireds_list->size == 1) {
+        if (body->type == ISEQ_TYPE_BLOCK && local_index == 1 && requireds_list && requireds_list->size == 1) {
             body->param.flags.ambiguous_param0 = true;
         }
 
-        iseq_calc_param_size(iseq);
-        body->param.size = arg_size;
+        if (parameters_node) {
+            // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+            //                                                             ^^^
+            if (parameters_node->keyword_rest) {
+                switch (PM_NODE_TYPE(parameters_node->keyword_rest)) {
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **nil, &n)
+                  //                                                             ^^^^^
+                  case PM_NO_KEYWORDS_PARAMETER_NODE: {
 
-        // Calculating the parameter size above does not account for numbered
-        // parameters. We can _only_ have numbered parameters if we don't have
-        // non numbered parameters. We verify this through asserts, and add the
-        // maximum numbered parameter size accordingly.
-        pm_node_t *block_parameters = NULL;
+                      body->param.flags.accepts_no_kwarg = true;
+                      break;
+                  }
+                  // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+                  //                                                             ^^^
+                  case PM_KEYWORD_REST_PARAMETER_NODE: {
+                        if (!body->param.flags.has_kw) {
+                            body->param.keyword = keyword = ZALLOC_N(struct rb_iseq_param_keyword, 1);
+                        }
+
+                        keyword->rest_start = local_index;
+                        body->param.flags.has_kwrest = true;
+
+                        pm_constant_id_t constant_id = ((pm_keyword_rest_parameter_node_t *)parameters_node->keyword_rest)->name;
+                        if (constant_id) {
+                            pm_insert_local_index(constant_id, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                            local_index++;
+                        }
+                        break;
+                  }
+                  // def foo(...)
+                  //         ^^^
+                  case PM_FORWARDING_PARAMETER_NODE: {
+                      body->param.rest_start = local_index;
+                      body->param.flags.has_rest = true;
+                      ID local = idMULT;
+                      local_table_for_iseq->ids[local_index] = local;
+                      local_index++;
+
+                      body->param.block_start = local_index;
+                      body->param.flags.has_block = true;
+                      local = idAnd;
+                      local_table_for_iseq->ids[local_index] = local;
+                      local_index++;
+
+                      local = idDot3;
+                      local_table_for_iseq->ids[local_index] = local;
+                      local_index++;
+                      break;
+                  }
+                  default: {
+                      rb_raise(rb_eArgError, "node type %s not expected as keyword_rest", pm_node_type_to_str(PM_NODE_TYPE(parameters_node->keyword_rest)));
+                  }
+                }
+            }
+
+            // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
+            //                                                                  ^^
+            if (parameters_node->block) {
+                body->param.block_start = local_index;
+                body->param.flags.has_block = true;
+
+                pm_constant_id_t name = ((pm_block_parameter_node_t *)parameters_node->block)->name;
+                pm_insert_local_index(name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                local_index++;
+            }
+        }
+
+        //********END OF STEP 2**********
+        // The local table is now consistent with expected
+        // stack layout
+
+        // If there's only one required element in the parameters
+        // CRuby needs to recognize it as an ambiguous parameter
+
+        //********STEP 3**********
+        // Goal: fill in the names of the parameters in MultiTargetNodes
+        //
+        // Go through requireds again to set the multis
+
+        if (requireds_list && requireds_list->size) {
+            for (size_t i = 0; i < requireds_list->size; i++) {
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *required = requireds_list->nodes[i];
+                if (PM_NODE_TYPE_P(required, PM_MULTI_TARGET_NODE)) {
+                    local_index = pm_compile_multi_assign_params((pm_multi_target_node_t *)required, index_lookup_table, local_table_for_iseq, scope_node, local_index);
+                }
+            }
+        }
+
+        // Go through posts again to set the multis
+        if (posts_list && posts_list->size) {
+            for (size_t i = 0; i < posts_list->size; i++) {
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *post= posts_list->nodes[i];
+                if (PM_NODE_TYPE_P(post, PM_MULTI_TARGET_NODE)) {
+                    local_index = pm_compile_multi_assign_params((pm_multi_target_node_t *)post, index_lookup_table, local_table_for_iseq, scope_node, local_index);
+                }
+            }
+        }
+
+        // Set any anonymous locals for the for node
+        if (PM_NODE_TYPE_P(scope_node->ast_node, PM_FOR_NODE)) {
+            ID local = rb_make_temporary_id(local_index);
+            local_table_for_iseq->ids[local_index] = local;
+            local_index++;
+        }
+
+        // Fill in any NumberedParameters, if they exist
+        if (scope_node->parameters && PM_NODE_TYPE_P(scope_node->parameters, PM_NUMBERED_PARAMETERS_NODE)) {
+            int maximum = ((pm_numbered_parameters_node_t *)scope_node->parameters)->maximum;
+            for (int i = 0; i < maximum; i++, local_index++) {
+                pm_constant_id_t constant_id = locals->ids[i];
+                pm_insert_local_index(constant_id, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+            }
+        }
+        //********END OF STEP 3**********
+
+        //********STEP 4**********
+        // Goal: fill in the method body locals
+        // To be explicit, these are the non-parameter locals
+        uint32_t locals_body_index = 0;
+
         switch (PM_NODE_TYPE(scope_node->ast_node)) {
           case PM_BLOCK_NODE: {
-            block_parameters = ((pm_block_node_t *) scope_node->ast_node)->parameters;
-            break;
+              locals_body_index = ((pm_block_node_t *)scope_node->ast_node)->locals_body_index;
+              break;
+          }
+          case PM_DEF_NODE: {
+              locals_body_index = ((pm_def_node_t *)scope_node->ast_node)->locals_body_index;
+              break;
           }
           case PM_LAMBDA_NODE: {
-            block_parameters = ((pm_lambda_node_t *) scope_node->ast_node)->parameters;
-            break;
+              locals_body_index = ((pm_lambda_node_t *)scope_node->ast_node)->locals_body_index;
+              break;
           }
-          default:
-            RUBY_ASSERT("unreachable");
-            break;
+          default: {
+          }
         }
 
-        if (block_parameters != NULL && PM_NODE_TYPE_P(block_parameters, PM_NUMBERED_PARAMETERS_NODE)) {
-            RUBY_ASSERT(body->param.size == 0);
-            body->param.size += ((pm_numbered_parameters_node_t *) block_parameters)->maximum;
+        if (scope_node->locals.size) {
+            for (size_t i = locals_body_index; i < scope_node->locals.size; i++) {
+                pm_constant_id_t constant_id = locals->ids[i];
+                if (constant_id) {
+                    pm_insert_local_index(constant_id, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                    local_index++;
+                }
+            }
         }
 
-        iseq_set_local_table(iseq, tbl);
+        // We fill in the block_locals, if they exist
+        // lambda { |x; y| y }
+        //              ^
+        if (block_locals && block_locals->size) {
+            for (size_t i = 0; i < block_locals->size; i++, local_index++) {
+                pm_constant_id_t constant_id = ((pm_block_local_variable_node_t *)block_locals->nodes[i])->name;
+                pm_insert_local_index(constant_id, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+            }
+        }
+
+        //********END OF STEP 4**********
+
+        // We set the index_lookup_table on the scope node so we can
+        // refer to the parameters correctly
+        scope_node->index_lookup_table = index_lookup_table;
+        iseq_calc_param_size(iseq);
+        iseq_set_local_table(iseq, local_table_for_iseq);
+        scope_node->local_table_for_iseq_size = local_table_for_iseq->size;
+
+        //********STEP 5************
+        // Goal: compile anything that needed to be compiled
+        if (optionals_list && optionals_list->size) {
+            LABEL **opt_table = (LABEL **)ALLOC_N(VALUE, optionals_list->size + 1);
+            LABEL *label;
+
+            // TODO: Should we make an api for NEW_LABEL where you can pass
+            // a pointer to the label it should fill out?  We already
+            // have a list of labels allocated above so it seems wasteful
+            // to do the copies.
+            for (size_t i = 0; i < optionals_list->size; i++, local_index++) {
+                label = NEW_LABEL(lineno);
+                opt_table[i] = label;
+                ADD_LABEL(ret, label);
+                pm_node_t *optional_node = optionals_list->nodes[i];
+                PM_COMPILE_NOT_POPPED(optional_node);
+            }
+
+            // Set the last label
+            label = NEW_LABEL(lineno);
+            opt_table[optionals_list->size] = label;
+            ADD_LABEL(ret, label);
+
+            body->param.opt_table = (const VALUE *)opt_table;
+        }
+
+        if (requireds_list && requireds_list->size) {
+            for (size_t i = 0; i < requireds_list->size; i++) {
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *required = requireds_list->nodes[i];
+                if (PM_NODE_TYPE_P(required, PM_MULTI_TARGET_NODE)) {
+                    ADD_GETLOCAL(ret, &dummy_line_node, table_size - required_multis_hidden_index, 0);
+                    PM_COMPILE(required);
+                }
+            }
+        }
+
+        if (posts_list && posts_list->size) {
+            for (size_t i = 0; i < posts_list->size; i++) {
+                // For each MultiTargetNode, we're going to have one
+                // additional anonymous local not represented in the locals table
+                // We want to account for this in our table size
+                pm_node_t *post = posts_list->nodes[i];
+                if (PM_NODE_TYPE_P(post, PM_MULTI_TARGET_NODE)) {
+                    ADD_GETLOCAL(ret, &dummy_line_node, table_size - post_multis_hidden_index, 0);
+                    PM_COMPILE(post);
+                }
+            }
+        }
 
         switch (body->type) {
           case ISEQ_TYPE_BLOCK: {
@@ -4377,7 +4974,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
             ADD_TRACE(ret, RUBY_EVENT_B_CALL);
             NODE dummy_line_node = generate_dummy_line_node(body->location.first_lineno, -1);
-            PM_NOP;
+            if (ISEQ_COMPILE_DATA(iseq)->redo_label != 0) {
+                PM_NOP;
+            }
             ADD_LABEL(ret, start);
 
             if (scope_node->body) {
@@ -4588,7 +5187,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         INIT_ANCHOR(args);
         ISEQ_COMPILE_DATA(iseq)->current_block = NULL;
 
-        ADD_INSN(ret, &dummy_line_node, putself);
+        PM_PUTSELF;
 
         int argc = pm_setup_args(super_node->arguments, &flags, &keywords, iseq, ret, src, popped, scope_node, dummy_line_node, parser);
 

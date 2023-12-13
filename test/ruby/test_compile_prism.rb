@@ -34,6 +34,7 @@ module Prism
       assert_prism_eval("0b10")
       assert_prism_eval("0o10")
       assert_prism_eval("010")
+      assert_prism_eval("(0o00)")
     end
 
     def test_NilNode
@@ -502,6 +503,10 @@ module Prism
       assert_prism_eval("a, (b, c) = [1, 2, 3]; b")
       assert_prism_eval("a, (b, c) = [1, 2, 3]; c")
       assert_prism_eval("a, (b, c) = [1, [2, 3]]; c")
+      assert_prism_eval("a, (b, *c) = [1, [2, 3]]; c")
+      assert_prism_eval("a, (b, *c) = 1, [2, 3]; c")
+      assert_prism_eval("a, (b, *) = 1, [2, 3]; b")
+      assert_prism_eval("a, (b, *c, d) = 1, [2, 3, 4]; [a, b, c, d]")
       assert_prism_eval("(a, (b, c, d, e), f, g), h = [1, [2, 3]], 4, 5, [6, 7]; c")
     end
 
@@ -597,6 +602,7 @@ module Prism
       assert_prism_eval('/pit/ne')
 
       assert_prism_eval('2.times.map { /#{1}/o }')
+      assert_prism_eval('2.times.map { foo = 1; /#{foo}/o }')
     end
 
     def test_StringNode
@@ -701,6 +707,17 @@ module Prism
       assert_prism_eval("case; when :a, :b; 1; else; 2 end")
       assert_prism_eval("case :a; when :b; else; end")
       assert_prism_eval("b = 1; case :a; when b; else; end")
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_case_node
+          case :a
+          when :b
+          else
+            return 2
+          end
+          1
+        end
+        prism_test_case_node
+      CODE
     end
 
     def test_ElseNode
@@ -772,6 +789,7 @@ module Prism
       assert_prism_eval("while true; break 1, 2; end")
 
       assert_prism_eval("[].each { break }")
+      assert_prism_eval("[true].map { break }")
     end
 
     def test_EnsureNode
@@ -836,6 +854,15 @@ module Prism
           end
         end
       CODE
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_ensure_node
+          begin
+          ensure
+          end
+          return
+        end
+        prism_test_ensure_node
+      CODE
     end
 
     def test_NextNode
@@ -877,6 +904,15 @@ module Prism
           res << i
         end while i < 5
         res
+      CODE
+
+      assert_prism_eval(<<-CODE)
+        while false
+          begin
+          ensure
+          end
+          next
+        end
       CODE
     end
 
@@ -1152,12 +1188,58 @@ module Prism
       assert_prism_eval("class PrismTestDefNode; def prism_test_def_node(*a) a end end;  PrismTestDefNode.new.prism_test_def_node(1).inspect")
 
       # block argument
-      assert_prism_eval(<<-CODE
-                        def self.prism_test_def_node(&block) prism_test_def_node2(&block) end
-                        def self.prism_test_def_node2() yield 1 end
-                        prism_test_def_node2 {|a| a }
-                        CODE
-                       )
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_def_node(&block) prism_test_def_node2(&block) end
+        def self.prism_test_def_node2() yield 1 end
+        prism_test_def_node2 {|a| a }
+      CODE
+
+      # multi argument
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_def_node(a, (b, *c, d))
+          [a, b, c, d]
+        end
+        prism_test_def_node("a", ["b", "c", "d"])
+      CODE
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_def_node(a, (b, c, *))
+          [a, b, c]
+        end
+        prism_test_def_node("a", ["b", "c"])
+      CODE
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_def_node(a, (*, b, c))
+          [a, b, c]
+        end
+        prism_test_def_node("a", ["b", "c"])
+      CODE
+
+      # recursive multis
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_def_node(a, (b, *c, (d, *e, f)))
+          [a, b, c, d, d, e, f]
+        end
+        prism_test_def_node("a", ["b", "c", ["d", "e", "f"]])
+      CODE
+
+      # Many arguments
+      assert_prism_eval(<<-CODE)
+        def self.prism_test_def_node(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m)
+          [a, b, c, d, e, f, g, h, i, j, k, l, m]
+        end
+        prism_test_def_node(
+          "a",
+          ["b", "c1", "c2", "d"],
+          "e",
+          "f1", "f2",
+          "g",
+          ["h", "i1", "i2", "j"],
+          k: "k",
+          l: "l",
+          m1: "m1",
+          m2: "m2"
+        )
+      CODE
     end
 
     def test_method_parameters
@@ -1329,6 +1411,34 @@ module Prism
         end
         foo(1)
       CODE
+
+      assert_prism_eval(<<-CODE)
+        foo = Object.new
+        def foo.[]=(k,v); 42; end
+        foo.[]=(1,2)
+      CODE
+
+      assert_prism_eval(<<-CODE)
+        def self.prism_opt_var_trail_hash(a = nil, *b, c, **d); end
+        prism_opt_var_trail_hash("a")
+        prism_opt_var_trail_hash("a", c: 1)
+        prism_opt_var_trail_hash("a", "b")
+        prism_opt_var_trail_hash("a", "b", "c")
+        prism_opt_var_trail_hash("a", "b", "c", c: 1)
+        prism_opt_var_trail_hash("a", "b", "c", "c" => 0, c: 1)
+      CODE
+
+      assert_prism_eval(<<-CODE)
+        class PrivateMethod
+          def initialize
+            self.instance_var
+          end
+          private
+          attr_accessor :instance_var
+        end
+        pm = PrivateMethod.new
+        pm.send(:instance_var)
+      CODE
     end
 
     def test_CallAndWriteNode
@@ -1463,6 +1573,22 @@ module Prism
     def test_ForwardingSuperNode
       assert_prism_eval("class Forwarding; def to_s; super; end; end")
       assert_prism_eval("class Forwarding; def eval(code); super { code }; end; end")
+      assert_prism_eval(<<-CODE)
+        class A
+          def initialize(a, b)
+          end
+        end
+
+        class B < A
+          attr_reader :res
+          def initialize(a, b, *)
+            super
+            @res = [a, b]
+          end
+        end
+
+        B.new(1, 2).res
+      CODE
     end
 
     def test_KeywordHashNode

@@ -173,13 +173,15 @@ The following default gems are updated.
 * english 0.8.0
 * erb 4.0.3
 * error_highlight 0.6.0
-* etc 1.4.3.dev.1
+* etc 1.4.3
 * fcntl 1.1.0
 * fiddle 1.1.2
 * fileutils 1.7.2
 * find 0.2.0
 * getoptlong 0.2.1
-* io-console 0.6.1.dev.1
+* io-console 0.7.0
+* io-nonblock 0.3.0
+* io-wait 0.3.1
 * irb 1.10.1
 * json 2.7.1
 * logger 1.6.0
@@ -200,6 +202,7 @@ The following default gems are updated.
 * psych 5.1.1.1
 * rdoc 6.6.1
 * reline 0.4.0
+* resolv 0.3.0
 * rinda 0.2.0
 * securerandom 0.3.0
 * set 1.0.4
@@ -232,11 +235,11 @@ The following bundled gems are updated.
 * rexml 3.2.6
 * rss 0.3.0
 * net-ftp 0.3.0
-* net-imap 0.4.7
+* net-imap 0.4.8
 * net-smtp 0.4.0
 * rbs 3.3.2
 * typeprof 0.21.8
-* debug 1.8.0
+* debug 1.9.0
 
 See GitHub releases like [Logger](https://github.com/ruby/logger/releases) or
 changelog for details of the default gems or bundled gems.
@@ -276,6 +279,18 @@ changelog for details of the default gems or bundled gems.
     * We no longer need to install libraries like `libreadline` or `libedit`.
 
 ## C API updates
+
+* `rb_postponed_job` changes
+
+    The postponed job APIs have been changed to address some rare crashes.
+    There are two new methods for managing postponed jobs; `rb_postponed_job_preregister`
+    and `rb_postponed_job_trigger`. These APIs replace `rb_postponed_job_register`
+    and `rb_postponed_job_register_once`, which are now marked as deprecated.
+    The semantics of these functions have also changed slightly; `rb_postponed_job_register`
+    now behaves like the `once` variant in that multiple calls with the same
+    `func` might be coalesced into a single execution of the `func`
+
+    [[Feature #20057]]
 
 ## Implementation improvements
 
@@ -409,3 +424,4 @@ changelog for details of the default gems or bundled gems.
 [Feature #19843]: https://bugs.ruby-lang.org/issues/19843
 [Bug #19868]:     https://bugs.ruby-lang.org/issues/19868
 [Feature #19965]: https://bugs.ruby-lang.org/issues/19965
+[Feature #20057]: https://bugs.ruby-lang.org/issues/20057

@@ -24,6 +24,7 @@
 #include "internal/numeric.h"
 #include "internal/object.h"
 #include "internal/rational.h"
+#include "internal/string.h"
 #include "ruby_assert.h"
 
 #define ZERO INT2FIX(0)
@@ -523,39 +524,54 @@ static VALUE nucomp_s_convert(int argc, VALUE *argv, VALUE klass);
 
 /*
  * call-seq:
- *    Complex(x[, y], exception: true)  ->  numeric or nil
+ *   Complex(real, imag = 0, exception: true) -> complex or nil
+ *   Complex(s, exception: true) -> complex or nil
  *
- * Returns x+i*y;
+ * Returns a new \Complex object if the arguments are valid;
+ * otherwise raises an exception if +exception+ is +true+;
+ * otherwise returns +nil+.
  *
- *    Complex(1, 2)    #=> (1+2i)
- *    Complex('1+2i')  #=> (1+2i)
- *    Complex(nil)     #=> TypeError
- *    Complex(1, nil)  #=> TypeError
+ * With Numeric arguments +real+ and +imag+,
+ * returns <tt>Complex.rect(real, imag)</tt> if the arguments are valid.
  *
- *    Complex(1, nil, exception: false)  #=> nil
- *    Complex('1+2', exception: false)   #=> nil
+ * With string argument +s+, returns a new \Complex object if the argument is valid;
+ * the string may have:
  *
- * Syntax of string form:
+ * - One or two numeric substrings,
+ *   each of which specifies a Complex, Float, Integer, Numeric, or Rational value,
+ *   specifying {rectangular coordinates}[rdoc-ref:Complex@Rectangular+Coordinates]:
  *
- *   string form = extra spaces , complex , extra spaces ;
- *   complex = real part | [ sign ] , imaginary part
- *           | real part , sign , imaginary part
- *           | rational , "@" , rational ;
- *   real part = rational ;
- *   imaginary part = imaginary unit | unsigned rational , imaginary unit ;
- *   rational = [ sign ] , unsigned rational ;
- *   unsigned rational = numerator | numerator , "/" , denominator ;
- *   numerator = integer part | fractional part | integer part , fractional part ;
- *   denominator = digits ;
- *   integer part = digits ;
- *   fractional part = "." , digits , [ ( "e" | "E" ) , [ sign ] , digits ] ;
- *   imaginary unit = "i" | "I" | "j" | "J" ;
- *   sign = "-" | "+" ;
- *   digits = digit , { digit | "_" , digit };
- *   digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
- *   extra spaces = ? \s* ? ;
+ *   - Sign-separated real and imaginary numeric substrings
+ *     (with trailing character <tt>'i'</tt>):
  *
- * See String#to_c.
+ *       Complex('1+2i')  # => (1+2i)
+ *       Complex('+1+2i') # => (1+2i)
+ *       Complex('+1-2i') # => (1-2i)
+ *       Complex('-1+2i') # => (-1+2i)
+ *       Complex('-1-2i') # => (-1-2i)
+ *
+ *   - Real-only numeric string (without trailing character <tt>'i'</tt>):
+ *
+ *       Complex('1')  # => (1+0i)
+ *       Complex('+1') # => (1+0i)
+ *       Complex('-1') # => (-1+0i)
+ *
+ *   - Imaginary-only numeric string (with trailing character <tt>'i'</tt>):
+ *
+ *       Complex('1i')  # => (0+1i)
+ *       Complex('+1i') # => (0+1i)
+ *       Complex('-1i') # => (0-1i)
+ *
+ * - At-sign separated real and imaginary rational substrings,
+ *   each of which specifies a Rational value,
+ *   specifying {polar coordinates}[rdoc-ref:Complex@Polar+Coordinates]:
+ *
+ *     Complex('1/2@3/4')   # => (0.36584443443691045+0.34081938001166706i)
+ *     Complex('+1/2@+3/4') # => (0.36584443443691045+0.34081938001166706i)
+ *     Complex('+1/2@-3/4') # => (0.36584443443691045-0.34081938001166706i)
+ *     Complex('-1/2@+3/4') # => (-0.36584443443691045-0.34081938001166706i)
+ *     Complex('-1/2@-3/4') # => (-0.36584443443691045+0.34081938001166706i)
+ *
  */
 static VALUE
 nucomp_f_complex(int argc, VALUE *argv, VALUE klass)
@@ -736,12 +752,19 @@ nucomp_s_polar(int argc, VALUE *argv, VALUE klass)
 
 /*
  * call-seq:
- *    cmp.real  ->  real
+ *   real -> numeric
  *
- * Returns the real part.
+ * Returns the real value for +self+:
  *
- *    Complex(7).real      #=> 7
- *    Complex(9, -4).real  #=> 9
+ *   Complex(7).real      #=> 7
+ *   Complex(9, -4).real  #=> 9
+ *
+ * If +self+ was created with
+ * {polar coordinates}[rdoc-ref:Complex@Polar+Coordinates], the returned value
+ * is computed, and may be inexact:
+ *
+ *   Complex.polar(1, Math::PI/4).real # => 0.7071067811865476 # Square root of 2.
+ *
  */
 VALUE
 rb_complex_real(VALUE self)
@@ -752,13 +775,21 @@ rb_complex_real(VALUE self)
 
 /*
  * call-seq:
- *    cmp.imag       ->  real
- *    cmp.imaginary  ->  real
+ *   imag -> numeric
  *
- * Returns the imaginary part.
+ * Returns the imaginary value for +self+:
  *
  *    Complex(7).imaginary      #=> 0
  *    Complex(9, -4).imaginary  #=> -4
+ *
+ * If +self+ was created with
+ * {polar coordinates}[rdoc-ref:Complex@Polar+Coordinates], the returned value
+ * is computed, and may be inexact:
+ *
+ *   Complex.polar(1, Math::PI/4).imag # => 0.7071067811865476 # Square root of 2.
+ *
+ * \Complex#imaginary is an alias for \Complex#imag.
+ *
  */
 VALUE
 rb_complex_imag(VALUE self)
@@ -769,11 +800,13 @@ rb_complex_imag(VALUE self)
 
 /*
  * call-seq:
- *    -cmp  ->  complex
+ *   -complex -> new_complex
  *
- * Returns negation of the value.
+ * Returns the negation of +self+, which is the negation of each of its parts:
  *
- *    -Complex(1, 2)  #=> (-1-2i)
+ *   -Complex(1, 2)   # => (-1-2i)
+ *   -Complex(-1, -2) # => (1+2i)
+ *
  */
 VALUE
 rb_complex_uminus(VALUE self)
@@ -785,15 +818,16 @@ rb_complex_uminus(VALUE self)
 
 /*
  * call-seq:
- *    cmp + numeric  ->  complex
+ *   complex + numeric -> new_complex
  *
- * Performs addition.
+ * Returns the sum of +self+ and +numeric+:
  *
- *    Complex(2, 3)  + Complex(2, 3)   #=> (4+6i)
- *    Complex(900)   + Complex(1)      #=> (901+0i)
- *    Complex(-2, 9) + Complex(-9, 2)  #=> (-11+11i)
- *    Complex(9, 8)  + 4               #=> (13+8i)
- *    Complex(20, 9) + 9.8             #=> (29.8+9i)
+ *   Complex(2, 3)  + Complex(2, 3)  # => (4+6i)
+ *   Complex(900)   + Complex(1)     # => (901+0i)
+ *   Complex(-2, 9) + Complex(-9, 2) # => (-11+11i)
+ *   Complex(9, 8)  + 4              # => (13+8i)
+ *   Complex(20, 9) + 9.8            # => (29.8+9i)
+ *
  */
 VALUE
 rb_complex_plus(VALUE self, VALUE other)
@@ -819,15 +853,16 @@ rb_complex_plus(VALUE self, VALUE other)
 
 /*
  * call-seq:
- *    cmp - numeric  ->  complex
+ *   complex - numeric -> new_complex
  *
- * Performs subtraction.
+ * Returns the difference of +self+ and +numeric+:
  *
- *    Complex(2, 3)  - Complex(2, 3)   #=> (0+0i)
- *    Complex(900)   - Complex(1)      #=> (899+0i)
- *    Complex(-2, 9) - Complex(-9, 2)  #=> (7+7i)
- *    Complex(9, 8)  - 4               #=> (5+8i)
- *    Complex(20, 9) - 9.8             #=> (10.2+9i)
+ *   Complex(2, 3)  - Complex(2, 3)  # => (0+0i)
+ *   Complex(900)   - Complex(1)     # => (899+0i)
+ *   Complex(-2, 9) - Complex(-9, 2) # => (7+7i)
+ *   Complex(9, 8)  - 4              # => (5+8i)
+ *   Complex(20, 9) - 9.8            # => (10.2+9i)
+ *
  */
 VALUE
 rb_complex_minus(VALUE self, VALUE other)
@@ -879,15 +914,16 @@ comp_mul(VALUE areal, VALUE aimag, VALUE breal, VALUE bimag, VALUE *real, VALUE 
 
 /*
  * call-seq:
- *    cmp * numeric  ->  complex
+ *   complex * numeric -> new_complex
  *
- * Performs multiplication.
+ * Returns the product of +self+ and +numeric+:
  *
- *    Complex(2, 3)  * Complex(2, 3)   #=> (-5+12i)
- *    Complex(900)   * Complex(1)      #=> (900+0i)
- *    Complex(-2, 9) * Complex(-9, 2)  #=> (0-85i)
- *    Complex(9, 8)  * 4               #=> (36+32i)
- *    Complex(20, 9) * 9.8             #=> (196.0+88.2i)
+ *   Complex(2, 3)  * Complex(2, 3)  # => (-5+12i)
+ *   Complex(900)   * Complex(1)     # => (900+0i)
+ *   Complex(-2, 9) * Complex(-9, 2) # => (0-85i)
+ *   Complex(9, 8)  * 4              # => (36+32i)
+ *   Complex(20, 9) * 9.8            # => (196.0+88.2i)
+ *
  */
 VALUE
 rb_complex_mul(VALUE self, VALUE other)
@@ -954,16 +990,17 @@ f_divide(VALUE self, VALUE other,
 
 /*
  * call-seq:
- *    cmp / numeric     ->  complex
- *    cmp.quo(numeric)  ->  complex
+ *   complex / numeric -> new_complex
  *
- * Performs division.
+ * Returns the quotient of +self+ and +numeric+:
  *
- *    Complex(2, 3)  / Complex(2, 3)   #=> ((1/1)+(0/1)*i)
- *    Complex(900)   / Complex(1)      #=> ((900/1)+(0/1)*i)
- *    Complex(-2, 9) / Complex(-9, 2)  #=> ((36/85)-(77/85)*i)
- *    Complex(9, 8)  / 4               #=> ((9/4)+(2/1)*i)
- *    Complex(20, 9) / 9.8             #=> (2.0408163265306123+0.9183673469387754i)
+ *   Complex(2, 3)  / Complex(2, 3)  # => ((1/1)+(0/1)*i)
+ *   Complex(900)   / Complex(1)     # => ((900/1)+(0/1)*i)
+ *   Complex(-2, 9) / Complex(-9, 2) # => ((36/85)-(77/85)*i)
+ *   Complex(9, 8)  / 4              # => ((9/4)+(2/1)*i)
+ *   Complex(20, 9) / 9.8            # => (2.0408163265306123+0.9183673469387754i)
+ *
+ * Complex#quo is an alias for Complex#/.
  */
 VALUE
 rb_complex_div(VALUE self, VALUE other)
@@ -2087,23 +2124,14 @@ string_to_c_strict(VALUE self, int raise)
 
     rb_must_asciicompat(self);
 
-    s = RSTRING_PTR(self);
-
-    if (!s || memchr(s, '\0', RSTRING_LEN(self))) {
-        if (!raise) return Qnil;
-        rb_raise(rb_eArgError, "string contains null byte");
+    if (raise) {
+        s = StringValueCStr(self);
+    }
+    else if (!(s = rb_str_to_cstr(self))) {
+        return Qnil;
     }
 
-    if (s && s[RSTRING_LEN(self)]) {
-        rb_str_modify(self);
-        s = RSTRING_PTR(self);
-        s[RSTRING_LEN(self)] = '\0';
-    }
-
-    if (!s)
-        s = (char *)"";
-
-    if (!parse_comp(s, 1, &num)) {
+    if (!parse_comp(s, TRUE, &num)) {
         if (!raise) return Qnil;
         rb_raise(rb_eArgError, "invalid value for convert(): %+"PRIsVALUE,
                  self);
@@ -2144,23 +2172,11 @@ string_to_c_strict(VALUE self, int raise)
 static VALUE
 string_to_c(VALUE self)
 {
-    char *s;
     VALUE num;
 
     rb_must_asciicompat(self);
 
-    s = RSTRING_PTR(self);
-
-    if (s && s[RSTRING_LEN(self)]) {
-        rb_str_modify(self);
-        s = RSTRING_PTR(self);
-        s[RSTRING_LEN(self)] = '\0';
-    }
-
-    if (!s)
-        s = (char *)"";
-
-    (void)parse_comp(s, 0, &num);
+    (void)parse_comp(rb_str_fill_terminator(self, 1), FALSE, &num);
 
     return num;
 }
@@ -2350,30 +2366,26 @@ float_arg(VALUE self)
 }
 
 /*
- * A \Complex object houses a pair of values
- * called, respectively, the _real_ and _imaginary_ parts;
- * see {Complex number}[https://en.wikipedia.org/wiki/Complex_number].
- *
- * Note that each of the parts may be a an instance of class Numeric,
- * or an instance of one of its subclasses:
- * Complex, Float, Integer, or Rational.
- *
- * You can create a \Complex object with:
- *
- * - A {complex literal}[rdoc-ref:syntax/literals.rdoc@Complex+Literals].
- * - \Method {Kernel#Complex}[https://docs.ruby-lang.org/en/master/Kernel.html#method-i-Complex].
- * - Methods Complex.rect or Complex.polar.
- * - Methods Numeric#to_c or String#to_c;
- *   or (trivially) methods Complex#to_c or NilClass#to_c.
+ * A \Complex object houses a pair of values,
+ * given when the object is created as either <i>rectangular coordinates</i>
+ * or <i>polar coordinates</i>.
  *
  * == Rectangular Coordinates
  *
- * Each of the methods above (except Complex.polar) takes two "rectangular" arguments
- * representing the _real_ and _imaginary_ parts of the created \Complex object;
- * see {Complex definition}[https://en.wikipedia.org/wiki/Complex_number#Definition].
+ * The rectangular coordinates of a complex number
+ * are called the _real_ and _imaginary_ parts;
+ * see {Complex number definition}[https://en.wikipedia.org/wiki/Complex_number#Definition].
  *
- * The created object stores the two values,
- * which may be retrieved:
+ * You can create a \Complex object from rectangular coordinates with:
+ *
+ * - A {complex literal}[rdoc-ref:doc/syntax/literals.rdoc@Complex+Literals].
+ * - \Method Complex.rect.
+ * - \Method Kernel#Complex, either with numeric arguments or with certain string arguments.
+ * - \Method String#to_c, for certain strings.
+ *
+ * Note that each of the stored parts may be a an instance one of the classes
+ * Complex, Float, Integer, or Rational;
+ * they may be retrieved:
  *
  * - Separately, with methods Complex#real and Complex#imaginary.
  * - Together, with method Complex#rect.
@@ -2385,13 +2397,19 @@ float_arg(VALUE self)
  *
  * == Polar Coordinates
  *
- * \Method Complex.polar takes two "polar" arguments,
- * representing the _modulus_ (or _absolute_) and _argument_ parts
- * of the created \Complex object;
- * see {Complex plane}[https://en.wikipedia.org/wiki/Complex_number#Polar_complex_plane].
+ * The polar coordinates of a complex number
+ * are called the _absolute_ and _argument_ parts;
+ * see {Complex polar plane}[https://en.wikipedia.org/wiki/Complex_number#Polar_complex_plane].
  *
- * The created object stores the two values,
- * which may be retrieved:
+ * You can create a \Complex object from polar coordinates with:
+ *
+ * - \Method Complex.polar.
+ * - \Method Kernel#Complex, with certain string arguments.
+ * - \Method String#to_c, for certain strings.
+ *
+ * Note that each of the stored parts may be a an instance one of the classes
+ * Complex, Float, Integer, or Rational;
+ * they may be retrieved:
  *
  * - Separately, with methods Complex#abs and Complex#arg.
  * - Together, with method Complex#polar.
