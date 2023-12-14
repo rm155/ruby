@@ -2327,7 +2327,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 return;
             }
             COMPILE_ERROR(ERROR_ARGS "Invalid break");
-            rb_bug("");
+            rb_bug("Invalid break");
         }
         return;
       }
@@ -3480,11 +3480,17 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       case PM_INTERPOLATED_MATCH_LAST_LINE_NODE: {
         pm_interpolated_match_last_line_node_t *cast = (pm_interpolated_match_last_line_node_t *) node;
 
+        int parts_size = (int)cast->parts.size;
+        if (parts_size > 0 && !PM_NODE_TYPE_P(cast->parts.nodes[0], PM_STRING_NODE)) {
+            ADD_INSN1(ret, &dummy_line_node, putobject, rb_str_new(0, 0));
+            parts_size++;
+        }
+
         pm_interpolated_node_compile(&cast->parts, iseq, dummy_line_node, ret, src, popped, scope_node, parser);
 
-        ADD_INSN2(ret, &dummy_line_node, toregexp, INT2FIX(pm_reg_flags(node)), INT2FIX((int) (cast->parts.size)));
+        ADD_INSN2(ret, &dummy_line_node, toregexp, INT2FIX(pm_reg_flags(node)), INT2FIX(parts_size));
 
-        ADD_INSN2(ret, &dummy_line_node, getspecial, INT2FIX(0), INT2FIX(0));
+        ADD_INSN1(ret, &dummy_line_node, getglobal, rb_id2sym(idLASTLINE));
         ADD_SEND(ret, &dummy_line_node, idEqTilde, INT2NUM(1));
         PM_POP_IF_POPPED;
 
@@ -4421,6 +4427,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         pm_node_list_t *posts_list = NULL;
         pm_node_list_t *requireds_list = NULL;
         pm_node_list_t *block_locals = NULL;
+        pm_node_t *block_param_keyword_rest = NULL;
 
         struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
 
@@ -4430,6 +4437,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 pm_block_parameters_node_t *block_parameters_node = (pm_block_parameters_node_t *)scope_node->parameters;
                 parameters_node = block_parameters_node->parameters;
                 block_locals = &block_parameters_node->locals;
+                if (parameters_node) {
+                    block_param_keyword_rest = parameters_node->keyword_rest;
+                }
                 break;
               }
               case PM_PARAMETERS_NODE: {
@@ -4500,6 +4510,10 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                     table_size++;
                 }
             }
+        }
+
+        if (block_param_keyword_rest) {
+            table_size++;
         }
 
         // When we have a `...` as the keyword_rest, it's a forwarding_parameter_node and
@@ -4663,7 +4677,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             const VALUE default_values = rb_ary_hidden_new(1);
             const VALUE complex_mark = rb_str_tmp_new(0);
 
-            ID *ids = calloc(keywords_list->size, sizeof(ID));
+            ID *ids = xcalloc(keywords_list->size, sizeof(ID));
 
             for (size_t i = 0; i < keywords_list->size; i++, local_index++) {
                 pm_node_t *keyword_parameter_node = keywords_list->nodes[i];
@@ -4755,6 +4769,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                   // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
                   //                                                             ^^^
                   case PM_KEYWORD_REST_PARAMETER_NODE: {
+                        pm_keyword_rest_parameter_node_t *kw_rest_node = (pm_keyword_rest_parameter_node_t *)parameters_node->keyword_rest;
                         if (!body->param.flags.has_kw) {
                             body->param.keyword = keyword = ZALLOC_N(struct rb_iseq_param_keyword, 1);
                         }
@@ -4762,11 +4777,14 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                         keyword->rest_start = local_index;
                         body->param.flags.has_kwrest = true;
 
-                        pm_constant_id_t constant_id = ((pm_keyword_rest_parameter_node_t *)parameters_node->keyword_rest)->name;
+                        pm_constant_id_t constant_id = kw_rest_node->name;
                         if (constant_id) {
                             pm_insert_local_index(constant_id, local_index, index_lookup_table, local_table_for_iseq, scope_node);
-                            local_index++;
                         }
+                        else {
+                            local_table_for_iseq->ids[local_index] = idPow;
+                        }
+                        local_index++;
                         break;
                   }
                   // def foo(...)
@@ -5079,7 +5097,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             }
         }
 
-        free(index_lookup_table);
+        st_free_table(index_lookup_table);
 
         if (!PM_NODE_TYPE_P(scope_node->ast_node, PM_ENSURE_NODE)) {
             ADD_INSN(ret, &dummy_line_node, leave);

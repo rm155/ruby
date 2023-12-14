@@ -546,7 +546,7 @@ module Prism
     end
 
     def test_InterpolatedMatchLastLineNode
-      assert_prism_eval("$pit = '.oo'; if /\#$pit/mix; end")
+      assert_prism_eval('$pit = ".oo"; if /"#{$pit}"/mix; end')
     end
 
     def test_InterpolatedRegularExpressionNode
@@ -659,6 +659,7 @@ module Prism
       assert_prism_eval("{ to_s: }")
       assert_prism_eval("{ Prism: }")
       assert_prism_eval("[ Prism: [:b, :c]]")
+      assert_prism_eval("{ [] => 1}")
     end
 
     def test_ImplicitNode
@@ -1631,6 +1632,7 @@ module Prism
 
     def test_KeywordRestParameterNode
       assert_prism_eval("def prism_test_keyword_rest_parameter_node(a, **b); end")
+      assert_prism_eval("Object.tap { |**| }")
     end
 
     def test_NoKeywordsParameterNode

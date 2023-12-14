@@ -85,7 +85,7 @@ module Gem::BUNDLED_GEMS
     else
       return
     end
-    EXACT[n] or PREFIXED[n = n[%r[\A[^/]+(?=/)]]] && n
+    (EXACT[n] or PREFIXED[n = n[%r[\A[^/]+(?=/)]]]) && n
   end
 
   def self.warning?(name, specs: nil)
@@ -102,6 +102,12 @@ module Gem::BUNDLED_GEMS
     else
       return
     end
+    # Warning feature is not working correctly with Bootsnap.
+    # caller_locations returns:
+    #   lib/ruby/3.3.0+0/bundled_gems.rb:65:in `block (2 levels) in replace_require'
+    #   $GEM_HOME/gems/bootsnap-1.17.0/lib/bootsnap/load_path_cache/core_ext/kernel_require.rb:32:in `require'"
+    #   ...
+    return if caller_locations(2).find {|c| c&.path.match?(/bootsnap/) }
     return if WARNED[name]
     WARNED[name] = true
     if gem == true

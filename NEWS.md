@@ -234,7 +234,7 @@ The following bundled gems are updated.
 * test-unit 3.6.1
 * rexml 3.2.6
 * rss 0.3.0
-* net-ftp 0.3.0
+* net-ftp 0.3.2
 * net-imap 0.4.8
 * net-smtp 0.4.0
 * rbs 3.3.2
@@ -275,7 +275,9 @@ changelog for details of the default gems or bundled gems.
 * `racc` is promoted to bundled gems.
     * You need to add `racc` to your `Gemfile` if you use `racc` under bundler environment.
 * `ext/readline` is retired
-    * We have `reline` that is pure Ruby implementation compatible with `ext/readline` API. We rely on `reline` in the future. If you need to use `ext/readline`, you can install `ext/readline` via rubygems.org with `gem install readline-ext`.
+    * We have `reline` that is pure Ruby implementation compatible with `ext/readline` API.
+      We rely on `reline` in the future. If you need to use `ext/readline`, you can install
+      `ext/readline` via rubygems.org with `gem install readline-ext`.
     * We no longer need to install libraries like `libreadline` or `libedit`.
 
 ## C API updates
@@ -343,7 +345,7 @@ changelog for details of the default gems or bundled gems.
 * `ratio_in_yjit` stat produced by `--yjit-stats` is now available in release builds,
   a special stats or dev build is no longer required to access most stats.
 * Exit tracing option now supports sampling
-    * `--trace-exits-sample-rate=N`
+    * `--yjit-trace-exits-sample-rate=N`
 * More thorough testing and multiple bug fixes
 * `--yjit-stats=quiet` is added to avoid printing stats on exit.
 * `--yjit-perf` is added to facilitate profiling with Linux perf.
