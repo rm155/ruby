@@ -580,6 +580,7 @@ typedef enum {
     GPR_FLAG_MAJOR_BY_OLDGEN    = 0x002,
     GPR_FLAG_MAJOR_BY_SHADY     = 0x004,
     GPR_FLAG_MAJOR_BY_FORCE     = 0x008,
+    GPR_FLAG_MAJOR_BY_ABSORB    = 0x010,
 #if RGENGC_ESTIMATE_OLDMALLOC
     GPR_FLAG_MAJOR_BY_OLDMALLOC = 0x020,
 #endif
@@ -2886,6 +2887,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     RB_VM_UNLOCK();
 
     rb_borrowing_sync_unlock(receiving_objspace->ractor);
+
+    receiving_objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_ABSORB;
 
     if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_objspace);
 }
@@ -11464,6 +11467,7 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
         (void)RB_DEBUG_COUNTER_INC_IF(gc_major_oldgen, reason & GPR_FLAG_MAJOR_BY_OLDGEN);
         (void)RB_DEBUG_COUNTER_INC_IF(gc_major_shady,  reason & GPR_FLAG_MAJOR_BY_SHADY);
         (void)RB_DEBUG_COUNTER_INC_IF(gc_major_force,  reason & GPR_FLAG_MAJOR_BY_FORCE);
+        (void)RB_DEBUG_COUNTER_INC_IF(gc_major_absorb, reason & GPR_FLAG_MAJOR_BY_ABSORB);
 #if RGENGC_ESTIMATE_OLDMALLOC
         (void)RB_DEBUG_COUNTER_INC_IF(gc_major_oldmalloc, reason & GPR_FLAG_MAJOR_BY_OLDMALLOC);
 #endif
@@ -13431,7 +13435,7 @@ static VALUE
 gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned int orig_flags)
 {
     static VALUE sym_major_by = Qnil, sym_gc_by, sym_immediate_sweep, sym_have_finalizer, sym_state, sym_need_major_by;
-    static VALUE sym_nofree, sym_oldgen, sym_shady, sym_force, sym_stress;
+    static VALUE sym_nofree, sym_oldgen, sym_shady, sym_force, sym_absorb, sym_stress;
 #if RGENGC_ESTIMATE_OLDMALLOC
     static VALUE sym_oldmalloc;
 #endif
@@ -13494,6 +13498,7 @@ gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned 
       (flags & GPR_FLAG_MAJOR_BY_OLDGEN) ? sym_oldgen :
       (flags & GPR_FLAG_MAJOR_BY_SHADY)  ? sym_shady :
       (flags & GPR_FLAG_MAJOR_BY_FORCE)  ? sym_force :
+      (flags & GPR_FLAG_MAJOR_BY_ABSORB) ? sym_absorb :
 #if RGENGC_ESTIMATE_OLDMALLOC
       (flags & GPR_FLAG_MAJOR_BY_OLDMALLOC) ? sym_oldmalloc :
 #endif
@@ -13507,6 +13512,7 @@ gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned 
             (need_major_flags & GPR_FLAG_MAJOR_BY_OLDGEN) ? sym_oldgen :
             (need_major_flags & GPR_FLAG_MAJOR_BY_SHADY)  ? sym_shady :
             (need_major_flags & GPR_FLAG_MAJOR_BY_FORCE)  ? sym_force :
+            (need_major_flags & GPR_FLAG_MAJOR_BY_ABSORB) ? sym_absorb :
 #if RGENGC_ESTIMATE_OLDMALLOC
             (need_major_flags & GPR_FLAG_MAJOR_BY_OLDMALLOC) ? sym_oldmalloc :
 #endif
