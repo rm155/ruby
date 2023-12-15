@@ -10939,7 +10939,7 @@ rb_gc_writebarrier(VALUE a, VALUE b)
 	gc_writebarrier_safe_objspace(a, b, b_objspace);
     }
     else {
-	VM_ASSERT(FL_TEST(b, FL_SHAREABLE)); //TODO: Assert that it is actually shared, not just shareable
+	VM_ASSERT(FL_TEST(b, FL_SHAREABLE));
 	gc_writebarrier_parallel_objspace(a, b, b_objspace);
     }
 }
