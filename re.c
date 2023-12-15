@@ -3357,6 +3357,7 @@ rb_reg_new_ary(VALUE ary, int opt)
 {
     VALUE re = rb_reg_new_str(rb_reg_preprocess_dregexp(ary, opt), opt);
     rb_obj_freeze(re);
+    FL_SET_RAW(re, FL_SHAREABLE);
     return re;
 }
 
@@ -3392,6 +3393,7 @@ rb_reg_compile(VALUE str, int options, const char *sourcefile, int sourceline)
         return Qnil;
     }
     rb_obj_freeze(re);
+    FL_SET_RAW(re, FL_SHAREABLE);
     return re;
 }
 
