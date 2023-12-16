@@ -2959,6 +2959,8 @@ rb_vm_register_special_exception_str(enum ruby_special_exceptions sp, VALUE cls,
     rb_vm_t *vm = GET_VM();
     VALUE exc = rb_exc_new3(cls, rb_obj_freeze(mesg));
     OBJ_FREEZE(exc);
+    FL_SET_RAW(mesg, FL_SHAREABLE);
+    FL_SET_RAW(exc, FL_SHAREABLE);
     ((VALUE *)vm->special_exceptions)[sp] = exc;
     rb_gc_register_mark_object(exc);
 }
