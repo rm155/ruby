@@ -792,6 +792,8 @@ typedef struct rb_vm_struct {
         size_t fiber_machine_stack_size;
     } default_params;
 
+    rb_nativethread_lock_t subclass_list_lock;
+
     unsigned int gc_deactivated: 1;
 } rb_vm_t;
 

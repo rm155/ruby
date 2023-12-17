@@ -3057,6 +3057,9 @@ ruby_vm_destruct(rb_vm_t *vm)
 	    rb_native_mutex_destroy(&vm->frozen_strings.lock);
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
+
+	rb_native_mutex_destroy(&vm->subclass_list_lock);
+
 	rb_global_space_free(vm->global_space);
 	rb_ractor_t *r = NULL;
 	ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
@@ -4227,6 +4230,8 @@ Init_BareVM(void)
     vm->negative_cme_table = rb_id_table_create(16);
     vm->overloaded_cme_table = st_init_numtable();
     vm->constant_cache = rb_id_table_create(0);
+
+    rb_native_mutex_initialize(&vm->subclass_list_lock);
 
     // setup main thread
     th->nt = ZALLOC(struct rb_native_thread);
