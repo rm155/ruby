@@ -8430,6 +8430,7 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
         gc_grey(objspace, obj);
     }
     else {
+	VM_ASSERT(dont_gc_val() == TRUE);
         reachable_objects_from_callback(obj);
     }
 }
@@ -14336,7 +14337,11 @@ rb_objspace_reachable_objects_from(VALUE obj, void (func)(VALUE, void *), void *
             }, *prev_mfd = cr->mfd;
 
             cr->mfd = &mfd;
+	    
+	    VALUE already_disabled = rb_objspace_gc_disable(objspace);
             gc_mark_children(objspace, obj);
+	    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+
             cr->mfd = prev_mfd;
         }
     }
@@ -14379,7 +14384,11 @@ objspace_reachable_objects_from_root(rb_objspace_t *objspace, void (func)(const 
     }, *prev_mfd = cr->mfd;
 
     cr->mfd = &mfd;
+
+    VALUE already_disabled = rb_objspace_gc_disable(objspace);
     gc_mark_roots(objspace, &data.category);
+    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+
     cr->mfd = prev_mfd;
 }
 
