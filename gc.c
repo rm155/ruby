@@ -2890,6 +2890,13 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     receiving_objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_ABSORB;
 
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->next_object_id_lock);
+    if (global_space->prev_id_assigner == closing_ractor) {
+	global_space->prev_id_assigner = receiving_ractor;
+    }
+    rb_native_mutex_unlock(&global_space->next_object_id_lock);
+
     if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_objspace);
 }
 
