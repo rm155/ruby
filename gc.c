@@ -12147,7 +12147,7 @@ update_shareable_tbl_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src)
 	    else {
 		rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
 		shared_item_found_in_table = st_delete(objspace->secondary_shareable_tbl, (st_data_t *)&src, 0);
-		st_insert(objspace->secondary_shareable_tbl, (st_data_t)dest, INT2FIX(0));
+		if (shared_item_found_in_table) st_insert(objspace->secondary_shareable_tbl, (st_data_t)dest, INT2FIX(0));
 		rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
 	    }
 	}
