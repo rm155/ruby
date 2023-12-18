@@ -45,7 +45,6 @@
 #include "builtin.h"
 #include "insns.inc"
 #include "insns_info.inc"
-#include "prism_compile.h"
 
 #undef RUBY_UNTYPED_DATA_WARNING
 #define RUBY_UNTYPED_DATA_WARNING 0
@@ -8914,7 +8913,7 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
     }
     ADD_INSN1(ret, node, dupn, INT2FIX(dup_argn));
     flag |= asgnflag;
-    ADD_SEND_R(ret, node, idAREF, argc, NULL, INT2FIX(flag), keywords);
+    ADD_SEND_R(ret, node, idAREF, argc, NULL, INT2FIX(flag & ~VM_CALL_KW_SPLAT_MUT), keywords);
 
     if (id == idOROP || id == idANDOP) {
         /* a[x] ||= y  or  a[x] &&= y

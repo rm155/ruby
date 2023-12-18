@@ -1362,9 +1362,16 @@ rb_using_module(const rb_cref_t *cref, VALUE module)
 
 /*
  *  call-seq:
- *     target    -> class
+ *     target    -> class_or_module
  *
  *  Return the class or module refined by the receiver.
+ *
+ *     module M
+ *       refine String do
+ *       end
+ *     end
+ *
+ *     M.refinements[0].target # => String
  */
 VALUE
 rb_refinement_module_get_refined_class(VALUE module)
@@ -1378,6 +1385,8 @@ rb_refinement_module_get_refined_class(VALUE module)
 /*
  *  call-seq:
  *     refined_class    -> class
+ *
+ *  Deprecated; prefer #target.
  *
  *  Return the class refined by the receiver.
  */

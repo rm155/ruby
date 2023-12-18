@@ -59,10 +59,12 @@ module Gem::BUNDLED_GEMS
   def self.replace_require(specs)
     return if [::Kernel.singleton_class, ::Kernel].any? {|klass| klass.respond_to?(:no_warning_require) }
 
+    spec_names = specs.to_a.each_with_object({}) {|spec, h| h[spec.name] = true }
+
     [::Kernel.singleton_class, ::Kernel].each do |kernel_class|
       kernel_class.send(:alias_method, :no_warning_require, :require)
       kernel_class.send(:define_method, :require) do |name|
-        if message = ::Gem::BUNDLED_GEMS.warning?(name, specs: specs) # rubocop:disable Style/HashSyntax
+        if message = ::Gem::BUNDLED_GEMS.warning?(name, specs: spec_names) # rubocop:disable Style/HashSyntax
           warn message, :uplevel => 1
         end
         kernel_class.send(:no_warning_require, name)
@@ -85,18 +87,19 @@ module Gem::BUNDLED_GEMS
     else
       return
     end
-    (EXACT[n] or PREFIXED[n = n[%r[\A[^/]+(?=/)]]]) && n
+    EXACT[n] or PREFIXED[n = n[%r[\A[^/]+(?=/)]]] && n
   end
 
   def self.warning?(name, specs: nil)
     feature = File.path(name) # name can be a feature name or a file path with String or Pathname
-    return if specs.to_a.map(&:name).include?(feature.sub(LIBEXT, ""))
-    _t, path = $:.resolve_feature_path(feature)
     name = feature.tr("/", "-")
+    name.sub!(LIBEXT, "")
+    return if specs.include?(name)
+    _t, path = $:.resolve_feature_path(feature)
     if gem = find_gem(path)
+      return if specs.include?(gem)
       caller = caller_locations(3, 3).find {|c| c&.absolute_path}
       return if find_gem(caller&.absolute_path)
-      name = name.sub(LIBEXT, "") # assume "foo.rb"/"foo.so" belongs to "foo" gem
     elsif SINCE[name]
       gem = true
     else
