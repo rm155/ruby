@@ -5887,6 +5887,8 @@ void
 rb_register_new_external_wmap_reference(VALUE *ptr)
 {
     VALUE obj = *ptr;
+    if (SPECIAL_CONST_P(obj)) return;
+
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
     rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
     st_insert_no_gc(source_objspace->wmap_referenced_obj_tbl, ptr, INT2FIX(0));
@@ -5897,7 +5899,7 @@ void
 rb_remove_from_external_weak_tables(VALUE *ptr)
 {
     VALUE obj = *ptr;
-    if (obj == Qundef || !FL_TEST_RAW(obj, FL_SHAREABLE)) return;
+    if (obj == Qundef || SPECIAL_CONST_P(obj) || !FL_TEST_RAW(obj, FL_SHAREABLE)) return;
 
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
     rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
