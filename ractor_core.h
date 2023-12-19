@@ -231,6 +231,9 @@ struct rb_ractor_struct {
     bool late_to_barrier;
 #endif
 
+    VALUE mark_object_ary;
+    rb_nativethread_lock_t mark_object_ary_lock;
+
     VALUE result_value;
 }; // rb_ractor_t is defined in vm_core.h
 
@@ -274,7 +277,9 @@ void rb_ractor_vm_barrier_interrupt_running_thread(rb_ractor_t *r);
 void rb_ractor_terminate_interrupt_main_thread(rb_ractor_t *r);
 void rb_ractor_terminate_all(void);
 bool rb_ractor_main_p_(void);
+void rb_ractor_mark_object_ary_init(rb_ractor_t *r, int capa);
 void rb_ractor_related_objects_mark(void *ptr);
+void rb_ractor_update_references(void *ptr);
 void rb_ractor_finish_marking(void);
 void rb_ractor_atfork(rb_vm_t *vm, rb_thread_t *th);
 

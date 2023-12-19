@@ -9302,7 +9302,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     mark_global_cc_cache_table(objspace);
 
     MARK_CHECKPOINT("ractor");
-    if (vm->ractor.cnt > 0) rb_ractor_related_objects_mark(objspace->ractor);
+    rb_ractor_related_objects_mark(objspace->ractor);
     rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
     mark_set(objspace, objspace->contained_ractor_tbl);
     rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
@@ -11114,25 +11114,36 @@ rb_gc_force_recycle(VALUE obj)
 #define MARK_OBJECT_ARY_BUCKET_SIZE 1024
 #endif
 
+static void
+register_mark_object_no_redirection(VALUE obj)
+{
+    rb_ractor_t *r = rb_current_allocating_ractor();
+    rb_objspace_t *objspace = r->local_objspace;
+    if (!is_pointer_to_heap(objspace, (void *)obj))
+        return;
+
+    VALUE already_disabled = rb_objspace_gc_disable(objspace);
+    rb_native_mutex_lock(&r->mark_object_ary_lock);
+
+    VALUE ary_ary = GET_VM()->mark_object_ary;
+    VALUE ary = rb_ary_last(0, 0, ary_ary);
+
+    if (NIL_P(ary) || RARRAY_LEN(ary) >= MARK_OBJECT_ARY_BUCKET_SIZE) {
+	ary = rb_ary_hidden_new(MARK_OBJECT_ARY_BUCKET_SIZE);
+	rb_ary_push(ary_ary, ary);
+    }
+
+    rb_ary_push(ary, obj);
+
+    rb_native_mutex_unlock(&r->mark_object_ary_lock);
+    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+}
+
 void
 rb_gc_register_mark_object(VALUE obj)
 {
-    if (!is_pointer_to_heap(&rb_objspace, (void *)obj))
-        return;
-
-    RB_VM_LOCK_ENTER();
-    {
-        VALUE ary_ary = GET_VM()->mark_object_ary;
-        VALUE ary = rb_ary_last(0, 0, ary_ary);
-
-        if (NIL_P(ary) || RARRAY_LEN(ary) >= MARK_OBJECT_ARY_BUCKET_SIZE) {
-            ary = rb_ary_hidden_new(MARK_OBJECT_ARY_BUCKET_SIZE);
-            rb_ary_push(ary_ary, ary);
-        }
-
-        rb_ary_push(ary, obj);
-    }
-    RB_VM_LOCK_LEAVE();
+    rb_ractor_t *r = rb_special_const_p(obj) ? NULL : GET_RACTOR_OF_VALUE(obj);
+    return rb_run_with_redirected_allocation(r, register_mark_object_no_redirection, obj);
 }
 
 void
@@ -13091,6 +13102,7 @@ gc_update_references(rb_objspace_t *objspace)
 	rb_vm_update_references(vm);
 	rb_gc_update_global_tbl();
     }
+    rb_ractor_update_references(objspace->ractor);
 
     bool shareable_objects_moved = !using_local_limits(objspace);
 

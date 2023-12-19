@@ -2902,25 +2902,6 @@ rb_vm_mark(void *ptr)
     RUBY_GC_INFO("-------------------------------------------------\n");
     if (ptr) {
         rb_vm_t *vm = ptr;
-        long i, len;
-        const VALUE *obj_ary;
-
-        rb_gc_mark_movable(vm->mark_object_ary);
-
-        len = RARRAY_LEN(vm->mark_object_ary);
-        obj_ary = RARRAY_CONST_PTR(vm->mark_object_ary);
-        for (i=0; i < len; i++) {
-            const VALUE *ptr;
-            long j, jlen;
-
-            rb_gc_mark(*obj_ary);
-            jlen = RARRAY_LEN(*obj_ary);
-            ptr = RARRAY_CONST_PTR(*obj_ary);
-            for (j=0; j < jlen; j++) {
-                rb_gc_mark(*ptr++);
-            }
-            obj_ary++;
-        }
 
         rb_gc_mark_movable(vm->load_path);
         rb_gc_mark_movable(vm->load_path_snapshot);
@@ -3056,6 +3037,8 @@ ruby_vm_destruct(rb_vm_t *vm)
         RB_ALTSTACK_FREE(vm->main_altstack);
 
 	rb_native_mutex_destroy(&vm->subclass_list_lock);
+
+	rb_native_mutex_destroy(&vm->ractor.main_ractor->mark_object_ary_lock);
 
 	rb_global_space_free(vm->global_space);
 	rb_ractor_t *r = NULL;
@@ -4268,7 +4251,10 @@ Init_vm_objects(void)
     vm->defined_module_hash = st_init_numtable();
 
     /* initialize mark object array, hash */
-    vm->mark_object_ary = rb_ary_hidden_new(128);
+    rb_ractor_mark_object_ary_init(vm->ractor.main_ractor, 128);
+    vm->mark_object_ary = vm->ractor.main_ractor->mark_object_ary;
+    rb_native_mutex_initialize(&vm->ractor.main_ractor->mark_object_ary_lock);
+
     vm->loading_table = st_init_strtable();
     vm->frozen_strings.table = st_init_table_with_size(&rb_fstring_hash_type, 10000);
     rb_native_mutex_initialize(&vm->frozen_strings.lock);

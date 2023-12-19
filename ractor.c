@@ -204,6 +204,34 @@ ractor_queue_mark(struct rb_ractor_queue *rq)
     }
 }
 
+static void
+ractor_mark_object_ary_mark_all(rb_ractor_t *r)
+{
+    long i, len;
+    const VALUE *obj_ary;
+
+    rb_native_mutex_lock(&r->mark_object_ary_lock);
+
+    rb_gc_mark_movable(r->mark_object_ary);
+
+    len = RARRAY_LEN(r->mark_object_ary);
+    obj_ary = RARRAY_CONST_PTR(r->mark_object_ary);
+    for (i=0; i < len; i++) {
+	const VALUE *ptr;
+	long j, jlen;
+
+	rb_gc_mark(*obj_ary);
+	jlen = RARRAY_LEN(*obj_ary);
+	ptr = RARRAY_CONST_PTR(*obj_ary);
+	for (j=0; j < jlen; j++) {
+	    rb_gc_mark(*ptr++);
+	}
+	obj_ary++;
+    }
+
+    rb_native_mutex_unlock(&r->mark_object_ary_lock);
+}
+
 static void ractor_local_storage_mark(rb_ractor_t *r);
 static void ractor_local_storage_free(rb_ractor_t *r);
 
@@ -244,6 +272,16 @@ rb_ractor_related_objects_mark(void *ptr)
     ractor_local_storage_mark(r);
 
     rb_gc_mark(r->result_value);
+
+    ractor_mark_object_ary_mark_all(r);
+}
+
+void
+rb_ractor_update_references(void *ptr)
+{
+    rb_ractor_t *r = (rb_ractor_t *)ptr;
+
+    r->mark_object_ary = rb_gc_location(r->mark_object_ary);
 }
 
 static void
@@ -265,6 +303,7 @@ ractor_free(void *ptr)
 {
     rb_ractor_t *r = (rb_ractor_t *)ptr;
     RUBY_DEBUG_LOG("free r:%d", rb_ractor_id(r));
+
     rb_native_mutex_destroy(&r->sync.lock);
     rb_native_cond_destroy(&r->sync.close_cond);
 #ifdef RUBY_THREAD_WIN32_H
@@ -275,10 +314,14 @@ ractor_free(void *ptr)
 	rb_native_mutex_destroy(&r->borrowing_sync.page_lock[i]);
     }
     rb_native_cond_destroy(&r->borrowing_sync.no_borrowers);
+
     ractor_queue_free(&r->sync.recv_queue);
     ractor_queue_free(&r->sync.takers_queue);
     ractor_local_storage_free(r);
     rb_hook_list_free(&r->pub.hooks);
+
+    rb_native_mutex_destroy(&r->mark_object_ary_lock);
+
     ruby_xfree(r);
 }
 
@@ -2147,6 +2190,29 @@ rb_ractor_living_threads_init(rb_ractor_t *r)
     r->threads.blocking_cnt = 0;
 }
 
+struct mark_object_ary_init_args {
+    rb_ractor_t *r;
+    int capa;
+};
+
+static VALUE
+ractor_mark_object_ary_init_no_redirection(VALUE args)
+{
+    struct mark_object_ary_init_args *init_args = (struct mark_object_ary_init_args *)args;
+    init_args->r->mark_object_ary = rb_ary_hidden_new(init_args->capa);
+    return Qnil;
+}
+
+void
+rb_ractor_mark_object_ary_init(rb_ractor_t *r, int capa)
+{
+    struct mark_object_ary_init_args args = {
+	.r = r,
+	.capa = capa,
+    };
+    rb_run_with_redirected_allocation(r, ractor_mark_object_ary_init_no_redirection, (VALUE)&args);
+}
+
 static void
 ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 {
@@ -2182,6 +2248,11 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 #if VM_CHECK_MODE > 0
     r->late_to_barrier = false;
 #endif
+
+    if (r != GET_VM()->ractor.main_ractor) {
+	rb_ractor_mark_object_ary_init(r, 128);
+	rb_native_mutex_initialize(&r->mark_object_ary_lock);
+    }
 
     r->result_value = Qnil;
 
