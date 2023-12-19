@@ -72,8 +72,22 @@
 
 RUBY_EXTERN rb_serial_t ruby_vm_global_cvar_state;
 
-#define SUBCLASS_LIST_LOCK() { rb_vm_t *_vm = GET_VM(); rb_native_mutex_lock(&_vm->subclass_list_lock);
-#define SUBCLASS_LIST_UNLOCK() rb_native_mutex_unlock(&_vm->subclass_list_lock); }
+#define SUBCLASS_LOCK_ENTER() \
+{ \
+    rb_vm_t *_vm = GET_VM(); \
+    rb_ractor_t *_cr = GET_RACTOR(); \
+    bool _subclass_list_already_locked = (_vm->subclass_list_lock_owner == _cr); \
+    if (!_subclass_list_already_locked) { \
+	rb_native_mutex_lock(&_vm->subclass_list_lock); \
+	_vm->subclass_list_lock_owner = _cr; \
+    }
+
+#define SUBCLASS_LOCK_LEAVE() \
+    if (!_subclass_list_already_locked) { \
+	_vm->subclass_list_lock_owner = NULL; \
+	rb_native_mutex_unlock(&_vm->subclass_list_lock); \
+    } \
+}
 
 static rb_subclass_entry_t *
 push_subclass_entry_to_list(VALUE super, VALUE klass)
@@ -83,7 +97,7 @@ push_subclass_entry_to_list(VALUE super, VALUE klass)
     entry = ZALLOC(rb_subclass_entry_t);
     entry->klass = klass;
 
-    SUBCLASS_LIST_LOCK();
+    SUBCLASS_LOCK_ENTER();
     {
 	head = RCLASS_SUBCLASSES(super);
 	if (!head) {
@@ -98,7 +112,7 @@ push_subclass_entry_to_list(VALUE super, VALUE klass)
 	}
 	head->next = entry;
     }
-    SUBCLASS_LIST_UNLOCK();
+    SUBCLASS_LOCK_LEAVE();
 
     return entry;
 }
@@ -122,7 +136,7 @@ rb_module_add_to_subclasses_list(VALUE module, VALUE iclass)
 void
 rb_class_remove_subclass_head(VALUE klass)
 {
-    SUBCLASS_LIST_LOCK();
+    SUBCLASS_LOCK_ENTER();
     {
 	rb_subclass_entry_t *head = RCLASS_SUBCLASSES(klass);
 
@@ -134,7 +148,7 @@ rb_class_remove_subclass_head(VALUE klass)
 	    xfree(head);
 	}
     }
-    SUBCLASS_LIST_UNLOCK();
+    SUBCLASS_LOCK_LEAVE();
 }
 
 void
@@ -142,7 +156,7 @@ rb_class_remove_from_super_subclasses(VALUE klass)
 {
     rb_subclass_entry_t *entry = RCLASS_SUBCLASS_ENTRY(klass);
     if (entry) {
-	SUBCLASS_LIST_LOCK();
+	SUBCLASS_LOCK_ENTER();
 	{
 	    rb_subclass_entry_t *prev = entry->prev, *next = entry->next;
 
@@ -153,7 +167,7 @@ rb_class_remove_from_super_subclasses(VALUE klass)
 		next->prev = prev;
 	    }
 	}
-	SUBCLASS_LIST_UNLOCK();
+	SUBCLASS_LOCK_LEAVE();
 
         xfree(entry);
     }
@@ -167,7 +181,7 @@ rb_class_remove_from_module_subclasses(VALUE klass)
     rb_subclass_entry_t *entry = RCLASS_MODULE_SUBCLASS_ENTRY(klass);
 
     if (entry) {
-	SUBCLASS_LIST_LOCK();
+	SUBCLASS_LOCK_ENTER();
 	{
 	    rb_subclass_entry_t *prev = entry->prev, *next = entry->next;
 
@@ -178,7 +192,7 @@ rb_class_remove_from_module_subclasses(VALUE klass)
 		next->prev = prev;
 	    }
 	}
-	SUBCLASS_LIST_UNLOCK();
+	SUBCLASS_LOCK_LEAVE();
 
         xfree(entry);
     }
@@ -189,7 +203,7 @@ rb_class_remove_from_module_subclasses(VALUE klass)
 void
 rb_class_foreach_subclass(VALUE klass, void (*f)(VALUE, VALUE), VALUE arg)
 {
-    SUBCLASS_LIST_LOCK();
+    SUBCLASS_LOCK_ENTER();
     {
 	// RCLASS_SUBCLASSES should always point to our head element which has NULL klass
 	rb_subclass_entry_t *cur = RCLASS_SUBCLASSES(klass);
@@ -210,7 +224,7 @@ rb_class_foreach_subclass(VALUE klass, void (*f)(VALUE, VALUE), VALUE arg)
 	    f(curklass, arg);
 	}
     }
-    SUBCLASS_LIST_UNLOCK();
+    SUBCLASS_LOCK_LEAVE();
 }
 
 static void

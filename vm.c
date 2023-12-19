@@ -4213,6 +4213,7 @@ Init_BareVM(void)
     vm->constant_cache = rb_id_table_create(0);
 
     rb_native_mutex_initialize(&vm->subclass_list_lock);
+    vm->subclass_list_lock_owner = NULL;
 
     // setup main thread
     th->nt = ZALLOC(struct rb_native_thread);

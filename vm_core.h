@@ -793,6 +793,7 @@ typedef struct rb_vm_struct {
     } default_params;
 
     rb_nativethread_lock_t subclass_list_lock;
+    struct rb_ractor_struct *subclass_list_lock_owner;
 
     unsigned int gc_deactivated: 1;
 } rb_vm_t;
