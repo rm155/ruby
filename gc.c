@@ -984,6 +984,8 @@ typedef struct rb_objspace {
         gc_compact_compare_func compare_func;
     } rcompactor;
 
+    rb_nativethread_lock_t local_compaction_lock;
+
     struct {
         size_t pooled_slots;
         size_t step_slots;
@@ -2230,6 +2232,9 @@ rb_objspace_free(rb_objspace_t *objspace)
             SIZE_POOL_EDEN_HEAP(size_pool)->total_slots = 0;
         }
     }
+
+    rb_nativethread_lock_destroy(&objspace->local_compaction_lock);
+
     st_free_table(objspace->id_to_obj_tbl);
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
@@ -4753,6 +4758,8 @@ Init_heap(rb_objspace_t *objspace)
     /* Need to determine if we can use mmap at runtime. */
     heap_page_alloc_use_mmap = INIT_HEAP_PAGE_ALLOC_USE_MMAP;
 #endif
+
+    rb_nativethread_lock_initialize(&objspace->local_compaction_lock);
 
     objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
     objspace->obj_to_id_tbl = st_init_numtable();
@@ -9135,6 +9142,7 @@ static void
 add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs)
 {
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+    rb_native_mutex_lock(&source_objspace->local_compaction_lock);
     rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
     gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
     if (local_rs) {
@@ -9151,6 +9159,7 @@ add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_st
 	set_reference_status(source_objspace->shared_reference_tbl, obj, local_rs);
     }
     rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
+    rb_native_mutex_unlock(&source_objspace->local_compaction_lock);
     rs->refcount = local_rs->refcount;
 }
 
@@ -11616,9 +11625,12 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	    gc_set_flags_finish(objspace, reason, &do_full_mark, &immediate_mark);
 	    gc_prof_timer_start(objspace);
 	    {
+		bool compaction_lock_needed = !!objspace->flags.during_compacting; //TODO: Make compaction more parallelized with sharing
+		if (compaction_lock_needed) rb_native_mutex_lock(&objspace->local_compaction_lock);
 		if (gc_marks(objspace, do_full_mark)) {
 		    gc_sweep(objspace);
 		}
+		if (compaction_lock_needed) rb_native_mutex_unlock(&objspace->local_compaction_lock);
 	    }
 	    gc_prof_timer_stop(objspace);
 	    gc_exit(objspace, gc_enter_event_start);
@@ -12052,7 +12064,7 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
     if (!running_global) reason &= ~GPR_FLAG_GLOBAL;
 
     if(!GET_VM()->gc_deactivated) {
-	if (reason & GPR_FLAG_COMPACT) {
+	if (reason & GPR_FLAG_COMPACT) { //TODO: Implement global compaction
 	    reason &= ~GPR_FLAG_COMPACT;
 	    while (global_gc_needed()) {
 		garbage_collect(objspace, reason, true);
