@@ -12278,6 +12278,16 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
 
     update_shareable_tbl_mapping(objspace, dest, src);
 
+#if VM_CHECK_MODE > 0
+    rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
+    VM_ASSERT(!st_lookup(objspace->shared_reference_tbl, (st_data_t)src, NULL));
+    rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
+
+    rb_native_mutex_lock(&objspace->universally_shared_obj_tbl_lock);
+    VM_ASSERT(!st_lookup(objspace->universally_shared_obj_tbl, (st_data_t)src, NULL));
+    rb_native_mutex_unlock(&objspace->universally_shared_obj_tbl_lock);
+#endif
+
     /* Move the object */
     memcpy(dest, src, MIN(src_slot_size, slot_size));
 
