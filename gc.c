@@ -11445,9 +11445,11 @@ global_gc_needed(void)
 static int
 garbage_collect(rb_objspace_t *objspace, unsigned int reason, bool need_finalize_deferred)
 {
-    if (global_gc_needed() && !(reason & GPR_FLAG_COMPACT)) {
+    if (global_gc_needed()) {
 	reason |= GPR_FLAG_GLOBAL;
     }
+    VM_ASSERT(!(reason & GPR_FLAG_COMPACT) || !(reason & GPR_FLAG_GLOBAL));
+
     if (reason & GPR_FLAG_GLOBAL) {
 	return garbage_collect_global(objspace, reason, need_finalize_deferred);
     }
@@ -12050,6 +12052,13 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
     if (!running_global) reason &= ~GPR_FLAG_GLOBAL;
 
     if(!GET_VM()->gc_deactivated) {
+	if (reason & GPR_FLAG_COMPACT) {
+	    reason &= ~GPR_FLAG_COMPACT;
+	    while (global_gc_needed()) {
+		garbage_collect(objspace, reason, true);
+	    }
+	    reason |= GPR_FLAG_COMPACT;
+	}
 	garbage_collect(objspace, reason, true);
     }
 
