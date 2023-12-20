@@ -2944,6 +2944,7 @@ rb_vm_register_special_exception_str(enum ruby_special_exceptions sp, VALUE cls,
     FL_SET_RAW(exc, FL_SHAREABLE);
     ((VALUE *)vm->special_exceptions)[sp] = exc;
     rb_gc_register_mark_object(exc);
+    rb_register_as_universally_shared(exc);
 }
 
 int
