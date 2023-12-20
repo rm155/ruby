@@ -571,7 +571,7 @@ register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
     ASSERT_global_symbols_locking(symbols);
 
     rb_ractor_classify_as_shareable(str);
-    rb_ractor_classify_as_shareable(sym);
+    if (DYNAMIC_SYM_P(sym)) FL_SET_RAW(sym, RUBY_FL_SHAREABLE);
 
     if (SYMBOL_DEBUG) {
         st_update(symbols->str_sym, (st_data_t)str,
@@ -693,6 +693,16 @@ dsymbol_alloc(rb_symbols_t *symbols, const VALUE klass, const VALUE str, rb_enco
     RSYMBOL(dsym)->hashval = RSHIFT((long)hashval, 1);
     register_sym(symbols, str, dsym);
     rb_hash_aset(symbols->dsymbol_fstr_hash, str, Qtrue);
+
+    if (rb_multi_ractor_p()) {
+	rb_ractor_t *str_ractor = get_ractor_of_value(str);
+	rb_ractor_t *hash_ractor = get_ractor_of_value(symbols->dsymbol_fstr_hash);
+	if (str_ractor && hash_ractor && str_ractor != hash_ractor) {
+	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
+	    rb_register_new_external_reference(hash_ractor->local_objspace, str);
+	}
+    }
+
     RUBY_DTRACE_CREATE_HOOK(SYMBOL, RSTRING_PTR(RSYMBOL(dsym)->fstr));
 
     return dsym;
@@ -752,6 +762,7 @@ lookup_str_sym_with_lock(rb_symbols_t *symbols, const VALUE str)
     if (st_lookup(symbols->str_sym, (st_data_t)str, &sym_data)) {
         VALUE sym = (VALUE)sym_data;
         if (DYNAMIC_SYM_P(sym)) {
+	    if (rb_multi_ractor_p()) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, sym);
             sym = dsymbol_check(symbols, sym);
         }
         return sym;
@@ -1060,6 +1071,7 @@ symbols_i(st_data_t key, st_data_t value, st_data_t arg)
         return ST_DELETE;
     }
     else {
+	if (rb_multi_ractor_p()) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, sym);
         rb_ary_push(ary, sym);
         return ST_CONTINUE;
     }
