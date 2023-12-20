@@ -889,9 +889,6 @@ typedef struct rb_objspace {
     st_table *external_reference_tbl;
     rb_nativethread_lock_t external_reference_tbl_lock;
 
-    st_table *universally_shared_obj_tbl;
-    rb_nativethread_lock_t universally_shared_obj_tbl_lock;
-
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
@@ -1101,10 +1098,6 @@ absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 
     //Shared object tables
     absorb_shared_object_tables(objspace_to_update, objspace_to_copy_from);
-
-    rb_native_mutex_lock(&objspace_to_copy_from->universally_shared_obj_tbl_lock);
-    absorb_table_contents(objspace_to_update->universally_shared_obj_tbl, objspace_to_copy_from->universally_shared_obj_tbl);
-    rb_native_mutex_unlock(&objspace_to_copy_from->universally_shared_obj_tbl_lock);
 
     rb_native_mutex_lock(&objspace_to_copy_from->wmap_referenced_obj_tbl_lock);
     rb_native_mutex_lock(&objspace_to_update->wmap_referenced_obj_tbl_lock);
@@ -2250,9 +2243,6 @@ rb_objspace_free(rb_objspace_t *objspace)
     rb_nativethread_lock_destroy(&objspace->shared_reference_tbl_lock);
     st_free_table(objspace->external_reference_tbl);
     rb_nativethread_lock_destroy(&objspace->external_reference_tbl_lock);
-
-    st_free_table(objspace->universally_shared_obj_tbl);
-    rb_nativethread_lock_destroy(&objspace->universally_shared_obj_tbl_lock);
 
     st_free_table(objspace->wmap_referenced_obj_tbl);
     rb_nativethread_lock_destroy(&objspace->wmap_referenced_obj_tbl_lock);
@@ -4408,12 +4398,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_SHAREABLE)) {
-	if (!using_local_limits(objspace)) {
-	    rb_native_mutex_lock(&objspace->universally_shared_obj_tbl_lock);
-	    st_delete(objspace->universally_shared_obj_tbl, &obj, NULL);
-	    rb_native_mutex_unlock(&objspace->universally_shared_obj_tbl_lock);
-	}
-
 	bool shared_item_found_in_table = !!st_delete(objspace->shareable_tbl, &obj, NULL);
 	if (shared_item_found_in_table) {
 	    objspace->shareable_tbl_size--;
@@ -4795,9 +4779,6 @@ Init_heap(rb_objspace_t *objspace)
     objspace->shareable_tbl = st_init_numtable();
     objspace->secondary_shareable_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->secondary_shareable_tbl_lock);
-
-    objspace->universally_shared_obj_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&objspace->universally_shared_obj_tbl_lock);
 
     objspace->shared_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
@@ -5822,17 +5803,6 @@ rb_remove_from_contained_ractor_tbl(rb_ractor_t *r)
     rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
     st_delete(objspace->contained_ractor_tbl, (st_data_t *) &ractor_obj, NULL);
     rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
-}
-
-void
-rb_register_as_universally_shared(VALUE obj)
-{
-    VM_ASSERT (!rb_special_const_p(obj));
-
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
-    rb_native_mutex_lock(&objspace->universally_shared_obj_tbl_lock);
-    st_insert_no_gc(objspace->universally_shared_obj_tbl, (st_data_t)obj, INT2FIX(0));
-    rb_native_mutex_unlock(&objspace->universally_shared_obj_tbl_lock);
 }
 
 void
@@ -9395,7 +9365,6 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
 
 	mark_and_pin_shared_reference_tbl(objspace);
-	mark_set(objspace, objspace->universally_shared_obj_tbl);
     }
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
@@ -12292,10 +12261,6 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
     rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
     VM_ASSERT(!st_lookup(objspace->shared_reference_tbl, (st_data_t)src, NULL));
     rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
-
-    rb_native_mutex_lock(&objspace->universally_shared_obj_tbl_lock);
-    VM_ASSERT(!st_lookup(objspace->universally_shared_obj_tbl, (st_data_t)src, NULL));
-    rb_native_mutex_unlock(&objspace->universally_shared_obj_tbl_lock);
 #endif
 
     /* Move the object */
