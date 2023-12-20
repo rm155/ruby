@@ -1477,11 +1477,17 @@ nucomp_real_p_m(VALUE self)
 
 /*
  * call-seq:
- *    cmp.denominator  ->  integer
+ *   denominator -> integer
  *
- * Returns the denominator (lcm of both denominator - real and imag).
+ * Returns the denominator of +self+, which is
+ * the {least common multiple}[https://en.wikipedia.org/wiki/Least_common_multiple]
+ * of <tt>self.real.denominator</tt> and <tt>self.imag.denominator</tt>:
  *
- * See numerator.
+ *   Complex.rect(Rational(1, 2), Rational(2, 3)).denominator # => 6
+ *
+ * Note that <tt>n.denominator</tt> of a non-rational numeric is +1+.
+ *
+ * Related: Complex#numerator.
  */
 static VALUE
 nucomp_denominator(VALUE self)
@@ -1492,21 +1498,23 @@ nucomp_denominator(VALUE self)
 
 /*
  * call-seq:
- *    cmp.numerator  ->  numeric
+ *   numerator -> new_complex
  *
- * Returns the numerator.
+ * Returns the \Complex object created from the numerators
+ * of the real and imaginary parts of +self+,
+ * after converting each part to the
+ * {lowest common denominator}[https://en.wikipedia.org/wiki/Lowest_common_denominator]
+ * of the two:
  *
- *        1   2       3+4i  <-  numerator
- *        - + -i  ->  ----
- *        2   3        6    <-  denominator
+ *   c = Complex(Rational(2, 3), Rational(3, 4)) # => ((2/3)+(3/4)*i)
+ *   c.numerator                                 # => (8+9i)
  *
- *    c = Complex('1/2+2/3i')  #=> ((1/2)+(2/3)*i)
- *    n = c.numerator          #=> (3+4i)
- *    d = c.denominator        #=> 6
- *    n / d                    #=> ((1/2)+(2/3)*i)
- *    Complex(Rational(n.real, d), Rational(n.imag, d))
- *                             #=> ((1/2)+(2/3)*i)
- * See denominator.
+ * In this example, the lowest common denominator of the two parts is 12;
+ * the two converted parts may be thought of as \Rational(8, 12) and \Rational(9, 12),
+ * whose numerators, respectively, are 8 and 9;
+ * so the returned value of <tt>c.numerator</tt> is <tt>Complex(8, 9)</tt>.
+ *
+ * Related: Complex#denominator.
  */
 static VALUE
 nucomp_numerator(VALUE self)
@@ -1599,15 +1607,16 @@ f_format(VALUE self, VALUE (*func)(VALUE))
 
 /*
  * call-seq:
- *    cmp.to_s  ->  string
+ *   to_s -> string
  *
- * Returns the value as a string.
+ * Returns a string representation of +self+:
  *
- *    Complex(2).to_s                       #=> "2+0i"
- *    Complex('-8/6').to_s                  #=> "-4/3+0i"
- *    Complex('1/2i').to_s                  #=> "0+1/2i"
- *    Complex(0, Float::INFINITY).to_s      #=> "0+Infinity*i"
- *    Complex(Float::NAN, Float::NAN).to_s  #=> "NaN+NaN*i"
+ *   Complex(2).to_s                      # => "2+0i"
+ *   Complex('-8/6').to_s                 # => "-4/3+0i"
+ *   Complex('1/2i').to_s                 # => "0+1/2i"
+ *   Complex(0, Float::INFINITY).to_s     # => "0+Infinity*i"
+ *   Complex(Float::NAN, Float::NAN).to_s # => "NaN+NaN*i"
+ *
  */
 static VALUE
 nucomp_to_s(VALUE self)
@@ -1617,15 +1626,16 @@ nucomp_to_s(VALUE self)
 
 /*
  * call-seq:
- *    cmp.inspect  ->  string
+ *   inspect -> string
  *
- * Returns the value as a string for inspection.
+ * Returns a string representation of +self+:
  *
- *    Complex(2).inspect                       #=> "(2+0i)"
- *    Complex('-8/6').inspect                  #=> "((-4/3)+0i)"
- *    Complex('1/2i').inspect                  #=> "(0+(1/2)*i)"
- *    Complex(0, Float::INFINITY).inspect      #=> "(0+Infinity*i)"
- *    Complex(Float::NAN, Float::NAN).inspect  #=> "(NaN+NaN*i)"
+ *   Complex(2).inspect                      # => "(2+0i)"
+ *   Complex('-8/6').inspect                 # => "((-4/3)+0i)"
+ *   Complex('1/2i').inspect                 # => "(0+(1/2)*i)"
+ *   Complex(0, Float::INFINITY).inspect     # => "(0+Infinity*i)"
+ *   Complex(Float::NAN, Float::NAN).inspect # => "(NaN+NaN*i)"
+ *
  */
 static VALUE
 nucomp_inspect(VALUE self)
@@ -1643,10 +1653,15 @@ nucomp_inspect(VALUE self)
 
 /*
  * call-seq:
- *    cmp.finite?  ->  true or false
+ *   finite? -> true or false
  *
- * Returns +true+ if +cmp+'s real and imaginary parts are both finite numbers,
- * otherwise returns +false+.
+ * Returns +true+ if both <tt>self.real.finite?</tt> and <tt>self.imag.finite?</tt>
+ * are true, +false+ otherwise:
+ *
+ *   Complex(1, 1).finite?               # => true
+ *   Complex(Float::INFINITY, 0).finite? # => false
+ *
+ * Related: Numeric#finite?, Float#finite?.
  */
 static VALUE
 rb_complex_finite_p(VALUE self)
@@ -1658,15 +1673,15 @@ rb_complex_finite_p(VALUE self)
 
 /*
  * call-seq:
- *    cmp.infinite?  ->  nil or 1
+ *   infinite? -> 1 or nil
  *
- * Returns +1+ if +cmp+'s real or imaginary part is an infinite number,
- * otherwise returns +nil+.
+ * Returns +1+ if either <tt>self.real.infinite?</tt> or <tt>self.imag.infinite?</tt>
+ * is true, +nil+ otherwise:
  *
- *  For example:
+ *   Complex(Float::INFINITY, 0).infinite? # => 1
+ *   Complex(1, 1).infinite?               # => nil
  *
- *     (1+1i).infinite?                   #=> nil
- *     (Float::INFINITY + 1i).infinite?   #=> 1
+ * Related: Numeric#infinite?, Float#infinite?.
  */
 static VALUE
 rb_complex_infinite_p(VALUE self)

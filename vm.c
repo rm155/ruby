@@ -2975,7 +2975,7 @@ ruby_vm_destruct(rb_vm_t *vm)
     if (vm) {
         rb_thread_t *th = vm->ractor.main_thread;
         VALUE *stack = th->ec->vm_stack;
-        if (rb_free_on_exit) {
+        if (rb_free_at_exit) {
             rb_free_default_rand_key();
             rb_free_encoded_insn_data();
             rb_free_global_enc_table();
@@ -3050,7 +3050,7 @@ ruby_vm_destruct(rb_vm_t *vm)
 	}
 	rb_objspace_free_all_non_main(vm);
         if (objspace) {
-            if (rb_free_on_exit) {
+            if (rb_free_at_exit) {
                 rb_objspace_free_objects(objspace);
                 rb_free_generic_iv_tbl_();
                 if (th) {
@@ -4315,7 +4315,7 @@ rb_ruby_debug_ptr(void)
     return &cr->debug;
 }
 
-bool rb_free_on_exit = false;
+bool rb_free_at_exit = false;
 
 /* iseq.c */
 VALUE rb_insn_operand_intern(const rb_iseq_t *iseq,

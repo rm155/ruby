@@ -89,7 +89,7 @@ AS_IF([test "$HAVE_BASERUBY" != no -a "`RUBYOPT=- $BASERUBY --disable=gems -e 'p
 ])
 AS_IF([test "$HAVE_BASERUBY" = no], [
     AS_IF([test "$cross_compiling" = yes], [AC_MSG_ERROR([executable host ruby is required for cross-compiling])])
-    BASERUBY="echo executable host ruby is required.  use --with-baseruby option.; false"
+    BASERUBY=$srcdir/tool/missing-baseruby.bat
 ])
 AC_SUBST(BASERUBY)
 AC_SUBST(HAVE_BASERUBY)
@@ -3947,16 +3947,9 @@ AC_ARG_ENABLE(rjit,
 )
 
 AS_CASE(["$RJIT_SUPPORT"],
-[yes|dev|disasm], [
+[yes|dev], [
     AS_CASE(["$RJIT_SUPPORT"],
     [dev], [
-        # Link libcapstone for --rjit-dump-disasm
-        AC_CHECK_LIB([capstone], [cs_disasm])
-
-        # Enable extra stats (vm_insns_count, ratio_in_rjit)
-        AC_DEFINE(RJIT_STATS, 1)
-    ],
-    [disasm], [
         # Link libcapstone for --rjit-dump-disasm
         AC_CHECK_LIB([capstone], [cs_disasm])
     ])

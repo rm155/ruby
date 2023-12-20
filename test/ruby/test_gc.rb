@@ -151,8 +151,13 @@ class TestGc < Test::Unit::TestCase
     GC.stat(stat)
 
     GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT].times do |i|
-      GC.stat_heap(i, stat_heap)
-      GC.stat(stat)
+      begin
+        reenable_gc = !GC.disable
+        GC.stat_heap(i, stat_heap)
+        GC.stat(stat)
+      ensure
+        GC.enable if reenable_gc
+      end
 
       assert_equal GC::INTERNAL_CONSTANTS[:RVALUE_SIZE] * (2**i), stat_heap[:slot_size]
       assert_operator stat_heap[:heap_allocatable_pages], :<=, stat[:heap_allocatable_pages]
@@ -804,6 +809,15 @@ class TestGc < Test::Unit::TestCase
         ObjectSpace.define_finalizer(obj, method(:c2))
         obj = nil
       end
+    end;
+
+    assert_normal_exit "#{<<~"begin;"}\n#{<<~'end;'}", '[Bug #20042]'
+    begin;
+      def (f = Object.new).call = nil # missing ID
+      o = Object.new
+      ObjectSpace.define_finalizer(o, f)
+      o = nil
+      GC.start
     end;
   end
 
