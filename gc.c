@@ -8472,7 +8472,6 @@ static inline void
 gc_mark(rb_objspace_t *objspace, VALUE obj)
 {
     if (!is_markable_object(obj)) return;
-    if (RB_TYPE_P(obj, T_CLASS)) gc_pin(objspace, obj);
     gc_mark_ptr(objspace, obj);
 }
 
@@ -8507,7 +8506,6 @@ rb_gc_mark_and_move(VALUE *ptr)
         *ptr = rb_gc_location(*ptr);
     }
     else {
-	if (RB_TYPE_P(*ptr, T_CLASS)) gc_pin(objspace, *ptr);
         gc_mark_ptr(objspace, *ptr);
     }
 }
@@ -10410,7 +10408,7 @@ gc_compact_plane(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *
         VALUE vp = (VALUE)p;
         GC_ASSERT(vp % sizeof(RVALUE) == 0);
 
-        if (bitset & 1) {
+        if ((bitset & 1) && (!using_local_limits(objspace) || !FL_TEST_RAW(vp, FL_SHAREABLE))) {
             objspace->rcompactor.considered_count_table[BUILTIN_TYPE(vp)]++;
 
             if (gc_is_moveable_obj(objspace, vp)) {
