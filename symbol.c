@@ -569,7 +569,6 @@ register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 {
     ASSERT_global_symbols_locking(symbols);
 
-    rb_ractor_classify_as_shareable(str);
     if (DYNAMIC_SYM_P(sym)) FL_SET_RAW(sym, RUBY_FL_SHAREABLE);
 
     if (SYMBOL_DEBUG) {
