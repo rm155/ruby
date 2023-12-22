@@ -458,6 +458,7 @@ set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
     VALUE ary, ids = symbols->ids;
     if (idx >= (size_t)RARRAY_LEN(ids) || NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
         ary = rb_ary_hidden_new(ID_ENTRY_UNIT * ID_ENTRY_SIZE);
+	FL_SET_RAW(ary, RUBY_FL_SHAREABLE);
 	rb_establish_potential_cross_ractor_connection(ids, ary);
         rb_ary_store(ids, (long)idx, ary);
     }
