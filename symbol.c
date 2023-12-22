@@ -691,14 +691,10 @@ dsymbol_alloc(rb_symbols_t *symbols, const VALUE klass, const VALUE str, rb_enco
     RSYMBOL(dsym)->hashval = RSHIFT((long)hashval, 1);
     register_sym(symbols, str, dsym);
     rb_hash_aset(symbols->dsymbol_fstr_hash, str, Qtrue);
+    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
 
     if (rb_multi_ractor_p()) {
-	rb_ractor_t *str_ractor = get_ractor_of_value(str);
-	rb_ractor_t *hash_ractor = get_ractor_of_value(symbols->dsymbol_fstr_hash);
-	if (str_ractor && hash_ractor && str_ractor != hash_ractor) {
-	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
-	    rb_register_new_external_reference(hash_ractor->local_objspace, str);
-	}
+	rb_establish_potential_cross_ractor_connection(symbols->dsymbol_fstr_hash, str);
     }
 
     RUBY_DTRACE_CREATE_HOOK(SYMBOL, RSTRING_PTR(RSYMBOL(dsym)->fstr));

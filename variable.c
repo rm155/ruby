@@ -3591,6 +3591,8 @@ const_set(VALUE klass, ID id, VALUE val)
 
     check_before_mod_set(klass, id, val, "constant");
 
+    rb_establish_potential_cross_ractor_connection(klass, val);
+
     RB_VM_LOCK_ENTER();
     {
         struct rb_id_table *tbl = RCLASS_CONST_TBL(klass);

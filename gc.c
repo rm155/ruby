@@ -5846,11 +5846,12 @@ cross_ractor_const_access(VALUE c, VALUE klass, ID id)
     }
 }
 
-void
-rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
+static void
+register_new_external_reference(rb_objspace_t *receiving_objspace, rb_objspace_t *source_objspace, VALUE obj)
 {
-    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    if (source_objspace == receiving_objspace) return;
+    VM_ASSERT(!RB_SPECIAL_CONST_P(obj));
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == source_objspace);
+    VM_ASSERT(receiving_objspace != source_objspace);
 
     rb_native_mutex_lock(&receiving_objspace->external_reference_tbl_lock);
 
@@ -5888,6 +5889,26 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
 	global_space->rglobalgc.shared_objects_total++;
 	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+    }
+}
+
+void
+rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
+{
+    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+    if (source_objspace != receiving_objspace) register_new_external_reference(receiving_objspace, source_objspace, obj);
+}
+
+void
+rb_establish_potential_cross_ractor_connection(VALUE referencer, VALUE referenced_obj)
+{
+    if (RB_SPECIAL_CONST_P(referencer) || RB_SPECIAL_CONST_P(referenced_obj)) return;
+
+    rb_objspace_t *receiving_objspace = GET_OBJSPACE_OF_VALUE(referencer);
+    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(referenced_obj);
+    if (receiving_objspace != source_objspace) {
+	VM_ASSERT(FL_TEST(referenced_obj, FL_SHAREABLE));
+	register_new_external_reference(receiving_objspace, source_objspace, referenced_obj);
     }
 }
 
