@@ -1328,7 +1328,7 @@ rb_proc_isolate_bang(VALUE self)
         proc->is_isolated = TRUE;
     }
 
-    rb_ractor_classify_as_shareable(self);
+    FL_SET_RAW(self, RUBY_FL_SHAREABLE);
     return self;
 }
 
@@ -1366,7 +1366,7 @@ rb_proc_ractor_make_shareable(VALUE self)
         proc->is_isolated = TRUE;
     }
 
-    rb_ractor_classify_as_shareable(self);
+    FL_SET_RAW(self, RUBY_FL_SHAREABLE);
     return self;
 }
 
