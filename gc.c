@@ -5281,6 +5281,7 @@ rb_define_finalizer_no_check(VALUE obj, VALUE block)
     }
     else {
         table = rb_ary_new3(1, block);
+	FL_SET_RAW(table, RUBY_FL_SHAREABLE); //TODO: Protect table from data races
         RBASIC_CLEAR_CLASS(table);
         st_add_direct(finalizer_table, obj, table);
     }
@@ -5393,11 +5394,8 @@ rb_gc_copy_finalizer(VALUE dest, VALUE obj)
     if (!FL_TEST(obj, FL_FINALIZE)) return;
     if (st_lookup(finalizer_table, obj, &data)) {
         table = (VALUE)data;
-	rb_objspace_t *origin_objspace = objspace;
 	objspace = GET_OBJSPACE_OF_VALUE(dest);
-	if (origin_objspace != objspace) {
-	    rb_ractor_classify_as_shareable(table);
-	}
+	rb_register_new_external_reference(objspace, table);
         st_insert(finalizer_table, dest, table);
     }
     FL_SET(dest, FL_FINALIZE);
