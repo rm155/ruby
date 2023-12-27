@@ -138,7 +138,7 @@ enc_new(rb_encoding *encoding)
 {
     VALUE enc = TypedData_Wrap_Struct(rb_cEncoding, &encoding_data_type, (void *)encoding);
     rb_obj_freeze(enc);
-    rb_ractor_classify_as_shareable(enc);
+    FL_SET_RAW(enc, RUBY_FL_SHAREABLE);
     return enc;
 }
 
@@ -150,7 +150,9 @@ enc_list_update(int index, rb_raw_encoding *encoding)
     VALUE list = rb_encoding_list;
     if (list && NIL_P(rb_ary_entry(list, index))) {
         /* initialize encoding data */
-        rb_ary_store(list, index, enc_new(encoding));
+	VALUE enc = enc_new(encoding);
+	rb_establish_potential_cross_ractor_connection(list, enc);
+        rb_ary_store(list, index, enc);
     }
 }
 
@@ -169,6 +171,7 @@ enc_list_lookup(int idx)
         rb_bug("rb_enc_from_encoding_index(%d): not created yet", idx);
     }
     else {
+	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, enc);
         return enc;
     }
 }
