@@ -514,10 +514,13 @@ rb_ary_set_shared(VALUE ary, VALUE shared_root)
     assert(!OBJ_FROZEN(ary));
     assert(ARY_SHARED_ROOT_P(shared_root) || OBJ_FROZEN(shared_root));
 
+    
+    FL_SET_RAW(shared_root, RUBY_FL_SHAREABLE);
+    rb_establish_potential_cross_ractor_connection(ary, shared_root);
+
     rb_ary_increment_share(shared_root);
     FL_SET_SHARED(ary);
     RB_OBJ_WRITE(ary, &RARRAY(ary)->as.heap.aux.shared_root, shared_root);
-    rb_ractor_classify_as_shareable(RARRAY(ary)->as.heap.aux.shared_root);
 
     RB_DEBUG_COUNTER_INC(obj_ary_shared_create);
 }
