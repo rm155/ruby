@@ -1320,6 +1320,7 @@ static VALUE
 iseqw_new(const rb_iseq_t *iseq)
 {
     if (iseq->wrapper) {
+	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, iseq->wrapper);
         return iseq->wrapper;
     }
     else {
@@ -1328,7 +1329,9 @@ iseqw_new(const rb_iseq_t *iseq)
         deconst.in = iseq;
         obj = TypedData_Wrap_Struct(rb_cISeq, &iseqw_data_type, deconst.out);
         RB_OBJ_WRITTEN(obj, Qundef, iseq);
-	rb_ractor_classify_as_shareable(obj);
+
+	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	rb_establish_potential_cross_ractor_connection((VALUE)iseq, obj);
 
         /* cache a wrapper object */
         RB_OBJ_WRITE((VALUE)iseq, &iseq->wrapper, obj);
