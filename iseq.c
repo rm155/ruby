@@ -1214,13 +1214,17 @@ rb_iseq_from_eval_p(const rb_iseq_t *iseq)
 VALUE
 rb_iseq_label(const rb_iseq_t *iseq)
 {
-    return ISEQ_BODY(iseq)->location.label;
+    VALUE label = ISEQ_BODY(iseq)->location.label;
+    rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, label);
+    return label;
 }
 
 VALUE
 rb_iseq_base_label(const rb_iseq_t *iseq)
 {
-    return ISEQ_BODY(iseq)->location.base_label;
+    VALUE base_label = ISEQ_BODY(iseq)->location.base_label;
+    rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, base_label);
+    return base_label;
 }
 
 VALUE
@@ -1235,7 +1239,9 @@ rb_iseq_method_name(const rb_iseq_t *iseq)
     struct rb_iseq_constant_body *const body = ISEQ_BODY(ISEQ_BODY(iseq)->local_iseq);
 
     if (body->type == ISEQ_TYPE_METHOD) {
-        return body->location.base_label;
+	VALUE base_label = body->location.base_label;
+	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, base_label);
+        return base_label;
     }
     else {
         return Qnil;
@@ -2234,6 +2240,7 @@ rb_insn_operand_intern(const rb_iseq_t *iseq,
             if (op) {
                 const rb_iseq_t *iseq = rb_iseq_check((rb_iseq_t *)op);
                 ret = ISEQ_BODY(iseq)->location.label;
+		rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, ret);
                 if (child) {
                     rb_ary_push(child, (VALUE)iseq);
                 }
@@ -3240,6 +3247,7 @@ iseq_data_to_ary(const rb_iseq_t *iseq)
         st_data_t label;
 
         if (st_lookup(labels_table, pos, &label)) {
+	    rb_establish_potential_cross_ractor_connection(body, label);
             rb_ary_push(body, (VALUE)label);
         }
 
@@ -3299,6 +3307,7 @@ iseq_data_to_ary(const rb_iseq_t *iseq)
     rb_ary_push(val, INT2FIX(ISEQ_MINOR_VERSION)); /* minor */
     rb_ary_push(val, INT2FIX(1));
     rb_ary_push(val, misc);
+    rb_establish_potential_cross_ractor_connection(val, iseq_body->location.label);
     rb_ary_push(val, iseq_body->location.label);
     rb_ary_push(val, rb_iseq_path(iseq));
     rb_ary_push(val, rb_iseq_realpath(iseq));

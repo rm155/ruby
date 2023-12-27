@@ -5929,7 +5929,6 @@ make_name_for_block(const rb_iseq_t *orig_iseq)
         block_name = rb_sprintf("block (%d levels) in %"PRIsVALUE, level, ISEQ_BODY(iseq)->location.label);
     }
 
-    rb_ractor_classify_as_shareable(block_name);
     return block_name;
 }
 
