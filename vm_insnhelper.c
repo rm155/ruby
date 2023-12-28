@@ -4675,6 +4675,7 @@ vm_search_super_method(const rb_control_frame_t *reg_cfp, struct rb_call_data *c
                                vm_ci_argc(cd->ci),
                                vm_ci_kwarg(cd->ci));
 
+    rb_establish_potential_cross_ractor_connection((VALUE)reg_cfp->iseq, (VALUE)cd->ci);
     RB_OBJ_WRITTEN(reg_cfp->iseq, Qundef, cd->ci);
 
     const struct rb_callcache *cc;

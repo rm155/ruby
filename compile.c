@@ -1458,6 +1458,7 @@ new_callinfo(rb_iseq_t *iseq, ID mid, int argc, unsigned int flag, struct rb_cal
 
     ISEQ_BODY(iseq)->ci_size++;
     const struct rb_callinfo *ci = vm_ci_new(mid, flag, argc, kw_arg);
+    rb_establish_potential_cross_ractor_connection((VALUE)iseq, (VALUE)ci);
     RB_OBJ_WRITTEN(iseq, Qundef, ci);
     return ci;
 }
@@ -3144,6 +3145,7 @@ ci_flag_set(const rb_iseq_t *iseq, const struct rb_callinfo *ci, unsigned int ad
                                              vm_ci_flag(ci) | add,
                                              vm_ci_argc(ci),
                                              vm_ci_kwarg(ci));
+    rb_establish_potential_cross_ractor_connection((VALUE)iseq, (VALUE)ci);
     RB_OBJ_WRITTEN(iseq, ci, nci);
     return nci;
 }
@@ -3155,6 +3157,7 @@ ci_argc_set(const rb_iseq_t *iseq, const struct rb_callinfo *ci, int argc)
                                               vm_ci_flag(ci),
                                               argc,
                                               vm_ci_kwarg(ci));
+    rb_establish_potential_cross_ractor_connection((VALUE)iseq, (VALUE)ci);
     RB_OBJ_WRITTEN(iseq, ci, nci);
     return nci;
 }
@@ -12333,6 +12336,7 @@ ibf_load_ci_entries(const struct ibf_load *load,
             }
 
             cds[i].ci = vm_ci_new(mid, flag, argc, kwarg);
+	    rb_establish_potential_cross_ractor_connection((VALUE)load->iseq, (VALUE)cds[i].ci);
             RB_OBJ_WRITTEN(load->iseq, Qundef, cds[i].ci);
             cds[i].cc = vm_cc_empty();
         }

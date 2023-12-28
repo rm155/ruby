@@ -3867,8 +3867,6 @@ static int
 old_sharing_system_imemo_type(enum imemo_type type)
 {
     switch (type) {
-      case imemo_iseq:
-      case imemo_callinfo:
       case imemo_callcache:
       case imemo_constcache:
 	return 1;
