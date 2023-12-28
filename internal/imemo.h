@@ -143,12 +143,9 @@ static inline void MEMO_V2_SET(struct MEMO *m, VALUE v);
 RUBY_SYMBOL_EXPORT_BEGIN
 #if IMEMO_DEBUG
 VALUE rb_imemo_new_debug(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0, const char *file, int line);
-VALUE rb_shareable_imemo_new_debug(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0, const char *file, int line);
 #define rb_imemo_new(type, v1, v2, v3, v0) rb_imemo_new_debug(type, v1, v2, v3, v0, __FILE__, __LINE__)
-#define rb_shareable_imemo_new(type, v1, v2, v3, v0) rb_shareable_imemo_new_debug(type, v1, v2, v3, v0, __FILE__, __LINE__)
 #else
 VALUE rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0);
-VALUE rb_shareable_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0);
 #endif
 const char *rb_imemo_name(enum imemo_type type);
 RUBY_SYMBOL_EXPORT_END

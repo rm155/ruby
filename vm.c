@@ -1221,7 +1221,7 @@ env_copy(const VALUE *src_ep, VALUE read_only_variables)
 
     VALUE *env_body = ZALLOC_N(VALUE, src_env->env_size); // fill with Qfalse
     VALUE *ep = &env_body[src_env->env_size - 2];
-    const rb_env_t *copied_env = vm_shareable_env_new(ep, env_body, src_env->env_size, src_env->iseq);
+    const rb_env_t *copied_env = vm_env_new(ep, env_body, src_env->env_size, src_env->iseq);
 
     // Copy after allocations above, since they can move objects in src_ep.
     RB_OBJ_WRITE(copied_env, &ep[VM_ENV_DATA_INDEX_ME_CREF], src_ep[VM_ENV_DATA_INDEX_ME_CREF]);
@@ -1275,6 +1275,10 @@ proc_isolate_env(VALUE self, rb_proc_t *proc, VALUE read_only_variables)
     const struct rb_captured_block *captured = &proc->block.as.captured;
     const rb_env_t *env = env_copy(captured->ep, read_only_variables);
     *((const VALUE **)&proc->block.as.captured.ep) = env->ep;
+
+    FL_SET_RAW(env, RUBY_FL_SHAREABLE);
+    rb_establish_potential_cross_ractor_connection(self, env);
+
     RB_OBJ_WRITTEN(self, Qundef, env);
 }
 

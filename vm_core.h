@@ -1523,15 +1523,6 @@ vm_env_new(VALUE *env_ep, VALUE *env_body, unsigned int env_size, const rb_iseq_
     return env;
 }
 
-static inline const rb_env_t *
-vm_shareable_env_new(VALUE *env_ep, VALUE *env_body, unsigned int env_size, const rb_iseq_t *iseq)
-{
-    rb_env_t *env = (rb_env_t *)rb_shareable_imemo_new(imemo_env, (VALUE)env_ep, (VALUE)env_body, 0, (VALUE)iseq);
-    env->env_size = env_size;
-    env_ep[VM_ENV_DATA_INDEX_ENV] = (VALUE)env;
-    return env;
-}
-
 static inline void
 VM_FORCE_WRITE(const VALUE *ptr, VALUE v)
 {
