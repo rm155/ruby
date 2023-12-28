@@ -353,6 +353,7 @@ rb_method_table_insert(VALUE klass, struct rb_id_table *table, ID method_id, con
     VM_ASSERT(RB_TYPE_P(table_owner, T_CLASS) || RB_TYPE_P(table_owner, T_ICLASS) || RB_TYPE_P(table_owner, T_MODULE));
     VM_ASSERT(table == RCLASS_M_TBL(table_owner));
     rb_id_table_insert(table, method_id, (VALUE)me);
+    rb_establish_potential_cross_ractor_connection(table_owner, (VALUE)me);
     RB_OBJ_WRITTEN(table_owner, Qundef, (VALUE)me);
 }
 
@@ -1256,6 +1257,7 @@ prepare_callable_method_entry(VALUE defined_class, ID id, const rb_method_entry_
                     mtbl = RCLASS_EXT(defined_class)->callable_m_tbl = rb_id_table_create(0);
                 }
                 cme = rb_method_entry_complement_defined_class(me, me->called_id, defined_class);
+		rb_establish_potential_cross_ractor_connection(defined_class, (VALUE)cme);
                 rb_id_table_insert(mtbl, id, (VALUE)cme);
                 RB_OBJ_WRITTEN(defined_class, Qundef, (VALUE)cme);
                 VM_ASSERT(callable_method_entry_p(cme));
@@ -1347,6 +1349,7 @@ negative_cme(ID mid)
     }
     else {
         cme = (rb_callable_method_entry_t *)rb_method_entry_alloc(mid, Qnil, Qnil, NULL, false);
+	rb_register_new_external_reference(vm->objspace, (VALUE)cme);
         rb_id_table_insert(vm->negative_cme_table, mid, (VALUE)cme);
     }
 
