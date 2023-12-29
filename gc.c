@@ -10530,7 +10530,7 @@ gc_sweep_compact(rb_objspace_t *objspace)
 }
 
 static void
-gc_marks_rest(rb_objspace_t *objspace)
+gc_marks_rest_no_finish(rb_objspace_t *objspace)
 {
     gc_report(1, objspace, "gc_marks_rest\n");
 
@@ -10544,7 +10544,12 @@ gc_marks_rest(rb_objspace_t *objspace)
     else {
         gc_mark_stacked_objects_all(objspace);
     }
+}
 
+static void
+gc_marks_rest(rb_objspace_t *objspace)
+{
+    gc_marks_rest_no_finish(objspace);
     gc_marks_finish(objspace);
 }
 
@@ -10645,9 +10650,13 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
 	objspace->global_gc_current_target = os;
 	gc_prof_mark_timer_start(os);
 	if (!is_incremental_marking(os)) {
-	    gc_marks_rest(os);
+	    gc_marks_rest_no_finish(os);
 	}
+    }
 
+    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+	objspace->global_gc_current_target = os;
+	gc_marks_finish(os);
 #if RGENGC_PROFILE > 0
 	if (gc_prof_record(os)) {
 	    gc_profile_record *record = gc_prof_record(os);
