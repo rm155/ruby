@@ -9092,6 +9092,7 @@ shared_references_all_marked(rb_objspace_t *objspace)
 static bool
 double_check_shared_reference_tbl(rb_objspace_t *objspace)
 {
+    if (!using_local_limits(objspace)) return true;
     if (!shared_references_all_marked(objspace)) {
 	mark_and_pin_shared_reference_tbl(objspace);
 	return false;
