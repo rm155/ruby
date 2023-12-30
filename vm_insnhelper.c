@@ -5862,6 +5862,7 @@ vm_ic_update(const rb_iseq_t *iseq, IC ic, VALUE val, const VALUE *reg_ep, const
     RB_OBJ_WRITE(ice, &ice->value, val);
     ice->ic_cref = vm_get_const_key_cref(reg_ep);
     if (rb_ractor_shareable_p(val)) ice->flags |= IMEMO_CONST_CACHE_SHAREABLE;
+    rb_establish_potential_cross_ractor_connection((VALUE)iseq, (VALUE)ice);
     RB_OBJ_WRITE(iseq, &ic->entry, ice);
 
     RUBY_ASSERT(pc >= ISEQ_BODY(iseq)->iseq_encoded);
@@ -5878,6 +5879,7 @@ rb_vm_opt_getconstant_path(rb_execution_context_t *ec, rb_control_frame_t *const
     struct iseq_inline_constant_cache_entry *ice = ic->entry;
     if (ice && vm_ic_hit_p(ice, GET_EP())) {
         val = ice->value;
+	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, val);
 
         VM_ASSERT(val == vm_get_ev_const_chain(ec, segments));
     } else {
