@@ -1008,6 +1008,7 @@ typedef struct rb_objspace {
 
     int local_gc_level;
     bool running_global_gc;
+    struct rb_objspace *current_parent_objspace;
 
     rb_ractor_t *alloc_target_ractor;
     struct rb_objspace *global_gc_current_target;
@@ -8429,12 +8430,23 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
 
-    if (using_local_limits(objspace) && !in_marking_range(objspace, obj)) {
-	if (LIKELY(during_gc) && is_full_marking(objspace)) {
-	    check_not_tnone(obj);
-	    mark_in_external_reference_tbl(objspace, obj);
+    //TODO: Improve condition efficiency
+    if (using_local_limits(objspace)) {
+	if (!in_marking_range(objspace, obj)) {
+	    if (LIKELY(during_gc) && is_full_marking(objspace)) {
+		check_not_tnone(obj);
+		mark_in_external_reference_tbl(objspace, obj);
+	    }
+	    return;
 	}
-	return;
+    }
+    else if (is_full_marking(objspace)) {
+	if (LIKELY(during_gc)) {
+	    if (objspace->current_parent_objspace != GET_OBJSPACE_OF_VALUE(obj)) {
+		check_not_tnone(obj);
+		mark_in_external_reference_tbl(objspace->current_parent_objspace, obj);
+	    }
+	}
     }
 
     if (LIKELY(during_gc)) {
@@ -8600,6 +8612,10 @@ gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
     }
     else {
         objspace->rgengc.parent_object = Qfalse;
+    }
+
+    if (!using_local_limits(objspace)) {
+	objspace->current_parent_objspace = GET_OBJSPACE_OF_VALUE(obj);
     }
 }
 
@@ -9294,6 +9310,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     if (categoryp) *categoryp = "xxx";
 
     objspace->rgengc.parent_object = Qfalse;
+    objspace->current_parent_objspace = objspace;
 
 #if PRINT_ROOT_TICKS
 #define MARK_CHECKPOINT_PRINT_TICK(category) do { \
@@ -10193,7 +10210,7 @@ gc_marks_finish(rb_objspace_t *objspace)
 
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace);
-    if (using_local_limits(objspace) && is_full_marking(objspace)) update_shared_object_references(objspace);
+    if (is_full_marking(objspace)) update_shared_object_references(objspace);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
