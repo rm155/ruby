@@ -1034,13 +1034,8 @@ enum {
     shared_object_added,
 };
 
-typedef struct gc_reference_count {
-    rb_atomic_t count;
-    bool removed_by_global_gc;
-} gc_reference_count_t;
-
 typedef struct gc_reference_status {
-    gc_reference_count_t *refcount;
+    rb_atomic_t *refcount;
     int status;
 } gc_reference_status_t;
 
@@ -4404,15 +4399,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
 	global_space->rglobalgc.shared_objects_total--;
 	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
-
-	rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
-	gc_reference_status_t *rs = get_reference_status(objspace->shared_reference_tbl, obj);
-	if (rs) {
-	    rs->refcount->removed_by_global_gc = true;
-	    delete_reference_status(objspace->shared_reference_tbl, obj);
-	    free(rs);
-	}
-	rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
@@ -5859,12 +5845,11 @@ register_new_external_reference(rb_objspace_t *receiving_objspace, rb_objspace_t
 	gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
 	VM_ASSERT(!!local_rs || (rb_current_allocating_ractor() == source_objspace->ractor) || (rb_current_allocating_ractor() == receiving_objspace->ractor));
 	if (local_rs) {
-	    ATOMIC_INC(local_rs->refcount->count);
+	    ATOMIC_INC(*local_rs->refcount);
 	}
 	else {
-	    gc_reference_count_t *refcount = malloc(sizeof(gc_reference_count_t));
-	    refcount->count = 1;
-	    refcount->removed_by_global_gc = false;
+	    rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
+	    *refcount = 1;
 
 	    local_rs = malloc(sizeof(gc_reference_status_t));
 	    local_rs->refcount = refcount;
@@ -9122,21 +9107,16 @@ double_check_shared_reference_tbl(rb_objspace_t *objspace)
 static void
 drop_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs)
 {
-    gc_reference_count_t *refcount = rs->refcount;
-    rb_atomic_t prev_count = RUBY_ATOMIC_FETCH_SUB(refcount->count, 1);
+    rb_atomic_t *refcount = rs->refcount;
+    rb_atomic_t prev_count = RUBY_ATOMIC_FETCH_SUB(*refcount, 1);
     if (prev_count == 1) {
-	if (!refcount->removed_by_global_gc) {
-	    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-	    rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
-	    if (refcount->count == 0) {
-		delete_reference_status(source_objspace->shared_reference_tbl, obj);
-		free(refcount);
-	    }
-	    rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
-	}
-	else {
+	rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
+	rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
+	if (*refcount == 0) {
+	    delete_reference_status(source_objspace->shared_reference_tbl, obj);
 	    free(refcount);
 	}
+	rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
     }
     free(rs);
 }
@@ -9148,12 +9128,11 @@ add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_st
     rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
     gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
     if (local_rs) {
-	ATOMIC_INC(local_rs->refcount->count);
+	ATOMIC_INC(*local_rs->refcount);
     }
     else {
-	gc_reference_count_t *refcount = malloc(sizeof(gc_reference_count_t));
-	refcount->count = 1;
-	refcount->removed_by_global_gc = false;
+	rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
+	*refcount = 1;
 
 	local_rs = malloc(sizeof(gc_reference_status_t));
 	local_rs->refcount = refcount;
@@ -9206,7 +9185,7 @@ insert_external_reference_row(st_data_t key, st_data_t val, st_data_t arg)
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) != objspace_to_update);
     bool replaced = !!st_insert(target_tbl, key, val);
     if (replaced) {
-	ATOMIC_DEC(rs->refcount->count);
+	ATOMIC_DEC(*rs->refcount);
     }
     return ST_CONTINUE;
 }
