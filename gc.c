@@ -11736,7 +11736,8 @@ begin_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev)
     VM_COND_AND_BARRIER_WAIT(vm, vm->global_gc_finished, !vm->global_gc_underway);
     objspace->running_global_gc = true;
     vm->global_gc_underway = true;
-    VM_COND_AND_BARRIER_WAIT(vm, vm->no_borrower_mode, vm->borrower_mode_count == 0);
+    rb_ractor_t *cr = GET_RACTOR();
+    VM_COND_AND_BARRIER_WAIT(vm, vm->no_borrower_mode, (vm->borrower_mode_count == 0 || (vm->borrower_mode_count == 1 && cr->borrower_mode_levels > 0)));
     rb_vm_barrier();
 }
 
