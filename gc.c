@@ -3862,12 +3862,7 @@ inherently_shareable_imemo_type(enum imemo_type type)
 static int
 old_sharing_system_imemo_type(enum imemo_type type)
 {
-    switch (type) {
-      case imemo_callcache:
-	return 1;
-      default:
-	return 0;
-    }
+    return 0;
 }
 
 #undef rb_imemo_new

@@ -434,7 +434,8 @@ cc_new(VALUE klass, ID mid, int argc, const rb_callable_method_entry_t *cme)
             const struct rb_callinfo *ci = vm_ci_new(mid, 0, argc, NULL); // TODO: proper ci
             cc = vm_cc_new(klass, cme, vm_call_general, cc_type_normal);
             METHOD_ENTRY_CACHED_SET((struct rb_callable_method_entry_struct *)cme);
-	    rb_establish_potential_cross_ractor_connection((VALUE)klass, (VALUE)ci);
+	    rb_establish_potential_cross_ractor_connection(klass, (VALUE)ci);
+	    rb_establish_potential_cross_ractor_connection(klass, (VALUE)cc);
             vm_ccs_push(klass, ccs, ci, cc);
         }
     }
