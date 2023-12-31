@@ -3868,7 +3868,6 @@ old_sharing_system_imemo_type(enum imemo_type type)
 {
     switch (type) {
       case imemo_callcache:
-      case imemo_constcache:
 	return 1;
       default:
 	return 0;
@@ -4807,6 +4806,9 @@ rb_create_ractor_local_objspace(rb_ractor_t *ractor)
     ractor->local_objspace = rb_objspace_alloc();
     ractor->local_objspace->ractor = ractor;
     Init_heap(ractor->local_objspace);
+    if (ractor != GET_VM()->ractor.main_ractor) {
+	ruby_single_main_objspace = NULL;
+    }
     rb_objspace_gc_enable(ractor->local_objspace);
 }
 
@@ -5888,6 +5890,7 @@ register_new_external_reference(rb_objspace_t *receiving_objspace, rb_objspace_t
 void
 rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
 {
+    if (RB_SPECIAL_CONST_P(obj)) return;
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
     if (source_objspace != receiving_objspace) register_new_external_reference(receiving_objspace, source_objspace, obj);
 }

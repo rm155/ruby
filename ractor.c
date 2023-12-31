@@ -2052,9 +2052,8 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     unlock_ractor_set();
 }
 
-static void
-cancel_single_ractor_mode(void)
-{
+static VALUE
+cancel_single_ractor_mode_no_redirection(VALUE args) {
     // enable multi-ractor mode
     RUBY_DEBUG_LOG("enable multi-ractor mode");
 
@@ -2067,7 +2066,13 @@ cancel_single_ractor_mode(void)
     }
 
     ruby_single_main_ractor = NULL;
-    ruby_single_main_objspace = NULL;
+    return Qnil;
+}
+
+static void
+cancel_single_ractor_mode(void)
+{
+    rb_run_with_redirected_allocation(GET_VM()->ractor.main_ractor, cancel_single_ractor_mode_no_redirection, Qnil);
 }
 
 static void
