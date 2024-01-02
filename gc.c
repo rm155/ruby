@@ -4389,11 +4389,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	    objspace->secondary_shareable_tbl_size--;
 	    rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
 	}
-
-	rb_global_space_t *global_space = &rb_global_space;
-	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	global_space->rglobalgc.shared_objects_total--;
-	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
@@ -5823,6 +5818,8 @@ cross_ractor_const_access(VALUE c, VALUE klass, ID id)
     }
 }
 
+static void add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs);
+
 static void
 register_new_external_reference(rb_objspace_t *receiving_objspace, rb_objspace_t *source_objspace, VALUE obj)
 {
@@ -5836,36 +5833,15 @@ register_new_external_reference(rb_objspace_t *receiving_objspace, rb_objspace_t
     bool new_addition = !rs;
 
     if (new_addition) {
-	rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
-	gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
-	VM_ASSERT(!!local_rs || (rb_current_allocating_ractor() == source_objspace->ractor) || (rb_current_allocating_ractor() == receiving_objspace->ractor));
-	if (local_rs) {
-	    ATOMIC_INC(*local_rs->refcount);
-	}
-	else {
-	    rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
-	    *refcount = 1;
-
-	    local_rs = malloc(sizeof(gc_reference_status_t));
-	    local_rs->refcount = refcount;
-	    local_rs->status = shared_object_local;
-	    set_reference_status(source_objspace->shared_reference_tbl, obj, local_rs);
-	}
-	rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
-
 	gc_reference_status_t *rs = malloc(sizeof(gc_reference_status_t));
-	rs->refcount = local_rs->refcount;
+
+	add_external_reference_usage(receiving_objspace, obj, rs);
+
 	rs->status = shared_object_unmarked;
 	set_reference_status(receiving_objspace->external_reference_tbl, obj, rs);
     }
 
     rb_native_mutex_unlock(&receiving_objspace->external_reference_tbl_lock);
-    if (new_addition) {
-	rb_global_space_t *global_space = &rb_global_space;
-	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	global_space->rglobalgc.shared_objects_total++;
-	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
-    }
 }
 
 void
@@ -9110,6 +9086,11 @@ drop_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_s
 	if (*refcount == 0) {
 	    delete_reference_status(source_objspace->shared_reference_tbl, obj);
 	    free(refcount);
+
+	    rb_global_space_t *global_space = &rb_global_space;
+	    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	    global_space->rglobalgc.shared_objects_total--;
+	    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
 	}
 	rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
     }
@@ -9122,10 +9103,13 @@ add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_st
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
     rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
     gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
+
     if (local_rs) {
 	ATOMIC_INC(*local_rs->refcount);
     }
     else {
+	VM_ASSERT(during_gc || (rb_current_allocating_ractor() == source_objspace->ractor) || (rb_current_allocating_ractor() == objspace->ractor));
+
 	rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
 	*refcount = 1;
 
@@ -9133,6 +9117,11 @@ add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_st
 	local_rs->refcount = refcount;
 	local_rs->status = shared_object_local;
 	set_reference_status(source_objspace->shared_reference_tbl, obj, local_rs);
+
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	global_space->rglobalgc.shared_objects_total++;
+	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
     }
     rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
     rs->refcount = local_rs->refcount;
@@ -13774,6 +13763,7 @@ gc_stat_internal(VALUE hash_or_sym)
 
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+    size_t shared_objects_total_value = global_space->rglobalgc.shared_objects_total;
     size_t shared_objects_limit_value = global_space->rglobalgc.shared_objects_limit;
     rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
 
@@ -13815,7 +13805,7 @@ gc_stat_internal(VALUE hash_or_sym)
     SET(old_objects, objspace->rgengc.old_objects);
     SET(old_objects_limit, objspace->rgengc.old_objects_limit);
     if (rb_multi_ractor_p()) {
-	SET(shared_objects, objspace->shareable_tbl_size + objspace->secondary_shareable_tbl_size);
+	SET(shared_objects, shared_objects_total_value);
 	SET(shared_objects_limit, shared_objects_limit_value);
     }
 #if RGENGC_ESTIMATE_OLDMALLOC
