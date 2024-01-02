@@ -3296,15 +3296,6 @@ make_shareable_check_shareable(VALUE obj)
     return traverse_cont;
 }
 
-void
-rb_ractor_classify_as_shareable(VALUE obj)
-{
-    if (!rb_special_const_p(obj) && !FL_TEST_RAW(obj, RUBY_FL_SHAREABLE)) {
-	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
-	rb_add_to_shareable_tbl(obj);
-    }
-}
-
 static enum obj_traverse_iterator_result
 mark_shareable_in_traversal(VALUE obj)
 {

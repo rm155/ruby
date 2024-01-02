@@ -878,12 +878,6 @@ typedef struct rb_objspace {
 
     st_table *finalizer_table;
 
-    st_table *shareable_tbl;
-    size_t shareable_tbl_size;
-    st_table *secondary_shareable_tbl;
-    size_t secondary_shareable_tbl_size;
-    rb_nativethread_lock_t secondary_shareable_tbl_lock;
-
     st_table *shared_reference_tbl;
     rb_nativethread_lock_t shared_reference_tbl_lock;
     st_table *external_reference_tbl;
@@ -1083,12 +1077,6 @@ absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 
     rb_native_mutex_unlock(&objspace_to_copy_from->contained_ractor_tbl_lock);
     rb_native_mutex_unlock(&objspace_to_update->contained_ractor_tbl_lock);
-
-    //Shareable tables
-    absorb_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->shareable_tbl);
-    objspace_to_update->shareable_tbl_size += objspace_to_copy_from->shareable_tbl_size;
-    absorb_table_contents(objspace_to_update->shareable_tbl, objspace_to_copy_from->secondary_shareable_tbl);
-    objspace_to_update->shareable_tbl_size += objspace_to_copy_from->secondary_shareable_tbl_size;
 
     //Shared object tables
     absorb_shared_object_tables(objspace_to_update, objspace_to_copy_from);
@@ -2226,10 +2214,6 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->id_to_obj_tbl);
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
-
-    st_free_table(objspace->shareable_tbl);
-    st_free_table(objspace->secondary_shareable_tbl);
-    rb_nativethread_lock_destroy(&objspace->secondary_shareable_tbl_lock);
 
     st_free_table(objspace->shared_reference_tbl);
     rb_nativethread_lock_destroy(&objspace->shared_reference_tbl_lock);
@@ -3859,12 +3843,6 @@ inherently_shareable_imemo_type(enum imemo_type type)
     }
 }
 
-static int
-old_sharing_system_imemo_type(enum imemo_type type)
-{
-    return 0;
-}
-
 #undef rb_imemo_new
 
 VALUE
@@ -3875,9 +3853,6 @@ rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0)
     VALUE obj = newobj_of(GET_RACTOR(), v0, flags, v1, v2, v3, TRUE, size);
     if (inherently_shareable_imemo_type(type)) {
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
-    }
-    if (old_sharing_system_imemo_type(type)) {
-	rb_add_to_shareable_tbl(obj);
     }
     return obj;
 }
@@ -4378,19 +4353,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         break;
     }
 
-    if (FL_TEST(obj, FL_SHAREABLE)) {
-	bool shared_item_found_in_table = !!st_delete(objspace->shareable_tbl, &obj, NULL);
-	if (shared_item_found_in_table) {
-	    objspace->shareable_tbl_size--;
-	}
-	else {
-	    rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
-	    shared_item_found_in_table = !!st_delete(objspace->secondary_shareable_tbl, &obj, NULL);
-	    objspace->secondary_shareable_tbl_size--;
-	    rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
-	}
-    }
-
     if (FL_TEST(obj, FL_EXIVAR)) {
         rb_free_generic_ivar((VALUE)obj);
         FL_UNSET(obj, FL_EXIVAR);
@@ -4741,9 +4703,6 @@ Init_heap(rb_objspace_t *objspace)
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
-    objspace->shareable_tbl = st_init_numtable();
-    objspace->secondary_shareable_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&objspace->secondary_shareable_tbl_lock);
 
     objspace->shared_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
@@ -5769,36 +5728,6 @@ rb_remove_from_contained_ractor_tbl(rb_ractor_t *r)
     rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
     st_delete(objspace->contained_ractor_tbl, (st_data_t *) &ractor_obj, NULL);
     rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
-}
-
-void
-rb_add_to_shareable_tbl(VALUE obj)
-{
-    VM_ASSERT (!rb_special_const_p(obj));
-
-    rb_objspace_t *current_objspace = &rb_objspace;
-    rb_objspace_t *value_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    bool new_addition = false;
-
-    if (current_objspace == value_objspace) {
-	new_addition = !st_insert(current_objspace->shareable_tbl, (st_data_t)obj, INT2FIX(0));
-	current_objspace->shareable_tbl_size++;
-    }
-    else {
-	rb_native_mutex_lock(&value_objspace->secondary_shareable_tbl_lock);
-
-	new_addition = !st_insert_no_gc(value_objspace->secondary_shareable_tbl, (st_data_t)obj, INT2FIX(0));
-
-	value_objspace->secondary_shareable_tbl_size++;
-	rb_native_mutex_unlock(&value_objspace->secondary_shareable_tbl_lock);
-    }
-
-    if (new_addition) {
-	rb_global_space_t *global_space = &rb_global_space;
-	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	global_space->rglobalgc.shared_objects_total++;
-	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
-    }
 }
 
 void
@@ -9346,12 +9275,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     rb_native_mutex_unlock(&objspace->obj_id_lock);
 
     if (using_local_limits(objspace) || !during_gc) {
-	MARK_CHECKPOINT("shareable_tbl");
-	mark_set(objspace, objspace->shareable_tbl);
-	rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
-	mark_set(objspace, objspace->secondary_shareable_tbl);
-	rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
-
+	MARK_CHECKPOINT("shared_reference_tbl");
 	mark_and_pin_shared_reference_tbl(objspace);
     }
 
@@ -12182,29 +12106,6 @@ update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src, st_dat
     return id_found;
 }
 
-static int
-update_shareable_tbl_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src)
-{
-    if (FL_TEST((VALUE) src, FL_SHAREABLE)) {
-	DURING_GC_COULD_MALLOC_REGION_START();
-	{
-	    bool shared_item_found_in_table = st_delete(objspace->shareable_tbl, (st_data_t *)&src, 0);
-	    if (shared_item_found_in_table) {
-		st_insert(objspace->shareable_tbl, (st_data_t)dest, INT2FIX(0));
-	    }
-	    else {
-		rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
-		shared_item_found_in_table = st_delete(objspace->secondary_shareable_tbl, (st_data_t *)&src, 0);
-		if (shared_item_found_in_table) st_insert(objspace->secondary_shareable_tbl, (st_data_t)dest, INT2FIX(0));
-		rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
-	    }
-	}
-	DURING_GC_COULD_MALLOC_REGION_END();
-	return 1;
-    }
-    return 0;
-}
-
 static VALUE
 gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, size_t slot_size)
 {
@@ -12249,8 +12150,6 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
     /* If the source object's object_id has been seen, we need to update
      * the object to object id mapping. */
     update_obj_id_mapping(objspace, dest, src, &srcid, &id);
-
-    update_shareable_tbl_mapping(objspace, dest, src);
 
 #if VM_CHECK_MODE > 0
     rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
@@ -13137,8 +13036,6 @@ gc_update_references(rb_objspace_t *objspace)
     }
     rb_ractor_update_references(objspace->ractor);
 
-    bool shareable_objects_moved = !using_local_limits(objspace);
-
     GLOBAL_SYMBOLS_ENTER(global_symbols);
     {
 	global_symbols->ids = rb_gc_location(global_symbols->ids);
@@ -13151,13 +13048,6 @@ gc_update_references(rb_objspace_t *objspace)
     gc_ref_update_table_values_only(objspace, objspace->obj_to_id_tbl);
     gc_update_table_refs(objspace, objspace->id_to_obj_tbl);
     rb_native_mutex_unlock(&objspace->obj_id_lock);
-
-    if (shareable_objects_moved) {
-	gc_update_table_refs(objspace, objspace->shareable_tbl);
-	rb_native_mutex_lock(&objspace->secondary_shareable_tbl_lock);
-	gc_update_table_refs(objspace, objspace->secondary_shareable_tbl);
-	rb_native_mutex_unlock(&objspace->secondary_shareable_tbl_lock);
-    }
     gc_update_table_refs(objspace, finalizer_table);
 
     objspace->flags.during_reference_updating = false;
