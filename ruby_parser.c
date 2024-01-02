@@ -1,4 +1,9 @@
 /* This is a wrapper for parse.y */
+
+#include "internal/ruby_parser.h"
+
+#include "rubyparser.h"
+
 #ifdef UNIVERSAL_PARSER
 
 #include "internal.h"
@@ -14,7 +19,6 @@
 #include "internal/parse.h"
 #include "internal/rational.h"
 #include "internal/re.h"
-#include "internal/ruby_parser.h"
 #include "internal/string.h"
 #include "internal/symbol.h"
 #include "internal/thread.h"
@@ -450,6 +454,12 @@ ruby_verbose2(void)
     return ruby_verbose;
 }
 
+static int *
+rb_errno_ptr2(void)
+{
+    return rb_errno_ptr();
+}
+
 static int
 type_p(VALUE obj, int t)
 {
@@ -566,6 +576,7 @@ rb_parser_config_initialize(rb_parser_config_t *config)
     config->ary_join          = rb_ary_join;
     config->ary_reverse       = rb_ary_reverse;
     config->ary_clear         = rb_ary_clear;
+    config->ary_modify        = rb_ary_modify;
     config->array_len         = rb_array_len;
     config->array_aref        = RARRAY_AREF;
 
@@ -723,6 +734,7 @@ rb_parser_config_initialize(rb_parser_config_t *config)
     config->bug             = rb_bug;
     config->fatal           = rb_fatal;
     config->verbose         = ruby_verbose2;
+    config->errno_ptr       = rb_errno_ptr2;
 
     config->make_backtrace = rb_make_backtrace;
 
@@ -901,11 +913,17 @@ rb_parser_set_yydebug(VALUE vparser, VALUE flag)
     rb_ruby_parser_set_yydebug(parser->parser_params, RTEST(flag));
     return flag;
 }
-
-#else
-
-/* For "ISO C requires a translation unit to contain at least one declaration" */
-void
-rb_parser_dummy(void)
-{}
 #endif
+
+VALUE
+rb_node_line_lineno_val(const NODE *node)
+{
+    return INT2FIX(node->nd_loc.beg_pos.lineno);
+}
+
+VALUE
+rb_node_file_path_val(const NODE *node)
+{
+    rb_parser_string_t *str = RNODE_FILE(node)->path;
+    return rb_enc_str_new(str->ptr, str->len, str->enc);
+}

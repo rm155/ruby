@@ -1662,7 +1662,7 @@ exc_detailed_message(int argc, VALUE *argv, VALUE exc)
 
     VALUE highlight = check_highlight_keyword(opt, 0);
 
-    extern VALUE rb_decorate_message(const VALUE eclass, const VALUE emesg, int highlight);
+    extern VALUE rb_decorate_message(const VALUE eclass, VALUE emesg, int highlight);
 
     return rb_decorate_message(CLASS_OF(exc), rb_get_message(exc), RTEST(highlight));
 }
@@ -3061,7 +3061,7 @@ syserr_eqq(VALUE self, VALUE exc)
  *
  *  <em>raises the exception:</em>
  *
- *     NoMethodError: undefined method `to_ary' for "hello":String
+ *     NoMethodError: undefined method `to_ary' for an instance of String
  */
 
 /*

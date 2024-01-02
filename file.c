@@ -5222,47 +5222,50 @@ rb_thread_flock(void *data)
     return (VALUE)ret;
 }
 
-/*
+/*  :markup: markdown
+ *
  *  call-seq:
- *     file.flock(locking_constant) -> 0 or false
+ *    flock(locking_constant) -> 0 or false
  *
- *  Locks or unlocks a file according to <i>locking_constant</i> (a
- *  logical <em>or</em> of the values in the table below).
- *  Returns <code>false</code> if File::LOCK_NB is specified and the
- *  operation would otherwise have blocked. Not available on all
- *  platforms.
+ *  Locks or unlocks file +self+ according to the given `locking_constant`,
+ *  a bitwise OR of the values in the table below.
  *
- *  Locking constants (in class File):
+ *  Not available on all platforms.
  *
- *     LOCK_EX   | Exclusive lock. Only one process may hold an
- *               | exclusive lock for a given file at a time.
- *     ----------+------------------------------------------------
- *     LOCK_NB   | Don't block when locking. May be combined
- *               | with other lock options using logical or.
- *     ----------+------------------------------------------------
- *     LOCK_SH   | Shared lock. Multiple processes may each hold a
- *               | shared lock for a given file at the same time.
- *     ----------+------------------------------------------------
- *     LOCK_UN   | Unlock.
+ *  Returns `false` if `File::LOCK_NB` is specified and the operation would have blocked;
+ *  otherwise returns `0`.
+ *
+ *  <br>
+ *
+ *  | Constant        | Lock         | Effect
+ *  |-----------------|--------------|-------------------------------------------------------------------
+ *  | +File::LOCK_EX+ | Exclusive    | Only one process may hold an exclusive lock for +self+ at a time.
+ *  | +File::LOCK_NB+ | Non-blocking | No blocking; may be combined with +File::LOCK_SH+ or +File::LOCK_EX+ using the bitwise OR operator <tt>\|</tt>.
+ *  | +File::LOCK_SH+ | Shared       | Multiple processes may each hold a shared lock for +self+ at the same time.
+ *  | +File::LOCK_UN+ | Unlock       | Remove an existing lock held by this process.
+ *
+ *  <br>
  *
  *  Example:
  *
- *     # update a counter using write lock
- *     # don't use "w" because it truncates the file before lock.
- *     File.open("counter", File::RDWR|File::CREAT, 0644) {|f|
- *       f.flock(File::LOCK_EX)
- *       value = f.read.to_i + 1
- *       f.rewind
- *       f.write("#{value}\n")
- *       f.flush
- *       f.truncate(f.pos)
- *     }
+ *  ```ruby
+ *  # Update a counter using an exclusive lock.
+ *  # Don't use File::WRONLY because it truncates the file.
+ *  File.open('counter', File::RDWR | File::CREAT, 0644) do |f|
+ *    f.flock(File::LOCK_EX)
+ *    value = f.read.to_i + 1
+ *    f.rewind
+ *    f.write("#{value}\n")
+ *    f.flush
+ *    f.truncate(f.pos)
+ *  end
  *
- *     # read the counter using read lock
- *     File.open("counter", "r") {|f|
- *       f.flock(File::LOCK_SH)
- *       p f.read
- *     }
+ *  # Read the counter using a shared lock.
+ *  File.open('counter', 'r') do |f|
+ *    f.flock(File::LOCK_SH)
+ *    f.read
+ *  end
+ *  ```
  *
  */
 

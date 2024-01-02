@@ -2747,7 +2747,7 @@ rb_ractor_terminate_all(void)
 rb_execution_context_t *
 rb_vm_main_ractor_ec(rb_vm_t *vm)
 {
-    return vm->ractor.main_ractor->threads.running_ec;
+    return vm->ractor.main_thread->ec;
 }
 
 static VALUE
@@ -3787,8 +3787,10 @@ move_enter(VALUE obj, struct obj_traverse_replace_data *data)
         return traverse_skip;
     }
     else {
-        data->replacement = rb_obj_alloc(RBASIC_CLASS(obj));
-	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, rb_class_of(obj));
+        VALUE moved = rb_obj_alloc(RBASIC_CLASS(obj));
+        rb_shape_set_shape(moved, rb_shape_get_shape(obj));
+        data->replacement = moved;
+	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, rb_class_of(moved));
         return traverse_cont;
     }
 }

@@ -83,7 +83,7 @@ rb_hook_list_mark_and_update(rb_hook_list_t *hooks)
     }
 }
 
-static void clean_hooks(const rb_execution_context_t *ec, rb_hook_list_t *list);
+static void clean_hooks(rb_hook_list_t *list);
 
 void
 rb_hook_list_free(rb_hook_list_t *hooks)
@@ -91,7 +91,7 @@ rb_hook_list_free(rb_hook_list_t *hooks)
     hooks->need_clean = true;
 
     if (hooks->running == 0) {
-        clean_hooks(GET_EC(), hooks);
+        clean_hooks(hooks);
     }
 }
 
@@ -224,7 +224,7 @@ rb_add_event_hook2(rb_event_hook_func_t func, rb_event_flag_t events, VALUE data
 }
 
 static void
-clean_hooks(const rb_execution_context_t *ec, rb_hook_list_t *list)
+clean_hooks(rb_hook_list_t *list)
 {
     rb_event_hook_t *hook, **nextp = &list->hooks;
     rb_event_flag_t prev_events = list->events;
@@ -258,11 +258,11 @@ clean_hooks(const rb_execution_context_t *ec, rb_hook_list_t *list)
 }
 
 static void
-clean_hooks_check(const rb_execution_context_t *ec, rb_hook_list_t *list)
+clean_hooks_check(rb_hook_list_t *list)
 {
     if (UNLIKELY(list->need_clean)) {
         if (list->running == 0) {
-            clean_hooks(ec, list);
+            clean_hooks(list);
         }
     }
 }
@@ -290,7 +290,7 @@ remove_event_hook(const rb_execution_context_t *ec, const rb_thread_t *filter_th
         hook = hook->next;
     }
 
-    clean_hooks_check(ec, list);
+    clean_hooks_check(list);
     return ret;
 }
 
@@ -374,7 +374,7 @@ static void
 exec_hooks_postcheck(const rb_execution_context_t *ec, rb_hook_list_t *list)
 {
     list->running--;
-    clean_hooks_check(ec, list);
+    clean_hooks_check(list);
 }
 
 static void

@@ -100,7 +100,7 @@ require_relative "irb/pager"
 # which is also displayed if you use command-line option <tt>--help</tt>.
 #
 # If you are interested in a specific option, consult the
-# {index}[rdoc-ref:doc/irb/indexes.rdoc@Index+of+Command-Line+Options].
+# {index}[rdoc-ref:doc/irb/indexes.md@Index+of+Command-Line+Options].
 #
 # ==== Command-Line Arguments
 #
@@ -172,7 +172,7 @@ require_relative "irb/pager"
 # Details of the entries' meanings are described in the relevant subsections below.
 #
 # If you are interested in a specific entry, consult the
-# {index}[rdoc-ref:doc/irb/indexes.rdoc@Index+of+IRB.conf+Entries].
+# {index}[rdoc-ref:doc/irb/indexes.md@Index+of+IRB.conf+Entries].
 #
 # === Notes on Initialization Precedence
 #
@@ -705,12 +705,6 @@ require_relative "irb/pager"
 # Command-line option <tt>-W[_level_]<tt>
 # sets warning level; 0=silence, 1=medium, 2=verbose.
 #
-# :stopdoc:
-# === Performance Measurement
-#
-# IRB.conf[:MEASURE] IRB.conf[:MEASURE_CALLBACKS] IRB.conf[:MEASURE_PROC]
-# :startdoc:
-#
 # == Other Features
 #
 # === Load Modules
@@ -771,12 +765,6 @@ require_relative "irb/pager"
 #
 # Note that the configuration file entry overrides the command-line options.
 #
-# :stopdoc:
-# === \Context Mode
-#
-# IRB.conf[:CONTEXT_MODE]
-# :startdoc:
-#
 # === \IRB Name
 #
 # You can specify a name for \IRB.
@@ -814,12 +802,6 @@ require_relative "irb/pager"
 #
 # Each time the configuration is changed,
 # that proc is called with argument +conf+:
-#
-# :stopdoc:
-# === \Locale
-#
-# IRB.conf[:LC_MESSAGES]
-# :startdoc:
 #
 # === Encodings
 #

@@ -462,7 +462,7 @@ AC_SUBST(CC_VERSION_MESSAGE, $cc_version_message)
 
 RUBY_UNIVERSAL_ARCH
 AS_IF([test "$target_cpu" != "$host_cpu" -a "$GCC" = yes -a "${universal_binary:-no}" = no], [
-    RUBY_DEFAULT_ARCH("$target_cpu")
+    RUBY_DEFAULT_ARCH($target_cpu)
 ])
 host_os=$target_os
 host_vendor=$target_vendor
@@ -830,7 +830,10 @@ AS_IF([test "$GCC" = yes], [
 	AS_FOR(option, opt, [-mbranch-protection=pac-ret -msign-return-address=all], [
             RUBY_TRY_CFLAGS(option, [branch_protection=yes], [branch_protection=no])
             AS_IF([test "x$branch_protection" = xyes], [
+                # C compiler and assembler must be consistent for -mbranch-protection
+                # since they both check `__ARM_FEATURE_PAC_DEFAULT` definition.
                 RUBY_APPEND_OPTION(XCFLAGS, option)
+                RUBY_APPEND_OPTION(ASFLAGS, option)
                 break
             ])
         ])
@@ -1352,6 +1355,7 @@ AC_CHECK_HEADERS(time.h)
 AC_CHECK_HEADERS(ucontext.h)
 AC_CHECK_HEADERS(utime.h)
 AC_CHECK_HEADERS(sys/epoll.h)
+AC_CHECK_HEADERS(sys/event.h)
 
 AS_CASE("$target_cpu", [x64|x86_64|i[3-6]86*], [
   AC_CHECK_HEADERS(x86intrin.h)

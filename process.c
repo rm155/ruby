@@ -901,7 +901,7 @@ pst_bitand(VALUE st1, VALUE st2)
         rb_raise(rb_eArgError, "negative mask value: %d", mask);
     }
 #define WARN_SUGGEST(suggest) \
-    rb_warn_deprecated_to_remove_at(3.4, "Process::Status#&", suggest)
+    rb_warn_deprecated_to_remove_at(3.5, "Process::Status#&", suggest)
 
     switch (mask) {
       case 0x80:
@@ -956,7 +956,7 @@ pst_rshift(VALUE st1, VALUE st2)
         rb_raise(rb_eArgError, "negative shift value: %d", places);
     }
 #define WARN_SUGGEST(suggest) \
-    rb_warn_deprecated_to_remove_at(3.4, "Process::Status#>>", suggest)
+    rb_warn_deprecated_to_remove_at(3.5, "Process::Status#>>", suggest)
 
     switch (places) {
       case 7:
@@ -1479,7 +1479,7 @@ proc_m_wait(int c, VALUE *v, VALUE _)
  *    Process.wait2(pid)
  *    # => [309581, #<Process::Status: pid 309581 exit 13>]
  *
- *  Process.waitpid2 is an alias for Process.waitpid.
+ *  Process.waitpid2 is an alias for Process.wait2.
  */
 
 static VALUE
@@ -3353,6 +3353,13 @@ run_exec_dup2(VALUE ary, VALUE tmpbuf, struct rb_execarg *sargp, char *errmsg, s
             if (extra_fd == -1) {
                 ERRMSG("dup");
                 goto fail;
+            }
+            // without this, kqueue timer_th.event_fd fails with a reserved FD did not have close-on-exec
+            //   in #assert_close_on_exec because the FD_CLOEXEC is not dup'd by default
+            if (fd_get_cloexec(pairs[i].oldfd, errmsg, errmsg_buflen)) {
+                if (fd_set_cloexec(extra_fd, errmsg, errmsg_buflen)) {
+                    goto fail;
+                }
             }
             rb_update_max_fd(extra_fd);
         }
