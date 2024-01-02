@@ -9056,8 +9056,26 @@ add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_st
     rs->refcount = local_rs->refcount;
 }
 
+static void
+confirm_added_shared_object_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    rb_objspace_t *objspace = (rb_objspace_t *)argp;
+    gc_reference_status_t *rs = (gc_reference_status_t *)value;
+    VALUE obj = (VALUE)key;
+    if (rs->status == shared_object_added) {
+	add_external_reference_usage(objspace, obj, rs);
+	rs->status = shared_object_marked;
+    }
+}
+
+static void
+confirm_added_shared_object_references(rb_objspace_t *objspace)
+{
+    st_foreach(objspace->external_reference_tbl, confirm_added_shared_object_references_i, (st_data_t)objspace);
+}
+
 static int
-update_shared_object_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+keep_marked_shared_object_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
     rb_objspace_t *objspace = (rb_objspace_t *)argp;
     gc_reference_status_t *rs = (gc_reference_status_t *)value;
@@ -9069,19 +9087,22 @@ update_shared_object_references_i(st_data_t key, st_data_t value, st_data_t argp
 	case shared_object_marked:
 	    rs->status = shared_object_unmarked;
 	    return ST_CONTINUE;
-	case shared_object_added:
-	    add_external_reference_usage(objspace, obj, rs);
-	    rs->status = shared_object_unmarked;
-	    return ST_CONTINUE;
 	default:
 	    rb_bug("update_shared_object_references_i: unreachable");
     }
 }
 
 static void
+keep_marked_shared_object_references(rb_objspace_t *objspace)
+{
+    st_foreach(objspace->external_reference_tbl, keep_marked_shared_object_references_i, (st_data_t)objspace);
+}
+
+static void
 update_shared_object_references(rb_objspace_t *objspace)
 {
-    st_foreach(objspace->external_reference_tbl, update_shared_object_references_i, (st_data_t)objspace);
+    confirm_added_shared_object_references(objspace);
+    keep_marked_shared_object_references(objspace);
     VM_ASSERT(external_references_all_unmarked(objspace));
 }
 
