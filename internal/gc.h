@@ -151,6 +151,29 @@ void rb_global_tables_init(void);
 
 void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);
 
+typedef enum {
+    OGS_FLAG_NONE               = 0x000,
+    OGS_FLAG_NOT_RUNNING        = 0x001,
+    OGS_FLAG_BLOCKING           = 0x002,
+    OGS_FLAG_BARRIER_WAITING    = 0x004,
+    OGS_FLAG_ENTERING_VM_LOCK   = 0x008,
+    OGS_FLAG_RUNNING_LOCAL_GC   = 0x010,
+    OGS_FLAG_RUNNING_GLOBAL_GC  = 0x020,
+    OGS_FLAG_ABSORBING_OBJSPACE = 0x040,
+};
+
+struct rb_order_chain_node {
+    rb_ractor_t *ractor;
+    rb_atomic_t object_graph_safety;
+    struct rb_order_chain_node *prev_node;
+    struct rb_order_chain_node *next_node;
+};
+
+void rb_ractor_insert_into_order_chain(rb_ractor_t *r);
+void rb_ractor_delete_from_order_chain(rb_ractor_t *r);
+void rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason);
+void rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason);
+
 #ifdef NEWOBJ_OF
 # undef NEWOBJ_OF
 # undef RB_NEWOBJ_OF

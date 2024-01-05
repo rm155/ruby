@@ -234,6 +234,8 @@ struct rb_ractor_struct {
     VALUE mark_object_ary;
     rb_nativethread_lock_t mark_object_ary_lock;
 
+    struct rb_order_chain_node *oc_node;
+
     VALUE result_value;
 }; // rb_ractor_t is defined in vm_core.h
 

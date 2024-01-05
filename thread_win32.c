@@ -965,6 +965,7 @@ rb_ractor_sched_barrier_start(rb_vm_t *vm, rb_ractor_t *cr)
 void
 rb_ractor_sched_barrier_join(rb_vm_t *vm, rb_ractor_t *cr)
 {
+    rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_BARRIER_WAITING);
     vm->ractor.sync.lock_owner = cr;
     unsigned int barrier_cnt = vm->ractor.sync.barrier_cnt;
     rb_thread_t *th = GET_THREAD();
@@ -1003,7 +1004,8 @@ rb_ractor_sched_barrier_join(rb_vm_t *vm, rb_ractor_t *cr)
         rb_vm_ractor_blocking_cnt_dec(vm, cr, __FILE__, __LINE__);
     }
 
-        vm->ractor.sync.lock_owner = NULL;
+    vm->ractor.sync.lock_owner = NULL;
+    rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_BARRIER_WAITING);
 }
 
 #endif /* THREAD_SYSTEM_DEPENDENT_IMPLEMENTATION */

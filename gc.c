@@ -823,6 +823,10 @@ typedef struct rb_global_space {
 	size_t shared_objects_total;
 	rb_nativethread_lock_t shared_tracking_lock;
     } rglobalgc; //TODO: Call global GC upon hitting shared object limit
+
+    struct rb_order_chain_node *order_chain_head_node;
+    rb_nativethread_lock_t order_chain_lock;
+    rb_nativethread_cond_t order_chain_removal_cond;
 } rb_global_space_t;
 
 typedef struct rb_objspace {
@@ -2841,6 +2845,8 @@ close_objspace(rb_objspace_t *objspace)
 void
 rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor)
 {
+    rb_ractor_object_graph_safety_advance(receiving_ractor, OGS_FLAG_ABSORBING_OBJSPACE);
+
     rb_objspace_t *receiving_objspace = receiving_ractor->local_objspace;
     rb_objspace_t *closing_objspace = closing_ractor->local_objspace;
 
@@ -2882,6 +2888,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     rb_native_mutex_unlock(&global_space->next_object_id_lock);
 
     if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_objspace);
+
+    rb_ractor_object_graph_safety_withdraw(receiving_ractor, OGS_FLAG_ABSORBING_OBJSPACE);
 }
 
 static void
@@ -4755,6 +4763,119 @@ rb_global_tables_init(void)
     global_space->absorbed_thread_tbl = st_init_numtable();
 }
 
+static void
+order_chain_init(rb_global_space_t *global_space)
+{
+    global_space->order_chain_head_node = NULL;
+    rb_nativethread_lock_initialize(&global_space->order_chain_lock);
+    rb_native_cond_initialize(&global_space->order_chain_removal_cond);
+}
+
+static void
+order_chain_release(rb_global_space_t *global_space)
+{
+    rb_nativethread_lock_destroy(&global_space->order_chain_lock);
+    rb_native_cond_destroy(&global_space->order_chain_removal_cond);
+}
+
+static void
+add_order_chain_node(rb_global_space_t *global_space, struct rb_order_chain_node *oc_node)
+{
+    oc_node->prev_node = NULL;
+    oc_node->next_node = global_space->order_chain_head_node;
+
+    if (oc_node->next_node) {
+	VM_ASSERT(oc_node->next_node->prev_node == NULL);
+	oc_node->next_node->prev_node = oc_node;
+    }
+
+    global_space->order_chain_head_node = oc_node;
+}
+
+void
+rb_ractor_insert_into_order_chain(rb_ractor_t *r)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->order_chain_lock);
+
+    struct rb_order_chain_node *oc_node = malloc(sizeof(struct rb_order_chain_node));
+    oc_node->object_graph_safety = OGS_FLAG_NONE;
+    oc_node->ractor = r;
+    r->oc_node = oc_node;
+    add_order_chain_node(global_space, oc_node);
+
+    rb_native_mutex_unlock(&global_space->order_chain_lock);
+}
+
+static void
+remove_order_chain_node(rb_global_space_t *global_space, struct rb_order_chain_node *oc_node)
+{
+    struct rb_order_chain_node *prev_node = oc_node->prev_node;
+    struct rb_order_chain_node *next_node = oc_node->next_node;
+
+    if (prev_node) {
+	VM_ASSERT(prev_node->next_node == oc_node);
+	VM_ASSERT(global_space->order_chain_head_node != oc_node);
+	prev_node->next_node = next_node;
+    }
+    else {
+	VM_ASSERT(global_space->order_chain_head_node == oc_node);
+	global_space->order_chain_head_node = next_node;
+    }
+
+    if (next_node) {
+	VM_ASSERT(next_node->prev_node == oc_node);
+	next_node->prev_node = prev_node;
+    }
+    rb_native_cond_broadcast(&global_space->order_chain_removal_cond);
+}
+
+void
+rb_ractor_delete_from_order_chain(rb_ractor_t *r)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->order_chain_lock);
+
+    remove_order_chain_node(global_space, r->oc_node);
+    free(r->oc_node);
+    r->oc_node = NULL;
+
+    rb_native_mutex_unlock(&global_space->order_chain_lock);
+}
+
+static void
+ractor_send_to_front_of_order_chain(rb_ractor_t *r)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->order_chain_lock);
+
+    remove_order_chain_node(global_space, r->oc_node);
+    add_order_chain_node(global_space, r->oc_node);
+
+    rb_native_mutex_unlock(&global_space->order_chain_lock);
+}
+
+void
+rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason)
+{
+    if (!r->oc_node) return;
+    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->oc_node->object_graph_safety);
+    int newval = oldval | reason;
+    ATOMIC_SET(r->oc_node->object_graph_safety, newval);
+    if (oldval == 0 && newval != 0) {
+	ractor_send_to_front_of_order_chain(r);
+    }
+}
+
+void
+rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason)
+{
+    if (!r->oc_node) return;
+    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->oc_node->object_graph_safety);
+    int newval = oldval & (~reason);
+    ATOMIC_SET(r->oc_node->object_graph_safety, newval);
+}
+
 rb_global_space_t *
 rb_global_space_init(void)
 {
@@ -4764,6 +4885,7 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->rglobalgc.shared_tracking_lock);
+    order_chain_init(global_space);
     return global_space;
 }
 
@@ -4774,6 +4896,7 @@ rb_global_space_free(rb_global_space_t *global_space)
     st_free_table(global_space->absorbed_thread_tbl);
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_destroy(&global_space->rglobalgc.shared_tracking_lock);
+    order_chain_release(global_space);
 }
 
 void
@@ -8994,9 +9117,40 @@ shared_references_all_marked(rb_objspace_t *objspace)
 }
 
 static bool
+object_graph_safety_p(rb_global_space_t *global_space, rb_objspace_t *objspace)
+{
+    struct rb_order_chain_node *current_node = objspace->ractor->oc_node->next_node;
+    while (current_node) {
+	if (!RUBY_ATOMIC_LOAD(current_node->object_graph_safety)) {
+	    return false;
+	}
+	current_node = current_node->next_node;
+    }
+    return true;
+}
+
+static void
+wait_for_object_graph_safety(rb_objspace_t *objspace)
+{
+    if (GET_RACTOR()->local_objspace->running_global_gc) return;
+
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->order_chain_lock);
+
+    while (!object_graph_safety_p(global_space, objspace)) {
+	rb_native_cond_wait(&global_space->order_chain_removal_cond, &global_space->order_chain_lock);
+    }
+
+    rb_native_mutex_unlock(&global_space->order_chain_lock);
+}
+
+static bool
 double_check_shared_reference_tbl(rb_objspace_t *objspace)
 {
     if (!using_local_limits(objspace)) return true;
+
+    wait_for_object_graph_safety(objspace);
+
     if (!shared_references_all_marked(objspace)) {
 	mark_and_pin_shared_reference_tbl(objspace);
 	return false;
@@ -11629,6 +11783,7 @@ begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 {
     if (vm->ractor.sync.lock_owner != cr && !objspace->running_global_gc) {
 	if (objspace->local_gc_level == 0) {
+	    rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_RUNNING_LOCAL_GC);
 	    RB_VM_LOCK_ENTER();
 	    {
 		VM_COND_AND_BARRIER_WAIT(vm, objspace->ractor->borrowing_sync.no_borrowers, objspace->ractor->borrowing_sync.borrower_count == 0);
@@ -11654,6 +11809,7 @@ end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 		rb_native_cond_broadcast(&objspace->ractor->borrowing_sync.borrowing_allowed_cond);
 	    }
 	    RB_VM_LOCK_LEAVE();
+	    rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_RUNNING_LOCAL_GC);
 	}
     }
 }
@@ -11661,11 +11817,12 @@ end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 static void
 begin_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev)
 {
+    rb_ractor_t *cr = GET_RACTOR();
+    rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_RUNNING_GLOBAL_GC);
     RB_VM_LOCK_ENTER_LEV(lev);
     VM_COND_AND_BARRIER_WAIT(vm, vm->global_gc_finished, !vm->global_gc_underway);
     objspace->running_global_gc = true;
     vm->global_gc_underway = true;
-    rb_ractor_t *cr = GET_RACTOR();
     VM_COND_AND_BARRIER_WAIT(vm, vm->no_borrower_mode, (vm->borrower_mode_count == 0 || (vm->borrower_mode_count == 1 && cr->borrower_mode_levels > 0)));
     rb_vm_barrier();
 }
@@ -11677,6 +11834,7 @@ end_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned int *lev)
     vm->global_gc_underway = false;
     rb_native_cond_broadcast(&vm->global_gc_finished);
     RB_VM_LOCK_LEAVE_LEV(lev);
+    rb_ractor_object_graph_safety_withdraw(GET_RACTOR(), OGS_FLAG_RUNNING_GLOBAL_GC);
 }
 
 #if PRINT_ENTER_EXIT_TICK

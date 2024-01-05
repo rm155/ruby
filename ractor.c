@@ -2050,6 +2050,7 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     ccan_list_add_tail(&vm->ractor.set, &r->vmlr_node);
     vm->ractor.cnt++;
     unlock_ractor_set();
+    rb_ractor_insert_into_order_chain(r);
 }
 
 static VALUE
@@ -2135,6 +2136,8 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 	if (!cr->local_objspace) rb_remove_from_contained_ractor_tbl(cr);
     }
     RB_VM_UNLOCK();
+
+    rb_ractor_delete_from_order_chain(cr);
 }
 
 static VALUE
@@ -2531,6 +2534,7 @@ rb_ractor_living_threads_insert(rb_ractor_t *r, rb_thread_t *th)
 static void
 vm_ractor_blocking_cnt_inc(rb_vm_t *vm, rb_ractor_t *r, const char *file, int line)
 {
+    rb_ractor_object_graph_safety_advance(r, OGS_FLAG_BLOCKING);
     ractor_status_set(r, ractor_blocking);
 
     RUBY_DEBUG_LOG2(file, line, "vm->ractor.blocking_cnt:%d++", vm->ractor.blocking_cnt);
@@ -2557,6 +2561,7 @@ rb_vm_ractor_blocking_cnt_dec(rb_vm_t *vm, rb_ractor_t *cr, const char *file, in
     vm->ractor.blocking_cnt--;
 
     ractor_status_set(cr, ractor_running);
+    rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_BLOCKING);
 }
 
 static void
