@@ -229,6 +229,7 @@ struct rb_ractor_struct {
 
 #if VM_CHECK_MODE > 0
     bool late_to_barrier;
+    bool during_ractor_copy;
 #endif
 
     VALUE mark_object_ary;

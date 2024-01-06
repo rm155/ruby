@@ -2255,6 +2255,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 
 #if VM_CHECK_MODE > 0
     r->late_to_barrier = false;
+    r->during_ractor_copy = false;
 #endif
 
     if (r != GET_VM()->ractor.main_ractor) {
@@ -3861,7 +3862,17 @@ copy_leave(VALUE obj, struct obj_traverse_replace_data *data)
 static VALUE
 ractor_copy(VALUE obj)
 {
+#if VM_CHECK_MODE > 0
+    rb_ractor_t *cr = GET_RACTOR();
+    cr->during_ractor_copy = true;
+#endif
+
     VALUE val = rb_obj_traverse_replace(obj, copy_enter, copy_leave, false);
+
+#if VM_CHECK_MODE > 0
+    cr->during_ractor_copy = false;
+#endif
+
     if (!UNDEF_P(val)) {
         return val;
     }

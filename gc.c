@@ -11051,21 +11051,35 @@ rb_gc_writebarrier(VALUE a, VALUE b)
         if (SPECIAL_CONST_P(b)) rb_bug("rb_gc_writebarrier: b is special const: %"PRIxVALUE, b);
     }
     
-    rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
-    rb_objspace_t *a_objspace = GET_OBJSPACE_OF_VALUE(a);
-    rb_objspace_t *b_objspace = GET_OBJSPACE_OF_VALUE(b);
+    rb_objspace_t *current_objspace = &rb_objspace;
 
-    if (a_objspace != b_objspace) {
-	//VM_ASSERT(FL_TEST(referenced_obj, FL_SHAREABLE));
-	register_new_external_reference(a_objspace, b_objspace, b);
-    }
-
-    if (LIKELY(b_objspace == GET_RACTOR()->local_objspace || b_objspace == allocating_ractor->local_objspace)) {
-	gc_writebarrier_safe_objspace(a, b, b_objspace);
+    if (ruby_single_main_objspace) {
+	gc_writebarrier_safe_objspace(a, b, current_objspace);
     }
     else {
-	VM_ASSERT(FL_TEST(b, FL_SHAREABLE));
-	gc_writebarrier_parallel_objspace(a, b, b_objspace);
+	rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
+	rb_objspace_t *b_objspace = GET_OBJSPACE_OF_VALUE(b);
+
+	if (FL_TEST_RAW(b, FL_SHAREABLE)) {
+	    rb_objspace_t *a_objspace = GET_OBJSPACE_OF_VALUE(a);
+
+	    if (a_objspace != b_objspace) {
+		register_new_external_reference(a_objspace, b_objspace, b);
+	    }
+
+	    if (LIKELY(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace)) {
+		gc_writebarrier_safe_objspace(a, b, b_objspace);
+	    }
+	    else {
+		gc_writebarrier_parallel_objspace(a, b, b_objspace);
+	    }
+	}
+	else {
+	    VM_ASSERT(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace);
+	    VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy);
+
+	    gc_writebarrier_safe_objspace(a, b, b_objspace);
+	}
     }
 }
 
