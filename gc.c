@@ -5905,19 +5905,6 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
 }
 
 void
-rb_establish_potential_cross_ractor_connection(VALUE referencer, VALUE referenced_obj)
-{
-    if (RB_SPECIAL_CONST_P(referencer) || RB_SPECIAL_CONST_P(referenced_obj)) return;
-
-    rb_objspace_t *receiving_objspace = GET_OBJSPACE_OF_VALUE(referencer);
-    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(referenced_obj);
-    if (receiving_objspace != source_objspace) {
-	VM_ASSERT(FL_TEST(referenced_obj, FL_SHAREABLE));
-	register_new_external_reference(receiving_objspace, source_objspace, referenced_obj);
-    }
-}
-
-void
 rb_register_new_external_wmap_reference(VALUE *ptr)
 {
     VALUE obj = *ptr;
@@ -11065,7 +11052,14 @@ rb_gc_writebarrier(VALUE a, VALUE b)
     }
     
     rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
+    rb_objspace_t *a_objspace = GET_OBJSPACE_OF_VALUE(a);
     rb_objspace_t *b_objspace = GET_OBJSPACE_OF_VALUE(b);
+
+    if (a_objspace != b_objspace) {
+	//VM_ASSERT(FL_TEST(referenced_obj, FL_SHAREABLE));
+	register_new_external_reference(a_objspace, b_objspace, b);
+    }
+
     if (LIKELY(b_objspace == GET_RACTOR()->local_objspace || b_objspace == allocating_ractor->local_objspace)) {
 	gc_writebarrier_safe_objspace(a, b, b_objspace);
     }

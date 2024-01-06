@@ -2116,8 +2116,6 @@ vm_search_cc(const VALUE klass, const struct rb_callinfo * const ci)
     cme = check_overloaded_cme(cme, ci);
 
     const struct rb_callcache *cc = vm_cc_new(klass, cme, vm_call_general, cc_type_normal);
-    rb_establish_potential_cross_ractor_connection(klass, (VALUE)ci);
-    rb_establish_potential_cross_ractor_connection(klass, (VALUE)cc);
     vm_ccs_push(klass, ccs, ci, cc);
 
     VM_ASSERT(vm_cc_cme(cc) != NULL);
@@ -4225,7 +4223,6 @@ vm_call_refined(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_c
     if (ref_cme) {
         if (calling->cd->cc) {
             const struct rb_callcache *cc = calling->cc = vm_cc_new(vm_cc_cme(calling->cc)->defined_class, ref_cme, vm_call_general, cc_type_refinement);
-	    rb_establish_potential_cross_ractor_connection((VALUE)cfp->iseq, (VALUE)cc);
             RB_OBJ_WRITE(cfp->iseq, &calling->cd->cc, cc);
             return vm_call_method(ec, cfp, calling);
         }
@@ -4678,7 +4675,6 @@ vm_search_super_method(const rb_control_frame_t *reg_cfp, struct rb_call_data *c
                                vm_ci_argc(cd->ci),
                                vm_ci_kwarg(cd->ci));
 
-    rb_establish_potential_cross_ractor_connection((VALUE)reg_cfp->iseq, (VALUE)cd->ci);
     RB_OBJ_WRITTEN(reg_cfp->iseq, Qundef, cd->ci);
 
     const struct rb_callcache *cc;
@@ -4688,7 +4684,6 @@ vm_search_super_method(const rb_control_frame_t *reg_cfp, struct rb_call_data *c
     if (!klass) {
         /* bound instance method of module */
         cc = vm_cc_new(klass, NULL, vm_call_method_missing, cc_type_super);
-	rb_establish_potential_cross_ractor_connection((VALUE)reg_cfp->iseq, (VALUE)cc);
         RB_OBJ_WRITE(reg_cfp->iseq, &cd->cc, cc);
     }
     else {
@@ -4704,7 +4699,6 @@ vm_search_super_method(const rb_control_frame_t *reg_cfp, struct rb_call_data *c
             const rb_callable_method_entry_t *cme = rb_callable_method_entry(klass, mid);
             if (cme) {
                 cc = vm_cc_new(klass, cme, vm_call_super_method, cc_type_super);
-		rb_establish_potential_cross_ractor_connection((VALUE)reg_cfp->iseq, (VALUE)cc);
                 RB_OBJ_WRITE(reg_cfp->iseq, &cd->cc, cc);
             }
             else {
@@ -5867,7 +5861,6 @@ vm_ic_update(const rb_iseq_t *iseq, IC ic, VALUE val, const VALUE *reg_ep, const
     RB_OBJ_WRITE(ice, &ice->value, val);
     ice->ic_cref = vm_get_const_key_cref(reg_ep);
     if (rb_ractor_shareable_p(val)) ice->flags |= IMEMO_CONST_CACHE_SHAREABLE;
-    rb_establish_potential_cross_ractor_connection((VALUE)iseq, (VALUE)ice);
     RB_OBJ_WRITE(iseq, &ic->entry, ice);
 
     RUBY_ASSERT(pc >= ISEQ_BODY(iseq)->iseq_encoded);

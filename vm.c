@@ -1277,7 +1277,6 @@ proc_isolate_env(VALUE self, rb_proc_t *proc, VALUE read_only_variables)
     *((const VALUE **)&proc->block.as.captured.ep) = env->ep;
 
     FL_SET_RAW(env, RUBY_FL_SHAREABLE);
-    rb_establish_potential_cross_ractor_connection(self, env);
 
     RB_OBJ_WRITTEN(self, Qundef, env);
 }

@@ -1333,7 +1333,6 @@ iseqw_new(const rb_iseq_t *iseq)
         RB_OBJ_WRITTEN(obj, Qundef, iseq);
 
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
-	rb_establish_potential_cross_ractor_connection((VALUE)iseq, obj);
 
         /* cache a wrapper object */
         RB_OBJ_WRITE((VALUE)iseq, &iseq->wrapper, obj);
@@ -3252,7 +3251,6 @@ iseq_data_to_ary(const rb_iseq_t *iseq)
         st_data_t label;
 
         if (st_lookup(labels_table, pos, &label)) {
-	    rb_establish_potential_cross_ractor_connection(body, label);
             rb_ary_push(body, (VALUE)label);
         }
 
@@ -3312,7 +3310,6 @@ iseq_data_to_ary(const rb_iseq_t *iseq)
     rb_ary_push(val, INT2FIX(ISEQ_MINOR_VERSION)); /* minor */
     rb_ary_push(val, INT2FIX(1));
     rb_ary_push(val, misc);
-    rb_establish_potential_cross_ractor_connection(val, iseq_body->location.label);
     rb_ary_push(val, iseq_body->location.label);
     rb_ary_push(val, rb_iseq_path(iseq));
     rb_ary_push(val, rb_iseq_realpath(iseq));

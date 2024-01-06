@@ -459,7 +459,6 @@ set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
     if (idx >= (size_t)RARRAY_LEN(ids) || NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
         ary = rb_ary_hidden_new(ID_ENTRY_UNIT * ID_ENTRY_SIZE);
 	FL_SET_RAW(ary, RUBY_FL_SHAREABLE);
-	rb_establish_potential_cross_ractor_connection(ids, ary);
         rb_ary_store(ids, (long)idx, ary);
     }
     idx = (num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
@@ -691,10 +690,6 @@ dsymbol_alloc(rb_symbols_t *symbols, const VALUE klass, const VALUE str, rb_enco
     RSYMBOL(dsym)->hashval = RSHIFT((long)hashval, 1);
     register_sym(symbols, str, dsym);
     rb_hash_aset(symbols->dsymbol_fstr_hash, str, Qtrue);
-
-    if (rb_multi_ractor_p()) {
-	rb_establish_potential_cross_ractor_connection(symbols->dsymbol_fstr_hash, str);
-    }
 
     RUBY_DTRACE_CREATE_HOOK(SYMBOL, RSTRING_PTR(RSYMBOL(dsym)->fstr));
 

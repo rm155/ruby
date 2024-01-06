@@ -514,7 +514,6 @@ rb_ary_set_shared(VALUE ary, VALUE shared_root)
 
     
     FL_SET_RAW(shared_root, RUBY_FL_SHAREABLE);
-    rb_establish_potential_cross_ractor_connection(ary, shared_root);
 
     rb_ary_increment_share(shared_root);
     FL_SET_SHARED(ary);

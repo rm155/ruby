@@ -151,7 +151,6 @@ enc_list_update(int index, rb_raw_encoding *encoding)
     if (list && NIL_P(rb_ary_entry(list, index))) {
         /* initialize encoding data */
 	VALUE enc = enc_new(encoding);
-	rb_establish_potential_cross_ractor_connection(list, enc);
         rb_ary_store(list, index, enc);
     }
 }

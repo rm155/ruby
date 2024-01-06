@@ -815,8 +815,7 @@ thread_create_core(VALUE thval, struct thread_create_params *params)
         th->ractor->threads.main = th;
 
 	VALUE isolated_proc = rb_proc_isolate_bang(params->proc);
-	rb_establish_potential_cross_ractor_connection(th->self, isolated_proc);
-        th->invoke_arg.proc.proc = isolated_proc;
+	RB_OBJ_WRITE(th->self, &th->invoke_arg.proc.proc, isolated_proc);
         th->invoke_arg.proc.args = INT2FIX(RARRAY_LENINT(params->args));
         th->invoke_arg.proc.kw_splat = rb_keyword_given_p();
         rb_ractor_send_parameters(ec, params->g, params->args);
