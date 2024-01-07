@@ -3076,7 +3076,12 @@ static struct st_table *
 obj_traverse_rec(struct obj_traverse_data *data)
 {
     if (UNLIKELY(!data->rec)) {
-	rb_run_with_redirected_allocation(NULL, create_traverse_rec, (VALUE)data);
+	if (rb_redirecting_allocation()) {
+	    rb_run_with_redirected_allocation(NULL, create_traverse_rec, (VALUE)data);
+	}
+	else {
+	    create_traverse_rec((VALUE)data);
+	}
     }
     return data->rec;
 }
@@ -3506,7 +3511,12 @@ static struct st_table *
 obj_traverse_replace_rec(struct obj_traverse_replace_data *data)
 {
     if (UNLIKELY(!data->rec)) {
-	rb_run_with_redirected_allocation(NULL, create_traverse_replace_rec, (VALUE)data);
+	if (rb_redirecting_allocation()) {
+	    rb_run_with_redirected_allocation(NULL, create_traverse_replace_rec, (VALUE)data);
+	}
+	else {
+	    create_traverse_replace_rec((VALUE)data);
+	}
     }
     return data->rec;
 }

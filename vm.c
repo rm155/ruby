@@ -3044,6 +3044,7 @@ ruby_vm_destruct(rb_vm_t *vm)
         RB_ALTSTACK_FREE(vm->main_altstack);
 
 	rb_native_mutex_destroy(&vm->subclass_list_lock);
+	rb_native_mutex_destroy(&vm->classpath_lock);
 
 	rb_native_mutex_destroy(&vm->ractor.main_ractor->mark_object_ary_lock);
 
@@ -4223,6 +4224,7 @@ Init_BareVM(void)
 
     rb_native_mutex_initialize(&vm->subclass_list_lock);
     vm->subclass_list_lock_owner = NULL;
+    rb_native_mutex_initialize(&vm->classpath_lock);
 
     // setup main thread
     th->nt = ZALLOC(struct rb_native_thread);

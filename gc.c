@@ -8761,6 +8761,8 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
 
     gc_mark(objspace, any->as.basic.klass);
 
+    rb_vm_t *vm = GET_VM();
+
     switch (BUILTIN_TYPE(obj)) {
       case T_CLASS:
         if (FL_TEST(obj, FL_SINGLETON)) {
@@ -8783,8 +8785,10 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
                 gc_mark(objspace, RCLASS_IVPTR(obj)[i]);
             }
         }
-        if (objspace == GET_VM()->objspace || objspace->flags.during_global_gc) mark_const_tbl(objspace, RCLASS_CONST_TBL(obj));
+        if (objspace == vm->objspace || objspace->flags.during_global_gc) mark_const_tbl(objspace, RCLASS_CONST_TBL(obj));
+	rb_native_mutex_lock(&vm->classpath_lock);
         gc_mark(objspace, RCLASS_EXT(obj)->classpath);
+	rb_native_mutex_unlock(&vm->classpath_lock);
         break;
 
       case T_ICLASS:

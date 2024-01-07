@@ -132,12 +132,22 @@ classname(VALUE klass, bool *permanent)
 {
     *permanent = false;
 
-    VALUE classpath = RCLASS_EXT(klass)->classpath;
-    if (classpath == 0) return Qnil;
+    VALUE classpath;
 
-    *permanent = RCLASS_EXT(klass)->permanent_classpath;
+    RB_VM_LOCK_ENTER();
+    {
+	rb_vm_t *vm = GET_VM();
+	rb_native_mutex_lock(&vm->classpath_lock);
+	classpath = RCLASS_EXT(klass)->classpath;
+	rb_native_mutex_unlock(&vm->classpath_lock);
 
-    return classpath;
+	if (classpath != 0) {
+	    *permanent = RCLASS_EXT(klass)->permanent_classpath;
+	}
+    }
+    RB_VM_LOCK_LEAVE();
+
+    return classpath == 0 ? Qnil : classpath;
 }
 
 /*
@@ -237,30 +247,34 @@ is_constant_path(VALUE name)
 VALUE
 rb_mod_set_temporary_name(VALUE mod, VALUE name)
 {
-    // We don't allow setting the name if the classpath is already permanent:
-    if (RCLASS_EXT(mod)->permanent_classpath) {
-        rb_raise(rb_eRuntimeError, "can't change permanent name");
+    RB_VM_LOCK_ENTER();
+    {
+	// We don't allow setting the name if the classpath is already permanent:
+	if (RCLASS_EXT(mod)->permanent_classpath) {
+	    rb_raise(rb_eRuntimeError, "can't change permanent name");
+	}
+
+	if (NIL_P(name)) {
+	    // Set the temporary classpath to NULL (anonymous):
+	    RCLASS_SET_CLASSPATH(mod, 0, FALSE);
+	}
+	else {
+	    // Ensure the name is a string:
+	    StringValue(name);
+
+	    if (RSTRING_LEN(name) == 0) {
+		rb_raise(rb_eArgError, "empty class/module name");
+	    }
+
+	    if (is_constant_path(name)) {
+		rb_raise(rb_eArgError, "the temporary name must not be a constant path to avoid confusion");
+	    }
+
+	    // Set the temporary classpath to the given name:
+	    RCLASS_SET_CLASSPATH(mod, name, FALSE);
+	}
     }
-
-    if (NIL_P(name)) {
-        // Set the temporary classpath to NULL (anonymous):
-        RCLASS_SET_CLASSPATH(mod, 0, FALSE);
-    }
-    else {
-        // Ensure the name is a string:
-        StringValue(name);
-
-        if (RSTRING_LEN(name) == 0) {
-            rb_raise(rb_eArgError, "empty class/module name");
-        }
-
-        if (is_constant_path(name)) {
-            rb_raise(rb_eArgError, "the temporary name must not be a constant path to avoid confusion");
-        }
-
-        // Set the temporary classpath to the given name:
-        RCLASS_SET_CLASSPATH(mod, name, FALSE);
-    }
+    RB_VM_LOCK_LEAVE();
 
     return mod;
 }
@@ -366,7 +380,11 @@ rb_set_class_path_string(VALUE klass, VALUE under, VALUE name)
         str = build_const_pathname(str, name);
     }
 
-    RCLASS_SET_CLASSPATH(klass, str, permanent);
+    RB_VM_LOCK_ENTER();
+    {
+	RCLASS_SET_CLASSPATH(klass, str, permanent);
+    }
+    RB_VM_LOCK_LEAVE();
 }
 
 void
@@ -3529,19 +3547,22 @@ set_namespace_path_i(ID id, VALUE v, void *payload)
     VALUE value = ce->value;
     VALUE parental_path = *((VALUE *) payload);
     if (!rb_is_const_id(id) || !rb_namespace_p(value)) {
-        return ID_TABLE_CONTINUE;
+	return ID_TABLE_CONTINUE;
     }
 
-    bool has_permanent_classpath;
-    classname(value, &has_permanent_classpath);
-    if (has_permanent_classpath) {
-        return ID_TABLE_CONTINUE;
-    }
-    set_namespace_path(value, build_const_path(parental_path, id));
+    RB_VM_LOCK_ENTER();
+    {
+	bool has_permanent_classpath;
+	classname(value, &has_permanent_classpath);
+	if (!has_permanent_classpath) {
+	    set_namespace_path(value, build_const_path(parental_path, id));
 
-    if (!RCLASS_EXT(value)->permanent_classpath) {
-        RCLASS_SET_CLASSPATH(value, 0, false);
+	    if (!RCLASS_EXT(value)->permanent_classpath) {
+		RCLASS_SET_CLASSPATH(value, 0, false);
+	    }
+	}
     }
+    RB_VM_LOCK_LEAVE();
 
     return ID_TABLE_CONTINUE;
 }
@@ -3619,27 +3640,31 @@ const_set(VALUE klass, ID id, VALUE val)
      * and avoid order-dependency on const_tbl
      */
     if (rb_cObject && rb_namespace_p(val)) {
-        bool val_path_permanent;
-        VALUE val_path = classname(val, &val_path_permanent);
-        if (NIL_P(val_path) || !val_path_permanent) {
-            if (klass == rb_cObject) {
-                set_namespace_path(val, rb_id2str(id));
-            }
-            else {
-                bool parental_path_permanent;
-                VALUE parental_path = classname(klass, &parental_path_permanent);
-                if (NIL_P(parental_path)) {
-                    bool throwaway;
-                    parental_path = rb_tmp_class_path(klass, &throwaway, make_temporary_path);
-                }
-                if (parental_path_permanent && !val_path_permanent) {
-                    set_namespace_path(val, build_const_path(parental_path, id));
-                }
-                else if (!parental_path_permanent && NIL_P(val_path)) {
-                    RCLASS_SET_CLASSPATH(val, build_const_path(parental_path, id), false);
-                }
-            }
-        }
+	RB_VM_LOCK_ENTER();
+	{
+	    bool val_path_permanent;
+	    VALUE val_path = classname(val, &val_path_permanent);
+	    if (NIL_P(val_path) || !val_path_permanent) {
+		if (klass == rb_cObject) {
+		    set_namespace_path(val, rb_id2str(id));
+		}
+		else {
+		    bool parental_path_permanent;
+		    VALUE parental_path = classname(klass, &parental_path_permanent);
+		    if (NIL_P(parental_path)) {
+			bool throwaway;
+			parental_path = rb_tmp_class_path(klass, &throwaway, make_temporary_path);
+		    }
+		    if (parental_path_permanent && !val_path_permanent) {
+			set_namespace_path(val, build_const_path(parental_path, id));
+		    }
+		    else if (!parental_path_permanent && NIL_P(val_path)) {
+			RCLASS_SET_CLASSPATH(val, build_const_path(parental_path, id), false);
+		    }
+		}
+	    }
+	}
+	RB_VM_LOCK_LEAVE();
     }
 }
 
