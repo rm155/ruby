@@ -2,6 +2,10 @@
 /*
  * console IO module
  */
+
+static const char *const
+IO_CONSOLE_VERSION = "0.7.2.dev.1";
+
 #include "ruby.h"
 #include "ruby/io.h"
 #include "ruby/thread.h"
@@ -1822,7 +1826,7 @@ InitVM_console(void)
     {
 	/* :stopdoc: */
         cConmode = rb_define_class_under(rb_cIO, "ConsoleMode", rb_cObject);
-        rb_define_const(cConmode, "VERSION", rb_str_new_cstr(STRINGIZE(IO_CONSOLE_VERSION)));
+        rb_define_const(cConmode, "VERSION", rb_str_new_cstr(IO_CONSOLE_VERSION));
         rb_define_alloc_func(cConmode, conmode_alloc);
         rb_undef_method(cConmode, "initialize");
         rb_define_method(cConmode, "initialize_copy", conmode_init_copy, 1);

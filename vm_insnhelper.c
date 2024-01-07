@@ -5880,7 +5880,8 @@ rb_vm_opt_getconstant_path(rb_execution_context_t *ec, rb_control_frame_t *const
 	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, val);
 
         VM_ASSERT(val == vm_get_ev_const_chain(ec, segments));
-    } else {
+    }
+    else {
         ruby_vm_constant_cache_misses++;
         val = vm_get_ev_const_chain(ec, segments);
         vm_ic_track_const_chain(GET_CFP(), ic, segments);

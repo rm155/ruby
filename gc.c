@@ -6938,46 +6938,46 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
         asan_unpoison_object(vp, false);
         if (bitset & 1) {
             switch (BUILTIN_TYPE(vp)) {
-                default: /* majority case */
-                    gc_report(2, objspace, "page_sweep: free %p\n", (void *)p);
+              default: /* majority case */
+                gc_report(2, objspace, "page_sweep: free %p\n", (void *)p);
 #if RGENGC_CHECK_MODE
-                    if (!is_full_marking(objspace)) {
-                        if (RVALUE_OLD_P(vp)) rb_bug("page_sweep: %p - old while minor GC.", (void *)p);
-                        if (RVALUE_REMEMBERED(vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
-                    }
+                if (!is_full_marking(objspace)) {
+                    if (RVALUE_OLD_P(vp)) rb_bug("page_sweep: %p - old while minor GC.", (void *)p);
+                    if (RVALUE_REMEMBERED(vp)) rb_bug("page_sweep: %p - remembered.", (void *)p);
+                }
 #endif
-                    if (obj_free(objspace, vp)) {
-                        // always add free slots back to the swept pages freelist,
-                        // so that if we're comapacting, we can re-use the slots
-                        (void)VALGRIND_MAKE_MEM_UNDEFINED((void*)p, BASE_SLOT_SIZE);
-                        heap_page_add_freeobj(objspace, sweep_page, vp);
-                        gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
-                        ctx->freed_slots++;
-                    }
-                    else {
-                        ctx->final_slots++;
-                    }
-                    break;
-
-                case T_MOVED:
-                    if (objspace->flags.during_compacting) {
-                        /* The sweep cursor shouldn't have made it to any
-                         * T_MOVED slots while the compact flag is enabled.
-                         * The sweep cursor and compact cursor move in
-                         * opposite directions, and when they meet references will
-                         * get updated and "during_compacting" should get disabled */
-                        rb_bug("T_MOVED shouldn't be seen until compaction is finished");
-                    }
-                    gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
-                    ctx->empty_slots++;
+                if (obj_free(objspace, vp)) {
+                    // always add free slots back to the swept pages freelist,
+                    // so that if we're comapacting, we can re-use the slots
+                    (void)VALGRIND_MAKE_MEM_UNDEFINED((void*)p, BASE_SLOT_SIZE);
                     heap_page_add_freeobj(objspace, sweep_page, vp);
-                    break;
-                case T_ZOMBIE:
-                    /* already counted */
-                    break;
-                case T_NONE:
-                    ctx->empty_slots++; /* already freed */
-                    break;
+                    gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
+                    ctx->freed_slots++;
+                }
+                else {
+                    ctx->final_slots++;
+                }
+                break;
+
+              case T_MOVED:
+                if (objspace->flags.during_compacting) {
+                    /* The sweep cursor shouldn't have made it to any
+                     * T_MOVED slots while the compact flag is enabled.
+                     * The sweep cursor and compact cursor move in
+                     * opposite directions, and when they meet references will
+                     * get updated and "during_compacting" should get disabled */
+                    rb_bug("T_MOVED shouldn't be seen until compaction is finished");
+                }
+                gc_report(3, objspace, "page_sweep: %s is added to freelist\n", obj_info(vp));
+                ctx->empty_slots++;
+                heap_page_add_freeobj(objspace, sweep_page, vp);
+                break;
+              case T_ZOMBIE:
+                /* already counted */
+                break;
+              case T_NONE:
+                ctx->empty_slots++; /* already freed */
+                break;
             }
         }
         p += slot_size;
@@ -11917,10 +11917,6 @@ gc_enter_count(enum gc_enter_event event)
     }
 }
 
-#ifndef MEASURE_GC
-#define MEASURE_GC (objspace->flags.measure_gc)
-#endif
-
 static bool current_process_time(struct timespec *ts);
 
 static void
@@ -12026,12 +12022,18 @@ gc_global_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int 
     RB_VM_LOCK_LEAVE_LEV(lock_lev);
 }
 
+#ifndef MEASURE_GC
+#define MEASURE_GC (objspace->flags.measure_gc)
+#endif
+
 static void
 gc_marking_enter(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    gc_clock_start(&objspace->profile.marking_start_time);
+    if (MEASURE_GC) {
+        gc_clock_start(&objspace->profile.marking_start_time);
+    }
 }
 
 static void
@@ -12039,7 +12041,9 @@ gc_marking_exit(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    objspace->profile.marking_time_ns += gc_clock_end(&objspace->profile.marking_start_time);
+    if (MEASURE_GC) {
+        objspace->profile.marking_time_ns += gc_clock_end(&objspace->profile.marking_start_time);
+    }
 }
 
 static void
@@ -12047,7 +12051,9 @@ gc_sweeping_enter(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    gc_clock_start(&objspace->profile.sweeping_start_time);
+    if (MEASURE_GC) {
+        gc_clock_start(&objspace->profile.sweeping_start_time);
+    }
 }
 
 static void
@@ -12055,7 +12061,9 @@ gc_sweeping_exit(rb_objspace_t *objspace)
 {
     GC_ASSERT(during_gc != 0);
 
-    objspace->profile.sweeping_time_ns += gc_clock_end(&objspace->profile.sweeping_start_time);
+    if (MEASURE_GC) {
+        objspace->profile.sweeping_time_ns += gc_clock_end(&objspace->profile.sweeping_start_time);
+    }
 }
 
 static void *

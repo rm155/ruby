@@ -1559,7 +1559,15 @@ hash_copy(VALUE ret, VALUE hash)
 static VALUE
 hash_dup_with_compare_by_id(VALUE hash)
 {
-    return hash_copy(copy_compare_by_id(rb_hash_new(), hash), hash);
+    VALUE dup = hash_alloc_flags(rb_cHash, 0, Qnil, RHASH_ST_TABLE_P(hash));
+    if (RHASH_ST_TABLE_P(hash)) {
+        RHASH_SET_ST_FLAG(dup);
+    }
+    else {
+        RHASH_UNSET_ST_FLAG(dup);
+    }
+
+    return hash_copy(dup, hash);
 }
 
 static VALUE
@@ -7298,7 +7306,7 @@ Init_Hash(void)
      * - ENV.replace replaces \ENV with a new collection of entries.
      * - ENV.clear empties \ENV.
      *
-     * == What's Here
+     * === What's Here
      *
      * First, what's elsewhere. \Class \ENV:
      *
@@ -7314,7 +7322,7 @@ Init_Hash(void)
      * - {Converting}[rdoc-ref:ENV@Methods+for+Converting]
      * - {And more ....}[rdoc-ref:ENV@More+Methods]
      *
-     * === Methods for Querying
+     * ==== Methods for Querying
      *
      * - ::[]: Returns the value for the given environment variable name if it exists:
      * - ::empty?: Returns whether \ENV is empty.
@@ -7325,7 +7333,7 @@ Init_Hash(void)
      * - ::size, ::length: Returns the number of entries.
      * - ::value?: Returns whether any entry has the given value.
      *
-     * === Methods for Assigning
+     * ==== Methods for Assigning
      *
      * - ::[]=, ::store: Creates, updates, or deletes the named environment variable.
      * - ::clear: Removes every environment variable; returns \ENV:
@@ -7333,7 +7341,7 @@ Init_Hash(void)
      * - ::replace: Replaces the entire content of the \ENV
      *   with the name/value pairs in the given hash.
      *
-     * === Methods for Deleting
+     * ==== Methods for Deleting
      *
      * - ::delete: Deletes the named environment variable name if it exists.
      * - ::delete_if: Deletes entries selected by the block.
@@ -7342,13 +7350,13 @@ Init_Hash(void)
      * - ::select!, ::filter!: Deletes entries selected by the block.
      * - ::shift: Removes and returns the first entry.
      *
-     * === Methods for Iterating
+     * ==== Methods for Iterating
      *
      * - ::each, ::each_pair: Calls the block with each name/value pair.
      * - ::each_key: Calls the block with each name.
      * - ::each_value: Calls the block with each value.
      *
-     * === Methods for Converting
+     * ==== Methods for Converting
      *
      * - ::assoc: Returns a 2-element array containing the name and value
      *   of the named environment variable if it exists:
@@ -7371,7 +7379,7 @@ Init_Hash(void)
      * - ::values: Returns all values as an array.
      * - ::values_at: Returns an array of the values for the given name.
      *
-     * === More Methods
+     * ==== More Methods
      *
      * - ::dup: Raises an exception.
      * - ::freeze: Raises an exception.
