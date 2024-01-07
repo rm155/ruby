@@ -5399,7 +5399,7 @@ compile_massign_lhs(rb_iseq_t *iseq, LINK_ANCHOR *const pre, LINK_ANCHOR *const 
             int argc = vm_ci_argc(ci);
             ci = ci_argc_set(iseq, ci, argc - 1);
             OPERAND_AT(iobj, 0) = (VALUE)ci;
-            RB_OBJ_WRITTEN(iseq, Qundef, iobj);
+            RB_OBJ_WRITTEN(iseq, Qundef, ci);
             INSERT_BEFORE_INSN1(iobj, line_node, newarray, INT2FIX(1));
             INSERT_BEFORE_INSN(iobj, line_node, concatarray);
         }
