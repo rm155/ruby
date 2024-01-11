@@ -690,6 +690,8 @@ RBIMPL_SYMBOL_EXPORT_BEGIN()
  */
 void rb_gc_writebarrier(VALUE old, VALUE young);
 
+void rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv);
+
 /**
  * This is the  implementation of #RB_OBJ_WB_UNPROTECT().  People  don't use it
  * directly.
@@ -812,6 +814,7 @@ rb_obj_written(
     if (!RB_SPECIAL_CONST_P(b)) {
         rb_gc_writebarrier(a, b);
     }
+    if (oldv != RUBY_Qundef) rb_gc_writebarrier_reference_dropped(a, oldv);
 
     return a;
 }
@@ -840,6 +843,8 @@ rb_obj_write(
 #ifdef RGENGC_LOGGING_WRITE
     RGENGC_LOGGING_WRITE(a, slot, b, filename, line);
 #endif
+
+    rb_gc_writebarrier_reference_dropped(a, *slot);
 
     *slot = b;
 

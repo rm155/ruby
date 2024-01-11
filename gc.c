@@ -890,6 +890,11 @@ typedef struct rb_objspace {
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
+    st_table *former_reference_list_tbl;
+    rb_nativethread_lock_t former_reference_list_tbl_lock;
+    rb_ractor_t *former_reference_list_tbl_lock_owner;
+    unsigned int former_reference_list_tbl_lock_lev;
+
     st_table *contained_ractor_tbl;
     rb_nativethread_lock_t contained_ractor_tbl_lock;
 
@@ -1037,6 +1042,11 @@ typedef struct gc_reference_status {
     int status;
 } gc_reference_status_t;
 
+struct former_reference_list {
+    VALUE varptr;
+    struct former_reference_list *next;
+};
+
 
 static int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 
@@ -1052,6 +1062,17 @@ static void drop_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc
 static void add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs);
 static void update_shared_object_references(rb_objspace_t *objspace);
 static void absorb_shared_object_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from);
+
+static struct former_reference_list *get_former_reference_list(rb_objspace_t *objspace, VALUE obj);
+static void set_former_reference_list(rb_objspace_t *objspace, VALUE obj, struct former_reference_list *fmr_ref_list);
+static void record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_reference);
+static void mark_former_references(rb_objspace_t *objspace, VALUE obj);
+static void release_former_references(rb_objspace_t *objspace, VALUE obj);
+static int release_all_former_references_in_objspace_i(st_data_t key, st_data_t value, st_data_t argp, int error);
+static void release_all_former_references_in_objspace(rb_objspace_t *objspace);
+static void release_all_former_references(rb_vm_t *vm);
+static void lock_former_references(rb_objspace_t *objspace);
+static void unlock_former_references(rb_objspace_t *objspace);
 
 static int
 insert_table_row(st_data_t key, st_data_t val, st_data_t arg)
@@ -1092,6 +1113,15 @@ absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 
     rb_native_mutex_unlock(&objspace_to_copy_from->wmap_referenced_obj_tbl_lock);
     rb_native_mutex_unlock(&objspace_to_update->wmap_referenced_obj_tbl_lock);
+
+    //Former reference list table
+    lock_former_references(objspace_to_copy_from);
+    lock_former_references(objspace_to_update);
+
+    absorb_table_contents(objspace_to_update->former_reference_list_tbl, objspace_to_copy_from->former_reference_list_tbl);
+
+    unlock_former_references(objspace_to_copy_from);
+    unlock_former_references(objspace_to_update);
 
     //Object ID tables
     rb_native_mutex_lock(&objspace_to_copy_from->obj_id_lock);
@@ -2226,6 +2256,9 @@ rb_objspace_free(rb_objspace_t *objspace)
 
     st_free_table(objspace->wmap_referenced_obj_tbl);
     rb_nativethread_lock_destroy(&objspace->wmap_referenced_obj_tbl_lock);
+
+    st_free_table(objspace->former_reference_list_tbl);
+    rb_nativethread_lock_destroy(&objspace->former_reference_list_tbl_lock);
 
     st_free_table(objspace->contained_ractor_tbl);
     rb_nativethread_lock_destroy(&objspace->contained_ractor_tbl_lock);
@@ -3717,12 +3750,6 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
           newobj_slowpath_wb_protected(klass, flags, objspace, cr, size_pool_idx, borrowing) :
           newobj_slowpath_wb_unprotected(klass, flags, objspace, cr, size_pool_idx, borrowing);
     }
-
-    if (objspace != GET_VM()->objspace) {
-	if (klass && !rb_special_const_p(klass) && BUILTIN_TYPE(klass) == T_CLASS) {
-	    rb_register_new_external_reference(objspace, klass);
-	}
-    }
     
     if (borrowing && is_incremental_marking(objspace)) {
 	if (gc_mark_set(objspace, obj)) {
@@ -4361,6 +4388,10 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
         break;
     }
 
+    if (FL_TEST(obj, FL_SHAREABLE)) {
+	release_former_references(objspace, obj);
+    }
+
     if (FL_TEST(obj, FL_EXIVAR)) {
         rb_free_generic_ivar((VALUE)obj);
         FL_UNSET(obj, FL_EXIVAR);
@@ -4714,11 +4745,16 @@ Init_heap(rb_objspace_t *objspace)
 
     objspace->shared_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
-    rb_nativethread_lock_initialize(&objspace->external_reference_tbl_lock);
     objspace->external_reference_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->external_reference_tbl_lock);
 
     objspace->wmap_referenced_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->wmap_referenced_obj_tbl_lock);
+
+    objspace->former_reference_list_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->former_reference_list_tbl_lock);
+    objspace->former_reference_list_tbl_lock_owner = NULL;
+    objspace->former_reference_list_tbl_lock_lev = 0;
 
     objspace->contained_ractor_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->contained_ractor_tbl_lock);
@@ -5451,7 +5487,6 @@ rb_gc_copy_finalizer(VALUE dest, VALUE obj)
     if (st_lookup(finalizer_table, obj, &data)) {
         table = (VALUE)data;
 	objspace = GET_OBJSPACE_OF_VALUE(dest);
-	rb_register_new_external_reference(objspace, table);
         st_insert(finalizer_table, dest, table);
     }
     FL_SET(dest, FL_FINALIZE);
@@ -5658,6 +5693,7 @@ bool rb_obj_is_main_ractor(VALUE gv);
 void
 rb_objspace_free_objects(rb_objspace_t *objspace)
 {
+    lock_former_references(objspace);
     for (size_t i = 0; i < heap_allocated_pages; i++) {
         struct heap_page *page = heap_pages_sorted[i];
         short stride = page->slot_size;
@@ -5681,6 +5717,7 @@ rb_objspace_free_objects(rb_objspace_t *objspace)
             }
         }
     }
+    unlock_former_references(objspace);
 }
 
 
@@ -5725,6 +5762,8 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
     LOCAL_GC_BEGIN(objspace);
     {
 	gc_enter(objspace, gc_enter_event_finalizer, false);
+	
+	lock_former_references(objspace);
 
 	/* run data/file object's finalizers */
 	for (i = 0; i < heap_allocated_pages; i++) {
@@ -5765,6 +5804,9 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 		}
 	    }
 	}
+
+	unlock_former_references(objspace);
+
 	gc_exit(objspace, gc_enter_event_finalizer);
     }
     LOCAL_GC_END(objspace);
@@ -5853,23 +5895,6 @@ rb_remove_from_contained_ractor_tbl(rb_ractor_t *r)
     rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
 }
 
-void
-cross_ractor_const_access(VALUE c, VALUE klass, ID id)
-{
-    if (!rb_multi_ractor_p() || rb_special_const_p(c)) return;
-
-    if (rb_ractor_shareable_p(c)) {
-	if (GET_RACTOR_OF_VALUE(c) != GET_RACTOR()) {
-	    rb_register_new_external_reference(GET_RACTOR()->local_objspace, c); //TODO: Don't repeat this
-	}
-    }
-    else {
-	if (UNLIKELY(!rb_ractor_main_p())) {
-	    rb_raise(rb_eRactorIsolationError, "can not access non-shareable objects in constant %"PRIsVALUE"::%s by non-main Ractor.", rb_class_path(klass), rb_id2name(id));
-	}
-    }
-}
-
 static void add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs);
 
 static void
@@ -5926,6 +5951,111 @@ rb_remove_from_external_weak_tables(VALUE *ptr)
     rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
     st_delete(source_objspace->wmap_referenced_obj_tbl, &ptr, NULL);
     rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
+}
+
+static struct former_reference_list *
+get_former_reference_list(rb_objspace_t *objspace, VALUE obj)
+{
+    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR() || (during_gc && !using_local_limits(objspace)));
+
+    st_data_t data;
+    int list_found = st_lookup(objspace->former_reference_list_tbl, (st_data_t)obj, &data);
+    return list_found ? (struct former_reference_list *)data : NULL;
+}
+
+static void
+set_former_reference_list(rb_objspace_t *objspace, VALUE obj, struct former_reference_list *fmr_ref_list)
+{
+    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+    st_insert(objspace->former_reference_list_tbl, (st_data_t)obj, (st_data_t)fmr_ref_list);
+}
+
+    static void
+record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_reference)
+{
+    VM_ASSERT(objspace == GET_OBJSPACE_OF_VALUE(parent));
+    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+
+    struct former_reference_list *tmp;
+    tmp = ALLOC(struct former_reference_list);
+
+    struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, parent);
+
+    tmp->next = fmr_ref_list;
+    tmp->varptr = former_reference;
+    set_former_reference_list(objspace, parent, tmp);
+}
+
+    static void
+mark_former_references(rb_objspace_t *objspace, VALUE obj)
+{
+    VM_ASSERT(!using_local_limits(objspace) || objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+
+    struct former_reference_list *list;
+    struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, obj);
+    for (list = fmr_ref_list; list; list = list->next) {
+	gc_mark_maybe(objspace, list->varptr);
+    }
+}
+
+    static void
+release_former_references(rb_objspace_t *objspace, VALUE obj)
+{
+    VM_ASSERT(during_gc);
+    VM_ASSERT(!using_local_limits(objspace) || objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+
+    struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, obj);
+
+    struct former_reference_list *list, *next;
+    for (list = fmr_ref_list; list; list = next) {
+	next = list->next;
+	xfree(list);
+    }
+    st_delete(objspace->former_reference_list_tbl, &obj, 0);
+}
+
+static int
+release_all_former_references_in_objspace_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    release_former_references((rb_objspace_t *)argp, (VALUE)key);
+    return ST_DELETE;
+}
+
+static void
+release_all_former_references_in_objspace(rb_objspace_t *objspace)
+{
+    st_foreach(objspace->former_reference_list_tbl, release_all_former_references_in_objspace_i, (st_data_t)objspace);
+}
+
+static void
+release_all_former_references(rb_vm_t *vm)
+{
+    rb_objspace_t *os = NULL;
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+	release_all_former_references_in_objspace(os);
+    }
+}
+
+static void
+lock_former_references(rb_objspace_t *objspace)
+{
+    rb_ractor_t *cr = GET_RACTOR();
+    if (objspace->former_reference_list_tbl_lock_owner != cr) {
+	rb_native_mutex_lock(&objspace->former_reference_list_tbl_lock);
+	objspace->former_reference_list_tbl_lock_owner = cr;
+    }
+    objspace->former_reference_list_tbl_lock_lev++;
+}
+
+static void
+unlock_former_references(rb_objspace_t *objspace)
+{
+    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+    objspace->former_reference_list_tbl_lock_lev--;
+    if (objspace->former_reference_list_tbl_lock_lev == 0) {
+	objspace->former_reference_list_tbl_lock_owner = NULL;
+	rb_native_mutex_unlock(&objspace->former_reference_list_tbl_lock);
+    }
 }
 
 static inline int
@@ -8761,6 +8891,8 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
 
     gc_mark(objspace, any->as.basic.klass);
 
+    if (FL_TEST_RAW(obj, FL_SHAREABLE)) mark_former_references(objspace, obj);
+
     rb_vm_t *vm = GET_VM();
 
     switch (BUILTIN_TYPE(obj)) {
@@ -10699,8 +10831,12 @@ gc_marks(rb_objspace_t *objspace, int full_mark)
 static void
 gc_marks_global(rb_objspace_t *objspace, int full_mark)
 {
+    rb_vm_t *vm = GET_VM();
+
+    release_all_former_references(vm);
+
     rb_objspace_t *os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	objspace->global_gc_current_target = os;
 	gc_prof_mark_timer_start(os);
 
@@ -10710,16 +10846,15 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
     }
 
     os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	objspace->global_gc_current_target = os;
 	gc_marks_start(os, full_mark);
     }
 
-    rb_vm_t *vm = GET_VM();
     rb_vm_ractor_mark(vm);
 
     os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	objspace->global_gc_current_target = os;
 	gc_prof_mark_timer_start(os);
 	if (!is_incremental_marking(os)) {
@@ -10727,7 +10862,7 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
 	}
     }
 
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	objspace->global_gc_current_target = os;
 	gc_marks_finish(os);
 #if RGENGC_PROFILE > 0
@@ -10741,7 +10876,7 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
     }
 
     os = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
+    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	objspace->global_gc_current_target = os;
 	gc_sweep(os);
     }
@@ -11045,6 +11180,19 @@ gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
         if (retry) goto retry;
     }
     return;
+}
+
+void
+rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
+{
+    if (SPECIAL_CONST_P(a)) return;
+
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(a);
+    if (UNLIKELY(!ruby_single_main_objspace && oldv != NULL && FL_TEST_RAW(a, FL_SHAREABLE) && !SPECIAL_CONST_P(oldv))) {
+	lock_former_references(objspace);
+	record_former_reference(objspace, a, oldv);
+	unlock_former_references(objspace);
+    }
 }
 
 void
@@ -12033,6 +12181,7 @@ gc_global_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int 
 static void
 gc_marking_enter(rb_objspace_t *objspace)
 {
+    lock_former_references(objspace);
     GC_ASSERT(during_gc != 0);
 
     if (MEASURE_GC) {
@@ -12048,11 +12197,13 @@ gc_marking_exit(rb_objspace_t *objspace)
     if (MEASURE_GC) {
         objspace->profile.marking_time_ns += gc_clock_end(&objspace->profile.marking_start_time);
     }
+    unlock_former_references(objspace);
 }
 
 static void
 gc_sweeping_enter(rb_objspace_t *objspace)
 {
+    lock_former_references(objspace);
     GC_ASSERT(during_gc != 0);
 
     if (MEASURE_GC) {
@@ -12068,6 +12219,7 @@ gc_sweeping_exit(rb_objspace_t *objspace)
     if (MEASURE_GC) {
         objspace->profile.sweeping_time_ns += gc_clock_end(&objspace->profile.sweeping_start_time);
     }
+    unlock_former_references(objspace);
 }
 
 static void *
@@ -14495,7 +14647,9 @@ rb_objspace_reachable_objects_from(VALUE obj, void (func)(VALUE, void *), void *
             cr->mfd = &mfd;
 	    
 	    VALUE already_disabled = rb_objspace_gc_disable(objspace);
+	    lock_former_references(objspace);
             gc_mark_children(objspace, obj);
+	    unlock_former_references(objspace);
 	    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
 
             cr->mfd = prev_mfd;
@@ -14542,7 +14696,9 @@ objspace_reachable_objects_from_root(rb_objspace_t *objspace, void (func)(const 
     cr->mfd = &mfd;
 
     VALUE already_disabled = rb_objspace_gc_disable(objspace);
+    lock_former_references(objspace);
     gc_mark_roots(objspace, &data.category);
+    unlock_former_references(objspace);
     if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
 
     cr->mfd = prev_mfd;

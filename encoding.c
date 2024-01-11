@@ -170,7 +170,6 @@ enc_list_lookup(int idx)
         rb_bug("rb_enc_from_encoding_index(%d): not created yet", idx);
     }
     else {
-	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, enc);
         return enc;
     }
 }

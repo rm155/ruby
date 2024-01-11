@@ -3799,14 +3799,12 @@ move_enter(VALUE obj, struct obj_traverse_replace_data *data)
 {
     if (rb_ractor_shareable_p(obj)) {
         data->replacement = obj;
-	if (!rb_special_const_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
         return traverse_skip;
     }
     else {
         VALUE moved = rb_obj_alloc(RBASIC_CLASS(obj));
         rb_shape_set_shape(moved, rb_shape_get_shape(obj));
         data->replacement = moved;
-	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, rb_class_of(moved));
         return traverse_cont;
     }
 }
@@ -3839,6 +3837,7 @@ move_leave(VALUE obj, struct obj_traverse_replace_data *data)
 static VALUE
 ractor_move(VALUE obj)
 {
+    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
     VALUE val = rb_obj_traverse_replace(obj, move_enter, move_leave, true);
     if (!UNDEF_P(val)) {
         return val;
@@ -3853,12 +3852,10 @@ copy_enter(VALUE obj, struct obj_traverse_replace_data *data)
 {
     if (rb_ractor_shareable_p(obj)) {
         data->replacement = obj;
-	if (!rb_special_const_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
         return traverse_skip;
     }
     else {
         data->replacement = rb_obj_clone(obj);
-	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, rb_class_of(obj));
         return traverse_cont;
     }
 }
@@ -3877,6 +3874,7 @@ ractor_copy(VALUE obj)
     cr->during_ractor_copy = true;
 #endif
 
+    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
     VALUE val = rb_obj_traverse_replace(obj, copy_enter, copy_leave, false);
 
 #if VM_CHECK_MODE > 0

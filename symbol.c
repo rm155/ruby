@@ -615,7 +615,6 @@ register_static_symid_str(ID id, VALUE str)
 
     OBJ_FREEZE(str);
     rb_vm_t *vm = GET_VM();
-    if (rb_current_allocating_ractor() != vm->ractor.main_ractor) rb_register_new_external_reference(vm->objspace, str);
     str = rb_fstring(str);
 
     RUBY_DTRACE_CREATE_HOOK(SYMBOL, RSTRING_PTR(str));
@@ -750,7 +749,6 @@ lookup_str_sym_with_lock(rb_symbols_t *symbols, const VALUE str)
     if (st_lookup(symbols->str_sym, (st_data_t)str, &sym_data)) {
         VALUE sym = (VALUE)sym_data;
         if (DYNAMIC_SYM_P(sym)) {
-	    if (rb_multi_ractor_p()) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, sym);
             sym = dsymbol_check(symbols, sym);
         }
         return sym;
@@ -1059,7 +1057,6 @@ symbols_i(st_data_t key, st_data_t value, st_data_t arg)
         return ST_DELETE;
     }
     else {
-	if (rb_multi_ractor_p()) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, sym);
         rb_ary_push(ary, sym);
         return ST_CONTINUE;
     }

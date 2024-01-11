@@ -682,7 +682,6 @@ rb_exc_raise_no_redirection(VALUE mesg)
 {
     if (rb_redirecting_allocation()) {
 	mesg = rb_ractor_make_shareable_copy(mesg);
-	rb_register_new_external_reference(GET_RACTOR()->local_objspace, mesg);
 	rb_run_with_redirected_allocation(NULL, rb_exc_raise_no_redirection, mesg);
     }
     else {

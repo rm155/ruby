@@ -1063,7 +1063,12 @@ vm_get_ev_const(rb_execution_context_t *ec, VALUE orig_klass, ID id, bool allow_
                             return 1;
                         }
                         else {
-			    cross_ractor_const_access(val, klass, id);
+                            if (UNLIKELY(!rb_ractor_main_p())) {
+                                if (!rb_ractor_shareable_p(val)) {
+                                    rb_raise(rb_eRactorIsolationError,
+                                             "can not access non-shareable objects in constant %"PRIsVALUE"::%s by non-main ractor.", rb_class_path(klass), rb_id2name(id));
+                                }
+                            }
 			    return val;
                         }
                     }
@@ -5877,7 +5882,6 @@ rb_vm_opt_getconstant_path(rb_execution_context_t *ec, rb_control_frame_t *const
     struct iseq_inline_constant_cache_entry *ice = ic->entry;
     if (ice && vm_ic_hit_p(ice, GET_EP())) {
         val = ice->value;
-	rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, val);
 
         VM_ASSERT(val == vm_get_ev_const_chain(ec, segments));
     }

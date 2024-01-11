@@ -1893,13 +1893,8 @@ ivar_set(VALUE obj, ID id, VALUE val)
     if (rb_multi_ractor_p()) {
 	rb_ractor_t *obj_ractor = get_ractor_of_value(obj);
 	rb_ractor_t *val_ractor = get_ractor_of_value(val);
-	if (obj_ractor && val_ractor && obj_ractor != val_ractor) {
-	    if (rb_ractor_shareable_p(val)) {
-		rb_register_new_external_reference(obj_ractor->local_objspace, val);
-	    }
-	    else {
-		rb_raise(rb_eRuntimeError, "an unshareable object can only be set to an instance variable of an object belonging to the same Ractor");
-	    }
+	if (UNLIKELY(obj_ractor && val_ractor && obj_ractor != val_ractor && !rb_ractor_shareable_p(val))) {
+	    rb_raise(rb_eRuntimeError, "an unshareable object can only be set to an instance variable of an object belonging to the same Ractor");
 	}
     }
 
@@ -3125,7 +3120,11 @@ rb_const_get_0(VALUE klass, ID id, int exclude, int recurse, int visibility)
 {
     VALUE c = rb_const_search(klass, id, exclude, recurse, visibility);
     if (!UNDEF_P(c)) {
-	cross_ractor_const_access(c, klass, id);
+        if (UNLIKELY(!rb_ractor_main_p())) {
+            if (!rb_ractor_shareable_p(c)) {
+                rb_raise(rb_eRactorIsolationError, "can not access non-shareable objects in constant %"PRIsVALUE"::%s by non-main Ractor.", rb_class_path(klass), rb_id2name(id));
+            }
+        }
 	return c;
     }
     return rb_const_missing(klass, ID2SYM(id));
@@ -3329,6 +3328,8 @@ rb_const_remove(VALUE mod, ID id)
     rb_clear_constant_cache_for_id(id);
 
     val = ce->value;
+
+    rb_gc_writebarrier_reference_dropped(mod, val);
 
     if (UNDEF_P(val)) {
         autoload_delete(mod, id);

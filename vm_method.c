@@ -1347,7 +1347,6 @@ negative_cme(ID mid)
     }
     else {
         cme = (rb_callable_method_entry_t *)rb_method_entry_alloc(mid, Qnil, Qnil, NULL, false);
-	rb_register_new_external_reference(vm->objspace, (VALUE)cme);
         rb_id_table_insert(vm->negative_cme_table, mid, (VALUE)cme);
     }
 

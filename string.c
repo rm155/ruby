@@ -413,7 +413,6 @@ rb_fstring(VALUE str)
 
     rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
     rb_ractor_t *str_ractor = get_ractor_of_value(str);
-    if (str_ractor && allocating_ractor != str_ractor) rb_register_new_external_reference(allocating_ractor->local_objspace, str);
 
     if (!FL_TEST_RAW(str, FL_FREEZE | STR_NOFREE))
         rb_str_resize(str, RSTRING_LEN(str));
