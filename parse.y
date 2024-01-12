@@ -86,6 +86,7 @@ hash_literal_key_p(VALUE k)
           case NODE_FLOAT:
           case NODE_RATIONAL:
           case NODE_IMAGINARY:
+          case NODE_SYM:
           case NODE_LINE:
           case NODE_FILE:
             return true;
@@ -100,28 +101,18 @@ hash_literal_key_p(VALUE k)
 static int rb_parser_string_hash_cmp(rb_parser_string_t *str1, rb_parser_string_t *str2);
 
 static int
-node_numeric_str_cmp(char *str1, char *str2)
-{
-    size_t len1 = strlen(str1);
-    size_t len2 = strlen(str2);
-
-    return (len1 != len2 ||
-            memcmp(str1, str2, len1) != 0);
-}
-
-static int
 node_integer_cmp(rb_node_integer_t *n1, rb_node_integer_t *n2)
 {
     return (n1->minus != n2->minus ||
             n1->base != n2->base ||
-            node_numeric_str_cmp(n1->val, n2->val));
+            strcmp(n1->val, n2->val));
 }
 
 static int
 node_float_cmp(rb_node_float_t *n1, rb_node_float_t *n2)
 {
     return (n1->minus != n2->minus ||
-            node_numeric_str_cmp(n1->val, n2->val));
+            strcmp(n1->val, n2->val));
 }
 
 static int
@@ -130,7 +121,7 @@ node_rational_cmp(rb_node_rational_t *n1, rb_node_rational_t *n2)
     return (n1->minus != n2->minus ||
             n1->base != n2->base ||
             n1->seen_point != n2->seen_point ||
-            node_numeric_str_cmp(n1->val, n2->val));
+            strcmp(n1->val, n2->val));
 }
 
 static int
@@ -140,15 +131,15 @@ node_imaginary_cmp(rb_node_imaginary_t *n1, rb_node_imaginary_t *n2)
             n1->base != n2->base ||
             n1->seen_point != n2->seen_point ||
             n1->type != n2->type ||
-            node_numeric_str_cmp(n1->val, n2->val));
+            strcmp(n1->val, n2->val));
 }
 
 static int
-node_integer_line_cmp(rb_node_integer_t *i, rb_node_line_t *line)
+node_integer_line_cmp(const NODE *node_i, const NODE *line)
 {
-    VALUE num = rb_node_integer_literal_val(i);
+    VALUE num = rb_node_integer_literal_val(node_i);
 
-    return !(FIXNUM_P(num) && RNODE(line)->nd_loc.beg_pos.lineno == FIX2INT(num));
+    return !(FIXNUM_P(num) && line->nd_loc.beg_pos.lineno == FIX2INT(num));
 }
 
 static int
@@ -174,34 +165,32 @@ node_cdhash_cmp(VALUE val, VALUE lit)
 
         /* Special case for Integer and __LINE__ */
         if (type_val == NODE_INTEGER && type_lit == NODE_LINE) {
-            return node_integer_line_cmp(RNODE_INTEGER(node_val), RNODE_LINE(node_lit));
+            return node_integer_line_cmp(node_val, node_lit);
         }
         if (type_lit == NODE_INTEGER && type_val == NODE_LINE) {
-            return node_integer_line_cmp(RNODE_INTEGER(node_lit), RNODE_LINE(node_val));
+            return node_integer_line_cmp(node_lit, node_val);
         }
 
         if (type_val != type_lit) {
             return -1;
         }
-        else if (type_lit == NODE_INTEGER) {
+
+        switch (type_lit) {
+          case NODE_INTEGER:
             return node_integer_cmp(RNODE_INTEGER(node_val), RNODE_INTEGER(node_lit));
-        }
-        else if (type_lit == NODE_FLOAT) {
+          case NODE_FLOAT:
             return node_float_cmp(RNODE_FLOAT(node_val), RNODE_FLOAT(node_lit));
-        }
-        else if (type_lit == NODE_RATIONAL) {
+          case NODE_RATIONAL:
             return node_rational_cmp(RNODE_RATIONAL(node_val), RNODE_RATIONAL(node_lit));
-        }
-        else if (type_lit == NODE_IMAGINARY) {
+          case NODE_IMAGINARY:
             return node_imaginary_cmp(RNODE_IMAGINARY(node_val), RNODE_IMAGINARY(node_lit));
-        }
-        else if (type_lit == NODE_LINE) {
+          case NODE_SYM:
+            return rb_parser_string_hash_cmp(RNODE_SYM(node_val)->string, RNODE_SYM(node_lit)->string);
+          case NODE_LINE:
             return node_val->nd_loc.beg_pos.lineno != node_lit->nd_loc.beg_pos.lineno;
-        }
-        else if (type_lit == NODE_FILE) {
+          case NODE_FILE:
             return rb_parser_string_hash_cmp(RNODE_FILE(node_val)->path, RNODE_FILE(node_lit)->path);
-        }
-        else {
+          default:
             rb_bug("unexpected node: %s, %s", ruby_node_name(type_val), ruby_node_name(type_lit));
         }
     }
@@ -223,20 +212,23 @@ node_cdhash_hash(VALUE a)
         enum node_type type = nd_type(node);
         switch (type) {
           case NODE_INTEGER:
-            val = rb_node_integer_literal_val(RNODE_INTEGER(node));
-            return (FIXNUM_P(val) ? val : FIX2LONG(rb_big_hash(val)));
+            val = rb_node_integer_literal_val(node);
+            if (!FIXNUM_P(val)) val = rb_big_hash(val);
+            return FIX2LONG(val);
           case NODE_FLOAT:
-            val = rb_node_float_literal_val(RNODE_FLOAT(node));
+            val = rb_node_float_literal_val(node);
             return rb_dbl_long_hash(RFLOAT_VALUE(val));
           case NODE_RATIONAL:
-            val = rb_node_rational_literal_val(RNODE_RATIONAL(node));
+            val = rb_node_rational_literal_val(node);
             return rb_rational_hash(val);
           case NODE_IMAGINARY:
-            val = rb_node_imaginary_literal_val(RNODE_IMAGINARY(node));
+            val = rb_node_imaginary_literal_val(node);
             return rb_complex_hash(val);
+          case NODE_SYM:
+            return rb_node_sym_string_val(node);
           case NODE_LINE:
             /* Same with NODE_INTEGER FIXNUM case */
-            return INT2FIX(node->nd_loc.beg_pos.lineno);
+            return (st_index_t)node->nd_loc.beg_pos.lineno;
           case NODE_FILE:
             /* Same with String in rb_iseq_cdhash_hash */
             return rb_str_hash(rb_node_file_path_val(node));
@@ -1071,6 +1063,7 @@ static rb_node_false_t *rb_node_false_new(struct parser_params *p, const YYLTYPE
 static rb_node_errinfo_t *rb_node_errinfo_new(struct parser_params *p, const YYLTYPE *loc);
 static rb_node_defined_t *rb_node_defined_new(struct parser_params *p, NODE *nd_head, const YYLTYPE *loc);
 static rb_node_postexe_t *rb_node_postexe_new(struct parser_params *p, NODE *nd_body, const YYLTYPE *loc);
+static rb_node_sym_t *rb_node_sym_new(struct parser_params *p, VALUE str, const YYLTYPE *loc);
 static rb_node_dsym_t *rb_node_dsym_new(struct parser_params *p, VALUE nd_lit, long nd_alen, NODE *nd_next, const YYLTYPE *loc);
 static rb_node_attrasgn_t *rb_node_attrasgn_new(struct parser_params *p, NODE *nd_recv, ID nd_mid, NODE *nd_args, const YYLTYPE *loc);
 static rb_node_lambda_t *rb_node_lambda_new(struct parser_params *p, rb_node_args_t *nd_args, NODE *nd_body, const YYLTYPE *loc);
@@ -1178,6 +1171,7 @@ static rb_node_error_t *rb_node_error_new(struct parser_params *p, const YYLTYPE
 #define NEW_ERRINFO(loc) (NODE *)rb_node_errinfo_new(p,loc)
 #define NEW_DEFINED(e,loc) (NODE *)rb_node_defined_new(p,e,loc)
 #define NEW_POSTEXE(b,loc) (NODE *)rb_node_postexe_new(p,b,loc)
+#define NEW_SYM(str,loc) (NODE *)rb_node_sym_new(p,str,loc)
 #define NEW_DSYM(s,l,n,loc) (NODE *)rb_node_dsym_new(p,s,l,n,loc)
 #define NEW_ATTRASGN(r,m,a,loc) (NODE *)rb_node_attrasgn_new(p,r,m,a,loc)
 #define NEW_LAMBDA(a,b,loc) (NODE *)rb_node_lambda_new(p,a,b,loc)
@@ -2139,7 +2133,25 @@ rb_str_to_parser_encoding_string(rb_parser_t *p, VALUE str)
 } tIDENTIFIER tFID tGVAR tIVAR tCONSTANT tCVAR tLABEL tOP_ASGN
 %printer {
 #ifndef RIPPER
-    rb_parser_printf(p, "%+"PRIsVALUE, RNODE_LIT($$)->nd_lit);
+    switch (nd_type(RNODE($$))) {
+      case NODE_INTEGER:
+        rb_parser_printf(p, "%+"PRIsVALUE, rb_node_integer_literal_val($$));
+        break;
+      case NODE_FLOAT:
+        rb_parser_printf(p, "%+"PRIsVALUE, rb_node_float_literal_val($$));
+        break;
+      case NODE_RATIONAL:
+        rb_parser_printf(p, "%+"PRIsVALUE, rb_node_rational_literal_val($$));
+        break;
+      case NODE_IMAGINARY:
+        rb_parser_printf(p, "%+"PRIsVALUE, rb_node_imaginary_literal_val($$));
+        break;
+      case NODE_LIT:
+        rb_parser_printf(p, "%+"PRIsVALUE, RNODE_LIT($$)->nd_lit);
+        break;
+      default:
+        break;
+    }
 #else
     rb_parser_printf(p, "%+"PRIsVALUE, get_value($$));
 #endif
@@ -3399,7 +3411,7 @@ fname		: tIDENTIFIER
 fitem		: fname
                     {
                     /*%%%*/
-                        $$ = NEW_LIT(ID2SYM($1), &@$);
+                        $$ = NEW_SYM(rb_id2str($1), &@$);
                     /*% %*/
                     /*% ripper: symbol_literal!($1) %*/
                     }
@@ -5595,7 +5607,7 @@ p_kw		: p_kw_label p_expr
                     {
                         error_duplicate_pattern_key(p, get_id($1), &@1);
                     /*%%%*/
-                        $$ = list_append(p, NEW_LIST(NEW_LIT(ID2SYM($1), &@1), &@$), $2);
+                        $$ = list_append(p, NEW_LIST(NEW_SYM(rb_id2str($1), &@1), &@$), $2);
                     /*% %*/
                     /*% ripper: rb_ary_new_from_args(2, get_value($1), get_value($2)) %*/
                     }
@@ -5607,7 +5619,7 @@ p_kw		: p_kw_label p_expr
                         }
                         error_duplicate_pattern_variable(p, get_id($1), &@1);
                     /*%%%*/
-                        $$ = list_append(p, NEW_LIST(NEW_LIT(ID2SYM($1), &@$), &@$), assignable(p, $1, 0, &@$));
+                        $$ = list_append(p, NEW_LIST(NEW_SYM(rb_id2str($1), &@$), &@$), assignable(p, $1, 0, &@$));
                     /*% %*/
                     /*% ripper: rb_ary_new_from_args(2, get_value(assignable(p, $1)), Qnil) %*/
                     }
@@ -5620,7 +5632,7 @@ p_kw_label	: tLABEL
                     /*%%%*/
                         if (!$2 || nd_type_p($2, NODE_STR)) {
                             NODE *node = dsym_node(p, $2, &loc);
-                            $$ = SYM2ID(RNODE_LIT(node)->nd_lit);
+                            $$ = rb_sym2id(rb_node_sym_string_val(node));
                         }
                     /*%
                         if (ripper_is_node_yylval(p, $2) && RNODE_RIPPER($2)->nd_cval) {
@@ -5632,7 +5644,7 @@ p_kw_label	: tLABEL
                     %*/
                         else {
                             yyerror1(&loc, "symbol literal with interpolation is not allowed");
-                            $$ = 0;
+                            $$ = rb_intern_str(STR_NEW0());
                         }
                     }
                 ;
@@ -6199,7 +6211,15 @@ ssym		: tSYMBEG sym
                     {
                         SET_LEX_STATE(EXPR_END);
                     /*%%%*/
-                        $$ = NEW_LIT(ID2SYM($2), &@$);
+                        VALUE str = rb_id2str($2);
+                        /*
+                         * TODO:
+                         *   set_yylval_noname sets invalid id to yylval.
+                         *   This branch can be removed once yylval is changed to
+                         *   hold lexed string.
+                         */
+                        if (!str) str = STR_NEW0();
+                        $$ = NEW_SYM(str, &@$);
                     /*% %*/
                     /*% ripper: symbol_literal!(symbol!($2)) %*/
                     }
@@ -6800,6 +6820,7 @@ singleton	: var_ref
                           case NODE_DXSTR:
                           case NODE_DREGX:
                           case NODE_LIT:
+                          case NODE_SYM:
                           case NODE_LINE:
                           case NODE_FILE:
                           case NODE_INTEGER:
@@ -6842,13 +6863,17 @@ assocs		: assoc
                             assocs = tail;
                         }
                         else if (tail) {
-                            if (RNODE_LIST(assocs)->nd_head &&
-                                !RNODE_LIST(tail)->nd_head && nd_type_p(RNODE_LIST(tail)->nd_next, NODE_LIST) &&
-                                nd_type_p(RNODE_LIST(RNODE_LIST(tail)->nd_next)->nd_head, NODE_HASH)) {
-                                /* DSTAR */
-                                tail = RNODE_HASH(RNODE_LIST(RNODE_LIST(tail)->nd_next)->nd_head)->nd_head;
+                            if (RNODE_LIST(assocs)->nd_head) {
+                                NODE *n = RNODE_LIST(tail)->nd_next;
+                                if (!RNODE_LIST(tail)->nd_head && nd_type_p(n, NODE_LIST) &&
+                                    nd_type_p((n = RNODE_LIST(n)->nd_head), NODE_HASH)) {
+                                    /* DSTAR */
+                                    tail = RNODE_HASH(n)->nd_head;
+                                }
                             }
-                            assocs = list_concat(assocs, tail);
+                            if (tail) {
+                                assocs = list_concat(assocs, tail);
+                            }
                         }
                         $$ = assocs;
                     /*% %*/
@@ -6859,10 +6884,6 @@ assocs		: assoc
 assoc		: arg_value tASSOC arg_value
                     {
                     /*%%%*/
-                        if (nd_type_p($1, NODE_STR)) {
-                            nd_set_type($1, NODE_LIT);
-                            RB_OBJ_WRITE(p->ast, &RNODE_LIT($1)->nd_lit, rb_fstring(RNODE_LIT($1)->nd_lit));
-                        }
                         $$ = list_append(p, NEW_LIST($1, &@$), $3);
                     /*% %*/
                     /*% ripper: assoc_new!($1, $3) %*/
@@ -6870,7 +6891,7 @@ assoc		: arg_value tASSOC arg_value
                 | tLABEL arg_value
                     {
                     /*%%%*/
-                        $$ = list_append(p, NEW_LIST(NEW_LIT(ID2SYM($1), &@1), &@$), $2);
+                        $$ = list_append(p, NEW_LIST(NEW_SYM(rb_id2str($1), &@1), &@$), $2);
                     /*% %*/
                     /*% ripper: assoc_new!($1, $2) %*/
                     }
@@ -6879,7 +6900,7 @@ assoc		: arg_value tASSOC arg_value
                     /*%%%*/
                         NODE *val = gettable(p, $1, &@$);
                         if (!val) val = NEW_ERROR(&@$);
-                        $$ = list_append(p, NEW_LIST(NEW_LIT(ID2SYM($1), &@1), &@$), val);
+                        $$ = list_append(p, NEW_LIST(NEW_SYM(rb_id2str($1), &@1), &@$), val);
                     /*% %*/
                     /*% ripper: assoc_new!($1, Qnil) %*/
                     }
@@ -6894,17 +6915,7 @@ assoc		: arg_value tASSOC arg_value
                 | tDSTAR arg_value
                     {
                     /*%%%*/
-                        if (nd_type_p($2, NODE_HASH) &&
-                            !(RNODE_HASH($2)->nd_head && RNODE_LIST(RNODE_HASH($2)->nd_head)->as.nd_alen)) {
-                            static VALUE empty_hash;
-                            if (!empty_hash) {
-                                empty_hash = rb_obj_freeze(rb_hash_new());
-                                rb_gc_register_mark_object(empty_hash);
-                            }
-                            $$ = list_append(p, NEW_LIST(0, &@$), NEW_LIT(empty_hash, &@$));
-                        }
-                        else
-                            $$ = list_append(p, NEW_LIST(0, &@$), $2);
+                        $$ = list_append(p, NEW_LIST(0, &@$), $2);
                     /*% %*/
                     /*% ripper: assoc_splat!($2) %*/
                     }
@@ -7006,11 +7017,6 @@ do { \
   set_yylval_node(NEW_STR(x, &_cur_loc)); \
   RB_OBJ_WRITTEN(p->ast, Qnil, x); \
 } while(0)
-# define set_yylval_literal(x) \
-do { \
-  set_yylval_node(NEW_LIT(x, &_cur_loc)); \
-  RB_OBJ_WRITTEN(p->ast, Qnil, x); \
-} while(0)
 # define set_yylval_num(x) (yylval.num = (x))
 # define set_yylval_id(x)  (yylval.id = (x))
 # define set_yylval_name(x)  (yylval.id = (x))
@@ -7025,7 +7031,6 @@ ripper_yylval_id(struct parser_params *p, ID x)
 # define set_yylval_num(x) (yylval.val = ripper_new_yylval(p, (x), 0, 0))
 # define set_yylval_id(x)  (void)(x)
 # define set_yylval_name(x) (void)(yylval.val = ripper_yylval_id(p, x))
-# define set_yylval_literal(x) add_mark_object(p, (x))
 # define set_yylval_node(x) (yylval.val = ripper_new_yylval(p, 0, 0, STR_NEW(p->lex.ptok, p->lex.pcur-p->lex.ptok)))
 # define yylval_id() yylval.id
 # define _cur_loc NULL_LOC /* dummy */
@@ -7608,6 +7613,7 @@ yycompile0(VALUE arg)
     RUBY_DTRACE_PARSE_HOOK(END);
     p->debug_lines = 0;
 
+    xfree(p->lex.strterm);
     p->lex.strterm = 0;
     p->lex.pcur = p->lex.pbeg = p->lex.pend = 0;
     if (n || p->error_p) {
@@ -9465,11 +9471,21 @@ parser_encode_length(struct parser_params *p, const char *name, long len)
 static void
 parser_set_encode(struct parser_params *p, const char *name)
 {
-    int idx = rb_enc_find_index(name);
     rb_encoding *enc;
     VALUE excargs[3];
+    int idx = 0;
 
+    const char *wrong = 0;
+    switch (*name) {
+      case 'e': case 'E': wrong = "external"; break;
+      case 'i': case 'I': wrong = "internal"; break;
+      case 'f': case 'F': wrong = "filesystem"; break;
+      case 'l': case 'L': wrong = "locale"; break;
+    }
+    if (wrong && STRCASECMP(name, wrong) == 0) goto unknown;
+    idx = rb_enc_find_index(name);
     if (idx < 0) {
+      unknown:
         excargs[1] = rb_sprintf("unknown encoding name: %s", name);
       error:
         excargs[0] = rb_eArgError;
@@ -12161,6 +12177,15 @@ rb_node_dxstr_new(struct parser_params *p, VALUE nd_lit, long nd_alen, NODE *nd_
     return n;
 }
 
+static rb_node_sym_t *
+rb_node_sym_new(struct parser_params *p, VALUE str, const YYLTYPE *loc)
+{
+    rb_node_sym_t *n = NODE_NEWNODE(NODE_SYM, rb_node_sym_t, loc);
+    n->string = rb_str_to_parser_encoding_string(p, str);
+
+    return n;
+}
+
 static rb_node_dsym_t *
 rb_node_dsym_new(struct parser_params *p, VALUE nd_lit, long nd_alen, NODE *nd_next, const YYLTYPE *loc)
 {
@@ -13175,8 +13200,7 @@ symbol_append(struct parser_params *p, NODE *symbols, NODE *symbol)
         nd_set_type(symbol, NODE_DSYM);
         break;
       case NODE_STR:
-        nd_set_type(symbol, NODE_LIT);
-        RB_OBJ_WRITTEN(p->ast, Qnil, RNODE_LIT(symbol)->nd_lit = rb_str_intern(RNODE_LIT(symbol)->nd_lit));
+        symbol = NEW_SYM(RNODE_LIT(symbol)->nd_lit, &RNODE(symbol)->nd_loc);
         break;
       default:
         compile_error(p, "unexpected node as symbol: %s", parser_node_name(type));
@@ -13908,16 +13932,18 @@ shareable_literal_value(struct parser_params *p, NODE *node)
         return Qfalse;
       case NODE_NIL:
         return Qnil;
+      case NODE_SYM:
+        return rb_node_sym_string_val(node);
       case NODE_LINE:
         return rb_node_line_lineno_val(node);
       case NODE_INTEGER:
-        return rb_node_integer_literal_val(RNODE_INTEGER(node));
+        return rb_node_integer_literal_val(node);
       case NODE_FLOAT:
-        return rb_node_float_literal_val(RNODE_FLOAT(node));
+        return rb_node_float_literal_val(node);
       case NODE_RATIONAL:
-        return rb_node_rational_literal_val(RNODE_RATIONAL(node));
+        return rb_node_rational_literal_val(node);
       case NODE_IMAGINARY:
-        return rb_node_imaginary_literal_val(RNODE_IMAGINARY(node));
+        return rb_node_imaginary_literal_val(node);
       case NODE_LIT:
         return RNODE_LIT(node)->nd_lit;
       default:
@@ -13944,6 +13970,7 @@ shareable_literal_constant(struct parser_params *p, enum shareability shareable,
       case NODE_FALSE:
       case NODE_NIL:
       case NODE_LIT:
+      case NODE_SYM:
       case NODE_LINE:
       case NODE_INTEGER:
       case NODE_FLOAT:
@@ -14262,6 +14289,7 @@ void_expr(struct parser_params *p, NODE *node)
         useless = "a constant";
         break;
       case NODE_LIT:
+      case NODE_SYM:
       case NODE_LINE:
       case NODE_FILE:
       case NODE_INTEGER:
@@ -14405,6 +14433,7 @@ is_static_content(NODE *node)
             if (!is_static_content(RNODE_LIST(node)->nd_head)) return 0;
         } while ((node = RNODE_LIST(node)->nd_next) != 0);
       case NODE_LIT:
+      case NODE_SYM:
       case NODE_LINE:
       case NODE_FILE:
       case NODE_INTEGER:
@@ -14529,6 +14558,7 @@ cond0(struct parser_params *p, NODE *node, enum cond_type type, const YYLTYPE *l
         else if (nd_type_p(node, NODE_DOT3)) nd_set_type(node, NODE_FLIP3);
         break;
 
+      case NODE_SYM:
       case NODE_DSYM:
       warn_symbol:
         SWITCH_BY_COND_TYPE(type, warning, "symbol ");
@@ -14893,7 +14923,7 @@ dsym_node(struct parser_params *p, NODE *node, const YYLTYPE *loc)
     VALUE lit;
 
     if (!node) {
-        return NEW_LIT(ID2SYM(idNULL), loc);
+        return NEW_SYM(STR_NEW0(), loc);
     }
 
     switch (nd_type(node)) {
@@ -14903,9 +14933,7 @@ dsym_node(struct parser_params *p, NODE *node, const YYLTYPE *loc)
         break;
       case NODE_STR:
         lit = RNODE_STR(node)->nd_lit;
-        RB_OBJ_WRITTEN(p->ast, Qnil, RNODE_STR(node)->nd_lit = ID2SYM(rb_intern_str(lit)));
-        nd_set_type(node, NODE_LIT);
-        nd_set_loc(node, loc);
+        node = NEW_SYM(lit, loc);
         break;
       default:
         node = NEW_DSYM(Qnil, 1, NEW_LIST(node, loc), loc);
@@ -14923,6 +14951,8 @@ nd_type_st_key_enable_p(NODE *node)
       case NODE_FLOAT:
       case NODE_RATIONAL:
       case NODE_IMAGINARY:
+      case NODE_STR:
+      case NODE_SYM:
       case NODE_LINE:
       case NODE_FILE:
         return true;
@@ -14937,33 +14967,18 @@ nd_st_key(struct parser_params *p, NODE *node)
     switch (nd_type(node)) {
       case NODE_LIT:
         return RNODE_LIT(node)->nd_lit;
+      case NODE_STR:
+        return RNODE_STR(node)->nd_lit;
       case NODE_INTEGER:
+        return rb_node_integer_literal_val(node);
       case NODE_FLOAT:
+        return rb_node_float_literal_val(node);
       case NODE_RATIONAL:
+        return rb_node_rational_literal_val(node);
       case NODE_IMAGINARY:
-      case NODE_LINE:
-      case NODE_FILE:
-        return (VALUE)node;
-      default:
-        rb_bug("unexpected node: %s", ruby_node_name(nd_type(node)));
-        UNREACHABLE_RETURN(0);
-    }
-}
-
-static VALUE
-nd_st_key_val(struct parser_params *p, NODE *node)
-{
-    switch (nd_type(node)) {
-      case NODE_LIT:
-        return RNODE_LIT(node)->nd_lit;
-      case NODE_INTEGER:
-        return rb_node_integer_literal_val(RNODE_INTEGER(node));
-      case NODE_FLOAT:
-        return rb_node_float_literal_val(RNODE_FLOAT(node));
-      case NODE_RATIONAL:
-        return rb_node_rational_literal_val(RNODE_RATIONAL(node));
-      case NODE_IMAGINARY:
-        return rb_node_imaginary_literal_val(RNODE_IMAGINARY(node));
+        return rb_node_imaginary_literal_val(node);
+      case NODE_SYM:
+        return rb_node_sym_string_val(node);
       case NODE_LINE:
         return rb_node_line_lineno_val(node);
       case NODE_FILE:
@@ -14996,7 +15011,7 @@ warn_duplicate_keys(struct parser_params *p, NODE *hash)
                  st_delete(literal_keys, (key = (st_data_t)nd_st_key(p, head), &key), &data)) {
             rb_compile_warn(p->ruby_sourcefile, nd_line((NODE *)data),
                             "key %+"PRIsVALUE" is duplicated and overwritten on line %d",
-                            nd_st_key_val(p, head), nd_line(head));
+                            nd_st_key(p, head), nd_line(head));
         }
         st_insert(literal_keys, (st_data_t)key, (st_data_t)hash);
         hash = next;
@@ -15708,7 +15723,7 @@ rb_reg_named_capture_assign_iter_impl(struct parser_params *p, const char *s, lo
     if (len < MAX_WORD_LENGTH && rb_reserved_word(s, (int)len)) {
         if (!lvar_defined(p, var)) return ST_CONTINUE;
     }
-    node = node_assign(p, assignable(p, var, 0, loc), NEW_LIT(ID2SYM(var), loc), NO_LEX_CTXT, loc);
+    node = node_assign(p, assignable(p, var, 0, loc), NEW_SYM(rb_id2str(var), loc), NO_LEX_CTXT, loc);
     succ = *succ_block;
     if (!succ) succ = NEW_ERROR(loc);
     succ = block_append(p, succ, node);
@@ -15800,7 +15815,7 @@ parser_append_options(struct parser_params *p, NODE *node)
             node = block_append(p, split, node);
         }
         if (p->do_chomp) {
-            NODE *chomp = NEW_LIT(ID2SYM(rb_intern("chomp")), LOC);
+            NODE *chomp = NEW_SYM(rb_str_new_cstr("chomp"), LOC);
             chomp = list_append(p, NEW_LIST(chomp, LOC), NEW_TRUE(LOC));
             irs = list_append(p, irs, NEW_HASH(chomp, LOC));
         }
@@ -15891,9 +15906,6 @@ rb_ruby_parser_free(void *ptr)
 {
     struct parser_params *p = (struct parser_params*)ptr;
     struct local_vars *local, *prev;
-#ifdef UNIVERSAL_PARSER
-    rb_parser_config_t *config = p->config;
-#endif
 
     if (p->tokenbuf) {
         ruby_sized_xfree(p->tokenbuf, p->toksiz);
@@ -15912,13 +15924,6 @@ rb_ruby_parser_free(void *ptr)
         }
     }
     xfree(ptr);
-
-#ifdef UNIVERSAL_PARSER
-    config->counter--;
-    if (config->counter <= 0) {
-        rb_ruby_parser_config_free(config);
-    }
-#endif
 }
 
 size_t
@@ -15935,20 +15940,6 @@ rb_ruby_parser_memsize(const void *ptr)
     }
     return size;
 }
-
-#ifdef UNIVERSAL_PARSER
-rb_parser_config_t *
-rb_ruby_parser_config_new(void *(*malloc)(size_t size))
-{
-    return (rb_parser_config_t *)malloc(sizeof(rb_parser_config_t));
-}
-
-void
-rb_ruby_parser_config_free(rb_parser_config_t *config)
-{
-    config->free(config);
-}
-#endif
 
 #ifndef UNIVERSAL_PARSER
 #ifndef RIPPER
@@ -15980,7 +15971,6 @@ rb_ruby_parser_allocate(rb_parser_config_t *config)
     /* parser_initialize expects fields to be set to 0 */
     rb_parser_t *p = (rb_parser_t *)config->calloc(1, sizeof(rb_parser_t));
     p->config = config;
-    p->config->counter++;
     return p;
 }
 

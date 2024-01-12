@@ -122,6 +122,7 @@ int ruby_get_stack_grow_direction(volatile VALUE *addr);
 
 const char *rb_obj_info(VALUE obj);
 const char *rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj);
+const char *rb_raw_obj_info_basic(char *const buff, const size_t buff_size, VALUE obj);
 
 const struct rb_callcache *get_from_global_cc_cache_table(int index);
 void set_in_global_cc_cache_table(int index, const struct rb_callcache *cc);

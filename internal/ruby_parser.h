@@ -12,7 +12,8 @@
 
 RUBY_SYMBOL_EXPORT_BEGIN
 #ifdef UNIVERSAL_PARSER
-void rb_parser_config_initialize(rb_parser_config_t *config);
+rb_parser_t *rb_parser_params_allocate(void);
+rb_parser_t *rb_parser_params_new(void);
 #endif
 VALUE rb_parser_set_context(VALUE, const struct rb_iseq_struct *, int);
 VALUE rb_parser_new(void);
@@ -71,12 +72,13 @@ enum lex_state_e {
     EXPR_NONE = 0
 };
 
+VALUE rb_node_sym_string_val(const NODE *);
 VALUE rb_node_line_lineno_val(const NODE *);
 VALUE rb_node_file_path_val(const NODE *);
 
-VALUE rb_node_integer_literal_val(rb_node_integer_t* node);
-VALUE rb_node_float_literal_val(rb_node_float_t* node);
-VALUE rb_node_rational_literal_val(rb_node_rational_t* node);
-VALUE rb_node_imaginary_literal_val(rb_node_imaginary_t* node);
+VALUE rb_node_integer_literal_val(const NODE *);
+VALUE rb_node_float_literal_val(const NODE *);
+VALUE rb_node_rational_literal_val(const NODE *);
+VALUE rb_node_imaginary_literal_val(const NODE *);
 
 #endif /* INTERNAL_RUBY_PARSE_H */

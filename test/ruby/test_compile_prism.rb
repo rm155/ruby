@@ -638,14 +638,23 @@ module Prism
       assert_prism_eval('"pit"')
       assert_prism_eval('"a".frozen?')
 
-      frozen_source = <<-CODE
-      # frozen_string_literal: true
-      "a".frozen?
-      CODE
-      ruby_eval = RubyVM::InstructionSequence.compile(frozen_source).eval
-      prism_eval = RubyVM::InstructionSequence.compile_prism(frozen_source).eval
+      [
+        # Test that string literal is frozen
+        <<~RUBY,
+          # frozen_string_literal: true
+          "a".frozen?
+        RUBY
+        # Test that two string literals with the same contents are the same string
+        <<~RUBY,
+          # frozen_string_literal: true
+          "hello".equal?("hello")
+        RUBY
+      ].each do |src|
+        ruby_eval = RubyVM::InstructionSequence.compile(src).eval
+        prism_eval = RubyVM::InstructionSequence.compile_prism(src).eval
 
-      assert_equal ruby_eval, prism_eval
+        assert_equal ruby_eval, prism_eval, src
+      end
     end
 
     def test_SymbolNode
@@ -758,6 +767,17 @@ module Prism
         end
         prism_test_case_node
       CODE
+
+      # Test splat in when
+      assert_prism_eval(<<~RUBY)
+        ary = [1, 2]
+        case 1
+        when *ary
+          :ok
+        else
+          :ng
+        end
+      RUBY
     end
 
     def test_ElseNode
@@ -1290,6 +1310,10 @@ module Prism
       CODE
     end
 
+    def test_repeated_method_params
+      assert_prism_eval("def self.foo(_a, _a); _a; end; foo(1, 2)")
+    end
+
     def test_method_parameters
       assert_prism_eval(<<-CODE)
         def self.prism_test_method_parameters(a, b=1, *c, d:, e: 2, **f, &g)
@@ -1432,6 +1456,11 @@ module Prism
 
       assert_prism_eval("prism_test_call_node_splat(*[], 1, 2)")
 
+      assert_prism_eval(<<~RUBY)
+        def self.prism_test_call_node_splat_and_double_splat(a, b, **opts); end
+        prism_test_call_node_splat_and_double_splat(*[1], 2, **{})
+      RUBY
+
       assert_prism_eval(<<-CODE)
         class Foo
           def []=(a, b)
@@ -1465,6 +1494,13 @@ module Prism
         def foo.[]=(k,v); 42; end
         foo.[]=(1,2)
       CODE
+
+      # With splat inside of []=
+      assert_prism_eval(<<~RUBY)
+        obj = Object.new
+        def obj.[]=(a, b); 10; end
+        obj[*[1]] = 3
+      RUBY
 
       assert_prism_eval(<<-CODE)
         def self.prism_opt_var_trail_hash(a = nil, *b, c, **d); end

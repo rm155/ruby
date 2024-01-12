@@ -150,6 +150,7 @@ enum node_type {
     NODE_ERRINFO,
     NODE_DEFINED,
     NODE_POSTEXE,
+    NODE_SYM,
     NODE_DSYM,
     NODE_ATTRASGN,
     NODE_LAMBDA,
@@ -940,6 +941,12 @@ typedef struct RNode_POSTEXE {
     struct RNode *nd_body;
 } rb_node_postexe_t;
 
+typedef struct RNode_SYM {
+    NODE node;
+
+    struct rb_parser_string *string;
+} rb_node_sym_t;
+
 typedef struct RNode_DSYM {
     NODE node;
 
@@ -1105,6 +1112,7 @@ typedef struct RNode_ERROR {
 #define RNODE_ERRINFO(node) ((struct RNode_ERRINFO *)(node))
 #define RNODE_DEFINED(node) ((struct RNode_DEFINED *)(node))
 #define RNODE_POSTEXE(node) ((struct RNode_POSTEXE *)(node))
+#define RNODE_SYM(node) ((struct RNode_SYM *)(node))
 #define RNODE_DSYM(node) ((struct RNode_DSYM *)(node))
 #define RNODE_ATTRASGN(node) ((struct RNode_ATTRASGN *)(node))
 #define RNODE_LAMBDA(node) ((struct RNode_LAMBDA *)(node))
@@ -1186,14 +1194,6 @@ typedef struct rb_imemo_tmpbuf_struct rb_imemo_tmpbuf_t;
 
 #ifdef UNIVERSAL_PARSER
 typedef struct rb_parser_config_struct {
-    /*
-     * Reference counter.
-     *   This is needed because both parser and ast refer
-     *   same config pointer.
-     *   We can remove this, once decuple parser and ast from Ruby GC.
-     */
-    int counter;
-
     /* Memory */
     void *(*malloc)(size_t size);
     void *(*calloc)(size_t number, size_t size);
@@ -1417,8 +1417,8 @@ typedef struct rb_parser_config_struct {
     VALUE qtrue;
     VALUE qfalse;
     VALUE qundef;
-    VALUE eArgError;
-    VALUE mRubyVMFrozenCore;
+    VALUE (*eArgError)(void);
+    VALUE (*mRubyVMFrozenCore)(void);
     int (*long2int)(long);
     int (*special_const_p)(VALUE);
     int (*builtin_type)(VALUE);
@@ -1439,8 +1439,6 @@ void rb_ruby_parser_free(void *ptr);
 rb_ast_t* rb_ruby_parser_compile_string(rb_parser_t *p, const char *f, VALUE s, int line);
 
 #ifdef UNIVERSAL_PARSER
-rb_parser_config_t *rb_ruby_parser_config_new(void *(*malloc)(size_t size));
-void rb_ruby_parser_config_free(rb_parser_config_t *config);
 rb_parser_t *rb_ruby_parser_allocate(rb_parser_config_t *config);
 rb_parser_t *rb_ruby_parser_new(rb_parser_config_t *config);
 #endif

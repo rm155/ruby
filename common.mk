@@ -1533,7 +1533,9 @@ clone-bundled-gems-src: PHONY
 	    gems/bundled_gems
 
 outdate-bundled-gems: PHONY
-	$(Q) $(BASERUBY) $(tooldir)/$@.rb --make="$(MAKE)" --mflags="$(MFLAGS)" "$(srcdir)"
+	$(Q) $(BASERUBY) $(tooldir)/$@.rb --make="$(MAKE)" --mflags="$(MFLAGS)" \
+	--ruby-platform=$(arch) --ruby-version=$(ruby_version) \
+	"$(srcdir)"
 
 update-bundled_gems: PHONY
 	$(Q) $(RUNRUBY) -rrubygems \
@@ -8493,6 +8495,7 @@ iseq.$(OBJEXT): $(top_srcdir)/internal/fixnum.h
 iseq.$(OBJEXT): $(top_srcdir)/internal/gc.h
 iseq.$(OBJEXT): $(top_srcdir)/internal/hash.h
 iseq.$(OBJEXT): $(top_srcdir)/internal/imemo.h
+iseq.$(OBJEXT): $(top_srcdir)/internal/io.h
 iseq.$(OBJEXT): $(top_srcdir)/internal/numeric.h
 iseq.$(OBJEXT): $(top_srcdir)/internal/parse.h
 iseq.$(OBJEXT): $(top_srcdir)/internal/rational.h
@@ -8700,6 +8703,7 @@ iseq.$(OBJEXT): {$(VPATH)}internal/value_type.h
 iseq.$(OBJEXT): {$(VPATH)}internal/variable.h
 iseq.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 iseq.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
+iseq.$(OBJEXT): {$(VPATH)}io.h
 iseq.$(OBJEXT): {$(VPATH)}iseq.c
 iseq.$(OBJEXT): {$(VPATH)}iseq.h
 iseq.$(OBJEXT): {$(VPATH)}method.h
@@ -15872,6 +15876,7 @@ ruby_parser.$(OBJEXT): $(top_srcdir)/internal/bignum.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/bits.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/compilers.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/complex.h
+ruby_parser.$(OBJEXT): $(top_srcdir)/internal/error.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/fixnum.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/imemo.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/numeric.h
@@ -15879,6 +15884,7 @@ ruby_parser.$(OBJEXT): $(top_srcdir)/internal/rational.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/ruby_parser.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/serial.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/static_assert.h
+ruby_parser.$(OBJEXT): $(top_srcdir)/internal/string.h
 ruby_parser.$(OBJEXT): $(top_srcdir)/internal/vm.h
 ruby_parser.$(OBJEXT): {$(VPATH)}assert.h
 ruby_parser.$(OBJEXT): {$(VPATH)}backward/2/assume.h
@@ -19318,6 +19324,7 @@ vm.$(OBJEXT): $(top_srcdir)/internal/gc.h
 vm.$(OBJEXT): $(top_srcdir)/internal/hash.h
 vm.$(OBJEXT): $(top_srcdir)/internal/imemo.h
 vm.$(OBJEXT): $(top_srcdir)/internal/inits.h
+vm.$(OBJEXT): $(top_srcdir)/internal/missing.h
 vm.$(OBJEXT): $(top_srcdir)/internal/numeric.h
 vm.$(OBJEXT): $(top_srcdir)/internal/object.h
 vm.$(OBJEXT): $(top_srcdir)/internal/parse.h
