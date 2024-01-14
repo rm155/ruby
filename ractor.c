@@ -2372,6 +2372,7 @@ void
 rb_ractor_atexit_exception(rb_execution_context_t *ec)
 {
     rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
+    cr->result_value = ec->errinfo;
     ractor_yield_atexit(ec, cr, ec->errinfo, true);
 }
 
