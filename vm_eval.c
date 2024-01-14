@@ -422,7 +422,7 @@ cc_new(VALUE klass, ID mid, int argc, const rb_callable_method_entry_t *cme)
             ccs = vm_ccs_create(klass, cc_tbl, mid, cme);
         }
 
-        for (int i=0; i<ccs->len; i++) {
+        for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
             cc = ccs->entries[i].cc;
             if (vm_cc_cme(cc) == cme) {
                 break;

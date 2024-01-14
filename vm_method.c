@@ -27,10 +27,11 @@ static enum rb_id_table_iterator_result
 vm_ccs_dump_i(ID mid, VALUE val, void *data)
 {
     const struct rb_class_cc_entries *ccs = (struct rb_class_cc_entries *)val;
-    fprintf(stderr,     "  | %s (len:%d) ", rb_id2name(mid), ccs->len);
+    int len = RUBY_ATOMIC_LOAD(ccs->len);
+    fprintf(stderr,     "  | %s (len:%d) ", rb_id2name(mid), len);
     rp(ccs->cme);
 
-    for (int i=0; i<ccs->len; i++) {
+    for (int i=0; i<len; i++) {
         fprintf(stderr, "  | [%d]\t", i); vm_ci_dump(ccs->entries[i].ci);
         rp_m(           "  |   \t", ccs->entries[i].cc);
     }

@@ -811,10 +811,11 @@ rb_obj_written(
     RGENGC_LOGGING_OBJ_WRITTEN(a, oldv, b, filename, line);
 #endif
 
+    if (oldv != RUBY_Qundef) rb_gc_writebarrier_reference_dropped(a, oldv);
+
     if (!RB_SPECIAL_CONST_P(b)) {
         rb_gc_writebarrier(a, b);
     }
-    if (oldv != RUBY_Qundef) rb_gc_writebarrier_reference_dropped(a, oldv);
 
     return a;
 }

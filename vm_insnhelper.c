@@ -1977,23 +1977,28 @@ vm_ccs_push(VALUE klass, struct rb_class_cc_entries *ccs, const struct rb_callin
         return;
     }
 
-    if (UNLIKELY(ccs->len == ccs->capa)) {
-        if (ccs->capa == 0) {
-            ccs->capa = 1;
-            ccs->entries = ALLOC_N(struct rb_class_cc_entries_entry, ccs->capa);
+    int len = RUBY_ATOMIC_LOAD(ccs->len);
+    int capa = RUBY_ATOMIC_LOAD(ccs->capa);
+    if (UNLIKELY(len == capa)) {
+        if (capa == 0) {
+	    capa = 1;
+            ATOMIC_SET(ccs->capa, capa);
+            ccs->entries = ALLOC_N(struct rb_class_cc_entries_entry, capa);
         }
         else {
-            ccs->capa *= 2;
-            REALLOC_N(ccs->entries, struct rb_class_cc_entries_entry, ccs->capa);
+	    capa *= 2;
+            ATOMIC_SET(ccs->capa, capa);
+            REALLOC_N(ccs->entries, struct rb_class_cc_entries_entry, capa);
         }
     }
-    VM_ASSERT(ccs->len < ccs->capa);
+    VM_ASSERT(len < capa);
 
-    const int pos = ccs->len++;
-    RB_OBJ_WRITE(klass, &ccs->entries[pos].ci, ci);
-    RB_OBJ_WRITE(klass, &ccs->entries[pos].cc, cc);
+    RB_OBJ_WRITE(klass, &ccs->entries[len].ci, ci);
+    RB_OBJ_WRITE(klass, &ccs->entries[len].cc, cc);
+    len++;
+    ATOMIC_INC(ccs->len);
 
-    if (RB_DEBUG_COUNTER_SETMAX(ccs_maxlen, ccs->len)) {
+    if (RB_DEBUG_COUNTER_SETMAX(ccs_maxlen, len)) {
         // for tuning
         // vm_mtbl_dump(klass, 0);
     }
@@ -2003,8 +2008,10 @@ vm_ccs_push(VALUE klass, struct rb_class_cc_entries *ccs, const struct rb_callin
 void
 rb_vm_ccs_dump(struct rb_class_cc_entries *ccs)
 {
-    ruby_debug_printf("ccs:%p (%d,%d)\n", (void *)ccs, ccs->len, ccs->capa);
-    for (int i=0; i<ccs->len; i++) {
+    int len = RUBY_ATOMIC_LOAD(ccs->len);
+    int capa = RUBY_ATOMIC_LOAD(ccs->capa);
+    ruby_debug_printf("ccs:%p (%d,%d)\n", (void *)ccs, len, capa);
+    for (int i=0; i<len; i++) {
         vm_ci_dump(ccs->entries[i].ci);
         rp(ccs->entries[i].cc);
     }
@@ -2013,10 +2020,12 @@ rb_vm_ccs_dump(struct rb_class_cc_entries *ccs)
 static int
 vm_ccs_verify(struct rb_class_cc_entries *ccs, ID mid, VALUE klass)
 {
+    int len = RUBY_ATOMIC_LOAD(ccs->len);
+    int capa = RUBY_ATOMIC_LOAD(ccs->capa);
     VM_ASSERT(vm_ccs_p(ccs));
-    VM_ASSERT(ccs->len <= ccs->capa);
+    VM_ASSERT(len <= capa);
 
-    for (int i=0; i<ccs->len; i++) {
+    for (int i=0; i<len; i++) {
         const struct rb_callinfo  *ci = ccs->entries[i].ci;
         const struct rb_callcache *cc = ccs->entries[i].cc;
 
@@ -2045,7 +2054,7 @@ vm_search_cc(const VALUE klass, const struct rb_callinfo * const ci)
     if (cc_tbl) {
         if (rb_id_table_lookup(cc_tbl, mid, &ccs_data)) {
             ccs = (struct rb_class_cc_entries *)ccs_data;
-            const int ccs_len = ccs->len;
+            const int ccs_len = RUBY_ATOMIC_LOAD(ccs->len);
 
             if (UNLIKELY(METHOD_ENTRY_INVALIDATED(ccs->cme))) {
                 rb_vm_ccs_free(ccs);

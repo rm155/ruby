@@ -4151,7 +4151,7 @@ static void
 vm_ccs_free(struct rb_class_cc_entries *ccs, int alive, rb_objspace_t *objspace, VALUE klass)
 {
     if (ccs->entries) {
-        for (int i=0; i<ccs->len; i++) {
+        for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
             const struct rb_callcache *cc = ccs->entries[i].cc;
             if (!alive) {
                 void *ptr = asan_unpoison_object_temporary((VALUE)cc);
@@ -4208,7 +4208,7 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data_ptr)
     else {
         gc_mark(data->objspace, (VALUE)ccs->cme);
 
-        for (int i=0; i<ccs->len; i++) {
+        for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
             VM_ASSERT(data->klass == ccs->entries[i].cc->klass);
 	    if (!using_local_limits(data->objspace)) {
 		VM_ASSERT(vm_cc_check_cme(ccs->entries[i].cc, ccs->cme));
@@ -6386,7 +6386,7 @@ cc_table_memsize_i(VALUE ccs_ptr, void *data_ptr)
     size_t *total_size = data_ptr;
     struct rb_class_cc_entries *ccs = (struct rb_class_cc_entries *)ccs_ptr;
     *total_size += sizeof(*ccs);
-    *total_size += sizeof(ccs->entries[0]) * ccs->capa;
+    *total_size += sizeof(ccs->entries[0]) * RUBY_ATOMIC_LOAD(ccs->capa);
     return ID_TABLE_CONTINUE;
 }
 
@@ -13001,7 +13001,7 @@ update_cc_tbl_i(VALUE ccs_ptr, void *data)
         ccs->cme = (const rb_callable_method_entry_t *)rb_gc_location((VALUE)ccs->cme);
     }
 
-    for (int i=0; i<ccs->len; i++) {
+    for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
         if (gc_object_moved_p(objspace, (VALUE)ccs->entries[i].ci)) {
             ccs->entries[i].ci = (struct rb_callinfo *)rb_gc_location((VALUE)ccs->entries[i].ci);
         }

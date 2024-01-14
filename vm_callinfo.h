@@ -571,8 +571,8 @@ struct rb_class_cc_entries {
 #if VM_CHECK_MODE > 0
     VALUE debug_sig;
 #endif
-    int capa;
-    int len;
+    rb_atomic_t capa;
+    rb_atomic_t len;
     const struct rb_callable_method_entry_struct *cme;
     struct rb_class_cc_entries_entry {
         const struct rb_callinfo *ci;
