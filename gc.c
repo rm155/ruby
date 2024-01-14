@@ -1034,7 +1034,8 @@ enum {
     shared_object_local,
     shared_object_unmarked,
     shared_object_marked,
-    shared_object_added,
+    shared_object_discovered_and_marked,
+    shared_object_added_externally,
 };
 
 typedef struct gc_reference_status {
@@ -1051,7 +1052,7 @@ struct former_reference_list {
 static int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 
 static void mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace);
-static bool external_references_all_unmarked(rb_objspace_t *objspace);
+static bool external_references_none_marked(rb_objspace_t *objspace);
 static gc_reference_status_t *get_reference_status(st_table *tbl, VALUE obj);
 static void set_reference_status(st_table *tbl, VALUE obj, gc_reference_status_t *rs);
 static void delete_reference_status(st_table *tbl, VALUE obj);
@@ -5915,7 +5916,12 @@ register_new_external_reference(rb_objspace_t *receiving_objspace, rb_objspace_t
 
 	add_external_reference_usage(receiving_objspace, obj, rs);
 
-	rs->status = shared_object_unmarked;
+	if (receiving_objspace == rb_current_allocating_ractor()->local_objspace) {
+	    rs->status = shared_object_unmarked;
+	}
+	else {
+	    rs->status = shared_object_added_externally;
+	}
 	set_reference_status(receiving_objspace->external_reference_tbl, obj, rs);
     }
 
@@ -5928,6 +5934,23 @@ rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
     if (RB_SPECIAL_CONST_P(obj)) return;
     rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
     if (source_objspace != receiving_objspace) register_new_external_reference(receiving_objspace, source_objspace, obj);
+}
+
+static void
+confirm_externally_added_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    rb_objspace_t *objspace = (rb_objspace_t *)argp;
+    gc_reference_status_t *rs = (gc_reference_status_t *)value;
+    VALUE obj = (VALUE)key;
+    if (rs->status == shared_object_added_externally) {
+	rs->status = shared_object_unmarked;
+    }
+}
+
+static void
+confirm_externally_added_external_references(rb_objspace_t *objspace)
+{
+    st_foreach(objspace->external_reference_tbl, confirm_externally_added_external_references_i, (st_data_t)objspace);
 }
 
 void
@@ -9156,25 +9179,25 @@ mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace)
 }
 
 static int
-external_references_all_unmarked_i(st_data_t key, st_data_t value, st_data_t arg)
+external_references_none_marked_i(st_data_t key, st_data_t value, st_data_t arg)
 {
     gc_reference_status_t *rs = (gc_reference_status_t *)value;
-    if (rs->status == shared_object_unmarked) {
+    if (rs->status != shared_object_marked && rs->status != shared_object_discovered_and_marked) {
 	return ST_CONTINUE;
     }
     else {
-	bool *all_unmarked = (bool *)arg;
-	*all_unmarked = false;
+	bool *none_marked = (bool *)arg;
+	*none_marked = false;
 	return ST_STOP;
     }
 }
 
 static bool
-external_references_all_unmarked(rb_objspace_t *objspace)
+external_references_none_marked(rb_objspace_t *objspace)
 {
-    bool all_unmarked = true;
-    st_foreach(objspace->external_reference_tbl, external_references_all_unmarked_i, (st_data_t)&all_unmarked);
-    return all_unmarked;
+    bool none_marked = true;
+    st_foreach(objspace->external_reference_tbl, external_references_none_marked_i, (st_data_t)&none_marked);
+    return none_marked;
 }
 
 static gc_reference_status_t *
@@ -9214,7 +9237,7 @@ mark_in_external_reference_tbl(rb_objspace_t *objspace, VALUE obj)
     else {
 	rs = malloc(sizeof(gc_reference_status_t));
 	rs->refcount = NULL;
-	rs->status = shared_object_added;
+	rs->status = shared_object_discovered_and_marked;
 	set_reference_status(objspace->external_reference_tbl, obj, rs);
     }
 }
@@ -9335,21 +9358,21 @@ add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_st
 }
 
 static void
-confirm_added_shared_object_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+confirmed_discovered_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
     rb_objspace_t *objspace = (rb_objspace_t *)argp;
     gc_reference_status_t *rs = (gc_reference_status_t *)value;
     VALUE obj = (VALUE)key;
-    if (rs->status == shared_object_added) {
+    if (rs->status == shared_object_discovered_and_marked) {
 	add_external_reference_usage(objspace, obj, rs);
 	rs->status = shared_object_marked;
     }
 }
 
 static void
-confirm_added_shared_object_references(rb_objspace_t *objspace)
+confirm_discovered_external_references(rb_objspace_t *objspace)
 {
-    st_foreach(objspace->external_reference_tbl, confirm_added_shared_object_references_i, (st_data_t)objspace);
+    st_foreach(objspace->external_reference_tbl, confirmed_discovered_external_references_i, (st_data_t)objspace);
 }
 
 static int
@@ -9363,6 +9386,7 @@ keep_marked_shared_object_references_i(st_data_t key, st_data_t value, st_data_t
 	    drop_external_reference_usage(objspace, obj, rs);
 	    return ST_DELETE;
 	case shared_object_marked:
+	case shared_object_added_externally:
 	    rs->status = shared_object_unmarked;
 	    return ST_CONTINUE;
 	default:
@@ -9379,9 +9403,9 @@ keep_marked_shared_object_references(rb_objspace_t *objspace)
 static void
 update_shared_object_references(rb_objspace_t *objspace)
 {
-    confirm_added_shared_object_references(objspace);
+    confirm_discovered_external_references(objspace);
     keep_marked_shared_object_references(objspace);
-    VM_ASSERT(external_references_all_unmarked(objspace));
+    VM_ASSERT(external_references_none_marked(objspace));
 }
 
 static int
@@ -10216,7 +10240,9 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
 
     VM_ASSERT(count_objspaces(GET_VM()) > 1 || st_table_size(objspace->shared_reference_tbl) == 0);
     VM_ASSERT(count_objspaces(GET_VM()) > 1 || st_table_size(objspace->external_reference_tbl) == 0);
-    VM_ASSERT(external_references_all_unmarked(objspace));
+    VM_ASSERT(external_references_none_marked(objspace));
+
+    confirm_externally_added_external_references(objspace);
 
     if (full_mark) {
         size_t incremental_marking_steps = (objspace->rincgc.pooled_slots / INCREMENTAL_MARK_STEP_ALLOCATIONS) + 1;
