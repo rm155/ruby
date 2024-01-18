@@ -5962,7 +5962,9 @@ confirm_externally_added_external_references_i(st_data_t key, st_data_t value, s
 static void
 confirm_externally_added_external_references(rb_objspace_t *objspace)
 {
+    rb_native_mutex_lock(&objspace->external_reference_tbl_lock);
     st_foreach(objspace->external_reference_tbl, confirm_externally_added_external_references_i, (st_data_t)objspace);
+    rb_native_mutex_unlock(&objspace->external_reference_tbl_lock);
 }
 
 void
@@ -9264,7 +9266,9 @@ static bool
 external_references_none_marked(rb_objspace_t *objspace)
 {
     bool none_marked = true;
+    rb_native_mutex_lock(&objspace->external_reference_tbl_lock);
     st_foreach(objspace->external_reference_tbl, external_references_none_marked_i, (st_data_t)&none_marked);
+    rb_native_mutex_unlock(&objspace->external_reference_tbl_lock);
     return none_marked;
 }
 
@@ -9296,6 +9300,7 @@ delete_reference_status(st_table *tbl, VALUE obj)
 static void
 mark_in_external_reference_tbl(rb_objspace_t *objspace, VALUE obj)
 {
+    rb_native_mutex_lock(&objspace->external_reference_tbl_lock);
     gc_reference_status_t *rs = get_reference_status(objspace->external_reference_tbl, obj);
     if (rs) {
 	if (rs->status == shared_object_unmarked) {
@@ -9308,6 +9313,7 @@ mark_in_external_reference_tbl(rb_objspace_t *objspace, VALUE obj)
 	rs->status = shared_object_discovered_and_marked;
 	set_reference_status(objspace->external_reference_tbl, obj, rs);
     }
+    rb_native_mutex_unlock(&objspace->external_reference_tbl_lock);
 }
 
 static int
@@ -9451,7 +9457,9 @@ confirmed_discovered_external_references_i(st_data_t key, st_data_t value, st_da
 static void
 confirm_discovered_external_references(rb_objspace_t *objspace)
 {
+    rb_native_mutex_lock(&objspace->external_reference_tbl_lock);
     st_foreach(objspace->external_reference_tbl, confirmed_discovered_external_references_i, (st_data_t)objspace);
+    rb_native_mutex_unlock(&objspace->external_reference_tbl_lock);
 }
 
 static int
@@ -9476,7 +9484,9 @@ keep_marked_shared_object_references_i(st_data_t key, st_data_t value, st_data_t
 static void
 keep_marked_shared_object_references(rb_objspace_t *objspace)
 {
+    rb_native_mutex_lock(&objspace->external_reference_tbl_lock);
     st_foreach(objspace->external_reference_tbl, keep_marked_shared_object_references_i, (st_data_t)objspace);
+    rb_native_mutex_unlock(&objspace->external_reference_tbl_lock);
 }
 
 static void
@@ -10317,9 +10327,17 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
     gc_report(1, objspace, "gc_marks_start: (%s)\n", full_mark ? "full" : "minor");
     gc_mode_transition(objspace, gc_mode_marking);
 
+#if VM_CHECK_MODE > 0
+    rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
     VM_ASSERT(count_objspaces(GET_VM()) > 1 || st_table_size(objspace->shared_reference_tbl) == 0);
+    rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
+
+    rb_native_mutex_lock(&objspace->external_reference_tbl_lock);
     VM_ASSERT(count_objspaces(GET_VM()) > 1 || st_table_size(objspace->external_reference_tbl) == 0);
+    rb_native_mutex_unlock(&objspace->external_reference_tbl_lock);
+
     VM_ASSERT(external_references_none_marked(objspace));
+#endif
 
     confirm_externally_added_external_references(objspace);
 
