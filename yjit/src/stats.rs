@@ -319,14 +319,17 @@ make_counters! {
     send_private_not_fcall,
     send_cfunc_ruby_array_varg,
     send_cfunc_argc_mismatch,
+    send_cfunc_block_arg,
     send_cfunc_toomany_args,
     send_cfunc_tracing,
     send_cfunc_kwargs,
     send_cfunc_splat_with_kw,
     send_cfunc_splat_send,
     send_attrset_kwargs,
+    send_attrset_block_arg,
     send_iseq_tailcall,
     send_iseq_arity_error,
+    send_iseq_block_arg_type,
     send_iseq_clobbering_block_arg,
     send_iseq_leaf_builtin_block_arg_block_param,
     send_iseq_only_keywords,
@@ -343,6 +346,7 @@ make_counters! {
     send_iseq_too_many_kwargs,
     send_not_implemented_method,
     send_getter_arity,
+    send_getter_block_arg,
     send_args_splat_non_iseq,
     send_args_splat_ivar,
     send_args_splat_attrset,
@@ -371,6 +375,7 @@ make_counters! {
     send_iseq_has_rest_opt_and_block,
     send_bmethod_ractor,
     send_bmethod_block_arg,
+    send_optimized_block_arg,
 
     invokesuper_defined_class_mismatch,
     invokesuper_kw_splat,
@@ -395,6 +400,7 @@ make_counters! {
 
     // Method calls that exit to the interpreter
     guard_send_block_arg_type,
+    guard_send_getter_splat_non_empty,
     guard_send_klass_megamorphic,
     guard_send_se_cf_overflow,
     guard_send_se_protected_check_failed,
@@ -444,11 +450,16 @@ make_counters! {
     opt_minus_overflow,
     opt_mult_overflow,
 
+    opt_succ_not_fixnum,
+    opt_succ_overflow,
+
     opt_mod_zero,
     opt_div_zero,
 
     lshift_amount_changed,
     lshift_overflow,
+
+    rshift_amount_changed,
 
     opt_aref_argc_not_one,
     opt_aref_arg_not_fixnum,

@@ -2677,8 +2677,10 @@ static inline VALUE
 vm_caller_setup_keyword_hash(const struct rb_callinfo *ci, VALUE keyword_hash)
 {
     if (UNLIKELY(!RB_TYPE_P(keyword_hash, T_HASH))) {
-        /* Convert a non-hash keyword splat to a new hash */
-        keyword_hash = rb_hash_dup(rb_to_hash_type(keyword_hash));
+        if (keyword_hash != Qnil) {
+            /* Convert a non-hash keyword splat to a new hash */
+            keyword_hash = rb_hash_dup(rb_to_hash_type(keyword_hash));
+        }
     }
     else if (!IS_ARGS_KW_SPLAT_MUT(ci)) {
         /* Convert a hash keyword splat to a new hash unless
@@ -2708,7 +2710,7 @@ CALLER_SETUP_ARG(struct rb_control_frame_struct *restrict cfp,
             if (vm_caller_setup_arg_splat(cfp, calling, ary, max_args)) return;
 
             // put kw
-            if (!RHASH_EMPTY_P(kwh)) {
+            if (kwh != Qnil && !RHASH_EMPTY_P(kwh)) {
                 if (UNLIKELY(calling->heap_argv)) {
                     rb_ary_push(calling->heap_argv, kwh);
                     ((struct RHash *)kwh)->basic.flags |= RHASH_PASS_AS_KEYWORDS;
@@ -2779,7 +2781,7 @@ check_keyword:
         VM_ASSERT(calling->kw_splat == 1);
         VALUE kwh = vm_caller_setup_keyword_hash(ci, cfp->sp[-1]);
 
-        if (RHASH_EMPTY_P(kwh)) {
+        if (kwh == Qnil || RHASH_EMPTY_P(kwh)) {
             cfp->sp--;
             calling->argc--;
             calling->kw_splat = 0;
@@ -2932,7 +2934,7 @@ vm_call_iseq_setup_kwparm_nokwarg(rb_execution_context_t *ec, rb_control_frame_t
 static VALUE builtin_invoker0(rb_execution_context_t *ec, VALUE self, const VALUE *argv, rb_insn_func_t funcptr);
 
 static VALUE
-vm_call_single_noarg_inline_builtin(rb_execution_context_t *ec, rb_control_frame_t *cfp,
+vm_call_single_noarg_leaf_builtin(rb_execution_context_t *ec, rb_control_frame_t *cfp,
                                     struct rb_calling_info *calling)
 {
     const struct rb_builtin_function *bf = calling->cc->aux_.bf;
@@ -2962,11 +2964,11 @@ vm_callee_setup_arg(rb_execution_context_t *ec, struct rb_calling_info *calling,
             VM_ASSERT(cc == calling->cc);
 
             if (cacheable_ci && vm_call_iseq_optimizable_p(ci, cc)) {
-                if ((iseq->body->builtin_attrs & BUILTIN_ATTR_SINGLE_NOARG_INLINE) &&
+                if ((iseq->body->builtin_attrs & BUILTIN_ATTR_SINGLE_NOARG_LEAF) &&
                     !(ruby_vm_event_flags & (RUBY_EVENT_C_CALL | RUBY_EVENT_C_RETURN))) {
                     VM_ASSERT(iseq->body->builtin_attrs & BUILTIN_ATTR_LEAF);
                     vm_cc_bf_set(cc, (void *)iseq->body->iseq_encoded[1]);
-                    CC_SET_FASTPATH(cc, vm_call_single_noarg_inline_builtin, true);
+                    CC_SET_FASTPATH(cc, vm_call_single_noarg_leaf_builtin, true);
                 }
                 else {
                     CC_SET_FASTPATH(cc, vm_call_iseq_setup_func(ci, param_size, local_size), true);
@@ -3605,7 +3607,7 @@ vm_call_cfunc_only_splat_kw(rb_execution_context_t *ec, rb_control_frame_t *reg_
     RB_DEBUG_COUNTER_INC(ccf_cfunc_only_splat_kw);
     VALUE keyword_hash = reg_cfp->sp[-1];
 
-    if (RB_TYPE_P(keyword_hash, T_HASH) && RHASH_EMPTY_P(keyword_hash)) {
+    if (keyword_hash == Qnil || (RB_TYPE_P(keyword_hash, T_HASH) && RHASH_EMPTY_P(keyword_hash))) {
         return vm_call_cfunc_array_argv(ec, reg_cfp, calling, 1, 0);
     }
 

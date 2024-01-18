@@ -20,9 +20,7 @@ module SyncDefaultGems
     "resolv-replace": "ruby/resolv-replace",
     English: "ruby/English",
     abbrev: "ruby/abbrev",
-    base64: "ruby/base64",
     benchmark: "ruby/benchmark",
-    bigdecimal: "ruby/bigdecimal",
     cgi: "ruby/cgi",
     csv: 'ruby/csv',
     date: 'ruby/date',
@@ -38,12 +36,10 @@ module SyncDefaultGems
     fileutils: 'ruby/fileutils',
     find: "ruby/find",
     forwardable: "ruby/forwardable",
-    getoptlong: "ruby/getoptlong",
     ipaddr: 'ruby/ipaddr',
     irb: 'ruby/irb',
     json: 'flori/json',
     logger: 'ruby/logger',
-    mutex_m: "ruby/mutex_m",
     nkf: "ruby/nkf",
     observer: "ruby/observer",
     open3: "ruby/open3",
@@ -342,14 +338,6 @@ module SyncDefaultGems
       cp_r("#{upstream}/test/test_syslog.rb", "test")
       cp_r("#{upstream}/syslog.gemspec", "ext/syslog")
       `git checkout ext/syslog/depend`
-    when "bigdecimal"
-      rm_rf(%w[ext/bigdecimal test/bigdecimal])
-      cp_r("#{upstream}/ext/bigdecimal", "ext")
-      cp_r("#{upstream}/sample", "ext/bigdecimal")
-      cp_r("#{upstream}/lib", "ext/bigdecimal")
-      cp_r("#{upstream}/test/bigdecimal", "test")
-      cp_r("#{upstream}/bigdecimal.gemspec", "ext/bigdecimal")
-      `git checkout ext/bigdecimal/depend`
     when "pathname"
       rm_rf(%w[ext/pathname test/pathname])
       cp_r("#{upstream}/ext/pathname", "ext")

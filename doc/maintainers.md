@@ -77,11 +77,6 @@ have commit right, others don't.
 * https://github.com/ruby/abbrev
 * https://rubygems.org/gems/abbrev
 
-#### lib/base64.rb
-* Yusuke Endoh (mame)
-* https://github.com/ruby/base64
-* https://rubygems.org/gems/base64
-
 #### lib/benchmark.rb
 * *unmaintained*
 * https://github.com/ruby/benchmark
@@ -153,11 +148,6 @@ have commit right, others don't.
 * Keiju ISHITSUKA (keiju)
 * https://github.com/ruby/forwardable
 * https://rubygems.org/gems/forwardable
-
-#### lib/getoptlong.rb
-* *unmaintained*
-* https://github.com/ruby/getoptlong
-* https://rubygems.org/gems/getoptlong
 
 #### lib/ipaddr.rb
 * Akinori MUSHA (knu)
@@ -337,9 +327,6 @@ have commit right, others don't.
 * https://rubygems.org/gems/weakref
 
 ### Extensions
-#### ext/bigdecimal
-* Kenta Murata (mrkn) https://github.com/ruby/bigdecimal
-* https://rubygems.org/gems/bigdecimal
 
 #### ext/cgi
 * Nobuyoshi Nakada (nobu)
@@ -485,6 +472,14 @@ have commit right, others don't.
 #### mutex_m
 * https://github.com/ruby/mutex_m
 
+#### lib/getoptlong.rb
+* https://github.com/ruby/getoptlong
+
+#### lib/base64.rb
+* https://github.com/ruby/base64
+
+#### ext/bigdecimal
+* https://rubygems.org/gems/bigdecimal
 
 ## Platform Maintainers
 ### mswin64 (Microsoft Windows)

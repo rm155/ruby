@@ -1001,6 +1001,10 @@ typedef struct rb_objspace {
 
     rb_postponed_job_handle_t finalize_deferred_pjob;
 
+#ifdef RUBY_ASAN_ENABLED
+    rb_execution_context_t *marking_machine_context_ec;
+#endif
+
     const struct rb_callcache *global_cc_cache_table[VM_GLOBAL_CC_CACHE_TABLE_SIZE]; // vm_eval.c
 
     struct ccan_list_head zombie_threads;
@@ -8370,6 +8374,26 @@ mark_global_cc_cache_table(rb_objspace_t *objspace)
 static void each_stack_location(rb_objspace_t *objspace, const rb_execution_context_t *ec,
                                  const VALUE *stack_start, const VALUE *stack_end, void (*cb)(rb_objspace_t *, VALUE));
 
+static void
+gc_mark_machine_stack_location_maybe(rb_objspace_t *objspace, VALUE obj)
+{
+    gc_mark_maybe(objspace, obj);
+
+#ifdef RUBY_ASAN_ENABLED
+    rb_execution_context_t *ec = objspace->marking_machine_context_ec;
+    void *fake_frame_start;
+    void *fake_frame_end;
+    bool is_fake_frame = asan_get_fake_stack_extents(
+        ec->thread_ptr->asan_fake_stack_handle, obj,
+        ec->machine.stack_start, ec->machine.stack_end,
+        &fake_frame_start, &fake_frame_end
+    );
+    if (is_fake_frame) {
+        each_stack_location(objspace, ec, fake_frame_start, fake_frame_end, gc_mark_maybe);
+    }
+#endif
+}
+
 #if defined(__wasm__)
 
 
@@ -8431,9 +8455,16 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_execution_context_t *ec
     SET_STACK_END;
     GET_STACK_BOUNDS(stack_start, stack_end, 1);
 
-    each_location(objspace, save_regs_gc_mark.v, numberof(save_regs_gc_mark.v), gc_mark_maybe);
+#ifdef RUBY_ASAN_ENABLED
+    objspace->marking_machine_context_ec = ec;
+#endif
 
-    each_stack_location(objspace, ec, stack_start, stack_end, gc_mark_maybe);
+    each_location(objspace, save_regs_gc_mark.v, numberof(save_regs_gc_mark.v), gc_mark_machine_stack_location_maybe);
+    each_stack_location(objspace, ec, stack_start, stack_end, gc_mark_machine_stack_location_maybe);
+
+#ifdef RUBY_ASAN_ENABLED
+    objspace->marking_machine_context_ec = NULL;
+#endif
 }
 #endif
 
@@ -13640,16 +13671,16 @@ heap_check_moved_i(void *vstart, void *vend, size_t stride, void *data)
 
 /*
  *  call-seq:
- *     GC.compact
+ *     GC.compact -> hash
  *
- * This function compacts objects together in Ruby's heap.  It eliminates
+ * This function compacts objects together in Ruby's heap. It eliminates
  * unused space (or fragmentation) in the heap by moving objects in to that
- * unused space.  This function returns a hash which contains statistics about
- * which objects were moved. See <tt>GC.latest_compact_info</tt> for details
- * about compaction statistics.
+ * unused space.
  *
- * This method is implementation specific and not expected to be implemented
- * in any implementation besides MRI.
+ * The returned +hash+ contains statistics about the objects that were moved;
+ * see GC.latest_compact_info.
+ *
+ * This method is only expected to work on CRuby.
  *
  * To test whether \GC compaction is supported, use the idiom:
  *

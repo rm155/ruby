@@ -4347,3 +4347,13 @@ assert_equal '0', %q{
 
   entry
 }
+
+# Integer succ and overflow
+assert_equal '[2, 4611686018427387904]', %q{
+  [1.succ, 4611686018427387903.succ]
+}
+
+# Integer right shift
+assert_equal '[0, 1, -4]', %q{
+  [0 >> 1, 2 >> 1, -7 >> 1]
+}

@@ -34,7 +34,6 @@ Socket:: Access underlying OS socket implementations
 == Libraries
 
 Abbrev:: Calculates a set of unique abbreviations for a given set of strings
-Base64:: Support for encoding and decoding binary data using a Base64 representation
 Benchmark:: Provides methods to measure and report the time used to execute code
 Bundler:: Manage your Ruby application's gem dependencies
 CGI:: Support for the Common Gateway Interface protocol
@@ -48,7 +47,6 @@ ErrorHighlight:: Highlight error location in your code
 FileUtils:: Several file utility methods for copying, moving, removing, etc
 Find:: This module supports top-down traversal of a set of file paths
 Forwardable:: Provides delegation of specified methods to a designated object
-GetoptLong:: Parse command line options similar to the GNU C getopt_long()
 IPAddr:: Provides methods to manipulate IPv4 and IPv6 IP addresses
 IRB:: Interactive Ruby command-line tool for REPL (Read Eval Print Loop)
 OptionParser:: Ruby-oriented class for command-line option analysis
@@ -84,7 +82,6 @@ WeakRef:: Allows a referenced object to be garbage-collected
 
 == Extensions
 
-BigDecimal:: Provides arbitrary-precision floating point decimal arithmetic
 Date:: A subclass of Object includes Comparable module for handling dates
 DateTime:: Subclass of Date to handling dates, hours, minutes, seconds, offsets
 Digest:: Provides a framework for message digest libraries
@@ -130,3 +127,6 @@ TypeProf:: A type analysis tool for Ruby code based on abstract interpretation
 DEBUGGER__:: Debugging functionality for Ruby
 Racc:: A LALR(1) parser generator written in Ruby.
 Mutex_m:: Mixin to extend objects to be handled like a Mutex
+GetoptLong:: Parse command line options similar to the GNU C getopt_long()
+Base64:: Support for encoding and decoding binary data using a Base64 representation
+BigDecimal:: Provides arbitrary-precision floating point decimal arithmetic

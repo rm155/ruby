@@ -730,78 +730,88 @@ pm_compile_while(rb_iseq_t *iseq, int lineno, pm_node_flags_t flags, enum pm_nod
     return;
 }
 
-static void
+static int
 pm_interpolated_node_compile(pm_node_list_t *parts, rb_iseq_t *iseq, NODE dummy_line_node, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node, pm_parser_t *parser)
 {
+    int number_of_items_pushed = 0;
     size_t parts_size = parts->size;
 
     if (parts_size > 0) {
+        VALUE current_string = Qnil;
         for (size_t index = 0; index < parts_size; index++) {
             pm_node_t *part = parts->nodes[index];
 
             if (PM_NODE_TYPE_P(part, PM_STRING_NODE)) {
-                pm_string_node_t *string_node = (pm_string_node_t *) part;
-                ADD_INSN1(ret, &dummy_line_node, putobject, parse_string(&string_node->unescaped, parser));
+                pm_string_node_t *string_node = (pm_string_node_t *)part;
+                VALUE string_value = parse_string(&string_node->unescaped, parser);
+                if (RTEST(current_string)) {
+                    current_string = rb_str_concat(current_string, string_value);
+                }
+                else {
+                    current_string = string_value;
+                }
             }
             else {
+                if (RTEST(current_string)) {
+                    if (parser->frozen_string_literal) {
+                        ADD_INSN1(ret, &dummy_line_node, putobject, rb_str_freeze(current_string));
+                    }
+                    else {
+                        ADD_INSN1(ret, &dummy_line_node, putstring, rb_str_freeze(current_string));
+                    }
+                    current_string = Qnil;
+                    number_of_items_pushed++;
+                }
                 PM_COMPILE_NOT_POPPED(part);
                 PM_DUP;
                 ADD_INSN1(ret, &dummy_line_node, objtostring, new_callinfo(iseq, idTo_s, 0, VM_CALL_FCALL | VM_CALL_ARGS_SIMPLE , NULL, FALSE));
                 ADD_INSN(ret, &dummy_line_node, anytostring);
+
+                number_of_items_pushed++;
             }
+        }
+
+        if (RTEST(current_string)) {
+            if (parser->frozen_string_literal) {
+                ADD_INSN1(ret, &dummy_line_node, putobject, rb_str_freeze(current_string));
+            }
+            else {
+                ADD_INSN1(ret, &dummy_line_node, putstring, rb_str_freeze(current_string));
+            }
+            current_string = Qnil;
+            number_of_items_pushed++;
         }
     }
     else {
         PM_PUTNIL;
     }
+    return number_of_items_pushed;
 }
 
 // This recurses through scopes and finds the local index at any scope level
 // It also takes a pointer to depth, and increments depth appropriately
 // according to the depth of the local
-static int
-pm_lookup_local_index_any_scope(rb_iseq_t *iseq, pm_scope_node_t *scope_node, pm_constant_id_t constant_id, int *found_depth)
+static pm_local_index_t
+pm_lookup_local_index(rb_iseq_t *iseq, pm_scope_node_t *scope_node, pm_constant_id_t constant_id, int start_depth)
 {
-    if (!scope_node) {
-        // We have recursed up all scope nodes
-        // and have not found the local yet
-        rb_bug("Local with constant_id %u does not exist", (unsigned int)constant_id);
-    }
-
+    pm_local_index_t lindex = {0};
+    int level = (start_depth) ? start_depth : 0;
     st_data_t local_index;
 
-    if (!st_lookup(scope_node->index_lookup_table, constant_id, &local_index)) {
-        // Local does not exist at this level, continue recursing up
-        if (found_depth) {
-            (*found_depth)++;
+    while(!st_lookup(scope_node->index_lookup_table, constant_id, &local_index)) {
+        level++;
+        if (scope_node->previous) {
+            scope_node = scope_node->previous;
+        } else {
+            // We have recursed up all scope nodes
+            // and have not found the local yet
+            rb_bug("Local with constant_id %u does not exist", (unsigned int)constant_id);
         }
-        return pm_lookup_local_index_any_scope(iseq, scope_node->previous, constant_id, found_depth);
     }
 
-    return scope_node->local_table_for_iseq_size - (int)local_index;
-}
-
-static int
-pm_lookup_local_index(rb_iseq_t *iseq, pm_scope_node_t *scope_node, pm_constant_id_t constant_id)
-{
-    st_data_t local_index;
-
-    if (!st_lookup(scope_node->index_lookup_table, constant_id, &local_index)) {
-        rb_bug("Local with constant_id %u does not exist", (unsigned int)constant_id);
-    }
-
-    return scope_node->local_table_for_iseq_size - (int)local_index;
-}
-
-static int
-pm_lookup_local_index_with_depth(rb_iseq_t *iseq, pm_scope_node_t *scope_node, pm_constant_id_t constant_id, uint32_t depth)
-{
-    for(uint32_t i = 0; i < depth; i++) {
-        scope_node = scope_node->previous;
-        iseq = (rb_iseq_t *)ISEQ_BODY(iseq)->parent_iseq;
-    }
-
-    return pm_lookup_local_index_any_scope(iseq, scope_node, constant_id, NULL);
+    lindex.level = level;
+    lindex.index = scope_node->local_table_for_iseq_size - (int)local_index;
+    return lindex;
 }
 
 // This returns the CRuby ID which maps to the pm_constant_id_t
@@ -820,12 +830,12 @@ pm_constant_id_lookup(pm_scope_node_t *scope_node, pm_constant_id_t constant_id)
 }
 
 static rb_iseq_t *
-pm_new_child_iseq(rb_iseq_t *iseq, pm_scope_node_t node, pm_parser_t *parser,
+pm_new_child_iseq(rb_iseq_t *iseq, pm_scope_node_t *node, pm_parser_t *parser,
                VALUE name, const rb_iseq_t *parent, enum rb_iseq_type type, int line_no)
 {
     debugs("[new_child_iseq]> ---------------------------------------\n");
     int isolated_depth = ISEQ_COMPILE_DATA(iseq)->isolated_depth;
-    rb_iseq_t * ret_iseq = pm_iseq_new_with_opt(&node, parser, name,
+    rb_iseq_t *ret_iseq = pm_iseq_new_with_opt(node, parser, name,
             rb_iseq_path(iseq), rb_iseq_realpath(iseq),
             line_no, parent,
             isolated_depth ? isolated_depth + 1 : 0,
@@ -952,10 +962,85 @@ pm_compile_index_write_nodes_add_send(bool popped, LINK_ANCHOR *const ret, rb_is
     return;
 }
 
+static void
+pm_arg_compile_keyword_hash_node(pm_keyword_hash_node_t *node, rb_iseq_t *iseq, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node, NODE dummy_line_node)
+{
+    size_t len = node->elements.size;
+    int cur_hash_size = 0;
+
+    bool new_hash_emitted = false;
+    for (size_t i = 0; i < len; i++) {
+        pm_node_t *cur_node = node->elements.nodes[i];
+        pm_node_type_t cur_type = PM_NODE_TYPE(cur_node);
+
+        switch (cur_type) {
+          case PM_ASSOC_NODE: {
+            pm_assoc_node_t *assoc = (pm_assoc_node_t *)cur_node;
+
+            PM_COMPILE(assoc->key);
+            PM_COMPILE(assoc->value);
+            cur_hash_size++;
+
+            // If we're at the last keyword arg, or the last assoc node of this "set",
+            // then we want to either construct a newhash or merge onto previous hashes
+            if (i == (len - 1) || !PM_NODE_TYPE_P(node->elements.nodes[i + 1], cur_type)) {
+                if (new_hash_emitted) {
+                    ADD_SEND(ret, &dummy_line_node, id_core_hash_merge_ptr, INT2FIX(cur_hash_size * 2 + 1));
+                }
+                else {
+                    if (!popped) {
+                        ADD_INSN1(ret, &dummy_line_node, newhash, INT2FIX(cur_hash_size * 2));
+                        cur_hash_size = 0;
+                        new_hash_emitted = true;
+                    }
+                }
+            }
+
+            break;
+          }
+          case PM_ASSOC_SPLAT_NODE: {
+            if (len > 1) {
+                ADD_INSN1(ret, &dummy_line_node, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
+                if (i == 0) {
+                    if (!popped) {
+                        ADD_INSN1(ret, &dummy_line_node, newhash, INT2FIX(0));
+                        new_hash_emitted = true;
+                    }
+                }
+                else {
+                    PM_SWAP;
+                }
+            }
+
+            pm_assoc_splat_node_t *assoc_splat = (pm_assoc_splat_node_t *)cur_node;
+            PM_COMPILE(assoc_splat->value);
+
+            if (len > 1) {
+                ADD_SEND(ret, &dummy_line_node, id_core_hash_merge_kwd, INT2FIX(2));
+            }
+
+            if ((i < len - 1) && !PM_NODE_TYPE_P(node->elements.nodes[i + 1], cur_type)) {
+                ADD_INSN1(ret, &dummy_line_node, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
+                PM_SWAP;
+            }
+
+            cur_hash_size = 0;
+            break;
+          }
+          default: {
+            rb_bug("Unknown type in keyword argument %s\n", pm_node_type_to_str(PM_NODE_TYPE(cur_node)));
+          }
+        }
+    }
+}
+
 static int
 pm_setup_args(pm_arguments_node_t *arguments_node, int *flags, struct rb_callinfo_kwarg **kw_arg, rb_iseq_t *iseq, LINK_ANCHOR *const ret, const uint8_t *src, bool popped, pm_scope_node_t *scope_node, NODE dummy_line_node, pm_parser_t *parser)
 {
     int orig_argc = 0;
+    bool has_splat = false;
+    bool has_keyword_splat = false;
+
     if (arguments_node == NULL) {
         if (*flags & VM_CALL_FCALL) {
             *flags |= VM_CALL_VCALL;
@@ -964,8 +1049,7 @@ pm_setup_args(pm_arguments_node_t *arguments_node, int *flags, struct rb_callinf
     else {
         pm_node_list_t arguments_node_list = arguments_node->arguments;
 
-        bool has_keyword_splat = (arguments_node->base.flags & PM_ARGUMENTS_NODE_FLAGS_CONTAINS_KEYWORD_SPLAT);
-        bool has_splat = false;
+        has_keyword_splat = (arguments_node->base.flags & PM_ARGUMENTS_NODE_FLAGS_CONTAINS_KEYWORD_SPLAT);
 
         // We count the number of elements post the splat node that are not keyword elements to
         // eventually pass as an argument to newarray
@@ -975,83 +1059,21 @@ pm_setup_args(pm_arguments_node_t *arguments_node, int *flags, struct rb_callinf
             pm_node_t *argument = arguments_node_list.nodes[index];
 
             switch (PM_NODE_TYPE(argument)) {
-                // A keyword hash node contains all keyword arguments as AssocNodes and AssocSplatNodes
+              // A keyword hash node contains all keyword arguments as AssocNodes and AssocSplatNodes
               case PM_KEYWORD_HASH_NODE: {
-                  pm_keyword_hash_node_t *keyword_arg = (pm_keyword_hash_node_t *)argument;
-                  size_t len = keyword_arg->elements.size;
+                pm_keyword_hash_node_t *keyword_arg = (pm_keyword_hash_node_t *)argument;
 
-                  if (has_keyword_splat) {
-                      int cur_hash_size = 0;
+                if (has_keyword_splat || has_splat) {
+                    *flags |= VM_CALL_KW_SPLAT;
+                    *flags |= VM_CALL_KW_SPLAT_MUT;
 
-                      bool new_hash_emitted = false;
-                      for (size_t i = 0; i < len; i++) {
-                          pm_node_t *cur_node = keyword_arg->elements.nodes[i];
+                    has_keyword_splat = true;
 
-                          pm_node_type_t cur_type = PM_NODE_TYPE(cur_node);
+                    pm_arg_compile_keyword_hash_node(keyword_arg, iseq, ret, src, false, scope_node, dummy_line_node);
+                }
+                else {
+                    size_t len = keyword_arg->elements.size;
 
-                          switch (PM_NODE_TYPE(cur_node)) {
-                            case PM_ASSOC_NODE: {
-                                orig_argc++;
-                                pm_assoc_node_t *assoc = (pm_assoc_node_t *)cur_node;
-
-                                PM_COMPILE_NOT_POPPED(assoc->key);
-                                PM_COMPILE_NOT_POPPED(assoc->value);
-                                cur_hash_size++;
-
-                                // If we're at the last keyword arg, or the last assoc node of this "set",
-                                // then we want to either construct a newhash or merge onto previous hashes
-                                if (i == (len - 1) || !PM_NODE_TYPE_P(keyword_arg->elements.nodes[i + 1], cur_type)) {
-                                    if (new_hash_emitted) {
-                                        ADD_SEND(ret, &dummy_line_node, id_core_hash_merge_ptr, INT2FIX(cur_hash_size * 2 + 1));
-                                    }
-                                    else {
-                                        ADD_INSN1(ret, &dummy_line_node, newhash, INT2FIX(cur_hash_size * 2));
-                                        cur_hash_size = 0;
-                                        new_hash_emitted = true;
-                                    }
-                                }
-
-                                break;
-                            }
-                            case PM_ASSOC_SPLAT_NODE: {
-                                if (len > 1) {
-                                    ADD_INSN1(ret, &dummy_line_node, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
-                                    if (i == 0) {
-                                        ADD_INSN1(ret, &dummy_line_node, newhash, INT2FIX(0));
-                                        new_hash_emitted = true;
-                                    }
-                                    else {
-                                        PM_SWAP;
-                                    }
-
-                                    *flags |= VM_CALL_KW_SPLAT_MUT;
-                                }
-
-                                pm_assoc_splat_node_t *assoc_splat = (pm_assoc_splat_node_t *)cur_node;
-                                PM_COMPILE_NOT_POPPED(assoc_splat->value);
-
-                                *flags |= VM_CALL_KW_SPLAT;
-
-                                if (len > 1) {
-                                    ADD_SEND(ret, &dummy_line_node, id_core_hash_merge_kwd, INT2FIX(2));
-                                }
-
-                                if ((i < len - 1) && !PM_NODE_TYPE_P(keyword_arg->elements.nodes[i + 1], cur_type)) {
-                                    ADD_INSN1(ret, &dummy_line_node, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
-                                    PM_SWAP;
-                                }
-
-                                cur_hash_size = 0;
-                                break;
-                            }
-                            default: {
-                                rb_bug("Unknown type in keyword argument %s\n", pm_node_type_to_str(PM_NODE_TYPE(cur_node)));
-                            }
-                          }
-                      }
-                      break;
-                  }
-                  else {
                     // We need to first figure out if all elements of the KeywordHashNode are AssocNodes
                     // with symbol keys.
                     if (PM_NODE_FLAG_P(keyword_arg, PM_KEYWORD_HASH_NODE_FLAGS_SYMBOL_KEYS)) {
@@ -1087,63 +1109,123 @@ pm_setup_args(pm_arguments_node_t *arguments_node, int *flags, struct rb_callinf
 
                         ADD_INSN1(ret, &dummy_line_node, newhash, INT2FIX(len * 2));
                     }
-                  }
-                  break;
+                }
+                break;
               }
               case PM_SPLAT_NODE: {
-                  *flags |= VM_CALL_ARGS_SPLAT;
-                  pm_splat_node_t *splat_node = (pm_splat_node_t *)argument;
-                  if (splat_node->expression) {
-                      orig_argc++;
-                      PM_COMPILE_NOT_POPPED(splat_node->expression);
-                  }
+                *flags |= VM_CALL_ARGS_SPLAT;
+                pm_splat_node_t *splat_node = (pm_splat_node_t *)argument;
+                if (splat_node->expression) {
+                    PM_COMPILE_NOT_POPPED(splat_node->expression);
+                }
 
-                  ADD_INSN1(ret, &dummy_line_node, splatarray, Qfalse);
+                bool first_splat = !has_splat;
 
-                  has_splat = true;
-                  post_splat_counter = 0;
+                if (first_splat) {
+                    // If this is the first splat array seen and it's not the
+                    // last parameter, we want splatarray to dup it.
+                    //
+                    // foo(a, *b, c)
+                    //        ^^
+                    if (index + 1 < arguments_node_list.size) {
+                        ADD_INSN1(ret, &dummy_line_node, splatarray, Qtrue);
+                    }
+                    // If this is the first spalt array seen and it's the last
+                    // parameter, we don't want splatarray to dup it.
+                    //
+                    // foo(a, *b)
+                    //        ^^
+                    else {
+                        ADD_INSN1(ret, &dummy_line_node, splatarray, Qfalse);
+                    }
+                }
+                else {
+                    // If this is not the first splat array seen and it is also
+                    // the last parameter, we don't want splayarray to dup it
+                    // and we need to concat the array.
+                    //
+                    // foo(a, *b, *c)
+                    //            ^^
+                    ADD_INSN1(ret, &dummy_line_node, splatarray, Qfalse);
+                    ADD_INSN(ret, &dummy_line_node, concatarray);
+                }
 
-                  break;
+                has_splat = true;
+                post_splat_counter = 0;
+
+                break;
               }
               case PM_FORWARDING_ARGUMENTS_NODE: {
-                  orig_argc++;
-                  *flags |= VM_CALL_ARGS_BLOCKARG | VM_CALL_ARGS_SPLAT;
-                  ADD_GETLOCAL(ret, &dummy_line_node, 3, 0);
-                  ADD_INSN1(ret, &dummy_line_node, splatarray, RBOOL(arguments_node_list.size > 1));
-                  ADD_INSN2(ret, &dummy_line_node, getblockparamproxy, INT2FIX(4), INT2FIX(0));
-                  break;
+                orig_argc++;
+                *flags |= VM_CALL_ARGS_BLOCKARG | VM_CALL_ARGS_SPLAT;
+                ADD_GETLOCAL(ret, &dummy_line_node, 3, 0);
+                ADD_INSN1(ret, &dummy_line_node, splatarray, RBOOL(arguments_node_list.size > 1));
+                ADD_INSN2(ret, &dummy_line_node, getblockparamproxy, INT2FIX(4), INT2FIX(0));
+                break;
               }
               default: {
-                  orig_argc++;
-                  post_splat_counter++;
-                  PM_COMPILE_NOT_POPPED(argument);
+                post_splat_counter++;
+                PM_COMPILE_NOT_POPPED(argument);
 
-                  if (has_splat) {
-                      // If the next node starts the keyword section of parameters
-                      if ((index < arguments_node_list.size - 1) && PM_NODE_TYPE_P(arguments_node_list.nodes[index + 1], PM_KEYWORD_HASH_NODE)) {
+                // If we have a splat and we've seen a splat, we need to process
+                // everything after the splat.
+                if (has_splat) {
+                    // Stack items are turned into an array and concatenated in
+                    // the following cases:
+                    //
+                    // If the next node is a splat:
+                    //
+                    //   foo(*a, b, *c)
+                    //
+                    // If the next node is a kwarg or kwarg splat:
+                    //
+                    //   foo(*a, b, c: :d)
+                    //   foo(*a, b, **c)
+                    //
+                    // If the next node is NULL (we have hit the end):
+                    //
+                    //   foo(*a, b)
+                    if (index == arguments_node_list.size - 1) {
+                        RUBY_ASSERT(post_splat_counter > 0);
+                        ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(post_splat_counter));
+                        ADD_INSN(ret, &dummy_line_node, concatarray);
+                    }
+                    else {
+                        pm_node_t *next_arg = arguments_node_list.nodes[index + 1];
 
-                          ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(post_splat_counter));
-                          ADD_INSN1(ret, &dummy_line_node, splatarray, Qfalse);
-                          ADD_INSN(ret, &dummy_line_node, concatarray);
-                      }
-                      // If it's the final node
-                      else if (index == arguments_node_list.size - 1) {
-                          if (post_splat_counter > 1) {
-                              ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(post_splat_counter));
-                              ADD_INSN1(ret, &dummy_line_node, splatarray, Qfalse);
-                              ADD_INSN(ret, &dummy_line_node, concatarray);
+                        switch (PM_NODE_TYPE(next_arg)) {
+                          // A keyword hash node contains all keyword arguments as AssocNodes and AssocSplatNodes
+                          case PM_KEYWORD_HASH_NODE: {
+                            ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(post_splat_counter));
+                            ADD_INSN(ret, &dummy_line_node, concatarray);
+                            break;
                           }
-                          else {
-                              ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(post_splat_counter));
-                              ADD_INSN(ret, &dummy_line_node, concatarray);
+                          case PM_SPLAT_NODE: {
+                            ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(post_splat_counter));
+                            ADD_INSN(ret, &dummy_line_node, concatarray);
+                            break;
                           }
-                          orig_argc = 1;
-                      }
-                  }
+                          default:
+                            break;
+                        }
+                    }
+                }
+                else {
+                    orig_argc++;
+                }
               }
             }
         }
     }
+
+    if (has_splat) {
+        orig_argc++;
+    }
+
+    if (has_keyword_splat) {
+        orig_argc++;
+    }
+
     return orig_argc;
 }
 
@@ -2097,7 +2179,7 @@ pm_compile_pattern(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_node_t
         // of a pattern. For example, foo in bar. This results in the value
         // being matched being written to that local variable.
         pm_local_variable_target_node_t *cast = (pm_local_variable_target_node_t *) node;
-        int index = pm_lookup_local_index(iseq, scope_node, cast->name);
+        pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, cast->name, 0);
 
         // If this local variable is being written from within an alternation
         // pattern, then it cannot actually be added to the local table since
@@ -2113,7 +2195,7 @@ pm_compile_pattern(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_node_t
             }
         }
 
-        ADD_SETLOCAL(ret, &line.node, index, (int) cast->depth);
+        ADD_SETLOCAL(ret, &line.node, index.index, index.level);
         ADD_INSNL(ret, &line.node, jump, matched_label);
         break;
       }
@@ -2299,12 +2381,10 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
     scope->parameters = NULL;
     scope->body = NULL;
     scope->constants = NULL;
-    scope->local_depth_offset = 0;
     scope->local_table_for_iseq_size = 0;
 
     if (previous) {
         scope->constants = previous->constants;
-        scope->local_depth_offset = previous->local_depth_offset;
     }
     scope->index_lookup_table = NULL;
 
@@ -2315,7 +2395,6 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
             pm_block_node_t *cast = (pm_block_node_t *) node;
             scope->body = cast->body;
             scope->locals = cast->locals;
-            scope->local_depth_offset = 0;
             scope->parameters = cast->parameters;
             break;
         }
@@ -2334,19 +2413,16 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         }
         case PM_ENSURE_NODE: {
             scope->body = (pm_node_t *)node;
-            scope->local_depth_offset += 1;
             break;
         }
         case PM_FOR_NODE: {
             pm_for_node_t *cast = (pm_for_node_t *)node;
             scope->body = (pm_node_t *)cast->statements;
-            scope->local_depth_offset += 1;
             break;
         }
         case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
             RUBY_ASSERT(node->flags & PM_REGULAR_EXPRESSION_FLAGS_ONCE);
             scope->body = (pm_node_t *)node;
-            scope->local_depth_offset += 1;
             break;
         }
         case PM_LAMBDA_NODE: {
@@ -2365,7 +2441,6 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         case PM_POST_EXECUTION_NODE: {
             pm_post_execution_node_t *cast = (pm_post_execution_node_t *) node;
             scope->body = (pm_node_t *) cast->statements;
-            scope->local_depth_offset += 2;
             break;
         }
         case PM_PROGRAM_NODE: {
@@ -2377,13 +2452,11 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         case PM_RESCUE_NODE: {
             pm_rescue_node_t *cast = (pm_rescue_node_t *)node;
             scope->body = (pm_node_t *)cast->statements;
-            scope->local_depth_offset += 1;
             break;
         }
         case PM_RESCUE_MODIFIER_NODE: {
             pm_rescue_modifier_node_t *cast = (pm_rescue_modifier_node_t *)node;
             scope->body = (pm_node_t *)cast->rescue_expression;
-            scope->local_depth_offset += 1;
             break;
         }
         case PM_SINGLETON_CLASS_NODE: {
@@ -2400,6 +2473,14 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         default:
             assert(false && "unreachable");
             break;
+    }
+}
+
+void
+pm_scope_node_destroy(pm_scope_node_t *scope_node)
+{
+    if (scope_node->index_lookup_table) {
+        st_free_table(scope_node->index_lookup_table);
     }
 }
 
@@ -2461,23 +2542,46 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *co
           }
       }
       case PM_AND_NODE:
+      case PM_BEGIN_NODE:
+      case PM_BREAK_NODE:
+      case PM_CASE_NODE:
+      case PM_CASE_MATCH_NODE:
+      case PM_CLASS_NODE:
+      case PM_DEF_NODE:
+      case PM_DEFINED_NODE:
       case PM_FLOAT_NODE:
+      case PM_FOR_NODE:
       case PM_HASH_NODE:
+      case PM_IF_NODE:
       case PM_IMAGINARY_NODE:
       case PM_INTEGER_NODE:
       case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE:
       case PM_INTERPOLATED_STRING_NODE:
+      case PM_INTERPOLATED_SYMBOL_NODE:
+      case PM_INTERPOLATED_X_STRING_NODE:
       case PM_KEYWORD_HASH_NODE:
       case PM_LAMBDA_NODE:
       case PM_MATCH_PREDICATE_NODE:
+      case PM_MATCH_REQUIRED_NODE:
+      case PM_MATCH_WRITE_NODE:
+      case PM_MODULE_NODE:
+      case PM_NEXT_NODE:
       case PM_OR_NODE:
       case PM_RANGE_NODE:
+      case PM_RATIONAL_NODE:
+      case PM_REDO_NODE:
       case PM_REGULAR_EXPRESSION_NODE:
+      case PM_RETRY_NODE:
+      case PM_RETURN_NODE:
+      case PM_SINGLETON_CLASS_NODE:
       case PM_SOURCE_ENCODING_NODE:
       case PM_SOURCE_FILE_NODE:
       case PM_SOURCE_LINE_NODE:
       case PM_STRING_NODE:
       case PM_SYMBOL_NODE:
+      case PM_UNLESS_NODE:
+      case PM_UNTIL_NODE:
+      case PM_WHILE_NODE:
       case PM_X_STRING_NODE:
         dtype = DEFINED_EXPR;
         break;
@@ -2575,8 +2679,10 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *co
             pm_compile_defined_expr0(iseq, call_node->receiver, ret, src, popped, scope_node, dummy_line_node, lineno, true, lfinish, true);
             if (PM_NODE_TYPE_P(call_node->receiver, PM_CALL_NODE)) {
                 ADD_INSNL(ret, &dummy_line_node, branchunless, lfinish[2]);
-                ID method_id = pm_constant_id_lookup(scope_node, call_node->name);
-                pm_compile_call(iseq, (const pm_call_node_t *)call_node->receiver, ret, src, popped, scope_node, method_id, NULL);
+
+                const pm_call_node_t *receiver = (const pm_call_node_t *)call_node->receiver;
+                ID method_id = pm_constant_id_lookup(scope_node, receiver->name);
+                pm_compile_call(iseq, receiver, ret, src, popped, scope_node, method_id, NULL);
             }
             else {
                 ADD_INSNL(ret, &dummy_line_node, branchunless, lfinish[1]);
@@ -2610,10 +2716,19 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *co
         ADD_INSN3(ret, &dummy_line_node, defined, INT2FIX(DEFINED_ZSUPER), 0,
                   PUSH_VAL(DEFINED_ZSUPER));
         return;
+      case PM_CALL_AND_WRITE_NODE:
+      case PM_CALL_OPERATOR_WRITE_NODE:
+      case PM_CALL_OR_WRITE_NODE:
+
       case PM_CONSTANT_WRITE_NODE:
       case PM_CONSTANT_OPERATOR_WRITE_NODE:
       case PM_CONSTANT_AND_WRITE_NODE:
       case PM_CONSTANT_OR_WRITE_NODE:
+
+      case PM_CONSTANT_PATH_AND_WRITE_NODE:
+      case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE:
+      case PM_CONSTANT_PATH_OR_WRITE_NODE:
+      case PM_CONSTANT_PATH_WRITE_NODE:
 
       case PM_GLOBAL_VARIABLE_WRITE_NODE:
       case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE:
@@ -2624,6 +2739,10 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *co
       case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE:
       case PM_CLASS_VARIABLE_AND_WRITE_NODE:
       case PM_CLASS_VARIABLE_OR_WRITE_NODE:
+
+      case PM_INDEX_AND_WRITE_NODE:
+      case PM_INDEX_OPERATOR_WRITE_NODE:
+      case PM_INDEX_OR_WRITE_NODE:
 
       case PM_INSTANCE_VARIABLE_WRITE_NODE:
       case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE:
@@ -2730,8 +2849,9 @@ pm_compile_call(rb_iseq_t *iseq, const pm_call_node_t *call_node, LINK_ANCHOR *c
         // Scope associated with the block
         pm_scope_node_t next_scope_node;
         pm_scope_node_init(call_node->block, &next_scope_node, scope_node, parser);
+        block_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+        pm_scope_node_destroy(&next_scope_node);
 
-        block_iseq = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
         if (ISEQ_BODY(block_iseq)->catch_table) {
             ADD_CATCH_ENTRY(CATCH_TYPE_BREAK, start, end_label, block_iseq, end_label);
         }
@@ -3065,12 +3185,34 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 PM_POP_IF_POPPED;
             }
             else {
+                bool has_kw_splat = false;
+
                 for (size_t index = 0; index < elements->size; index++) {
-                    PM_COMPILE(elements->nodes[index]);
+                    pm_node_t *element_node = elements->nodes[index];
+
+                    switch (PM_NODE_TYPE(element_node)) {
+                      case PM_KEYWORD_HASH_NODE: {
+                        has_kw_splat = true;
+
+                        pm_arg_compile_keyword_hash_node((pm_keyword_hash_node_t *)element_node, iseq, ret, src, popped, scope_node, dummy_line_node);
+
+                        break;
+                      }
+                      default: {
+                        PM_COMPILE(element_node);
+
+                        break;
+                      }
+                    }
                 }
 
                 if (!popped) {
-                    ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(elements->size));
+                    if (has_kw_splat) {
+                        ADD_INSN1(ret, &dummy_line_node, newarraykwsplat, INT2FIX(elements->size));
+                    }
+                    else {
+                        ADD_INSN1(ret, &dummy_line_node, newarray, INT2FIX(elements->size));
+                    }
                 }
             }
         }
@@ -3103,19 +3245,20 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       case PM_BEGIN_NODE: {
         pm_begin_node_t *begin_node = (pm_begin_node_t *) node;
         rb_iseq_t *child_iseq;
-        LABEL *lstart = NEW_LABEL(lineno);
-        LABEL *lend = NEW_LABEL(lineno);
-        LABEL *lcont = NEW_LABEL(lineno);
-
 
         if (begin_node->rescue_clause) {
+            LABEL *lstart = NEW_LABEL(lineno);
+            LABEL *lend = NEW_LABEL(lineno);
+            LABEL *lcont = NEW_LABEL(lineno);
+
             pm_scope_node_t rescue_scope_node;
             pm_scope_node_init((pm_node_t *)begin_node->rescue_clause, &rescue_scope_node, scope_node, parser);
-
-            rb_iseq_t *rescue_iseq = NEW_CHILD_ISEQ(rescue_scope_node,
+            rb_iseq_t *rescue_iseq = NEW_CHILD_ISEQ(&rescue_scope_node,
                                                     rb_str_concat(rb_str_new2("rescue in"),
                                                                   ISEQ_BODY(iseq)->location.label),
                                                     ISEQ_TYPE_RESCUE, 1);
+            pm_scope_node_destroy(&rescue_scope_node);
+
             lstart->rescued = LABEL_RESCUE_BEG;
             lend->rescued = LABEL_RESCUE_END;
             ADD_LABEL(ret, lstart);
@@ -3155,14 +3298,16 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                     PM_PUTNIL_UNLESS_POPPED;
                 }
             }
+
             ADD_LABEL(ret, eend);
+            ADD_LABEL(ret, econt);
+
             if (!popped) {
                 PM_NOP;
             }
             pm_statements_node_t *statements = begin_node->ensure_clause->statements;
             if (statements) {
                 PM_COMPILE((pm_node_t *)statements);
-                ADD_LABEL(ret, econt);
                 PM_POP_UNLESS_POPPED;
             }
 
@@ -3177,12 +3322,12 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
             pm_scope_node_t next_scope_node;
             pm_scope_node_init((pm_node_t *)begin_node->ensure_clause, &next_scope_node, scope_node, parser);
-
-            child_iseq = NEW_CHILD_ISEQ(next_scope_node,
+            child_iseq = NEW_CHILD_ISEQ(&next_scope_node,
                     rb_str_new2("ensure in"),
                     ISEQ_TYPE_ENSURE, lineno);
-            ISEQ_COMPILE_DATA(iseq)->current_block = child_iseq;
+            pm_scope_node_destroy(&next_scope_node);
 
+            ISEQ_COMPILE_DATA(iseq)->current_block = child_iseq;
 
             erange = ISEQ_COMPILE_DATA(iseq)->ensure_node_stack->erange;
             if (estart->link.next != &eend->link) {
@@ -3194,14 +3339,12 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         }
 
         if (!begin_node->rescue_clause && !begin_node->ensure_clause) {
-            ADD_LABEL(ret, lstart);
             if (begin_node->statements) {
                 PM_COMPILE((pm_node_t *)begin_node->statements);
             }
             else {
                 PM_PUTNIL_UNLESS_POPPED;
             }
-            ADD_LABEL(ret, lend);
         }
         return;
       }
@@ -3370,48 +3513,45 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         pm_node_list_t conditions = case_node->conditions;
 
-        LABEL **conditions_labels = (LABEL **)ALLOC_N(VALUE, conditions.size + 1);
+        LABEL **conditions_labels = (LABEL **)ALLOCA_N(VALUE, conditions.size + 1);
         LABEL *label;
 
         for (size_t i = 0; i < conditions.size; i++) {
             label = NEW_LABEL(lineno);
             conditions_labels[i] = label;
-            if (has_predicate) {
-                pm_when_node_t *when_node = (pm_when_node_t *)conditions.nodes[i];
+            pm_when_node_t *when_node = (pm_when_node_t *)conditions.nodes[i];
 
-                for (size_t i = 0; i < when_node->conditions.size; i++) {
-                    pm_node_t *condition_node = when_node->conditions.nodes[i];
+            for (size_t i = 0; i < when_node->conditions.size; i++) {
+                pm_node_t *condition_node = when_node->conditions.nodes[i];
 
-                    if (PM_NODE_TYPE_P(condition_node, PM_SPLAT_NODE)) {
-                        ADD_INSN (ret, &dummy_line_node, dup);
-                        PM_COMPILE_NOT_POPPED(condition_node);
-                        ADD_INSN1(ret, &dummy_line_node, splatarray, Qfalse);
-                        ADD_INSN1(ret, &dummy_line_node, checkmatch, INT2FIX(VM_CHECKMATCH_TYPE_CASE | VM_CHECKMATCH_ARRAY));
-                    }
-                    else {
-                        PM_COMPILE_NOT_POPPED(condition_node);
+                if (PM_NODE_TYPE_P(condition_node, PM_SPLAT_NODE)) {
+                    int checkmatch_type = has_predicate ? VM_CHECKMATCH_TYPE_CASE : VM_CHECKMATCH_TYPE_WHEN;
+                    ADD_INSN (ret, &dummy_line_node, dup);
+                    PM_COMPILE_NOT_POPPED(condition_node);
+                    ADD_INSN1(ret, &dummy_line_node, checkmatch,
+                              INT2FIX(checkmatch_type | VM_CHECKMATCH_ARRAY));
+                }
+                else {
+                    PM_COMPILE_NOT_POPPED(condition_node);
+                    if (has_predicate) {
                         ADD_INSN1(ret, &dummy_line_node, topn, INT2FIX(1));
                         ADD_SEND_WITH_FLAG(ret, &dummy_line_node, idEqq, INT2NUM(1), INT2FIX(VM_CALL_FCALL | VM_CALL_ARGS_SIMPLE));
                     }
-
-                    ADD_INSNL(ret, &dummy_line_node, branchif, label);
                 }
-            }
-            else {
-                ADD_INSNL(ret, &dummy_line_node, jump, label);
-                PM_PUTNIL;
+
+                ADD_INSNL(ret, &dummy_line_node, branchif, label);
             }
         }
 
         if (has_predicate) {
             PM_POP;
+        }
 
-            if (case_node->consequent) {
-                 PM_COMPILE((pm_node_t *)case_node->consequent);
-            }
-            else {
-                PM_PUTNIL_UNLESS_POPPED;
-            }
+        if (case_node->consequent) {
+             PM_COMPILE((pm_node_t *)case_node->consequent);
+        }
+        else {
+            PM_PUTNIL_UNLESS_POPPED;
         }
 
         ADD_INSNL(ret, &dummy_line_node, jump, end_label);
@@ -3593,14 +3733,15 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       }
       case PM_CLASS_NODE: {
         pm_class_node_t *class_node = (pm_class_node_t *)node;
-        pm_scope_node_t next_scope_node;
-        pm_scope_node_init((pm_node_t *)class_node, &next_scope_node, scope_node, parser);
 
         ID class_id = pm_constant_id_lookup(scope_node, class_node->name);
 
         VALUE class_name = rb_str_freeze(rb_sprintf("<class:%"PRIsVALUE">", rb_id2str(class_id)));
 
-        const rb_iseq_t *class_iseq = NEW_CHILD_ISEQ(next_scope_node, class_name, ISEQ_TYPE_CLASS, lineno);
+        pm_scope_node_t next_scope_node;
+        pm_scope_node_init((pm_node_t *)class_node, &next_scope_node, scope_node, parser);
+        const rb_iseq_t *class_iseq = NEW_CHILD_ISEQ(&next_scope_node, class_name, ISEQ_TYPE_CLASS, lineno);
+        pm_scope_node_destroy(&next_scope_node);
 
         // TODO: Once we merge constant path nodes correctly, fix this flag
         const int flags = VM_DEFINECLASS_TYPE_CLASS |
@@ -4016,9 +4157,11 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       case PM_DEF_NODE: {
         pm_def_node_t *def_node = (pm_def_node_t *) node;
         ID method_name = pm_constant_id_lookup(scope_node, def_node->name);
+
         pm_scope_node_t next_scope_node;
         pm_scope_node_init((pm_node_t *)def_node, &next_scope_node, scope_node, parser);
-        rb_iseq_t *method_iseq = NEW_ISEQ(next_scope_node, rb_id2str(method_name), ISEQ_TYPE_METHOD, lineno);
+        rb_iseq_t *method_iseq = NEW_ISEQ(&next_scope_node, rb_id2str(method_name), ISEQ_TYPE_METHOD, lineno);
+        pm_scope_node_destroy(&next_scope_node);
 
         if (def_node->receiver) {
             PM_COMPILE_NOT_POPPED(def_node->receiver);
@@ -4074,6 +4217,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             PM_COMPILE((pm_node_t *)ensure_node->statements);
         }
         ADD_LABEL(ret, end);
+        return;
       }
       case PM_ELSE_NODE: {
           pm_else_node_t *cast = (pm_else_node_t *)node;
@@ -4119,9 +4263,6 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         LABEL *retry_label = NEW_LABEL(lineno);
         LABEL *retry_end_l = NEW_LABEL(lineno);
 
-        pm_scope_node_t next_scope_node;
-        pm_scope_node_init((pm_node_t *)for_node, &next_scope_node, scope_node, parser);
-
         pm_constant_id_list_t locals;
         pm_constant_id_list_init(&locals);
 
@@ -4129,7 +4270,11 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         PM_COMPILE_NOT_POPPED(for_node->collection);
 
-        child_iseq = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+        pm_scope_node_t next_scope_node;
+        pm_scope_node_init((pm_node_t *)for_node, &next_scope_node, scope_node, parser);
+        child_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+        pm_scope_node_destroy(&next_scope_node);
+
         ISEQ_COMPILE_DATA(iseq)->current_block = child_iseq;
         ADD_SEND_WITH_BLOCK(ret, &dummy_line_node, idEach, INT2FIX(0), child_iseq);
 
@@ -4153,7 +4298,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         if (forwarding_super_node->block) {
             pm_scope_node_t next_scope_node;
             pm_scope_node_init((pm_node_t *)forwarding_super_node->block, &next_scope_node, scope_node, parser);
-            block = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+            block = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+            pm_scope_node_destroy(&next_scope_node);
+
             RB_OBJ_WRITTEN(iseq, Qundef, (VALUE)block);
         }
 
@@ -4680,8 +4827,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
             pm_scope_node_t next_scope_node;
             pm_scope_node_init((pm_node_t*)node, &next_scope_node, scope_node, parser);
+            block_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+            pm_scope_node_destroy(&next_scope_node);
 
-            block_iseq = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
             ISEQ_COMPILE_DATA(iseq)->current_block = block_iseq;
 
             ADD_INSN2(ret, &dummy_line_node, once, block_iseq, INT2FIX(ic_index));
@@ -4706,11 +4854,10 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       }
       case PM_INTERPOLATED_STRING_NODE: {
         pm_interpolated_string_node_t *interp_string_node = (pm_interpolated_string_node_t *) node;
-        pm_interpolated_node_compile(&interp_string_node->parts, iseq, dummy_line_node, ret, src, popped, scope_node, parser);
+        int number_of_items_pushed = pm_interpolated_node_compile(&interp_string_node->parts, iseq, dummy_line_node, ret, src, popped, scope_node, parser);
 
-        size_t parts_size = interp_string_node->parts.size;
-        if (parts_size > 1) {
-            ADD_INSN1(ret, &dummy_line_node, concatstrings, INT2FIX((int)(parts_size)));
+        if (number_of_items_pushed > 1) {
+            ADD_INSN1(ret, &dummy_line_node, concatstrings, INT2FIX(number_of_items_pushed));
         }
 
         PM_POP_IF_POPPED;
@@ -4718,11 +4865,10 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       }
       case PM_INTERPOLATED_SYMBOL_NODE: {
         pm_interpolated_symbol_node_t *interp_symbol_node = (pm_interpolated_symbol_node_t *) node;
-        pm_interpolated_node_compile(&interp_symbol_node->parts, iseq, dummy_line_node, ret, src, popped, scope_node, parser);
+        int number_of_items_pushed = pm_interpolated_node_compile(&interp_symbol_node->parts, iseq, dummy_line_node, ret, src, popped, scope_node, parser);
 
-        size_t parts_size = interp_symbol_node->parts.size;
-        if (parts_size > 1) {
-            ADD_INSN1(ret, &dummy_line_node, concatstrings, INT2FIX((int)(parts_size)));
+        if (number_of_items_pushed > 1) {
+            ADD_INSN1(ret, &dummy_line_node, concatstrings, INT2FIX(number_of_items_pushed));
         }
 
         if (!popped) {
@@ -4737,11 +4883,10 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       case PM_INTERPOLATED_X_STRING_NODE: {
         pm_interpolated_x_string_node_t *interp_x_string_node = (pm_interpolated_x_string_node_t *) node;
         PM_PUTSELF;
-        pm_interpolated_node_compile(&interp_x_string_node->parts, iseq, dummy_line_node, ret, src, false, scope_node, parser);
+        int number_of_items_pushed = pm_interpolated_node_compile(&interp_x_string_node->parts, iseq, dummy_line_node, ret, src, false, scope_node, parser);
 
-        size_t parts_size = interp_x_string_node->parts.size;
-        if (parts_size > 1) {
-            ADD_INSN1(ret, &dummy_line_node, concatstrings, INT2FIX((int)(parts_size)));
+        if (number_of_items_pushed > 1) {
+            ADD_INSN1(ret, &dummy_line_node, concatstrings, INT2FIX(number_of_items_pushed));
         }
 
         ADD_SEND_WITH_FLAG(ret, &dummy_line_node, idBackquote, INT2NUM(1), INT2FIX(VM_CALL_FCALL | VM_CALL_ARGS_SIMPLE));
@@ -4764,8 +4909,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       case PM_LAMBDA_NODE: {
         pm_scope_node_t next_scope_node;
         pm_scope_node_init(node, &next_scope_node, scope_node, parser);
+        const rb_iseq_t *block = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+        pm_scope_node_destroy(&next_scope_node);
 
-        const rb_iseq_t *block = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
         VALUE argc = INT2FIX(0);
 
         ADD_INSN1(ret, &dummy_line_node, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
@@ -4781,9 +4927,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         LABEL *end_label = NEW_LABEL(lineno);
 
         pm_constant_id_t constant_id = local_variable_and_write_node->name;
-        int depth = local_variable_and_write_node->depth + scope_node->local_depth_offset;
-        int local_index = pm_lookup_local_index_with_depth(iseq, scope_node, constant_id, depth);
-        ADD_GETLOCAL(ret, &dummy_line_node, local_index, depth);
+        pm_local_index_t local_index = pm_lookup_local_index(iseq, scope_node, constant_id, local_variable_and_write_node->depth);
+        ADD_GETLOCAL(ret, &dummy_line_node, local_index.index, local_index.level);
 
         PM_DUP_UNLESS_POPPED;
 
@@ -4795,7 +4940,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         PM_DUP_UNLESS_POPPED;
 
-        ADD_SETLOCAL(ret, &dummy_line_node, local_index, depth);
+        ADD_SETLOCAL(ret, &dummy_line_node, local_index.index, local_index.level);
         ADD_LABEL(ret, end_label);
 
         return;
@@ -4804,10 +4949,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         pm_local_variable_operator_write_node_t *local_variable_operator_write_node = (pm_local_variable_operator_write_node_t*) node;
 
         pm_constant_id_t constant_id = local_variable_operator_write_node->name;
+        pm_local_index_t local_index = pm_lookup_local_index(iseq, scope_node, constant_id, 0);
 
-        int depth = local_variable_operator_write_node->depth + scope_node->local_depth_offset;
-        int local_index = pm_lookup_local_index_with_depth(iseq, scope_node, constant_id, depth);
-        ADD_GETLOCAL(ret, &dummy_line_node, local_index, depth);
+        ADD_GETLOCAL(ret, &dummy_line_node, local_index.index, local_index.level);
 
         PM_COMPILE_NOT_POPPED(local_variable_operator_write_node->value);
         ID method_id = pm_constant_id_lookup(scope_node, local_variable_operator_write_node->operator);
@@ -4817,7 +4961,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         PM_DUP_UNLESS_POPPED;
 
-        ADD_SETLOCAL(ret, &dummy_line_node, local_index, depth);
+        ADD_SETLOCAL(ret, &dummy_line_node, local_index.index, local_index.level);
 
         return;
       }
@@ -4831,9 +4975,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         ADD_INSNL(ret, &dummy_line_node, branchunless, set_label);
 
         pm_constant_id_t constant_id = local_variable_or_write_node->name;
-        int depth = local_variable_or_write_node->depth + scope_node->local_depth_offset;
-        int local_index = pm_lookup_local_index_with_depth(iseq, scope_node, constant_id, depth);
-        ADD_GETLOCAL(ret, &dummy_line_node, local_index, depth);
+        pm_local_index_t local_index = pm_lookup_local_index(iseq, scope_node, constant_id, 0);
+        ADD_GETLOCAL(ret, &dummy_line_node, local_index.index, local_index.level);
 
         PM_DUP_UNLESS_POPPED;
 
@@ -4846,7 +4989,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         PM_DUP_UNLESS_POPPED;
 
-        ADD_SETLOCAL(ret, &dummy_line_node, local_index, depth);
+        ADD_SETLOCAL(ret, &dummy_line_node, local_index.index, local_index.level);
         ADD_LABEL(ret, end_label);
 
         return;
@@ -4855,8 +4998,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         pm_local_variable_read_node_t *local_read_node = (pm_local_variable_read_node_t *) node;
 
         if (!popped) {
-            int index = pm_lookup_local_index_with_depth(iseq, scope_node, local_read_node->name, local_read_node->depth);
-            ADD_GETLOCAL(ret, &dummy_line_node, index, local_read_node->depth + scope_node->local_depth_offset);
+            pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, local_read_node->name, 0);
+            ADD_GETLOCAL(ret, &dummy_line_node, index.index, index.level);
         }
         return;
       }
@@ -4864,10 +5007,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         pm_local_variable_target_node_t *local_write_node = (pm_local_variable_target_node_t *) node;
 
         pm_constant_id_t constant_id = local_write_node->name;
-        int found_depth = 0;
-        int index = pm_lookup_local_index_any_scope(iseq, scope_node, constant_id, &found_depth);
+        pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, constant_id, 0);
 
-        ADD_SETLOCAL(ret, &dummy_line_node, index, found_depth);
+        ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
         return;
       }
       case PM_LOCAL_VARIABLE_WRITE_NODE: {
@@ -4878,10 +5020,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         pm_constant_id_t constant_id = local_write_node->name;
 
-        int found_depth = 0;
-        int index = pm_lookup_local_index_any_scope(iseq, scope_node, constant_id, &found_depth);
+        pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, constant_id, 0);
 
-        ADD_SETLOCAL(ret, &dummy_line_node, index, found_depth);
+        ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
         return;
       }
       case PM_MATCH_LAST_LINE_NODE: {
@@ -5020,12 +5161,12 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             assert(PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_TARGET_NODE));
 
             pm_local_variable_target_node_t *local_target = (pm_local_variable_target_node_t *) target;
-            int index = pm_lookup_local_index(iseq, scope_node, local_target->name);
+            pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, local_target->name, 0);
 
             ADD_INSN1(ret, &dummy_line_node, putobject, rb_id2sym(pm_constant_id_lookup(scope_node, local_target->name)));
             ADD_SEND(ret, &dummy_line_node, idAREF, INT2FIX(1));
             ADD_LABEL(ret, fail_label);
-            ADD_SETLOCAL(ret, &dummy_line_node, index, (int) local_target->depth);
+            ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
             PM_POP_IF_POPPED;
             return;
         }
@@ -5037,14 +5178,14 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             assert(PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_TARGET_NODE));
 
             pm_local_variable_target_node_t *local_target = (pm_local_variable_target_node_t *) target;
-            int index = pm_lookup_local_index(iseq, scope_node, local_target->name);
+            pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, local_target->name, 0);
 
             if (((size_t) targets_index) < (targets_count - 1)) {
                 PM_DUP;
             }
             ADD_INSN1(ret, &dummy_line_node, putobject, rb_id2sym(pm_constant_id_lookup(scope_node, local_target->name)));
             ADD_SEND(ret, &dummy_line_node, idAREF, INT2FIX(1));
-            ADD_SETLOCAL(ret, &dummy_line_node, index, (int) local_target->depth);
+            ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
         }
 
         // Since we matched successfully, now we'll jump to the end.
@@ -5060,10 +5201,10 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             assert(PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_TARGET_NODE));
 
             pm_local_variable_target_node_t *local_target = (pm_local_variable_target_node_t *) target;
-            int index = pm_lookup_local_index(iseq, scope_node, local_target->name);
+            pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, local_target->name, 0);
 
             PM_PUTNIL;
-            ADD_SETLOCAL(ret, &dummy_line_node, index, (int) local_target->depth);
+            ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
         }
 
         // Finally, we can push the end label for either case.
@@ -5077,13 +5218,14 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       }
       case PM_MODULE_NODE: {
         pm_module_node_t *module_node = (pm_module_node_t *)node;
-        pm_scope_node_t next_scope_node;
-        pm_scope_node_init((pm_node_t *)module_node, &next_scope_node, scope_node, parser);
 
         ID module_id = pm_constant_id_lookup(scope_node, module_node->name);
         VALUE module_name = rb_str_freeze(rb_sprintf("<module:%"PRIsVALUE">", rb_id2str(module_id)));
 
-        const rb_iseq_t *module_iseq = NEW_CHILD_ISEQ(next_scope_node, module_name, ISEQ_TYPE_CLASS, lineno);
+        pm_scope_node_t next_scope_node;
+        pm_scope_node_init((pm_node_t *)module_node, &next_scope_node, scope_node, parser);
+        const rb_iseq_t *module_iseq = NEW_CHILD_ISEQ(&next_scope_node, module_name, ISEQ_TYPE_CLASS, lineno);
+        pm_scope_node_destroy(&next_scope_node);
 
         const int flags = VM_DEFINECLASS_TYPE_MODULE |
             pm_compile_class_path(ret, iseq, module_node->constant_path, &dummy_line_node, src, false, scope_node);
@@ -5097,9 +5239,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
       }
       case PM_REQUIRED_PARAMETER_NODE: {
         pm_required_parameter_node_t *required_parameter_node = (pm_required_parameter_node_t *)node;
-        int index = pm_lookup_local_index(iseq, scope_node, required_parameter_node->name);
+        pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, required_parameter_node->name, 0);
 
-        ADD_SETLOCAL(ret, &dummy_line_node, index, 0);
+        ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
         return;
       }
       case PM_MULTI_TARGET_NODE: {
@@ -5108,12 +5250,10 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 PM_NODE_TYPE_P(cast->rest, PM_SPLAT_NODE) &&
                 (((pm_splat_node_t *)cast->rest)->expression));
 
-        if (cast->lefts.size) {
-            int flag = (int) (bool) cast->rights.size || has_rest_expression;
-            ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(cast->lefts.size), INT2FIX(flag));
-            for (size_t index = 0; index < cast->lefts.size; index++) {
-                PM_COMPILE_NOT_POPPED(cast->lefts.nodes[index]);
-            }
+        int flag = (int) (bool) cast->rights.size || has_rest_expression;
+        ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(cast->lefts.size), INT2FIX(flag));
+        for (size_t index = 0; index < cast->lefts.size; index++) {
+            PM_COMPILE_NOT_POPPED(cast->lefts.nodes[index]);
         }
 
         if (has_rest_expression) {
@@ -5138,6 +5278,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         pm_multi_write_node_t *multi_write_node = (pm_multi_write_node_t *)node;
         pm_node_list_t *lefts = &multi_write_node->lefts;
         pm_node_list_t *rights = &multi_write_node->rights;
+        bool has_rest_expression = (multi_write_node->rest &&
+                                    PM_NODE_TYPE_P(multi_write_node->rest, PM_SPLAT_NODE));
         size_t argc = 1;
 
         // pre-process the left hand side of multi-assignments.
@@ -5235,8 +5377,13 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 PM_COMPILE(rights->nodes[index]);
             }
         }
-        else if (rest_expression) {
-            PM_COMPILE(rest_expression);
+        else if (has_rest_expression) {
+            if (rest_expression) {
+                ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(0), INT2FIX(1));
+                PM_COMPILE(rest_expression);
+            } else if (!lefts->size && !PM_NODE_TYPE_P(multi_write_node->value, PM_SPLAT_NODE)){
+                ADD_INSN2(ret, &dummy_line_node, expandarray, INT2FIX(0), INT2FIX(0));
+            }
         }
 
         return;
@@ -5360,9 +5507,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         pm_optional_parameter_node_t *optional_parameter_node = (pm_optional_parameter_node_t *)node;
         PM_COMPILE_NOT_POPPED(optional_parameter_node->value);
 
-        int index = pm_lookup_local_index(iseq, scope_node, optional_parameter_node->name);
+        pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, optional_parameter_node->name, 0);
 
-        ADD_SETLOCAL(ret, &dummy_line_node, index, 0);
+        ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
 
         return;
       }
@@ -5415,8 +5562,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         pm_scope_node_t next_scope_node;
         pm_scope_node_init(node, &next_scope_node, scope_node, parser);
+        child_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+        pm_scope_node_destroy(&next_scope_node);
 
-        child_iseq = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
         ISEQ_COMPILE_DATA(iseq)->current_block = child_iseq;
 
         int is_index = ISEQ_BODY(iseq)->ise_size++;
@@ -5566,7 +5714,11 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             for (size_t index = 0; index < exceptions->size; index++) {
                 ADD_GETLOCAL(ret, &dummy_line_node, LVAR_ERRINFO, 0);
                 PM_COMPILE(exceptions->nodes[index]);
-                ADD_INSN1(ret, &dummy_line_node, checkmatch, INT2FIX(VM_CHECKMATCH_TYPE_RESCUE));
+                int checkmatch_flags = VM_CHECKMATCH_TYPE_RESCUE;
+                if (PM_NODE_TYPE_P(exceptions->nodes[index], PM_SPLAT_NODE)) {
+                    checkmatch_flags |= VM_CHECKMATCH_ARRAY;
+                }
+                ADD_INSN1(ret, &dummy_line_node, checkmatch, INT2FIX(checkmatch_flags));
                 ADD_INSN1(ret, &dummy_line_node, branchif, exception_match_label);
             }
         } else {
@@ -5666,14 +5818,15 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         return;
       }
       case PM_RESCUE_MODIFIER_NODE: {
-        pm_scope_node_t rescue_scope_node;
         pm_rescue_modifier_node_t *rescue_node = (pm_rescue_modifier_node_t *)node;
-        pm_scope_node_init((pm_node_t *)rescue_node, &rescue_scope_node, scope_node, parser);
 
-        rb_iseq_t *rescue_iseq = NEW_CHILD_ISEQ(rescue_scope_node,
+        pm_scope_node_t rescue_scope_node;
+        pm_scope_node_init((pm_node_t *)rescue_node, &rescue_scope_node, scope_node, parser);
+        rb_iseq_t *rescue_iseq = NEW_CHILD_ISEQ(&rescue_scope_node,
                                                 rb_str_concat(rb_str_new2("rescue in"),
                                                               ISEQ_BODY(iseq)->location.label),
                                                 ISEQ_TYPE_RESCUE, 1);
+        pm_scope_node_destroy(&rescue_scope_node);
 
         LABEL *lstart = NEW_LABEL(lineno);
         LABEL *lend = NEW_LABEL(lineno);
@@ -5932,23 +6085,23 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                   // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
                   //            ^^^^^^^^^^
                   case PM_MULTI_TARGET_NODE: {
-                      required_multis_hidden_index = local_index;
-                      local = rb_make_temporary_id(local_index);
-                      local_table_for_iseq->ids[local_index] = local;
-                      break;
+                    required_multis_hidden_index = local_index;
+                    local = rb_make_temporary_id(local_index);
+                    local_table_for_iseq->ids[local_index] = local;
+                    break;
                   }
                   // def foo(a, (b, *c, d), e = 1, *f, g, (h, *i, j),  k:, l: 1, **m, &n)
                   //         ^
                   case PM_REQUIRED_PARAMETER_NODE: {
-                      pm_required_parameter_node_t * param = (pm_required_parameter_node_t *)required;
+                    pm_required_parameter_node_t * param = (pm_required_parameter_node_t *)required;
 
-                      if (!PM_NODE_FLAG_P(required, PM_PARAMETER_FLAGS_REPEATED_PARAMETER)) {
-                          pm_insert_local_index(param->name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
-                      }
-                      break;
+                    if (!PM_NODE_FLAG_P(required, PM_PARAMETER_FLAGS_REPEATED_PARAMETER)) {
+                        pm_insert_local_index(param->name, local_index, index_lookup_table, local_table_for_iseq, scope_node);
+                    }
+                    break;
                   }
                   default: {
-                      rb_bug("Unsupported node in requireds in parameters %s", pm_node_type_to_str(PM_NODE_TYPE(node)));
+                    rb_bug("Unsupported node in requireds in parameters %s", pm_node_type_to_str(PM_NODE_TYPE(node)));
                   }
                 }
             }
@@ -6284,6 +6437,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
         // We set the index_lookup_table on the scope node so we can
         // refer to the parameters correctly
+        if (scope_node->index_lookup_table) {
+            st_free_table(scope_node->index_lookup_table);
+        }
         scope_node->index_lookup_table = index_lookup_table;
         iseq_calc_param_size(iseq);
         iseq_set_local_table(iseq, local_table_for_iseq);
@@ -6311,12 +6467,12 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                             PM_NODE_TYPE_P(value, PM_RANGE_NODE)) {
                         LABEL *end_label = NEW_LABEL(nd_line(&dummy_line_node));
 
-                        int index = pm_lookup_local_index(iseq, scope_node, name);
+                        pm_local_index_t index = pm_lookup_local_index(iseq, scope_node, name, 0);
                         int kw_bits_idx = table_size - body->param.keyword->bits_start;
                         ADD_INSN2(ret, &dummy_line_node, checkkeyword, INT2FIX(kw_bits_idx + VM_ENV_DATA_SIZE - 1), INT2FIX(i));
                         ADD_INSNL(ret, &dummy_line_node, branchif, end_label);
                         PM_COMPILE(value);
-                        ADD_SETLOCAL(ret, &dummy_line_node, index, 0);
+                        ADD_SETLOCAL(ret, &dummy_line_node, index.index, index.level);
 
                         ADD_LABEL(ret, end_label);
                     }
@@ -6409,8 +6565,9 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                     // We create another ScopeNode from the statements within the PostExecutionNode
                     pm_scope_node_t next_scope_node;
                     pm_scope_node_init((pm_node_t *)post_execution_node->statements, &next_scope_node, scope_node, parser);
+                    pm_scope_node_destroy(&next_scope_node);
 
-                    const rb_iseq_t *block = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(body->parent_iseq), ISEQ_TYPE_BLOCK, lineno);
+                    const rb_iseq_t *block = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(body->parent_iseq), ISEQ_TYPE_BLOCK, lineno);
 
                     ADD_CALL_WITH_BLOCK(ret, &dummy_line_node, id_core_set_postexe, INT2FIX(0), block);
                     break;
@@ -6503,8 +6660,6 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             }
         }
 
-        st_free_table(index_lookup_table);
-
         if (!PM_NODE_TYPE_P(scope_node->ast_node, PM_ENSURE_NODE)) {
             ADD_INSN(ret, &dummy_line_node, leave);
         }
@@ -6517,10 +6672,11 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         return;
       case PM_SINGLETON_CLASS_NODE: {
         pm_singleton_class_node_t *singleton_class_node = (pm_singleton_class_node_t *)node;
+
         pm_scope_node_t next_scope_node;
         pm_scope_node_init((pm_node_t *)singleton_class_node, &next_scope_node, scope_node, parser);
-
-        const rb_iseq_t *singleton_class = NEW_ISEQ(next_scope_node, rb_fstring_lit("singleton class"), ISEQ_TYPE_CLASS, lineno);
+        const rb_iseq_t *singleton_class = NEW_ISEQ(&next_scope_node, rb_fstring_lit("singleton class"), ISEQ_TYPE_CLASS, lineno);
+        pm_scope_node_destroy(&next_scope_node);
 
         PM_COMPILE_NOT_POPPED(singleton_class_node->expression);
         PM_PUTNIL;
@@ -6632,7 +6788,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
               case PM_BLOCK_NODE: {
                 pm_scope_node_t next_scope_node;
                 pm_scope_node_init(super_node->block, &next_scope_node, scope_node, parser);
-                parent_block = NEW_CHILD_ISEQ(next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+                parent_block = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, lineno);
+                pm_scope_node_destroy(&next_scope_node);
                 break;
               }
               default: {
@@ -6767,25 +6924,19 @@ rb_translate_prism(pm_parser_t *parser, rb_iseq_t *iseq, pm_scope_node_t *scope_
 {
     RUBY_ASSERT(ISEQ_COMPILE_DATA(iseq));
 
-    ID *constants = calloc(parser->constant_pool.size, sizeof(ID));
-    rb_encoding *encoding = rb_enc_find(parser->encoding->name);
-    for (uint32_t index = 0; index < parser->constant_pool.size; index++) {
-        pm_constant_t *constant = &parser->constant_pool.constants[index];
-        constants[index] = rb_intern3((const char *) constant->start, constant->length, encoding);
-    }
-
     st_table *index_lookup_table = st_init_numtable();
     pm_constant_id_list_t *locals = &scope_node->locals;
     for (size_t i = 0; i < locals->size; i++) {
         st_insert(index_lookup_table, locals->ids[i], i);
     }
-    scope_node->constants = constants;
+
+    if (scope_node->index_lookup_table) {
+        st_free_table(scope_node->index_lookup_table);
+    }
     scope_node->index_lookup_table = index_lookup_table;
 
     pm_compile_node(iseq, (pm_node_t *)scope_node, ret, scope_node->base.location.start, false, (pm_scope_node_t *)scope_node);
-    iseq_set_sequence(iseq, ret);
 
-    free(constants);
     return Qnil;
 }
 

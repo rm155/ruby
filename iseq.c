@@ -1433,10 +1433,21 @@ iseqw_s_compile_prism_compile(pm_parser_t *parser, VALUE opt, rb_iseq_t *iseq, V
 
         pm_scope_node_t scope_node;
         pm_scope_node_init(node, &scope_node, NULL, parser);
+
+        ID *constants = calloc(parser->constant_pool.size, sizeof(ID));
+        rb_encoding *encoding = rb_enc_find(parser->encoding->name);
+        for (uint32_t index = 0; index < parser->constant_pool.size; index++) {
+            pm_constant_t *constant = &parser->constant_pool.constants[index];
+            constants[index] = rb_intern3((const char *) constant->start, constant->length, encoding);
+        }
+        scope_node.constants = constants;
+
         rb_iseq_compile_prism_node(iseq, &scope_node, parser);
 
         finish_iseq_build(iseq);
+        pm_scope_node_destroy(&scope_node);
         pm_node_destroy(parser, node);
+        free(constants);
     }
 }
 
@@ -1470,23 +1481,27 @@ iseqw_s_compile_prism(int argc, VALUE *argv, VALUE self)
 
     pm_parser_t parser;
 
+    pm_string_t input;
     if (RB_TYPE_P(src, T_FILE)) {
         FilePathValue(src);
         file = rb_fstring(src); /* rb_io_t->pathv gets frozen anyways */
 
-        pm_string_t input;
         pm_string_mapped_init(&input, RSTRING_PTR(file));
-
-        pm_parser_init(&parser, pm_string_source(&input), pm_string_length(&input), &options);
     }
     else {
-        pm_parser_init(&parser, (const uint8_t *) RSTRING_PTR(src), RSTRING_LEN(src), &options);
+        Check_Type(src, T_STRING);
+        input.source = (const uint8_t *)RSTRING_PTR(src);
+        input.length = RSTRING_LEN(src);
+        input.type = PM_STRING_SHARED;
     }
+
+    pm_parser_init(&parser, pm_string_source(&input), pm_string_length(&input), &options);
 
     rb_iseq_t *iseq = iseq_alloc();
     iseqw_s_compile_prism_compile(&parser, opt, iseq, file, path, start_line);
     pm_parser_free(&parser);
     pm_options_free(&options);
+    pm_string_free(&input);
 
     return iseqw_new(iseq);
 }
