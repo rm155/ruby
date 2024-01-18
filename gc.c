@@ -8628,7 +8628,7 @@ check_not_tnone(VALUE obj)
 		rb_bug("try to mark T_NONE object (belonging to Ractor #%d) from global GC", GET_RACTOR_OF_VALUE(obj)->pub.id);
 	    }
 	    else {
-		rb_bug("try to mark T_NONE object from local GC of Ractor #%d", objspace->ractor->pub.id);
+		rb_bug("try to mark T_NONE object (belonging to Ractor #%d) from local GC of Ractor #%d", GET_RACTOR_OF_VALUE(obj)->pub.id, objspace->ractor->pub.id);
 	    }
 	}
 	else {
