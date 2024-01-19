@@ -1075,7 +1075,7 @@ static struct former_reference_list *get_former_reference_list(rb_objspace_t *ob
 static void former_reference_list_free(struct former_reference_list *fmr_ref_list);
 static void record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_reference);
 static void mark_former_references(rb_objspace_t *objspace, VALUE obj);
-static void mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error);
+static int mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error);
 static bool mark_all_former_references(rb_objspace_t *objspace);
 static void former_reference_list_clear_mark_notes(struct former_reference_list *fmr_ref_list);
 static int former_reference_lists_remove_unmarked_i(st_data_t key, st_data_t value, st_data_t arg);
@@ -6066,7 +6066,7 @@ mark_former_references(rb_objspace_t *objspace, VALUE obj)
     }
 }
 
-static void
+static int
 mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
     rb_objspace_t *objspace = &rb_objspace;
@@ -6089,6 +6089,7 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
 	    }
 	}
     }
+    return ST_CONTINUE;
 }
 
 static bool
