@@ -2607,17 +2607,19 @@ rb_ractor_living_threads_remove(rb_ractor_t *cr, rb_thread_t *th)
     if (cr->threads.cnt == 1) {
         vm_remove_ractor(th->vm, cr);
     }
-
-    RACTOR_LOCK(cr);
-    {
-	ccan_list_del(&th->lt_node);
-	cr->threads.cnt--;
-	if (th == cr->dropped_main_thread) {
-	    rb_remove_from_absorbed_threads_tbl(cr->dropped_main_thread);
-	    cr->dropped_main_thread = NULL;
+    else {
+	RACTOR_LOCK(cr);
+	{
+	    ccan_list_del(&th->lt_node);
+	    cr->threads.cnt--;
 	}
+	RACTOR_UNLOCK(cr);
     }
-    RACTOR_UNLOCK(cr);
+
+    if (th == cr->dropped_main_thread) {
+	rb_remove_from_absorbed_threads_tbl(cr->dropped_main_thread);
+	cr->dropped_main_thread = NULL;
+    }
 }
 
 void
