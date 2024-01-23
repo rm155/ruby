@@ -323,6 +323,8 @@ int rb_objspace_marked_object_p(VALUE obj);
 rb_ractor_t *get_ractor_of_value(VALUE obj);
 bool rb_contained_in_objspace_p(struct rb_objspace *objspace, VALUE obj);
 
+bool heap_locked(struct rb_objspace *objspace);
+
 void rb_objspace_each_objects(
     int (*callback)(void *start, void *end, size_t stride, void *data),
     void *data);
