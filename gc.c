@@ -1019,6 +1019,10 @@ typedef struct rb_objspace {
 
     rb_ractor_t *alloc_target_ractor;
     struct rb_objspace *global_gc_current_target;
+
+    bool external_writebarrier_allowed;
+    rb_nativethread_lock_t external_writebarrier_allowed_lock;
+    rb_nativethread_cond_t external_writebarrier_allowed_cond;
 } rb_objspace_t;
 
 static rb_objspace_t *
@@ -2274,6 +2278,10 @@ rb_objspace_free(rb_objspace_t *objspace)
     rb_nativethread_lock_destroy(&objspace->contained_ractor_tbl_lock);
 
     rb_nativethread_lock_destroy(&objspace->zombie_threads_lock);
+
+
+    rb_nativethread_lock_destroy(&objspace->external_writebarrier_allowed_lock);
+    rb_native_cond_destroy(&objspace->external_writebarrier_allowed_cond);
 
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
@@ -4782,6 +4790,10 @@ Init_heap(rb_objspace_t *objspace)
 
     objspace->contained_ractor_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->contained_ractor_tbl_lock);
+
+    objspace->external_writebarrier_allowed = true;
+    rb_nativethread_lock_initialize(&objspace->external_writebarrier_allowed_lock);
+    rb_native_cond_initialize(&objspace->external_writebarrier_allowed_cond);
 
     objspace->alloc_target_ractor = NULL;
 
@@ -9388,13 +9400,20 @@ wait_for_object_graph_safety(rb_objspace_t *objspace)
     if (GET_RACTOR()->local_objspace->running_global_gc) return;
 
     rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->order_chain_lock);
+    rb_native_mutex_lock(&objspace->external_writebarrier_allowed_lock);
+    objspace->external_writebarrier_allowed = true;
+    rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
+    rb_native_cond_broadcast(&objspace->external_writebarrier_allowed_cond);
 
+    rb_native_mutex_lock(&global_space->order_chain_lock);
     while (!object_graph_safety_p(global_space, objspace)) {
 	rb_native_cond_wait(&global_space->order_chain_removal_cond, &global_space->order_chain_lock);
     }
-
     rb_native_mutex_unlock(&global_space->order_chain_lock);
+
+    rb_native_mutex_lock(&objspace->external_writebarrier_allowed_lock);
+    objspace->external_writebarrier_allowed = false;
+    rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
 }
 
 static bool
@@ -11218,7 +11237,7 @@ gc_writebarrier_generational(VALUE a, VALUE b, rb_objspace_t *objspace)
 {
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(b) == objspace);
 
-    if (GET_OBJSPACE_OF_VALUE(a) != objspace) return;
+    if (GET_OBJSPACE_OF_VALUE(a) != objspace || !RVALUE_OLD_P(a) || RVALUE_OLD_P(b)) return;
 
     if (RGENGC_CHECK_MODE) {
         if (!RVALUE_OLD_P(a)) rb_bug("gc_writebarrier_generational: %s is not an old object.", obj_info(a));
@@ -11297,45 +11316,19 @@ gc_writebarrier_safe_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
 	gc_writebarrier_incremental(a, b, objspace);
     }
     else {
-        if (!RVALUE_OLD_P(a) || RVALUE_OLD_P(b)) {
-            // do nothing
-        }
-        else {
-            gc_writebarrier_generational(a, b, objspace);
-        }
+	gc_writebarrier_generational(a, b, objspace);
     }
 }
 
 static void
 gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
 {
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(b) == objspace);
-
-  retry:
-    if (!is_incremental_marking(objspace)) {
-        if (!RVALUE_OLD_P(a) || RVALUE_OLD_P(b)) {
-            // do nothing
-        }
-        else {
-            gc_writebarrier_generational(a, b, objspace);
-        }
+    rb_native_mutex_lock(&objspace->external_writebarrier_allowed_lock);
+    while (!objspace->external_writebarrier_allowed) {
+	    rb_native_cond_wait(&objspace->external_writebarrier_allowed_cond, &objspace->external_writebarrier_allowed_lock);
     }
-    else {
-        bool retry = false;
-        RB_VM_LOCK_ENTER_NO_BARRIER();
-        {
-            if (is_incremental_marking(objspace)) {
-                gc_writebarrier_incremental(a, b, objspace);
-            }
-            else {
-                retry = true;
-            }
-        }
-        RB_VM_LOCK_LEAVE_NO_BARRIER();
-
-        if (retry) goto retry;
-    }
-    return;
+    gc_writebarrier_safe_objspace(a, b, objspace);
+    rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
 }
 
 void
@@ -12114,11 +12107,20 @@ begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 	}
 	objspace->local_gc_level++;
     }
+
+    rb_native_mutex_lock(&objspace->external_writebarrier_allowed_lock);
+    objspace->external_writebarrier_allowed = false;
+    rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
 }
 
 static void
 end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 {
+    rb_native_mutex_lock(&objspace->external_writebarrier_allowed_lock);
+    objspace->external_writebarrier_allowed = true;
+    rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
+    rb_native_cond_broadcast(&objspace->external_writebarrier_allowed_cond);
+
     if (vm->ractor.sync.lock_owner != cr && !objspace->running_global_gc) {
 	objspace->local_gc_level--;
 	if (objspace->local_gc_level == 0) {
