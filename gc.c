@@ -1651,7 +1651,7 @@ enum gc_enter_event {
     gc_enter_event_rb_memerror,
 };
 
-static inline void gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier);
+static inline void gc_enter(rb_objspace_t *objspace, enum gc_enter_event event);
 static inline void gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
 static inline void gc_exit(rb_objspace_t *objspace, enum gc_enter_event event);
 static inline void gc_global_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev);
@@ -3045,7 +3045,7 @@ gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
 {
     LOCAL_GC_BEGIN(objspace);
     {
-	gc_enter(objspace, gc_enter_event_continue, false);
+	gc_enter(objspace, gc_enter_event_continue);
 
 	/* Continue marking if in incremental marking. */
 	if (is_incremental_marking(objspace)) {
@@ -5783,7 +5783,7 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
     /* running data/file finalizers are part of garbage collection */
     LOCAL_GC_BEGIN(objspace);
     {
-	gc_enter(objspace, gc_enter_event_finalizer, false);
+	gc_enter(objspace, gc_enter_event_finalizer);
 	
 	/* run data/file object's finalizers */
 	for (i = 0; i < heap_allocated_pages; i++) {
@@ -12013,7 +12013,7 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
     else {
 	LOCAL_GC_BEGIN(objspace);
 	{
-	    gc_enter(objspace, gc_enter_event_start, false);
+	    gc_enter(objspace, gc_enter_event_start);
 #if RGENGC_CHECK_MODE >= 2
 	    gc_verify_internal_consistency(objspace);
 #endif
@@ -12042,7 +12042,7 @@ gc_rest(rb_objspace_t *objspace)
     if (marking || sweeping) {
 	LOCAL_GC_BEGIN(objspace);
 	{
-	    gc_enter(objspace, gc_enter_event_rest, GET_VM()->global_gc_underway);
+	    gc_enter(objspace, gc_enter_event_rest);
 
 	    if (RGENGC_CHECK_MODE >= 2) gc_verify_internal_consistency(objspace);
 
@@ -12256,23 +12256,8 @@ gc_clock_end(struct timespec *ts)
 }
 
 static inline void
-gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, bool use_vm_barrier)
+gc_enter(rb_objspace_t *objspace, enum gc_enter_event event)
 {
-    if (use_vm_barrier) {
-	switch (event) {
-	    case gc_enter_event_rest:
-		if (!is_marking(objspace)) break;
-		// fall through
-	    case gc_enter_event_start:
-	    case gc_enter_event_continue:
-		// stop other ractors
-		rb_vm_barrier();
-		break;
-	    default:
-		break;
-	}
-    }
-
     gc_enter_count(event);
     if (UNLIKELY(during_gc != 0)) rb_bug("during_gc != 0");
     if (RGENGC_CHECK_MODE >= 3) gc_verify_internal_consistency(objspace);
@@ -12288,13 +12273,13 @@ static inline void
 gc_global_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
 {
     RB_VM_LOCK_ENTER_LEV(lock_lev);
-    gc_enter(objspace, event, true);
+    gc_enter(objspace, event);
 
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&GET_VM()->objspace_set, os, objspace_node) {
 	if (os == objspace)
 	    continue;
-	gc_enter(os, event, false);
+	gc_enter(os, event);
     }
 }
 
