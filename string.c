@@ -436,10 +436,10 @@ register_fstring(VALUE str, bool copy)
 
     RB_FSTRING_TABLE_ENTER();
     {
-        st_table *frozen_strings = rb_vm_fstring_table();
+        st_table *fstring_table = rb_vm_fstring_table();
         do {
             args.fstr = str;
-            st_update(frozen_strings, (st_data_t)str, fstr_update_callback, (st_data_t)&args);
+            st_update(fstring_table, (st_data_t)str, fstr_update_callback, (st_data_t)&args);
         } while (UNDEF_P(args.fstr));
     }
     RB_FSTRING_TABLE_LEAVE();

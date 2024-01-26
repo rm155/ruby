@@ -14,6 +14,7 @@
 #include "id.h"
 #include "ruby/encoding.h"
 #include "ruby/thread_native.h"
+#include "vm_core.h"
 
 #define DYNAMIC_ID_P(id) (!(id&ID_STATIC_SYM)&&id>tLAST_OP_ID)
 #define STATIC_ID2SYM(id)  (((VALUE)(id)<<RUBY_SPECIAL_SHIFT)|SYMBOL_FLAG)
@@ -66,11 +67,7 @@ typedef struct {
     st_table *str_sym;
     VALUE ids;
     VALUE dsymbol_fstr_hash;
-    struct {
-	rb_nativethread_lock_t lock;
-	struct rb_ractor_struct *lock_owner;
-	int lock_lev;
-    } sym_sync;
+    rb_gc_safe_lock_t sym_lock;
 } rb_symbols_t;
 
 static inline rb_id_serial_t
@@ -113,7 +110,7 @@ void rb_leave_sym_lock(rb_symbols_t *symbols);
 
 #define GLOBAL_SYMBOLS_ENTER(symbols) { rb_symbols_t *symbols = &ruby_global_symbols; rb_enter_sym_lock(symbols);
 #define GLOBAL_SYMBOLS_LEAVE(symbols) rb_leave_sym_lock(symbols); }
-#define ASSERT_global_symbols_locking(symbols) VM_ASSERT(!rb_multi_ractor_p() || symbols->sym_sync.lock_owner == GET_RACTOR());
+#define ASSERT_global_symbols_locking(symbols) VM_ASSERT(!rb_multi_ractor_p() || rb_gc_safe_lock_acquired(&symbols->sym_lock));
 
 RUBY_FUNC_EXPORTED const uint_least32_t ruby_global_name_punct_bits[(0x7e - 0x20 + 31) / 32];
 

@@ -1076,6 +1076,49 @@ heap_locked(rb_objspace_t *objspace)
     } \
 }
 
+void
+rb_gc_safe_lock_enter(rb_gc_safe_lock_t *gs_lock)
+{
+    struct rb_ractor_struct *cr = GET_RACTOR();
+    if (gs_lock->lock_owner != cr) {
+	if (!rb_during_gc()) gs_lock->gc_previously_disabled = rb_gc_disable();
+	rb_native_mutex_lock(&gs_lock->lock);
+	gs_lock->lock_owner = cr;
+    }
+    gs_lock->lock_lev++;
+}
+
+void
+rb_gc_safe_lock_leave(rb_gc_safe_lock_t *gs_lock)
+{
+    gs_lock->lock_lev--;
+    if (gs_lock->lock_lev == 0) {
+	gs_lock->lock_owner = NULL;
+	rb_native_mutex_unlock(&gs_lock->lock);
+	if ((!rb_during_gc()) && gs_lock->gc_previously_disabled == Qfalse) rb_gc_enable();
+    }
+}
+
+void
+rb_gc_safe_lock_initialize(rb_gc_safe_lock_t *gs_lock)
+{
+    rb_nativethread_lock_initialize(&gs_lock->lock);
+    gs_lock->lock_owner = NULL;
+    gs_lock->lock_lev = 0;
+}
+
+void
+rb_gc_safe_lock_destroy(rb_gc_safe_lock_t *gs_lock)
+{
+    rb_nativethread_lock_destroy(&gs_lock->lock);
+}
+
+bool
+rb_gc_safe_lock_acquired(rb_gc_safe_lock_t *gs_lock)
+{
+    return gs_lock->lock_owner == GET_RACTOR();
+}
+
 static rb_objspace_t *
 current_ractor_objspace(void)
 {

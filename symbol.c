@@ -94,9 +94,7 @@ Init_sym(void)
 {
     rb_symbols_t *symbols = &ruby_global_symbols;
 
-    rb_nativethread_lock_initialize(&symbols->sym_sync.lock);
-    symbols->sym_sync.lock_owner = NULL;
-    symbols->sym_sync.lock_lev = 0;
+    rb_gc_safe_lock_initialize(&symbols->sym_lock);
 
     VALUE dsym_fstrs = rb_ident_hash_new();
     symbols->dsymbol_fstr_hash = dsym_fstrs;
@@ -122,22 +120,13 @@ WARN_UNUSED_RESULT(static ID intern_str(VALUE str, int mutable));
 void
 rb_enter_sym_lock(rb_symbols_t *symbols)
 {
-    rb_ractor_t *cr = GET_RACTOR();
-    if (symbols->sym_sync.lock_owner != cr) {
-	rb_native_mutex_lock(&symbols->sym_sync.lock);
-	symbols->sym_sync.lock_owner = cr;
-    }
-    symbols->sym_sync.lock_lev++;
+    rb_gc_safe_lock_enter(&symbols->sym_lock);
 }
 
 void
 rb_leave_sym_lock(rb_symbols_t *symbols)
 {
-    symbols->sym_sync.lock_lev--;
-    if (symbols->sym_sync.lock_lev == 0) {
-	symbols->sym_sync.lock_owner = NULL;
-	rb_native_mutex_unlock(&symbols->sym_sync.lock);
-    }
+    rb_gc_safe_lock_leave(&symbols->sym_lock);
 }
 
 ID

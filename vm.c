@@ -2818,7 +2818,7 @@ rb_vm_update_references(void *ptr)
 
 	RB_FSTRING_TABLE_ENTER();
 	{
-	    rb_gc_update_tbl_refs(vm->frozen_strings.table);
+	    rb_gc_update_tbl_refs(vm->fstring_table);
 	}
 	RB_FSTRING_TABLE_LEAVE();
         vm->mark_object_ary = rb_gc_location(vm->mark_object_ary);
@@ -3043,10 +3043,10 @@ ruby_vm_destruct(rb_vm_t *vm)
             vm->loading_table = 0;
         }
 
-        if (vm->frozen_strings.table) {
-            st_free_table(vm->frozen_strings.table);
-            vm->frozen_strings.table = 0;
-	    rb_native_mutex_destroy(&vm->frozen_strings.lock);
+        if (vm->fstring_table) {
+            st_free_table(vm->fstring_table);
+            vm->fstring_table = 0;
+	    rb_gc_safe_lock_destroy(&vm->fstring_table_lock);
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
 
@@ -3141,7 +3141,7 @@ vm_memsize(const void *ptr)
     size_t fstring_table_size;
     RB_FSTRING_TABLE_ENTER();
     {
-        fstring_table_size = rb_st_memsize(vm->frozen_strings.table);
+        fstring_table_size = rb_st_memsize(vm->fstring_table);
     }
     RB_FSTRING_TABLE_LEAVE();
 
@@ -4284,10 +4284,8 @@ Init_vm_objects(void)
     rb_native_mutex_initialize(&vm->ractor.main_ractor->mark_object_ary_lock);
 
     vm->loading_table = st_init_strtable();
-    vm->frozen_strings.table = st_init_table_with_size(&rb_fstring_hash_type, 10000);
-    rb_native_mutex_initialize(&vm->frozen_strings.lock);
-    vm->frozen_strings.lock_owner = NULL;
-    vm->frozen_strings.lock_lev = 0;
+    vm->fstring_table = st_init_table_with_size(&rb_fstring_hash_type, 10000);
+    rb_gc_safe_lock_initialize(&vm->fstring_table_lock);
 }
 
 /* Stub for builtin function when not building YJIT units*/
@@ -4352,8 +4350,8 @@ st_table *
 rb_vm_fstring_table(void)
 {
     rb_vm_t *vm = GET_VM();
-    VM_ASSERT(!rb_multi_ractor_p() || vm->frozen_strings.lock_owner == GET_RACTOR());
-    return vm->frozen_strings.table;
+    VM_ASSERT(!rb_multi_ractor_p() || rb_gc_safe_lock_acquired(&vm->fstring_table_lock));
+    return vm->fstring_table;
 }
 
 #if VM_COLLECT_USAGE_DETAILS

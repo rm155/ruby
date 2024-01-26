@@ -624,6 +624,19 @@ typedef struct rb_hook_list_struct {
 // see builtin.h for definition
 typedef const struct rb_builtin_function *RB_BUILTIN;
 
+typedef struct rb_gc_safe_lock_struct {
+    rb_nativethread_lock_t lock;
+    int lock_lev;
+    struct rb_ractor_struct *lock_owner;
+    VALUE gc_previously_disabled;
+} rb_gc_safe_lock_t;
+
+void rb_gc_safe_lock_enter(rb_gc_safe_lock_t *gs_lock);
+void rb_gc_safe_lock_leave(rb_gc_safe_lock_t *gs_lock);
+void rb_gc_safe_lock_initialize(rb_gc_safe_lock_t *gs_lock);
+void rb_gc_safe_lock_destroy(rb_gc_safe_lock_t *gs_lock);
+bool rb_gc_safe_lock_acquired(rb_gc_safe_lock_t *gs_lock);
+
 typedef struct rb_vm_struct {
     VALUE self;
 
@@ -756,12 +769,8 @@ typedef struct rb_vm_struct {
 
     rb_at_exit_list *at_exit;
 
-    struct {
-	rb_nativethread_lock_t lock;
-	int lock_lev;
-	struct rb_ractor_struct *lock_owner;
-	st_table *table;
-    } frozen_strings;
+    rb_gc_safe_lock_t fstring_table_lock;
+    st_table *fstring_table;
 
     const struct rb_builtin_function *builtin_function_table;
     int builtin_inline_index;

@@ -127,22 +127,13 @@ rb_vm_lock_leave_cr(struct rb_ractor_struct *cr, unsigned int *levp, const char 
 static inline void
 rb_enter_fstring_lock(rb_vm_t *vm)
 {
-    rb_ractor_t *cr = GET_RACTOR();
-    if (vm->frozen_strings.lock_owner != cr) {
-	rb_native_mutex_lock(&vm->frozen_strings.lock);
-	vm->frozen_strings.lock_owner = cr;
-    }
-    vm->frozen_strings.lock_lev++;
+    rb_gc_safe_lock_enter(&vm->fstring_table_lock);
 }
 
 static inline void
 rb_leave_fstring_lock(rb_vm_t *vm)
 {
-    vm->frozen_strings.lock_lev--;
-    if (vm->frozen_strings.lock_lev == 0) {
-	vm->frozen_strings.lock_owner = NULL;
-	rb_native_mutex_unlock(&vm->frozen_strings.lock);
-    }
+    rb_gc_safe_lock_leave(&vm->fstring_table_lock);
 }
 
 #define RB_FSTRING_TABLE_ENTER() { rb_vm_t *_vm = GET_VM(); rb_enter_fstring_lock(_vm);
