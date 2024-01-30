@@ -151,14 +151,15 @@ void rb_global_tables_init(void);
 void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);
 
 typedef enum {
-    OGS_FLAG_NONE               = 0x000,
-    OGS_FLAG_NOT_RUNNING        = 0x001,
-    OGS_FLAG_BLOCKING           = 0x002,
-    OGS_FLAG_BARRIER_WAITING    = 0x004,
-    OGS_FLAG_ENTERING_VM_LOCK   = 0x008,
-    OGS_FLAG_RUNNING_LOCAL_GC   = 0x010,
-    OGS_FLAG_RUNNING_GLOBAL_GC  = 0x020,
-    OGS_FLAG_ABSORBING_OBJSPACE = 0x040,
+    OGS_FLAG_NONE                  = 0x000,
+    OGS_FLAG_NOT_RUNNING           = 0x001,
+    OGS_FLAG_BLOCKING              = 0x002,
+    OGS_FLAG_BARRIER_WAITING       = 0x004,
+    OGS_FLAG_ENTERING_VM_LOCK      = 0x008,
+    OGS_FLAG_RUNNING_LOCAL_GC      = 0x010,
+    OGS_FLAG_RUNNING_GLOBAL_GC     = 0x020,
+    OGS_FLAG_ABSORBING_OBJSPACE    = 0x040,
+    OGS_FLAG_VM_COND_AND_BARRIER   = 0x080,
 };
 
 struct rb_order_chain_node {

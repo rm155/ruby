@@ -2238,10 +2238,9 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     rb_native_cond_initialize(&r->barrier_wait_cond);
 #endif
 
-    r->borrower_mode_levels = 0;
-
     rb_native_mutex_initialize(&r->borrowing_sync.lock);
     r->borrowing_sync.lock_owner = NULL;
+    r->borrowing_sync.lock_lev = 0;
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
 	rb_native_mutex_initialize(&r->borrowing_sync.page_lock[i]);
 	r->borrowing_sync.page_lock_owner[i] = NULL;
@@ -2482,35 +2481,24 @@ unlock_ractor_set(void)
 void
 rb_borrowing_sync_lock(rb_ractor_t *r)
 {
-    ASSERT_vm_unlocking();
-    VM_ASSERT(r->borrowing_sync.lock_owner != GET_RACTOR());
-    rb_native_mutex_lock(&r->borrowing_sync.lock);
-    r->borrowing_sync.lock_owner = GET_RACTOR();
+    rb_ractor_t *cr = GET_RACTOR();
+    if (r->borrowing_sync.lock_owner != cr) {
+	VM_ASSERT(r->borrowing_sync.lock_owner != cr);
+	rb_native_mutex_lock(&r->borrowing_sync.lock);
+	r->borrowing_sync.lock_owner = cr;
+    }
+    r->borrowing_sync.lock_lev++;
 }
 
 void
 rb_borrowing_sync_unlock(rb_ractor_t *r)
 {
     VM_ASSERT(r->borrowing_sync.lock_owner == GET_RACTOR());
-    r->borrowing_sync.lock_owner = NULL;
-    rb_native_mutex_unlock(&r->borrowing_sync.lock);
-}
-
-void
-rb_active_borrowing_begin(rb_ractor_t *r)
-{
-    rb_borrowing_sync_lock(r);
-    while (!r->borrowing_sync.borrowing_allowed) {
+    r->borrowing_sync.lock_lev--;
+    if (r->borrowing_sync.lock_lev == 0) {
 	r->borrowing_sync.lock_owner = NULL;
-	rb_native_cond_wait(&r->borrowing_sync.borrowing_allowed_cond, &r->borrowing_sync.lock);
-	r->borrowing_sync.lock_owner = GET_RACTOR();
+	rb_native_mutex_unlock(&r->borrowing_sync.lock);
     }
-}
-
-void
-rb_active_borrowing_end(rb_ractor_t *r)
-{
-    rb_borrowing_sync_unlock(r);
 }
 
 void

@@ -4222,8 +4222,6 @@ Init_BareVM(void)
     vm->global_space = rb_global_space_init();
     vm->objspace = ruby_single_main_objspace = rb_objspace_alloc();
 
-    vm->borrower_mode_count = 0;
-    rb_native_cond_initialize(&vm->no_borrower_mode);
     vm->global_gc_underway = false;
     rb_native_cond_initialize(&vm->global_gc_finished);
 

@@ -199,20 +199,19 @@ struct rb_ractor_struct {
     VALUE verbose;
     VALUE debug;
 
-    int borrower_mode_levels;
-
     rb_ractor_newobj_cache_t newobj_cache;
     rb_ractor_newobj_cache_t newobj_borrowing_cache;
     struct {
 	rb_nativethread_lock_t lock;
 	rb_ractor_t *lock_owner;
+	int lock_lev;
 
 	rb_nativethread_lock_t page_lock[SIZE_POOL_COUNT];
 	rb_ractor_t *page_lock_owner[SIZE_POOL_COUNT];
 	int page_lock_lev[SIZE_POOL_COUNT];
 	bool page_recently_locked[SIZE_POOL_COUNT];
 
-	int borrower_count;
+	rb_atomic_t borrower_count;
 	rb_nativethread_cond_t no_borrowers;
 
 	bool borrowing_allowed;

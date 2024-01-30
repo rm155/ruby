@@ -762,8 +762,6 @@ typedef struct rb_vm_struct {
     struct ccan_list_head objspace_set; //TODO: Remove once Ractors handle their own objspace upon ending
     struct rb_global_space *global_space;
 
-    int borrower_mode_count;
-    rb_nativethread_cond_t no_borrower_mode;
     bool global_gc_underway;
     rb_nativethread_cond_t global_gc_finished;
 
