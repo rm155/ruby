@@ -11414,20 +11414,28 @@ gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
     rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
 }
 
+static bool
+probably_broken_shareable_path_p(VALUE a, VALUE oldv)
+{
+    return !!oldv &&
+	FL_TEST_RAW(a, FL_SHAREABLE) &&
+	is_pointer_to_any_objspace_heap((void *)oldv) &&
+	!RB_TYPE_P(oldv, T_NONE) &&
+	FL_TEST_RAW(oldv, FL_SHAREABLE);
+}
+
 void
 rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
 {
     if (SPECIAL_CONST_P(a)) return;
+    (void)VALGRIND_MAKE_MEM_DEFINED(&oldv, sizeof(oldv));
 
     rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(a);
 
-    if (UNLIKELY(!ruby_single_main_objspace && FL_TEST_RAW(a, FL_SHAREABLE))) {
-	if (is_pointer_to_any_objspace_heap((void *)oldv) && !RB_TYPE_P(oldv, T_NONE)) {
-	    //VM_ASSERT(FL_TEST_RAW(oldv, FL_SHAREABLE));
-	    lock_former_references(objspace);
-	    record_former_reference(objspace, a, oldv);
-	    unlock_former_references(objspace);
-	}
+    if (UNLIKELY(!ruby_single_main_objspace && probably_broken_shareable_path_p(a, oldv))) {
+	lock_former_references(objspace);
+	record_former_reference(objspace, a, oldv);
+	unlock_former_references(objspace);
     }
 }
 
