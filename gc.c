@@ -1060,18 +1060,20 @@ heap_locked(rb_objspace_t *objspace)
 #define HEAP_LOCK_LEAVE(objspace) heap_lock_leave(objspace, GET_RACTOR()); }
 
 #define SUSPEND_HEAP_LOCK_BEGIN(objspace) { \
-    rb_ractor_t *_old_heap_lock_owner = objspace->heap_lock_owner; \
-    int _old_heap_lock_level = objspace->heap_lock_level; \
-    if (_old_heap_lock_owner) { \
+    bool heap_lock_suspended = false; \
+    int _old_heap_lock_level; \
+    if (objspace->heap_lock_owner == GET_RACTOR()) { \
+	heap_lock_suspended = true; \
+	_old_heap_lock_level = objspace->heap_lock_level; \
 	objspace->heap_lock_owner = NULL; \
 	objspace->heap_lock_level = 0; \
 	rb_native_mutex_unlock(&objspace->heap_lock); \
     }
 
 #define SUSPEND_HEAP_LOCK_END(objspace) \
-    if (_old_heap_lock_owner) { \
+    if (heap_lock_suspended) { \
 	rb_native_mutex_lock(&objspace->heap_lock); \
-	objspace->heap_lock_owner = _old_heap_lock_owner; \
+	objspace->heap_lock_owner = GET_RACTOR(); \
 	objspace->heap_lock_level = _old_heap_lock_level; \
     } \
 }
