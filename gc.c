@@ -9692,7 +9692,15 @@ prepare_for_reference_tbl_absorption(rb_objspace_t *objspace_to_update, rb_objsp
 static void
 absorb_shared_object_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
 {
+    rb_native_mutex_lock(&objspace_to_copy_from->external_reference_tbl_lock);
+    rb_native_mutex_lock(&objspace_to_update->external_reference_tbl_lock);
+
     prepare_for_reference_tbl_absorption(objspace_to_update, objspace_to_copy_from);
+    absorb_external_references(objspace_to_update, objspace_to_copy_from);
+
+    rb_native_mutex_unlock(&objspace_to_copy_from->external_reference_tbl_lock);
+    rb_native_mutex_unlock(&objspace_to_update->external_reference_tbl_lock);
+
     rb_native_mutex_lock(&objspace_to_copy_from->shared_reference_tbl_lock);
     rb_native_mutex_lock(&objspace_to_update->shared_reference_tbl_lock);
 
@@ -9700,8 +9708,6 @@ absorb_shared_object_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *ob
 
     rb_native_mutex_unlock(&objspace_to_copy_from->shared_reference_tbl_lock);
     rb_native_mutex_unlock(&objspace_to_update->shared_reference_tbl_lock);
-
-    absorb_external_references(objspace_to_update, objspace_to_copy_from);
 }
 
 
