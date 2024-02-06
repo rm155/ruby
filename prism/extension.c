@@ -21,7 +21,6 @@ ID rb_option_id_filepath;
 ID rb_option_id_encoding;
 ID rb_option_id_line;
 ID rb_option_id_frozen_string_literal;
-ID rb_option_id_verbose;
 ID rb_option_id_version;
 ID rb_option_id_scopes;
 
@@ -130,8 +129,6 @@ build_options_i(VALUE key, VALUE value, VALUE argument) {
         if (!NIL_P(value)) pm_options_line_set(options, NUM2INT(value));
     } else if (key_id == rb_option_id_frozen_string_literal) {
         if (!NIL_P(value)) pm_options_frozen_string_literal_set(options, value == Qtrue);
-    } else if (key_id == rb_option_id_verbose) {
-        pm_options_suppress_warnings_set(options, value != Qtrue);
     } else if (key_id == rb_option_id_version) {
         if (!NIL_P(value)) {
             const char *version = check_string(value);
@@ -402,12 +399,25 @@ parser_errors(pm_parser_t *parser, rb_encoding *encoding, VALUE source) {
             LONG2FIX(error->location.end - error->location.start)
         };
 
+        VALUE level = Qnil;
+        switch (error->level) {
+            case PM_ERROR_LEVEL_FATAL:
+                level = ID2SYM(rb_intern("fatal"));
+                break;
+            case PM_ERROR_LEVEL_ARGUMENT:
+                level = ID2SYM(rb_intern("argument"));
+                break;
+            default:
+                rb_raise(rb_eRuntimeError, "Unknown level: %" PRIu8, error->level);
+        }
+
         VALUE error_argv[] = {
             rb_enc_str_new_cstr(error->message, encoding),
-            rb_class_new_instance(3, location_argv, rb_cPrismLocation)
+            rb_class_new_instance(3, location_argv, rb_cPrismLocation),
+            level
         };
 
-        rb_ary_push(errors, rb_class_new_instance(2, error_argv, rb_cPrismParseError));
+        rb_ary_push(errors, rb_class_new_instance(3, error_argv, rb_cPrismParseError));
     }
 
     return errors;
@@ -428,12 +438,25 @@ parser_warnings(pm_parser_t *parser, rb_encoding *encoding, VALUE source) {
             LONG2FIX(warning->location.end - warning->location.start)
         };
 
+        VALUE level = Qnil;
+        switch (warning->level) {
+            case PM_WARNING_LEVEL_DEFAULT:
+                level = ID2SYM(rb_intern("default"));
+                break;
+            case PM_WARNING_LEVEL_VERBOSE:
+                level = ID2SYM(rb_intern("verbose"));
+                break;
+            default:
+                rb_raise(rb_eRuntimeError, "Unknown level: %" PRIu8, warning->level);
+        }
+
         VALUE warning_argv[] = {
             rb_enc_str_new_cstr(warning->message, encoding),
-            rb_class_new_instance(3, location_argv, rb_cPrismLocation)
+            rb_class_new_instance(3, location_argv, rb_cPrismLocation),
+            level
         };
 
-        rb_ary_push(warnings, rb_class_new_instance(2, warning_argv, rb_cPrismParseWarning));
+        rb_ary_push(warnings, rb_class_new_instance(3, warning_argv, rb_cPrismParseWarning));
     }
 
     return warnings;
@@ -644,8 +667,6 @@ parse_input(pm_string_t *input, const pm_options_t *options) {
  *       integer or nil. Note that this is 1-indexed.
  * * `frozen_string_literal` - whether or not the frozen string literal pragma
  *       has been set. This should be a boolean or nil.
- * * `verbose` - the current level of verbosity. This controls whether or not
- *       the parser emits warnings. This should be a boolean or nil.
  * * `version` - the version of prism that should be used to parse Ruby code. By
  *       default prism assumes you want to parse with the latest vesion of
  *       prism (which you can trigger with `nil` or `"latest"`). If you want to
@@ -987,12 +1008,12 @@ inspect_node(VALUE self, VALUE source) {
 
 /**
  * call-seq:
- *   Debug::format_errors(source) -> String
+ *   Debug::format_errors(source, colorize) -> String
  *
  * Format the errors that are found when parsing the given source string.
  */
 static VALUE
-format_errors(VALUE self, VALUE source) {
+format_errors(VALUE self, VALUE source, VALUE colorize) {
     pm_string_t input;
     input_load_string(&input, source);
 
@@ -1002,7 +1023,7 @@ format_errors(VALUE self, VALUE source) {
     pm_node_t *node = pm_parse(&parser);
     pm_buffer_t buffer = { 0 };
 
-    pm_parser_errors_format(&parser, &buffer, true);
+    pm_parser_errors_format(&parser, &buffer, RTEST(colorize));
 
     rb_encoding *encoding = rb_enc_find(parser.encoding->name);
     VALUE result = rb_enc_str_new(pm_buffer_value(&buffer), pm_buffer_length(&buffer), encoding);
@@ -1056,7 +1077,6 @@ Init_prism(void) {
     rb_option_id_encoding = rb_intern_const("encoding");
     rb_option_id_line = rb_intern_const("line");
     rb_option_id_frozen_string_literal = rb_intern_const("frozen_string_literal");
-    rb_option_id_verbose = rb_intern_const("verbose");
     rb_option_id_version = rb_intern_const("version");
     rb_option_id_scopes = rb_intern_const("scopes");
 
@@ -1093,7 +1113,7 @@ Init_prism(void) {
     rb_define_singleton_method(rb_cPrismDebug, "memsize", memsize, 1);
     rb_define_singleton_method(rb_cPrismDebug, "profile_file", profile_file, 1);
     rb_define_singleton_method(rb_cPrismDebug, "inspect_node", inspect_node, 1);
-    rb_define_singleton_method(rb_cPrismDebug, "format_errors", format_errors, 1);
+    rb_define_singleton_method(rb_cPrismDebug, "format_errors", format_errors, 2);
 
     // Next, initialize the other APIs.
     Init_prism_api_node();

@@ -468,7 +468,7 @@ apply2files(int (*func)(const char *, void *), int argc, VALUE *argv, void *arg)
         aa->fn[aa->i].path = path;
     }
 
-    rb_thread_call_without_gvl(no_gvl_apply2files, aa, RUBY_UBF_IO, 0);
+    IO_WITHOUT_GVL(no_gvl_apply2files, aa);
     if (aa->errnum) {
 #ifdef UTIME_EINVAL
         if (func == utime_internal) {
@@ -1168,8 +1168,7 @@ stat_without_gvl(const char *path, struct stat *st)
     data.file.path = path;
     data.st = st;
 
-    return (int)(VALUE)rb_thread_call_without_gvl(no_gvl_stat, &data,
-                                                  RUBY_UBF_IO, NULL);
+    return IO_WITHOUT_GVL_INT(no_gvl_stat, &data);
 }
 
 #if !defined(HAVE_STRUCT_STAT_ST_BIRTHTIMESPEC) && \
@@ -1219,8 +1218,7 @@ statx_without_gvl(const char *path, struct statx *stx, unsigned int mask)
     no_gvl_statx_data data = {stx, AT_FDCWD, path, 0, mask};
 
     /* call statx(2) with pathname */
-    return (int)(VALUE)rb_thread_call_without_gvl(no_gvl_statx, &data,
-                                                  RUBY_UBF_IO, NULL);
+    return IO_WITHOUT_GVL_INT(no_gvl_statx, &data);
 }
 
 static int
@@ -1382,8 +1380,7 @@ lstat_without_gvl(const char *path, struct stat *st)
     data.file.path = path;
     data.st = st;
 
-    return (int)(VALUE)rb_thread_call_without_gvl(no_gvl_lstat, &data,
-                                                    RUBY_UBF_IO, NULL);
+    return IO_WITHOUT_GVL_INT(no_gvl_lstat, &data);
 }
 #endif /* HAVE_LSTAT */
 
@@ -1557,8 +1554,7 @@ rb_eaccess(VALUE fname, int mode)
     aa.path = StringValueCStr(fname);
     aa.mode = mode;
 
-    return (int)(VALUE)rb_thread_call_without_gvl(nogvl_eaccess, &aa,
-                                                RUBY_UBF_IO, 0);
+    return IO_WITHOUT_GVL_INT(nogvl_eaccess, &aa);
 }
 
 static void *
@@ -1579,8 +1575,7 @@ rb_access(VALUE fname, int mode)
     aa.path = StringValueCStr(fname);
     aa.mode = mode;
 
-    return (int)(VALUE)rb_thread_call_without_gvl(nogvl_access, &aa,
-                                                RUBY_UBF_IO, 0);
+    return IO_WITHOUT_GVL_INT(nogvl_access, &aa);
 }
 
 /*
@@ -3140,8 +3135,7 @@ readlink_without_gvl(VALUE path, VALUE buf, size_t size)
     ra.buf = RSTRING_PTR(buf);
     ra.size = size;
 
-    return (ssize_t)rb_thread_call_without_gvl(nogvl_readlink, &ra,
-                                                RUBY_UBF_IO, 0);
+    return (ssize_t)IO_WITHOUT_GVL(nogvl_readlink, &ra);
 }
 
 VALUE
@@ -3242,8 +3236,7 @@ rb_file_s_rename(VALUE klass, VALUE from, VALUE to)
 #if defined __CYGWIN__
     errno = 0;
 #endif
-    if ((int)(VALUE)rb_thread_call_without_gvl(no_gvl_rename, &ra,
-                                         RUBY_UBF_IO, 0) < 0) {
+    if (IO_WITHOUT_GVL_INT(no_gvl_rename, &ra) < 0) {
         int e = errno;
 #if defined DOSISH
         switch (e) {
@@ -3717,7 +3710,15 @@ append_fspath(VALUE result, VALUE fname, char *dir, rb_encoding **enc, rb_encodi
     size_t dirlen = strlen(dir), buflen = rb_str_capacity(result);
 
     if (NORMALIZE_UTF8PATH || *enc != fsenc) {
-        rb_encoding *direnc = fs_enc_check(fname, dirname = ospath_new(dir, dirlen, fsenc));
+        dirname = ospath_new(dir, dirlen, fsenc);
+        if (!rb_enc_compatible(fname, dirname)) {
+            xfree(dir);
+            /* rb_enc_check must raise because the two encodings are not
+             * compatible. */
+            rb_enc_check(fname, dirname);
+            rb_bug("unreachable");
+        }
+        rb_encoding *direnc = fs_enc_check(fname, dirname);
         if (direnc != fsenc) {
             dirname = rb_str_conv_enc(dirname, fsenc, direnc);
             RSTRING_GETMEM(dirname, cwdp, dirlen);
@@ -5128,8 +5129,7 @@ rb_file_s_truncate(VALUE klass, VALUE path, VALUE len)
     path = rb_str_encode_ospath(path);
     ta.path = StringValueCStr(path);
 
-    r = (int)(VALUE)rb_thread_call_without_gvl(nogvl_truncate, &ta,
-                                                RUBY_UBF_IO, NULL);
+    r = IO_WITHOUT_GVL_INT(nogvl_truncate, &ta);
     if (r < 0)
         rb_sys_fail_path(path);
     return INT2FIX(0);
@@ -5329,60 +5329,83 @@ test_check(int n, int argc, VALUE *argv)
 #define CHECK(n) test_check((n), argc, argv)
 
 /*
+ *  :markup: markdown
+ *
  *  call-seq:
- *     test(cmd, file1 [, file2] ) -> obj
+ *    test(char, path0, path1 = nil) -> object
  *
- *  Uses the character +cmd+ to perform various tests on +file1+ (first
- *  table below) or on +file1+ and +file2+ (second table).
+ *  Performs a test on one or both of the <i>filesystem entities</i> at the given paths
+ *  `path0` and `path1`:
  *
- *  File tests on a single file:
+ *  - Each path `path0` or `path1` points to a file, directory, device, pipe, etc.
+ *  - Character `char` selects a specific test.
  *
- *    Cmd    Returns   Meaning
- *    "A"  | Time    | Last access time for file1
- *    "b"  | boolean | True if file1 is a block device
- *    "c"  | boolean | True if file1 is a character device
- *    "C"  | Time    | Last change time for file1
- *    "d"  | boolean | True if file1 exists and is a directory
- *    "e"  | boolean | True if file1 exists
- *    "f"  | boolean | True if file1 exists and is a regular file
- *    "g"  | boolean | True if file1 has the setgid bit set
- *    "G"  | boolean | True if file1 exists and has a group
- *         |         | ownership equal to the caller's group
- *    "k"  | boolean | True if file1 exists and has the sticky bit set
- *    "l"  | boolean | True if file1 exists and is a symbolic link
- *    "M"  | Time    | Last modification time for file1
- *    "o"  | boolean | True if file1 exists and is owned by
- *         |         | the caller's effective uid
- *    "O"  | boolean | True if file1 exists and is owned by
- *         |         | the caller's real uid
- *    "p"  | boolean | True if file1 exists and is a fifo
- *    "r"  | boolean | True if file1 is readable by the effective
- *         |         | uid/gid of the caller
- *    "R"  | boolean | True if file is readable by the real
- *         |         | uid/gid of the caller
- *    "s"  | int/nil | If file1 has nonzero size, return the size,
- *         |         | otherwise return nil
- *    "S"  | boolean | True if file1 exists and is a socket
- *    "u"  | boolean | True if file1 has the setuid bit set
- *    "w"  | boolean | True if file1 exists and is writable by
- *         |         | the effective uid/gid
- *    "W"  | boolean | True if file1 exists and is writable by
- *         |         | the real uid/gid
- *    "x"  | boolean | True if file1 exists and is executable by
- *         |         | the effective uid/gid
- *    "X"  | boolean | True if file1 exists and is executable by
- *         |         | the real uid/gid
- *    "z"  | boolean | True if file1 exists and has a zero length
+ *  The tests:
  *
- *  Tests that take two files:
+ *  - Each of these tests operates only on the entity at `path0`,
+ *    and returns `true` or `false`;
+ *    for a non-existent entity, returns `false` (does not raise exception):
  *
- *    "-"  | boolean | True if file1 and file2 are identical
- *    "="  | boolean | True if the modification times of file1
- *         |         | and file2 are equal
- *    "<"  | boolean | True if the modification time of file1
- *         |         | is prior to that of file2
- *    ">"  | boolean | True if the modification time of file1
- *         |         | is after that of file2
+ *      | Character    | Test                                                                      |
+ *      |:------------:|:--------------------------------------------------------------------------|
+ *      | <tt>'b'</tt> | Whether the entity is a block device.                                     |
+ *      | <tt>'c'</tt> | Whether the entity is a character device.                                 |
+ *      | <tt>'d'</tt> | Whether the entity is a directory.                                        |
+ *      | <tt>'e'</tt> | Whether the entity is an existing entity.                                 |
+ *      | <tt>'f'</tt> | Whether the entity is an existing regular file.                           |
+ *      | <tt>'g'</tt> | Whether the entity's setgid bit is set.                                   |
+ *      | <tt>'G'</tt> | Whether the entity's group ownership is equal to the caller's.            |
+ *      | <tt>'k'</tt> | Whether the entity's sticky bit is set.                                   |
+ *      | <tt>'l'</tt> | Whether the entity is a symbolic link.                                    |
+ *      | <tt>'o'</tt> | Whether the entity is owned by the caller's effective uid.                |
+ *      | <tt>'O'</tt> | Like <tt>'o'</tt>, but uses the real uid (not the effective uid).         |
+ *      | <tt>'p'</tt> | Whether the entity is a FIFO device (named pipe).                         |
+ *      | <tt>'r'</tt> | Whether the entity is readable by the caller's effecive uid/gid.          |
+ *      | <tt>'R'</tt> | Like <tt>'r'</tt>, but uses the real uid/gid (not the effective uid/gid). |
+ *      | <tt>'S'</tt> | Whether the entity is a socket.                                           |
+ *      | <tt>'u'</tt> | Whether the entity's setuid bit is set.                                   |
+ *      | <tt>'w'</tt> | Whether the entity is writable by the caller's effective uid/gid.         |
+ *      | <tt>'W'</tt> | Like <tt>'w'</tt>, but uses the real uid/gid (not the effective uid/gid). |
+ *      | <tt>'x'</tt> | Whether the entity is executable by the caller's effective uid/gid.       |
+ *      | <tt>'X'</tt> | Like <tt>'x'</tt>, but uses the real uid/gid (not the effecive uid/git).  |
+ *      | <tt>'z'</tt> | Whether the entity exists and is of length zero.                          |
+ *
+ *  - This test operates only on the entity at `path0`,
+ *    and returns an integer size or +nil+:
+ *
+ *      | Character    | Test                                                                                         |
+ *      |:------------:|:---------------------------------------------------------------------------------------------|
+ *      | <tt>'s'</tt> | Returns positive integer size if the entity exists and has non-zero length, +nil+ otherwise. |
+ *
+ *  - Each of these tests operates only on the entity at `path0`,
+ *    and returns a Time object;
+ *    raises an exception if the entity does not exist:
+ *
+ *      | Character    | Test                                   |
+ *      |:------------:|:---------------------------------------|
+ *      | <tt>'A'</tt> | Last access time for the entity.       |
+ *      | <tt>'C'</tt> | Last change time for the entity.       |
+ *      | <tt>'M'</tt> | Last modification time for the entity. |
+ *
+ *  - Each of these tests operates on the modification time (`mtime`)
+ *    of each of the entities at `path0` and `path1`,
+ *    and returns a `true` or `false`;
+ *    returns `false` if either entity does not exist:
+ *
+ *      | Character    | Test                                                            |
+ *      |:------------:|:----------------------------------------------------------------|
+ *      | <tt>'<'</tt> | Whether the `mtime` at `path0` is less than that at `path1`.    |
+ *      | <tt>'='</tt> | Whether the `mtime` at `path0` is equal to that at `path1`.     |
+ *      | <tt>'>'</tt> | Whether the `mtime` at `path0` is greater than that at `path1`. |
+ *
+ *  - This test operates on the content of each of the entities at `path0` and `path1`,
+ *    and returns a `true` or `false`;
+ *    returns `false` if either entity does not exist:
+ *
+ *      | Character    | Test                                          |
+ *      |:------------:|:----------------------------------------------|
+ *      | <tt>'-'</tt> | Whether the entities exist and are identical. |
+ *
  */
 
 static VALUE
@@ -6201,7 +6224,7 @@ rb_file_s_mkfifo(int argc, VALUE *argv, VALUE _)
     FilePathValue(path);
     path = rb_str_encode_ospath(path);
     ma.path = RSTRING_PTR(path);
-    if (rb_thread_call_without_gvl(nogvl_mkfifo, &ma, RUBY_UBF_IO, 0)) {
+    if (IO_WITHOUT_GVL(nogvl_mkfifo, &ma)) {
         rb_sys_fail_path(path);
     }
     return INT2FIX(0);

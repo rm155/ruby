@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name = "prism"
-  spec.version = "0.19.0"
+  spec.version = "0.21.0"
   spec.authors = ["Shopify"]
   spec.email = ["ruby@shopify.com"]
 
@@ -31,6 +31,8 @@ Gem::Specification.new do |spec|
     "docs/javascript.md",
     "docs/local_variable_depth.md",
     "docs/mapping.md",
+    "docs/parser_translation.md",
+    "docs/parsing_rules.md",
     "docs/releasing.md",
     "docs/ripper.md",
     "docs/ruby_api.md",
@@ -73,16 +75,21 @@ Gem::Specification.new do |spec|
     "lib/prism/ffi.rb",
     "lib/prism/lex_compat.rb",
     "lib/prism/mutation_compiler.rb",
-    "lib/prism/node.rb",
     "lib/prism/node_ext.rb",
     "lib/prism/node_inspector.rb",
+    "lib/prism/node.rb",
     "lib/prism/pack.rb",
     "lib/prism/parse_result.rb",
+    "lib/prism/parse_result/comments.rb",
+    "lib/prism/parse_result/newlines.rb",
     "lib/prism/pattern.rb",
     "lib/prism/ripper_compat.rb",
     "lib/prism/serialize.rb",
-    "lib/prism/parse_result/comments.rb",
-    "lib/prism/parse_result/newlines.rb",
+    "lib/prism/translation.rb",
+    "lib/prism/translation/parser.rb",
+    "lib/prism/translation/parser/compiler.rb",
+    "lib/prism/translation/parser/lexer.rb",
+    "lib/prism/translation/parser/rubocop.rb",
     "lib/prism/visitor.rb",
     "src/diagnostic.c",
     "src/encoding.c",

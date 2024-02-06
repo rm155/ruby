@@ -932,7 +932,7 @@ test: test-short
 
 # Separate to skip updating encs and exts by `make -o test-precheck`
 # for GNU make.
-test-precheck: encs exts PHONY $(DOT_WAIT)
+test-precheck: $(ENCSTATIC:static=lib)encs exts PHONY $(DOT_WAIT)
 yes-test-all-precheck: programs $(DOT_WAIT) test-precheck
 
 PRECHECK_TEST_ALL = yes-test-all-precheck
@@ -1563,7 +1563,7 @@ no-test-bundled-gems-prepare: no-test-bundled-gems-precheck
 yes-test-bundled-gems-prepare: yes-test-bundled-gems-precheck
 	$(ACTIONS_GROUP)
 	$(XRUBY) -C "$(srcdir)" bin/gem install --no-document \
-		--install-dir .bundle --conservative "hoe" "json-schema" "test-unit-rr"
+		--install-dir .bundle --conservative "hoe" "json-schema" "test-unit-rr" "ipaddr" "forwardable" "ruby2_keywords"
 	$(ACTIONS_ENDGROUP)
 
 PREPARE_BUNDLED_GEMS = test-bundled-gems-prepare
@@ -3273,6 +3273,7 @@ compile.$(OBJEXT): $(top_srcdir)/internal/fixnum.h
 compile.$(OBJEXT): $(top_srcdir)/internal/gc.h
 compile.$(OBJEXT): $(top_srcdir)/internal/hash.h
 compile.$(OBJEXT): $(top_srcdir)/internal/imemo.h
+compile.$(OBJEXT): $(top_srcdir)/internal/io.h
 compile.$(OBJEXT): $(top_srcdir)/internal/numeric.h
 compile.$(OBJEXT): $(top_srcdir)/internal/object.h
 compile.$(OBJEXT): $(top_srcdir)/internal/rational.h
@@ -3484,6 +3485,7 @@ compile.$(OBJEXT): {$(VPATH)}internal/value_type.h
 compile.$(OBJEXT): {$(VPATH)}internal/variable.h
 compile.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 compile.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
+compile.$(OBJEXT): {$(VPATH)}io.h
 compile.$(OBJEXT): {$(VPATH)}iseq.h
 compile.$(OBJEXT): {$(VPATH)}method.h
 compile.$(OBJEXT): {$(VPATH)}missing.h
@@ -16081,6 +16083,7 @@ ruby_parser.$(OBJEXT): {$(VPATH)}internal/variable.h
 ruby_parser.$(OBJEXT): {$(VPATH)}internal/warning_push.h
 ruby_parser.$(OBJEXT): {$(VPATH)}internal/xmalloc.h
 ruby_parser.$(OBJEXT): {$(VPATH)}missing.h
+ruby_parser.$(OBJEXT): {$(VPATH)}node.h
 ruby_parser.$(OBJEXT): {$(VPATH)}onigmo.h
 ruby_parser.$(OBJEXT): {$(VPATH)}oniguruma.h
 ruby_parser.$(OBJEXT): {$(VPATH)}ruby_assert.h

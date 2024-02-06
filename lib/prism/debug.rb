@@ -141,9 +141,9 @@ module Prism
             sorted << AnonymousLocal if params.keywords.any?
 
             if params.keyword_rest.is_a?(ForwardingParameterNode)
-              sorted.push(:*, :&, :"...")
+              sorted.push(:*, :**, :&, :"...")
             elsif params.keyword_rest.is_a?(KeywordRestParameterNode)
-              sorted << params.keyword_rest.name if params.keyword_rest.name
+              sorted << (params.keyword_rest.name || :**)
             end
 
             # Recurse down the parameter tree to find any destructured
@@ -162,7 +162,9 @@ module Prism
               end
             end
 
-            sorted << params.block.name if params.block&.name
+            if params.block
+              sorted << (params.block.name || :&)
+            end
 
             names = sorted.concat(names - sorted)
           end

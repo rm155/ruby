@@ -1,5 +1,12 @@
 # Maintainers
-This page describes the current module, library, and extension maintainers of Ruby.
+This page describes the current branch, module, library, and extension maintainers of Ruby.
+
+## Branch Maintainers
+
+A branch maintainer is responsible for backporting commits into stable branches
+and publishing Ruby patch releases.
+
+[The list of current branch maintainers is available in the wiki](https://github.com/ruby/ruby/wiki/Release-Engineering).
 
 ## Module Maintainers
 A module maintainer is responsible for a certain part of Ruby.
@@ -72,10 +79,6 @@ have commit right, others don't.
 
 ## Default gems Maintainers
 ### Libraries
-#### lib/abbrev.rb
-* Akinori MUSHA (knu)
-* https://github.com/ruby/abbrev
-* https://rubygems.org/gems/abbrev
 
 #### lib/benchmark.rb
 * *unmaintained*
@@ -91,12 +94,6 @@ have commit right, others don't.
 * *unmaintained*
 * https://github.com/ruby/cgi
 * https://rubygems.org/gems/cgi
-
-#### lib/csv.rb
-* Kenta Murata (mrkn)
-* Kouhei Sutou (kou)
-* https://github.com/ruby/csv
-* https://rubygems.org/gems/csv
 
 #### lib/English.rb
 * *unmaintained*
@@ -117,11 +114,6 @@ have commit right, others don't.
 * Akinori MUSHA (knu)
 * https://github.com/ruby/digest
 * https://rubygems.org/gems/digest
-
-#### lib/drb.rb, lib/drb/*
-* Masatoshi SEKI (seki)
-* https://github.com/ruby/drb
-* https://rubygems.org/gems/drb
 
 #### lib/erb.rb
 * Masatoshi SEKI (seki)
@@ -181,11 +173,6 @@ have commit right, others don't.
 * https://github.com/ruby/net-protocol
 * https://rubygems.org/gems/net-protocol
 
-#### lib/observer.rb
-* *unmaintained*
-* https://github.com/ruby/observer
-* https://rubygems.org/gems/observer
-
 #### lib/open3.rb
 * *unmaintained*
 * https://github.com/ruby/open3
@@ -231,11 +218,6 @@ have commit right, others don't.
 * https://github.com/ruby/resolv
 * https://rubygems.org/gems/resolv
 
-#### lib/resolv-replace.rb
-* Tanaka Akira (akr)
-* https://github.com/ruby/resolv-replace
-* https://rubygems.org/gems/resolv-replace
-
 #### lib/rdoc.rb, lib/rdoc/*
 * Eric Hodel (drbrain)
 * Hiroshi SHIBATA (hsbt)
@@ -249,11 +231,6 @@ have commit right, others don't.
 * Hitoshi Hasumi (hasumikin)
 * https://github.com/ruby/reline
 * https://rubygems.org/gems/reline
-
-#### lib/rinda/*
-* Masatoshi SEKI (seki)
-* https://github.com/ruby/rinda
-* https://rubygems.org/gems/rinda
 
 #### lib/securerandom.rb
 * Tanaka Akira (akr)
@@ -374,11 +351,6 @@ have commit right, others don't.
 * https://github.com/flori/json
 * https://rubygems.org/gems/json
 
-#### ext/nkf
-* NARUSE, Yui (naruse)
-* https://github.com/ruby/nkf
-* https://rubygems.org/gems/nkf
-
 #### ext/openssl
 * Kazuki Yamaguchi (rhe)
 * https://github.com/ruby/openssl
@@ -405,11 +377,6 @@ have commit right, others don't.
 * https://github.com/ruby/strscan
 * https://rubygems.org/gems/strscan
 
-#### ext/syslog
-* Akinori MUSHA (knu)
-* https://github.com/ruby/syslog
-* https://rubygems.org/gems/syslog
-
 #### ext/win32ole
 * Masaki Suketa (suke)
 * https://github.com/ruby/win32ole
@@ -422,7 +389,7 @@ have commit right, others don't.
 
 ## Bundled gems upstream repositories
 ### minitest
-* https://github.com/seattlerb/minitest
+* https://github.com/minitest/minitest
 
 ### power_assert
 * https://github.com/ruby/power_assert
@@ -472,14 +439,38 @@ have commit right, others don't.
 #### mutex_m
 * https://github.com/ruby/mutex_m
 
-#### lib/getoptlong.rb
+#### getoptlong
 * https://github.com/ruby/getoptlong
 
-#### lib/base64.rb
+#### base64
 * https://github.com/ruby/base64
 
-#### ext/bigdecimal
-* https://rubygems.org/gems/bigdecimal
+#### bigdecimal
+* https://github.com/ruby/bigdecimal
+
+#### observer
+* https://github.com/ruby/observer
+
+#### abbrev
+* https://github.com/ruby/abbrev
+
+#### resolv-replace
+* https://github.com/ruby/resolv-replace
+
+#### rinda
+* https://github.com/ruby/rinda
+
+#### drb
+* https://github.com/ruby/drb
+
+#### nkf
+* https://github.com/ruby/nkf
+
+#### syslog
+* https://github.com/ruby/syslog
+
+#### csv
+* https://github.com/ruby/csv
 
 ## Platform Maintainers
 ### mswin64 (Microsoft Windows)

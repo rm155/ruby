@@ -50,7 +50,6 @@ pub enum Type {
     False,
     Fixnum,
     Flonum,
-    Hash,
     ImmSymbol,
 
     #[allow(unused)]
@@ -59,6 +58,7 @@ pub enum Type {
     TString, // An object with the T_STRING flag set, possibly an rb_cString
     CString, // An un-subclassed string of type rb_cString (can have instance vars in some cases)
     TArray, // An object with the T_ARRAY flag set, possibly an rb_cArray
+    THash, // An object with the T_HASH flag set, possibly an rb_cHash
 
     TProc, // A proc object. Could be an instance of a subclass of ::rb_cProc
 
@@ -111,7 +111,7 @@ impl Type {
             }
             match val.builtin_type() {
                 RUBY_T_ARRAY => Type::TArray,
-                RUBY_T_HASH => Type::Hash,
+                RUBY_T_HASH => Type::THash,
                 RUBY_T_STRING => Type::TString,
                 #[cfg(not(test))]
                 RUBY_T_DATA if unsafe { rb_obj_is_proc(val).test() } => Type::TProc,
@@ -154,7 +154,7 @@ impl Type {
         match self {
             Type::UnknownHeap => true,
             Type::TArray => true,
-            Type::Hash => true,
+            Type::THash => true,
             Type::HeapSymbol => true,
             Type::TString => true,
             Type::CString => true,
@@ -167,6 +167,11 @@ impl Type {
     /// Check if it's a T_ARRAY object (both TArray and CArray are T_ARRAY)
     pub fn is_array(&self) -> bool {
         matches!(self, Type::TArray)
+    }
+
+    /// Check if it's a T_HASH object
+    pub fn is_hash(&self) -> bool {
+        matches!(self, Type::THash)
     }
 
     /// Check if it's a T_STRING object (both TString and CString are T_STRING)
@@ -187,7 +192,7 @@ impl Type {
             Type::Fixnum => Some(RUBY_T_FIXNUM),
             Type::Flonum => Some(RUBY_T_FLOAT),
             Type::TArray => Some(RUBY_T_ARRAY),
-            Type::Hash => Some(RUBY_T_HASH),
+            Type::THash => Some(RUBY_T_HASH),
             Type::ImmSymbol | Type::HeapSymbol => Some(RUBY_T_SYMBOL),
             Type::TString | Type::CString => Some(RUBY_T_STRING),
             Type::TProc => Some(RUBY_T_DATA),
@@ -480,6 +485,13 @@ pub struct Context {
     // Stack slot type/local_idx we track
     // 8 temp types * 4 bits, total 32 bits
     temp_payload: u32,
+
+    /// A pointer to a block ISEQ supplied by the caller. 0 if not inlined.
+    /// Not using IseqPtr to satisfy Default trait, and not using Option for #[repr(packed)]
+    /// TODO: This could be u16 if we have a global or per-ISEQ HashMap to convert IseqPtr
+    /// to serial indexes. We're thinking of overhauling Context structure in Ruby 3.4 which
+    /// could allow this to consume no bytes, so we're leaving this as is.
+    inline_block: u64,
 }
 
 /// Tuple of (iseq, idx) used to identify basic blocks
@@ -1400,14 +1412,19 @@ pub fn take_version_list(blockid: BlockId) -> VersionList {
 }
 
 /// Count the number of block versions matching a given blockid
-fn get_num_versions(blockid: BlockId) -> usize {
+/// `inlined: true` counts inlined versions, and `inlined: false` counts other versions.
+fn get_num_versions(blockid: BlockId, inlined: bool) -> usize {
     let insn_idx = blockid.idx.as_usize();
     match get_iseq_payload(blockid.iseq) {
         Some(payload) => {
             payload
                 .version_map
                 .get(insn_idx)
-                .map(|versions| versions.len())
+                .map(|versions| {
+                    versions.iter().filter(|&&version|
+                        unsafe { version.as_ref() }.ctx.inline() == inlined
+                    ).count()
+                })
                 .unwrap_or(0)
         }
         None => 0,
@@ -1465,6 +1482,9 @@ fn find_block_version(blockid: BlockId, ctx: &Context) -> Option<BlockRef> {
     return best_version;
 }
 
+/// Allow inlining a Block up to MAX_INLINE_VERSIONS times.
+const MAX_INLINE_VERSIONS: usize = 1000;
+
 /// Produce a generic context when the block version limit is hit for a blockid
 pub fn limit_block_versions(blockid: BlockId, ctx: &Context) -> Context {
     // Guard chains implement limits separately, do nothing
@@ -1472,21 +1492,39 @@ pub fn limit_block_versions(blockid: BlockId, ctx: &Context) -> Context {
         return *ctx;
     }
 
+    let next_versions = get_num_versions(blockid, ctx.inline()) + 1;
+    let max_versions = if ctx.inline() {
+        MAX_INLINE_VERSIONS
+    } else {
+        get_option!(max_versions)
+    };
+
     // If this block version we're about to add will hit the version limit
-    if get_num_versions(blockid) + 1 >= get_option!(max_versions) {
+    if next_versions >= max_versions {
         // Produce a generic context that stores no type information,
         // but still respects the stack_size and sp_offset constraints.
         // This new context will then match all future requests.
         let generic_ctx = ctx.get_generic_ctx();
 
-        debug_assert_ne!(
-            TypeDiff::Incompatible,
-            ctx.diff(&generic_ctx),
-            "should substitute a compatible context",
-        );
+        if cfg!(debug_assertions) {
+            let mut ctx = ctx.clone();
+            if ctx.inline() {
+                // Suppress TypeDiff::Incompatible from ctx.diff(). We return TypeDiff::Incompatible
+                // to keep inlining blocks until we hit the limit, but it's safe to give up inlining.
+                ctx.inline_block = 0;
+                assert!(generic_ctx.inline_block == 0);
+            }
+
+            assert_ne!(
+                TypeDiff::Incompatible,
+                ctx.diff(&generic_ctx),
+                "should substitute a compatible context",
+            );
+        }
 
         return generic_ctx;
     }
+    incr_counter_to!(max_inline_versions, next_versions);
 
     return *ctx;
 }
@@ -2020,6 +2058,16 @@ impl Context {
         self.local_types = 0;
     }
 
+    /// Return true if the code is inlined by the caller
+    pub fn inline(&self) -> bool {
+        self.inline_block != 0
+    }
+
+    /// Set a block ISEQ given to the Block of this Context
+    pub fn set_inline_block(&mut self, iseq: IseqPtr) {
+        self.inline_block = iseq as u64
+    }
+
     /// Compute a difference score for two context objects
     pub fn diff(&self, dst: &Context) -> TypeDiff {
         // Self is the source context (at the end of the predecessor)
@@ -2064,6 +2112,13 @@ impl Context {
             TypeDiff::Compatible(diff) => diff,
             TypeDiff::Incompatible => return TypeDiff::Incompatible,
         };
+
+        // Check the block to inline
+        if src.inline_block != dst.inline_block {
+            // find_block_version should not find existing blocks with different
+            // inline_block so that their yield will not be megamorphic.
+            return TypeDiff::Incompatible;
+        }
 
         // For each local type we track
         for i in 0.. MAX_LOCAL_TYPES {
@@ -3456,7 +3511,7 @@ mod tests {
 
     #[test]
     fn context_size() {
-        assert_eq!(mem::size_of::<Context>(), 15);
+        assert_eq!(mem::size_of::<Context>(), 23);
     }
 
     #[test]

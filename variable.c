@@ -1518,9 +1518,7 @@ rb_obj_convert_to_too_complex(VALUE obj, st_table *table)
         RB_VM_LOCK_LEAVE();
     }
 
-    if (old_ivptr) {
-        xfree(old_ivptr);
-    }
+    xfree(old_ivptr);
 }
 
 void
@@ -2321,7 +2319,7 @@ rb_obj_remove_instance_variable(VALUE obj, VALUE name)
     if (id) {
         VALUE val = rb_ivar_delete(obj, id, Qundef);
 
-        if (val != Qundef) return val;
+        if (!UNDEF_P(val)) return val;
     }
 
     rb_name_err_raise("instance variable %1$s not defined",

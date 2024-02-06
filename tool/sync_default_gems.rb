@@ -17,17 +17,13 @@ module SyncDefaultGems
     "net-http": "ruby/net-http",
     "net-protocol": "ruby/net-protocol",
     "open-uri": "ruby/open-uri",
-    "resolv-replace": "ruby/resolv-replace",
     English: "ruby/English",
-    abbrev: "ruby/abbrev",
     benchmark: "ruby/benchmark",
     cgi: "ruby/cgi",
-    csv: 'ruby/csv',
     date: 'ruby/date',
     delegate: "ruby/delegate",
     did_you_mean: "ruby/did_you_mean",
     digest: "ruby/digest",
-    drb: "ruby/drb",
     erb: "ruby/erb",
     error_highlight: "ruby/error_highlight",
     etc: 'ruby/etc',
@@ -40,8 +36,6 @@ module SyncDefaultGems
     irb: 'ruby/irb',
     json: 'flori/json',
     logger: 'ruby/logger',
-    nkf: "ruby/nkf",
-    observer: "ruby/observer",
     open3: "ruby/open3",
     openssl: "ruby/openssl",
     optparse: "ruby/optparse",
@@ -56,7 +50,6 @@ module SyncDefaultGems
     readline: "ruby/readline",
     reline: 'ruby/reline',
     resolv: "ruby/resolv",
-    rinda: "ruby/rinda",
     rubygems: 'rubygems/rubygems',
     securerandom: "ruby/securerandom",
     set: "ruby/set",
@@ -65,7 +58,6 @@ module SyncDefaultGems
     stringio: 'ruby/stringio',
     strscan: 'ruby/strscan',
     syntax_suggest: ["ruby/syntax_suggest", "main"],
-    syslog: "ruby/syslog",
     tempfile: "ruby/tempfile",
     time: "ruby/time",
     timeout: "ruby/timeout",
@@ -323,21 +315,6 @@ module SyncDefaultGems
       cp_r("#{upstream}/test/erb", "test")
       cp_r("#{upstream}/erb.gemspec", "lib")
       cp_r("#{upstream}/libexec/erb", "libexec")
-    when "nkf"
-      rm_rf(%w[ext/nkf test/nkf])
-      cp_r("#{upstream}/ext/nkf", "ext")
-      cp_r("#{upstream}/lib", "ext/nkf")
-      cp_r("#{upstream}/test/nkf", "test")
-      cp_r("#{upstream}/nkf.gemspec", "ext/nkf")
-      `git checkout ext/nkf/depend`
-    when "syslog"
-      rm_rf(%w[ext/syslog test/syslog test/test_syslog.rb])
-      cp_r("#{upstream}/ext/syslog", "ext")
-      cp_r("#{upstream}/lib", "ext/syslog")
-      cp_r("#{upstream}/test/syslog", "test")
-      cp_r("#{upstream}/test/test_syslog.rb", "test")
-      cp_r("#{upstream}/syslog.gemspec", "ext/syslog")
-      `git checkout ext/syslog/depend`
     when "pathname"
       rm_rf(%w[ext/pathname test/pathname])
       cp_r("#{upstream}/ext/pathname", "ext")

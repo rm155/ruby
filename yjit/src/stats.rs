@@ -245,7 +245,7 @@ macro_rules! make_counters {
 
 /// The list of counters that are available without --yjit-stats.
 /// They are incremented only by `incr_counter!` and don't use `gen_counter_incr`.
-pub const DEFAULT_COUNTERS: [Counter; 8] = [
+pub const DEFAULT_COUNTERS: [Counter; 9] = [
     Counter::code_gc_count,
     Counter::compiled_iseq_entry,
     Counter::cold_iseq_entry,
@@ -254,6 +254,7 @@ pub const DEFAULT_COUNTERS: [Counter; 8] = [
     Counter::compiled_block_count,
     Counter::compiled_branch_count,
     Counter::compile_time_ns,
+    Counter::max_inline_versions,
 ];
 
 /// Macro to increase a counter by name and count
@@ -268,6 +269,24 @@ macro_rules! incr_counter_by {
     };
 }
 pub(crate) use incr_counter_by;
+
+/// Macro to increase a counter if the given value is larger
+macro_rules! incr_counter_to {
+    // Unsafe is ok here because options are initialized
+    // once before any Ruby code executes
+    ($counter_name:ident, $count:expr) => {
+        #[allow(unused_unsafe)]
+        {
+            unsafe {
+                $crate::stats::COUNTERS.$counter_name = u64::max(
+                    $crate::stats::COUNTERS.$counter_name,
+                    $count as u64,
+                )
+            }
+        }
+    };
+}
+pub(crate) use incr_counter_to;
 
 /// Macro to increment a counter by name
 macro_rules! incr_counter {
@@ -300,8 +319,8 @@ make_counters! {
     // Method calls that fallback to dynamic dispatch
     send_keywords,
     send_kw_splat,
+    send_singleton_class,
     send_args_splat_super,
-    send_iseq_zsuper,
     send_block_arg,
     send_ivar_set_method,
     send_zsuper_method,
@@ -331,8 +350,10 @@ make_counters! {
     send_iseq_arity_error,
     send_iseq_block_arg_type,
     send_iseq_clobbering_block_arg,
+    send_iseq_complex_discard_extras,
     send_iseq_leaf_builtin_block_arg_block_param,
     send_iseq_only_keywords,
+    send_iseq_kw_splat,
     send_iseq_kwargs_req_and_opt_missing,
     send_iseq_kwargs_mismatch,
     send_iseq_has_post,
@@ -340,6 +361,7 @@ make_counters! {
     send_iseq_has_no_kw,
     send_iseq_accepts_no_kwarg,
     send_iseq_materialized_block,
+    send_iseq_splat_not_array,
     send_iseq_splat_with_opt,
     send_iseq_splat_with_kw,
     send_iseq_missing_optional_kw,
@@ -355,11 +377,8 @@ make_counters! {
     send_args_splat_aset,
     send_args_splat_opt_call,
     send_args_splat_cfunc_var_args,
-    send_args_splat_cfunc_zuper,
-    send_args_splat_cfunc_ruby2_keywords,
     send_iseq_splat_arity_error,
     send_splat_too_long,
-    send_iseq_ruby2_keywords,
     send_send_not_imm,
     send_send_wrong_args,
     send_send_null_mid,
@@ -385,14 +404,15 @@ make_counters! {
     invokesuper_no_me,
     invokesuper_not_iseq_or_cfunc,
     invokesuper_refinement,
+    invokesuper_singleton_class,
 
     invokeblock_megamorphic,
     invokeblock_none,
     invokeblock_iseq_arg0_optional,
-    invokeblock_iseq_arg0_has_kw,
     invokeblock_iseq_arg0_args_splat,
     invokeblock_iseq_arg0_not_array,
     invokeblock_iseq_arg0_wrong_len,
+    invokeblock_iseq_not_inlined,
     invokeblock_ifunc_args_splat,
     invokeblock_ifunc_kw_splat,
     invokeblock_proc,
@@ -415,6 +435,7 @@ make_counters! {
     guard_send_instance_of_class_mismatch,
     guard_send_interrupted,
     guard_send_not_fixnums,
+    guard_send_not_fixnum_or_flonum,
     guard_send_not_string,
     guard_send_respond_to_mid_mismatch,
 
@@ -445,6 +466,8 @@ make_counters! {
     definedivar_megamorphic,
 
     setlocal_wb_required,
+
+    invokebuiltin_too_many_args,
 
     opt_plus_overflow,
     opt_minus_overflow,
@@ -500,6 +523,8 @@ make_counters! {
 
     objtostring_not_string,
 
+    splatkw_not_hash,
+
     binding_allocations,
     binding_set,
 
@@ -516,6 +541,7 @@ make_counters! {
     defer_empty_count,
     branch_insn_count,
     branch_known_count,
+    max_inline_versions,
 
     freed_iseq_count,
 

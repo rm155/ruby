@@ -160,6 +160,7 @@ enum node_type {
     NODE_ERROR,
     NODE_LINE,
     NODE_FILE,
+    NODE_ENCODING,
     NODE_RIPPER,
     NODE_RIPPER_VALUES,
     NODE_LAST
@@ -336,16 +337,15 @@ typedef struct RNode_RESCUE {
 typedef struct RNode_RESBODY {
     NODE node;
 
-    struct RNode *nd_head;
-    struct RNode *nd_body;
     struct RNode *nd_args;
+    struct RNode *nd_body;
+    struct RNode *nd_next;
 } rb_node_resbody_t;
 
 typedef struct RNode_ENSURE {
     NODE node;
 
     struct RNode *nd_head;
-    struct RNode *nd_resq; /* Maybe not used other than reduce_nodes */
     struct RNode *nd_ensr;
 } rb_node_ensure_t;
 
@@ -1005,6 +1005,11 @@ typedef struct RNode_FILE {
     struct rb_parser_string *path;
 } rb_node_file_t;
 
+typedef struct RNode_ENCODING {
+    NODE node;
+    rb_encoding *enc;
+} rb_node_encoding_t;
+
 typedef struct RNode_ERROR {
     NODE node;
 } rb_node_error_t;
@@ -1121,6 +1126,7 @@ typedef struct RNode_ERROR {
 #define RNODE_FNDPTN(node) ((struct RNode_FNDPTN *)(node))
 #define RNODE_LINE(node) ((struct RNode_LINE *)(node))
 #define RNODE_FILE(node) ((struct RNode_FILE *)(node))
+#define RNODE_ENCODING(node) ((struct RNode_ENCODING *)(node))
 
 #ifdef RIPPER
 typedef struct RNode_RIPPER {
@@ -1237,8 +1243,6 @@ typedef struct rb_parser_config_struct {
     VALUE (*ary_unshift)(VALUE ary, VALUE item);
     VALUE (*ary_new2)(long capa); // ary_new_capa
     VALUE (*ary_entry)(VALUE ary, long offset);
-    VALUE (*ary_join)(VALUE ary, VALUE sep);
-    VALUE (*ary_reverse)(VALUE ary);
     VALUE (*ary_clear)(VALUE ary);
     void (*ary_modify)(VALUE ary);
     long (*array_len)(VALUE a);
@@ -1340,8 +1344,6 @@ typedef struct rb_parser_config_struct {
     rb_encoding *(*enc_from_index)(int idx);
     VALUE (*enc_associate_index)(VALUE obj, int encindex);
     int (*enc_isspace)(OnigCodePoint c, rb_encoding *enc);
-    int enc_coderange_7bit;
-    int enc_coderange_unknown;
     rb_encoding *(*enc_compatible)(VALUE str1, VALUE str2);
     VALUE (*enc_from_encoding)(rb_encoding *enc);
     int (*encoding_get)(VALUE obj);
@@ -1426,6 +1428,8 @@ typedef struct rb_parser_config_struct {
     VALUE (*node_case_when_optimizable_literal)(const NODE *const node);
 
     /* For Ripper */
+    int enc_coderange_7bit;
+    int enc_coderange_unknown;
     VALUE (*static_id2sym)(ID id);
     long (*str_coderange_scan_restartable)(const char *s, const char *e, rb_encoding *enc, int *cr);
 } rb_parser_config_t;

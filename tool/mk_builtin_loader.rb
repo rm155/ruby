@@ -6,7 +6,7 @@ require_relative 'ruby_vm/helpers/c_escape'
 
 SUBLIBS = {}
 REQUIRED = {}
-BUILTIN_ATTRS = %w[leaf]
+BUILTIN_ATTRS = %w[leaf inline_block]
 
 def string_literal(lit, str = [])
   while lit
@@ -166,7 +166,7 @@ def collect_builtin base, tree, name, bs, inlines, locals = nil
           when 'cstmt'
             text = inline_text argc, args.first
 
-            func_name = "_bi#{inlines.size}"
+            func_name = "_bi#{lineno}"
             cfunc_name = make_cfunc_name(inlines, name, lineno)
             inlines[cfunc_name] = [lineno, text, locals, func_name]
             argc -= 1
@@ -174,7 +174,7 @@ def collect_builtin base, tree, name, bs, inlines, locals = nil
             text = inline_text argc, args.first
             code = "return #{text};"
 
-            func_name = "_bi#{inlines.size}"
+            func_name = "_bi#{lineno}"
             cfunc_name = make_cfunc_name(inlines, name, lineno)
 
             locals = [] if $1 == 'cconst'
@@ -274,7 +274,8 @@ def generate_cexpr(ofile, lineno, line_file, body_lineno, text, locals, func_nam
   locals&.reverse_each&.with_index{|param, i|
     next unless Symbol === param
     next unless local_candidates.include?(param.to_s)
-    f.puts "MAYBE_UNUSED(const VALUE) #{param} = rb_vm_lvar(ec, #{-3 - i});"
+    f.puts "VALUE *const #{param}__ptr = (VALUE *)&ec->cfp->ep[#{-3 - i}];"
+    f.puts "MAYBE_UNUSED(const VALUE) #{param} = *#{param}__ptr;"
     lineno += 1
   }
   f.puts "#line #{body_lineno} \"#{line_file}\""

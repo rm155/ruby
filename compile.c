@@ -26,6 +26,7 @@
 #include "internal/error.h"
 #include "internal/gc.h"
 #include "internal/hash.h"
+#include "internal/io.h"
 #include "internal/numeric.h"
 #include "internal/object.h"
 #include "internal/rational.h"
@@ -977,20 +978,6 @@ rb_iseq_compile_node(rb_iseq_t *iseq, const NODE *node)
         validate_labels(iseq, labels_table);
     }
 #endif
-    CHECK(iseq_setup_insn(iseq, ret));
-    return iseq_setup(iseq, ret);
-}
-
-static VALUE rb_translate_prism(pm_parser_t *parser, rb_iseq_t *iseq, pm_scope_node_t *scope_node, LINK_ANCHOR *const ret);
-
-VALUE
-rb_iseq_compile_prism_node(rb_iseq_t * iseq, pm_scope_node_t *scope_node, pm_parser_t *parser)
-{
-    DECL_ANCHOR(ret);
-    INIT_ANCHOR(ret);
-
-    CHECK(rb_translate_prism(parser, iseq, scope_node, ret));
-
     CHECK(iseq_setup_insn(iseq, ret));
     return iseq_setup(iseq, ret);
 }
@@ -1961,6 +1948,9 @@ iseq_set_arguments_keywords(rb_iseq_t *iseq, LINK_ANCHOR *const optargs,
               case NODE_IMAGINARY:
                 dv = rb_node_imaginary_literal_val(val_node);
                 break;
+              case NODE_ENCODING:
+                dv = rb_node_encoding_val(val_node);
+                break;
               case NODE_NIL:
                 dv = Qnil;
                 break;
@@ -2073,6 +2063,7 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *const optargs, const NODE *cons
         if (rest_id) {
             body->param.rest_start = arg_size++;
             body->param.flags.has_rest = TRUE;
+            if (rest_id == '*') body->param.flags.anon_rest = TRUE;
             assert(body->param.rest_start != -1);
         }
 
@@ -2091,10 +2082,15 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *const optargs, const NODE *cons
             arg_size = iseq_set_arguments_keywords(iseq, optargs, args, arg_size);
         }
         else if (args->kw_rest_arg) {
+            ID kw_id = iseq->body->local_table[arg_size];
             struct rb_iseq_param_keyword *keyword = ZALLOC_N(struct rb_iseq_param_keyword, 1);
             keyword->rest_start = arg_size++;
             body->param.keyword = keyword;
             body->param.flags.has_kwrest = TRUE;
+
+            static ID anon_kwrest = 0;
+            if (!anon_kwrest) anon_kwrest = rb_intern("**");
+            if (kw_id == anon_kwrest) body->param.flags.anon_kwrest = TRUE;
         }
         else if (args->no_kwarg) {
             body->param.flags.accepts_no_kwarg = TRUE;
@@ -2856,6 +2852,7 @@ iseq_set_exception_table(rb_iseq_t *iseq)
                 if (entry->type == CATCH_TYPE_RESCUE ||
                     entry->type == CATCH_TYPE_BREAK ||
                     entry->type == CATCH_TYPE_NEXT) {
+                    RUBY_ASSERT(entry->sp > 0);
                     entry->sp--;
                 }
             }
@@ -3190,6 +3187,30 @@ ci_argc_set(const rb_iseq_t *iseq, const struct rb_callinfo *ci, int argc)
     return nci;
 }
 
+static bool
+optimize_args_splat_no_copy(rb_iseq_t *iseq, INSN *insn, LINK_ELEMENT *niobj,
+                                 unsigned int set_flags, unsigned int unset_flags)
+{
+    LINK_ELEMENT *iobj = (LINK_ELEMENT *)insn;
+    if (!IS_NEXT_INSN_ID(niobj, send)) {
+        return false;
+    }
+    niobj = niobj->next;
+
+    const struct rb_callinfo *ci = (const struct rb_callinfo *)OPERAND_AT(niobj, 0);
+    unsigned int flags = vm_ci_flag(ci);
+    if ((flags & set_flags) == set_flags && !(flags & unset_flags)) {
+        RUBY_ASSERT(flags & VM_CALL_ARGS_SPLAT_MUT);
+        OPERAND_AT(iobj, 0) = Qfalse;
+        const struct rb_callinfo *nci = vm_ci_new(vm_ci_mid(ci),
+            flags & ~VM_CALL_ARGS_SPLAT_MUT, vm_ci_argc(ci), vm_ci_kwarg(ci));
+        RB_OBJ_WRITTEN(iseq, ci, nci);
+        OPERAND_AT(niobj, 0) = (VALUE)nci;
+        return true;
+    }
+    return false;
+}
+
 static int
 iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcallopt)
 {
@@ -3344,15 +3365,15 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
     /*
      *  ...
      *  duparray [...]
-     *  concatarray
+     *  concatarray | concattoarray
      * =>
      *  ...
      *  putobject [...]
-     *  concatarray
+     *  concatarray | concattoarray
      */
     if (IS_INSN_ID(iobj, duparray)) {
         LINK_ELEMENT *next = iobj->link.next;
-        if (IS_INSN(next) && IS_INSN_ID(next, concatarray)) {
+        if (IS_INSN(next) && (IS_INSN_ID(next, concatarray) || IS_INSN_ID(next, concattoarray))) {
             iobj->insn_id = BIN(putobject);
         }
     }
@@ -3549,7 +3570,6 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
 
     if (IS_INSN_ID(iobj, newarray) ||
         IS_INSN_ID(iobj, duparray) ||
-        IS_INSN_ID(iobj, expandarray) ||
         IS_INSN_ID(iobj, concatarray) ||
         IS_INSN_ID(iobj, splatarray) ||
         0) {
@@ -3879,58 +3899,46 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
         *  splatarray false
         *  send
         */
-        if (IS_NEXT_INSN_ID(niobj, send)) {
-            niobj = niobj->next;
-            unsigned int flag = vm_ci_flag((const struct rb_callinfo *)OPERAND_AT(niobj, 0));
-            if ((flag & VM_CALL_ARGS_SPLAT) && !(flag & (VM_CALL_KW_SPLAT|VM_CALL_ARGS_BLOCKARG))) {
-                OPERAND_AT(iobj, 0) = Qfalse;
-            }
-        }
-        else if (IS_NEXT_INSN_ID(niobj, getlocal) || IS_NEXT_INSN_ID(niobj, getinstancevariable)) {
+        if (optimize_args_splat_no_copy(iseq, iobj, niobj,
+            VM_CALL_ARGS_SPLAT, VM_CALL_KW_SPLAT|VM_CALL_ARGS_BLOCKARG)) goto optimized_splat;
+
+        if (IS_NEXT_INSN_ID(niobj, getlocal) || IS_NEXT_INSN_ID(niobj, getinstancevariable)) {
             niobj = niobj->next;
 
-            if (IS_NEXT_INSN_ID(niobj, send)) {
-                niobj = niobj->next;
-                unsigned int flag = vm_ci_flag((const struct rb_callinfo *)OPERAND_AT(niobj, 0));
+            /*
+            * Eliminate array allocation for f(1, *a, &lvar) and f(1, *a, &@iv)
+            *
+            *  splatarray true
+            *  getlocal / getinstancevariable
+            *  send ARGS_SPLAT|ARGS_BLOCKARG and not KW_SPLAT
+            * =>
+            *  splatarray false
+            *  getlocal / getinstancevariable
+            *  send
+            */
+            if (optimize_args_splat_no_copy(iseq, iobj, niobj,
+                VM_CALL_ARGS_SPLAT|VM_CALL_ARGS_BLOCKARG, VM_CALL_KW_SPLAT)) goto optimized_splat;
 
-                if ((flag & VM_CALL_ARGS_SPLAT)) {
-                    /*
-                    * Eliminate array allocation for f(1, *a, &lvar) and f(1, *a, &@iv)
-                    *
-                    *  splatarray true
-                    *  getlocal / getinstancevariable
-                    *  send ARGS_SPLAT|ARGS_BLOCKARG and not KW_SPLAT
-                    * =>
-                    *  splatarray false
-                    *  getlocal / getinstancevariable
-                    *  send
-                    */
-                    if ((flag & VM_CALL_ARGS_BLOCKARG) && !(flag & VM_CALL_KW_SPLAT)) {
-                        OPERAND_AT(iobj, 0) = Qfalse;
-                    }
+            /*
+            * Eliminate array allocation for f(*a, **lvar) and f(*a, **@iv)
+            *
+            *  splatarray true
+            *  getlocal / getinstancevariable
+            *  send ARGS_SPLAT|KW_SPLAT and not ARGS_BLOCKARG
+            * =>
+            *  splatarray false
+            *  getlocal / getinstancevariable
+            *  send
+            */
+            if (optimize_args_splat_no_copy(iseq, iobj, niobj,
+                VM_CALL_ARGS_SPLAT|VM_CALL_KW_SPLAT, VM_CALL_ARGS_BLOCKARG)) goto optimized_splat;
 
-                    /*
-                    * Eliminate array allocation for f(*a, **lvar) and f(*a, **@iv)
-                    *
-                    *  splatarray true
-                    *  getlocal / getinstancevariable
-                    *  send ARGS_SPLAT|KW_SPLAT and not ARGS_BLOCKARG
-                    * =>
-                    *  splatarray false
-                    *  getlocal / getinstancevariable
-                    *  send
-                    */
-                    else if (!(flag & VM_CALL_ARGS_BLOCKARG) && (flag & VM_CALL_KW_SPLAT)) {
-                        OPERAND_AT(iobj, 0) = Qfalse;
-                    }
-                }
-            }
-            else if (IS_NEXT_INSN_ID(niobj, getlocal) || IS_NEXT_INSN_ID(niobj, getinstancevariable) ||
-                   IS_NEXT_INSN_ID(niobj, getblockparamproxy)) {
+            if (IS_NEXT_INSN_ID(niobj, getlocal) || IS_NEXT_INSN_ID(niobj, getinstancevariable) ||
+                    IS_NEXT_INSN_ID(niobj, getblockparamproxy)) {
                 niobj = niobj->next;
 
                 /*
-                * Eliminate array allocation for f(*a, **lvar, &lvar) and f(*a, **@iv, &@iv)
+                * Eliminate array allocation for f(*a, **lvar, &{arg,lvar,@iv})
                 *
                 *  splatarray true
                 *  getlocal / getinstancevariable
@@ -3942,40 +3950,24 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
                 *  getlocal / getinstancevariable / getblockparamproxy
                 *  send
                 */
-                if (IS_NEXT_INSN_ID(niobj, send)) {
-                    niobj = niobj->next;
-                    unsigned int flag = vm_ci_flag((const struct rb_callinfo *)OPERAND_AT(niobj, 0));
-
-                    if ((flag & VM_CALL_ARGS_SPLAT) && (flag & VM_CALL_KW_SPLAT) && (flag & VM_CALL_ARGS_BLOCKARG)) {
-                        OPERAND_AT(iobj, 0) = Qfalse;
-                    }
-                }
+                optimize_args_splat_no_copy(iseq, iobj, niobj,
+                    VM_CALL_ARGS_SPLAT|VM_CALL_KW_SPLAT|VM_CALL_ARGS_BLOCKARG, 0);
             }
-        }
-        else if (IS_NEXT_INSN_ID(niobj, getblockparamproxy)) {
-            niobj = niobj->next;
-
-            if (IS_NEXT_INSN_ID(niobj, send)) {
-                niobj = niobj->next;
-                unsigned int flag = vm_ci_flag((const struct rb_callinfo *)OPERAND_AT(niobj, 0));
-
-                /*
-                * Eliminate array allocation for f(1, *a, &arg)
-                *
-                *  splatarray true
-                *  getblockparamproxy
-                *  send ARGS_SPLAT|ARGS_BLOCKARG and not KW_SPLAT
-                * =>
-                *  splatarray false
-                *  getblockparamproxy
-                *  send
-                */
-                if ((flag & VM_CALL_ARGS_BLOCKARG) & (flag & VM_CALL_ARGS_SPLAT) && !(flag & VM_CALL_KW_SPLAT)) {
-                        OPERAND_AT(iobj, 0) = Qfalse;
-                }
-            }
-        }
-        else if (IS_NEXT_INSN_ID(niobj, duphash)) {
+        } else if (IS_NEXT_INSN_ID(niobj, getblockparamproxy)) {
+            /*
+            * Eliminate array allocation for f(1, *a, &arg)
+            *
+            *  splatarray true
+            *  getblockparamproxy
+            *  send ARGS_SPLAT|ARGS_BLOCKARG and not KW_SPLAT
+            * =>
+            *  splatarray false
+            *  getblockparamproxy
+            *  send
+            */
+            optimize_args_splat_no_copy(iseq, iobj, niobj,
+                VM_CALL_ARGS_SPLAT|VM_CALL_ARGS_BLOCKARG, VM_CALL_KW_SPLAT);
+        } else if (IS_NEXT_INSN_ID(niobj, duphash)) {
             niobj = niobj->next;
 
             /*
@@ -3989,21 +3981,13 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
             *  duphash
             *  send
             */
-            if (IS_NEXT_INSN_ID(niobj, send)) {
-                niobj = niobj->next;
-                unsigned int flag = vm_ci_flag((const struct rb_callinfo *)OPERAND_AT(niobj, 0));
+            if (optimize_args_splat_no_copy(iseq, iobj, niobj->next,
+                VM_CALL_ARGS_SPLAT|VM_CALL_KW_SPLAT|VM_CALL_KW_SPLAT_MUT, VM_CALL_ARGS_BLOCKARG)) goto optimized_splat;
 
-                if ((flag & VM_CALL_ARGS_SPLAT) && (flag & VM_CALL_KW_SPLAT) &&
-                        (flag & VM_CALL_KW_SPLAT_MUT) && !(flag & VM_CALL_ARGS_BLOCKARG)) {
-                    OPERAND_AT(iobj, 0) = Qfalse;
-                }
-            }
-            else if (IS_NEXT_INSN_ID(niobj, getlocal) || IS_NEXT_INSN_ID(niobj, getinstancevariable) ||
-                   IS_NEXT_INSN_ID(niobj, getblockparamproxy)) {
-                niobj = niobj->next;
-
+            if (IS_NEXT_INSN_ID(niobj, getlocal) || IS_NEXT_INSN_ID(niobj, getinstancevariable) ||
+                    IS_NEXT_INSN_ID(niobj, getblockparamproxy)) {
                 /*
-                * Eliminate array allocation for f(*a, kw: 1, &lvar) and f(*a, kw: 1, &@iv)
+                * Eliminate array allocation for f(*a, kw: 1, &{arg,lvar,@iv})
                 *
                 *  splatarray true
                 *  duphash
@@ -4015,18 +3999,12 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
                 *  getlocal / getinstancevariable / getblockparamproxy
                 *  send
                 */
-                if (IS_NEXT_INSN_ID(niobj, send)) {
-                    niobj = niobj->next;
-                    unsigned int flag = vm_ci_flag((const struct rb_callinfo *)OPERAND_AT(niobj, 0));
-
-                    if ((flag & VM_CALL_ARGS_SPLAT) && (flag & VM_CALL_KW_SPLAT) &&
-                            (flag & VM_CALL_KW_SPLAT_MUT) && (flag & VM_CALL_ARGS_BLOCKARG)) {
-                        OPERAND_AT(iobj, 0) = Qfalse;
-                    }
-                }
+                optimize_args_splat_no_copy(iseq, iobj, niobj->next,
+                    VM_CALL_ARGS_SPLAT|VM_CALL_KW_SPLAT|VM_CALL_KW_SPLAT_MUT|VM_CALL_ARGS_BLOCKARG, 0);
             }
         }
     }
+  optimized_splat:
 
     return COMPILE_OK;
 }
@@ -4524,6 +4502,7 @@ compile_branch_condition(rb_iseq_t *iseq, LINK_ANCHOR *ret, const NODE *cond,
       case NODE_SYM:
       case NODE_LINE:
       case NODE_FILE:
+      case NODE_ENCODING:
       case NODE_INTEGER:    /* NODE_INTEGER is always true */
       case NODE_FLOAT:      /* NODE_FLOAT is always true */
       case NODE_RATIONAL:   /* NODE_RATIONAL is always true */
@@ -4734,6 +4713,7 @@ static_literal_node_p(const NODE *node, const rb_iseq_t *iseq, bool hash_key)
       case NODE_LIT:
       case NODE_SYM:
       case NODE_LINE:
+      case NODE_ENCODING:
       case NODE_INTEGER:
       case NODE_FLOAT:
       case NODE_RATIONAL:
@@ -4772,6 +4752,8 @@ static_literal_value(const NODE *node, rb_iseq_t *iseq)
         return rb_node_sym_string_val(node);
       case NODE_LINE:
         return rb_node_line_lineno_val(node);
+      case NODE_ENCODING:
+        return rb_node_encoding_val(node);
       case NODE_FILE:
       case NODE_STR:
         if (ISEQ_COMPILE_DATA(iseq)->option->debug_frozen_string_literal || RTEST(ruby_debug)) {
@@ -4792,7 +4774,7 @@ static_literal_value(const NODE *node, rb_iseq_t *iseq)
 }
 
 static int
-compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int popped)
+compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int popped, bool first_chunk)
 {
     const NODE *line_node = node;
 
@@ -4827,8 +4809,8 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
      *
      *   [x1,x2,...,x10000] =>
      *     push x1  ; push x2  ; ...; push x256; newarray 256;
-     *     push x257; push x258; ...; push x512; newarray 256; concatarray;
-     *     push x513; push x514; ...; push x768; newarray 256; concatarray;
+     *     push x257; push x258; ...; push x512; pushtoarray 256;
+     *     push x513; push x514; ...; push x768; pushtoarray 256;
      *     ...
      *
      * - Long subarray can be optimized by pre-allocating a hidden array.
@@ -4838,8 +4820,8 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
      *
      *   [x, 1,2,3,...,100, z] =>
      *     push x; newarray 1;
-     *     putobject [1,2,3,...,100] (<- hidden array); concatarray;
-     *     push z; newarray 1; concatarray
+     *     putobject [1,2,3,...,100] (<- hidden array); concattoarray;
+     *     push z; pushtoarray 1;
      *
      * - If the last element is a keyword, newarraykwsplat should be emitted
      *   to check and remove empty keyword arguments hash from array.
@@ -4852,14 +4834,14 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
     const int max_stack_len = 0x100;
     const int min_tmp_ary_len = 0x40;
     int stack_len = 0;
-    int first_chunk = 1;
 
-    /* Convert pushed elements to an array, and concatarray if needed */
-#define FLUSH_CHUNK(newarrayinsn)                               \
+    /* Either create a new array, or push to the existing array */
+#define FLUSH_CHUNK \
     if (stack_len) {                                            \
-        ADD_INSN1(ret, line_node, newarrayinsn, INT2FIX(stack_len)); \
-        if (!first_chunk) ADD_INSN(ret, line_node, concatarray);     \
-        first_chunk = stack_len = 0;                            \
+        if (first_chunk) ADD_INSN1(ret, line_node, newarray, INT2FIX(stack_len)); \
+        else ADD_INSN1(ret, line_node, pushtoarray, INT2FIX(stack_len));     \
+        first_chunk = FALSE; \
+        stack_len = 0;                            \
     }
 
     while (node) {
@@ -4882,14 +4864,14 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
                 OBJ_FREEZE(ary);
 
                 /* Emit optimized code */
-                FLUSH_CHUNK(newarray);
+                FLUSH_CHUNK;
                 if (first_chunk) {
                     ADD_INSN1(ret, line_node, duparray, ary);
-                    first_chunk = 0;
+                    first_chunk = FALSE;
                 }
                 else {
                     ADD_INSN1(ret, line_node, putobject, ary);
-                    ADD_INSN(ret, line_node, concatarray);
+                    ADD_INSN(ret, line_node, concattoarray);
                 }
                 RB_OBJ_WRITTEN(iseq, Qundef, ary);
             }
@@ -4906,36 +4888,18 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
 
             if (!RNODE_LIST(node)->nd_next && keyword_node_p(RNODE_LIST(node)->nd_head)) {
                 /* Reached the end, and the last element is a keyword */
-                FLUSH_CHUNK(newarraykwsplat);
+                ADD_INSN1(ret, line_node, newarraykwsplat, INT2FIX(stack_len));
+                if (!first_chunk) ADD_INSN(ret, line_node, concattoarray);
                 return 1;
             }
 
             /* If there are many pushed elements, flush them to avoid stack overflow */
-            if (stack_len >= max_stack_len) FLUSH_CHUNK(newarray);
+            if (stack_len >= max_stack_len) FLUSH_CHUNK;
         }
     }
 
-    FLUSH_CHUNK(newarray);
+    FLUSH_CHUNK;
 #undef FLUSH_CHUNK
-    return 1;
-}
-
-/* Compile an array containing the single element represented by node */
-static int
-compile_array_1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node)
-{
-    if (static_literal_node_p(node, iseq, false)) {
-        VALUE ary = rb_ary_hidden_new(1);
-        rb_ary_push(ary, static_literal_value(node, iseq));
-        OBJ_FREEZE(ary);
-
-        ADD_INSN1(ret, node, duparray, ary);
-    }
-    else {
-        CHECK(COMPILE_(ret, "array element", node, FALSE));
-        ADD_INSN1(ret, node, newarray, INT2FIX(1));
-    }
-
     return 1;
 }
 
@@ -5424,11 +5388,31 @@ compile_massign_lhs(rb_iseq_t *iseq, LINK_ANCHOR *const pre, LINK_ANCHOR *const 
         ADD_ELEM(lhs, (LINK_ELEMENT *)iobj);
         if (vm_ci_flag(ci) & VM_CALL_ARGS_SPLAT) {
             int argc = vm_ci_argc(ci);
+            bool dupsplat = false;
             ci = ci_argc_set(iseq, ci, argc - 1);
+            if (!(vm_ci_flag(ci) & VM_CALL_ARGS_SPLAT_MUT)) {
+                /* Given h[*a], _ = ary
+                 * setup_args sets VM_CALL_ARGS_SPLAT and not VM_CALL_ARGS_SPLAT_MUT
+                 * `a` must be dupped, because it will be appended with ary[0]
+                 * Since you are dupping `a`, you can set VM_CALL_ARGS_SPLAT_MUT
+                 */
+                dupsplat = true;
+                ci = ci_flag_set(iseq, ci, VM_CALL_ARGS_SPLAT_MUT);
+            }
             OPERAND_AT(iobj, 0) = (VALUE)ci;
             RB_OBJ_WRITTEN(iseq, Qundef, ci);
-            INSERT_BEFORE_INSN1(iobj, line_node, newarray, INT2FIX(1));
-            INSERT_BEFORE_INSN(iobj, line_node, concatarray);
+            /* Given: h[*a], h[*b, 1] = ary
+             *  h[*a] uses splatarray false and does not set VM_CALL_ARGS_SPLAT_MUT,
+             *    so this uses splatarray true on a to dup it before using pushtoarray
+             *  h[*b, 1] uses splatarray true and sets VM_CALL_ARGS_SPLAT_MUT,
+             *    so you can use pushtoarray directly
+             */
+            if (dupsplat) {
+                INSERT_BEFORE_INSN(iobj, line_node, swap);
+                INSERT_BEFORE_INSN1(iobj, line_node, splatarray, Qtrue);
+                INSERT_BEFORE_INSN(iobj, line_node, swap);
+            }
+            INSERT_BEFORE_INSN1(iobj, line_node, pushtoarray, INT2FIX(1));
         }
         ADD_INSN(lhs, line_node, pop);
         if (argc != 1) {
@@ -5802,6 +5786,7 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
       case NODE_SYM:
       case NODE_LINE:
       case NODE_FILE:
+      case NODE_ENCODING:
       case NODE_INTEGER:
       case NODE_FLOAT:
       case NODE_RATIONAL:
@@ -6194,18 +6179,23 @@ setup_args_core(rb_iseq_t *iseq, LINK_ANCHOR *const args, const NODE *argn,
         // f(*a)
         NO_CHECK(COMPILE(args, "args (splat)", RNODE_SPLAT(argn)->nd_head));
         ADD_INSN1(args, argn, splatarray, RBOOL(dup_rest));
-        if (flag_ptr) *flag_ptr |= VM_CALL_ARGS_SPLAT;
+        if (flag_ptr)  {
+            *flag_ptr |= VM_CALL_ARGS_SPLAT;
+            if (dup_rest) *flag_ptr |= VM_CALL_ARGS_SPLAT_MUT;
+        }
         RUBY_ASSERT(flag_ptr == NULL || (*flag_ptr & VM_CALL_KW_SPLAT) == 0);
         return 1;
       }
       case NODE_ARGSCAT: {
-        if (flag_ptr) *flag_ptr |= VM_CALL_ARGS_SPLAT;
+        if (flag_ptr) *flag_ptr |= VM_CALL_ARGS_SPLAT | VM_CALL_ARGS_SPLAT_MUT;
         int argc = setup_args_core(iseq, args, RNODE_ARGSCAT(argn)->nd_head, 1, NULL, NULL);
+        bool args_pushed = false;
 
         if (nd_type_p(RNODE_ARGSCAT(argn)->nd_body, NODE_LIST)) {
             int rest_len = compile_args(iseq, args, RNODE_ARGSCAT(argn)->nd_body, &kwnode);
             if (kwnode) rest_len--;
-            ADD_INSN1(args, argn, newarray, INT2FIX(rest_len));
+            ADD_INSN1(args, argn, pushtoarray, INT2FIX(rest_len));
+            args_pushed = true;
         }
         else {
             RUBY_ASSERT(!check_keyword(RNODE_ARGSCAT(argn)->nd_body));
@@ -6216,9 +6206,8 @@ setup_args_core(rb_iseq_t *iseq, LINK_ANCHOR *const args, const NODE *argn,
             ADD_INSN1(args, argn, splatarray, Qtrue);
             argc += 1;
         }
-        else {
-            ADD_INSN1(args, argn, splatarray, Qfalse);
-            ADD_INSN(args, argn, concatarray);
+        else if (!args_pushed) {
+            ADD_INSN(args, argn, concattoarray);
         }
 
         // f(..., *a, ..., k1:1, ...) #=> f(..., *[*a, ...], **{k1:1, ...})
@@ -6233,15 +6222,14 @@ setup_args_core(rb_iseq_t *iseq, LINK_ANCHOR *const args, const NODE *argn,
         return argc;
       }
       case NODE_ARGSPUSH: {
-        if (flag_ptr) *flag_ptr |= VM_CALL_ARGS_SPLAT;
+        if (flag_ptr) *flag_ptr |= VM_CALL_ARGS_SPLAT | VM_CALL_ARGS_SPLAT_MUT;
         int argc = setup_args_core(iseq, args, RNODE_ARGSPUSH(argn)->nd_head, 1, NULL, NULL);
 
         if (nd_type_p(RNODE_ARGSPUSH(argn)->nd_body, NODE_LIST)) {
             int rest_len = compile_args(iseq, args, RNODE_ARGSPUSH(argn)->nd_body, &kwnode);
             if (kwnode) rest_len--;
             ADD_INSN1(args, argn, newarray, INT2FIX(rest_len));
-            ADD_INSN1(args, argn, newarray, INT2FIX(1));
-            ADD_INSN(args, argn, concatarray);
+            ADD_INSN1(args, argn, pushtoarray, INT2FIX(1));
         }
         else {
             if (keyword_node_p(RNODE_ARGSPUSH(argn)->nd_body)) {
@@ -6249,8 +6237,7 @@ setup_args_core(rb_iseq_t *iseq, LINK_ANCHOR *const args, const NODE *argn,
             }
             else {
                 NO_CHECK(COMPILE(args, "args (cat: splat)", RNODE_ARGSPUSH(argn)->nd_body));
-                ADD_INSN1(args, argn, newarray, INT2FIX(1));
-                ADD_INSN(args, argn, concatarray);
+                ADD_INSN1(args, argn, pushtoarray, INT2FIX(1));
             }
         }
 
@@ -7235,6 +7222,7 @@ iseq_compile_pattern_each(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *c
       case NODE_RATIONAL:
       case NODE_IMAGINARY:
       case NODE_FILE:
+      case NODE_ENCODING:
       case NODE_STR:
       case NODE_XSTR:
       case NODE_DSTR:
@@ -8279,7 +8267,7 @@ compile_resbody(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node,
         }
         ADD_INSN(ret, line_node, leave);
         ADD_LABEL(ret, label_miss);
-        resq = RNODE_RESBODY(resq)->nd_head;
+        resq = RNODE_RESBODY(resq)->nd_next;
     }
     return COMPILE_OK;
 }
@@ -8641,6 +8629,9 @@ compile_builtin_attr(rb_iseq_t *iseq, const NODE *node)
         if (strcmp(RSTRING_PTR(string), "leaf") == 0) {
             ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_LEAF;
         }
+        else if (strcmp(RSTRING_PTR(string), "inline_block") == 0) {
+            ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_INLINE_BLOCK;
+        }
         else {
             goto unknown_arg;
         }
@@ -8791,7 +8782,6 @@ compile_builtin_function_call(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NOD
             }
             else if (strcmp("cinit!", builtin_func) == 0) {
                 // ignore
-                GET_VM()->builtin_inline_index++;
                 return COMPILE_OK;
             }
             else if (strcmp("attr!", builtin_func) == 0) {
@@ -8819,10 +8809,7 @@ compile_builtin_function_call(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NOD
                 return COMPILE_NG;
             }
 
-            if (GET_VM()->builtin_inline_index == INT_MAX) {
-                rb_bug("builtin inline function index overflow:%s", builtin_func);
-            }
-            int inline_index = GET_VM()->builtin_inline_index++;
+            int inline_index = nd_line(node);
             snprintf(inline_func, sizeof(inline_func), BUILTIN_INLINE_PREFIX "%d", inline_index);
             builtin_func = inline_func;
             args_node = NULL;
@@ -9085,7 +9072,7 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
     }
     ADD_INSN1(ret, node, dupn, INT2FIX(dup_argn));
     flag |= asgnflag;
-    ADD_SEND_R(ret, node, idAREF, argc, NULL, INT2FIX(flag & ~VM_CALL_KW_SPLAT_MUT), keywords);
+    ADD_SEND_R(ret, node, idAREF, argc, NULL, INT2FIX(flag & ~(VM_CALL_ARGS_SPLAT_MUT|VM_CALL_KW_SPLAT_MUT)), keywords);
 
     if (id == idOROP || id == idANDOP) {
         /* a[x] ||= y  or  a[x] &&= y
@@ -9115,20 +9102,28 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
         if (flag & VM_CALL_ARGS_SPLAT) {
             if (flag & VM_CALL_KW_SPLAT) {
                 ADD_INSN1(ret, node, topn, INT2FIX(2 + boff));
+                if (!(flag & VM_CALL_ARGS_SPLAT_MUT)) {
+                    ADD_INSN1(ret, node, splatarray, Qtrue);
+                    flag |= VM_CALL_ARGS_SPLAT_MUT;
+                }
                 ADD_INSN(ret, node, swap);
-                ADD_INSN1(ret, node, newarray, INT2FIX(1));
-                ADD_INSN(ret, node, concatarray);
+                ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
                 ADD_INSN1(ret, node, setn, INT2FIX(2 + boff));
                 ADD_INSN(ret, node, pop);
             }
             else {
-                ADD_INSN1(ret, node, newarray, INT2FIX(1));
                 if (boff > 0) {
                     ADD_INSN1(ret, node, dupn, INT2FIX(3));
                     ADD_INSN(ret, node, swap);
                     ADD_INSN(ret, node, pop);
                 }
-                ADD_INSN(ret, node, concatarray);
+                if (!(flag & VM_CALL_ARGS_SPLAT_MUT)) {
+                    ADD_INSN(ret, node, swap);
+                    ADD_INSN1(ret, node, splatarray, Qtrue);
+                    ADD_INSN(ret, node, swap);
+                    flag |= VM_CALL_ARGS_SPLAT_MUT;
+                }
+                ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
                 if (boff > 0) {
                     ADD_INSN1(ret, node, setn, INT2FIX(3));
                     ADD_INSN(ret, node, pop);
@@ -9175,20 +9170,28 @@ compile_op_asgn1(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
         if (flag & VM_CALL_ARGS_SPLAT) {
             if (flag & VM_CALL_KW_SPLAT) {
                 ADD_INSN1(ret, node, topn, INT2FIX(2 + boff));
+                if (!(flag & VM_CALL_ARGS_SPLAT_MUT)) {
+                    ADD_INSN1(ret, node, splatarray, Qtrue);
+                    flag |= VM_CALL_ARGS_SPLAT_MUT;
+                }
                 ADD_INSN(ret, node, swap);
-                ADD_INSN1(ret, node, newarray, INT2FIX(1));
-                ADD_INSN(ret, node, concatarray);
+                ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
                 ADD_INSN1(ret, node, setn, INT2FIX(2 + boff));
                 ADD_INSN(ret, node, pop);
             }
             else {
-                ADD_INSN1(ret, node, newarray, INT2FIX(1));
                 if (boff > 0) {
                     ADD_INSN1(ret, node, dupn, INT2FIX(3));
                     ADD_INSN(ret, node, swap);
                     ADD_INSN(ret, node, pop);
                 }
-                ADD_INSN(ret, node, concatarray);
+                if (!(flag & VM_CALL_ARGS_SPLAT_MUT)) {
+                    ADD_INSN(ret, node, swap);
+                    ADD_INSN1(ret, node, splatarray, Qtrue);
+                    ADD_INSN(ret, node, swap);
+                    flag |= VM_CALL_ARGS_SPLAT_MUT;
+                }
+                ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
                 if (boff > 0) {
                     ADD_INSN1(ret, node, setn, INT2FIX(3));
                     ADD_INSN(ret, node, pop);
@@ -9549,14 +9552,11 @@ compile_super(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, i
             if (local_body->param.flags.has_kwrest) {
                 int idx = local_body->local_table_size - local_kwd->rest_start;
                 ADD_GETLOCAL(args, node, idx, lvar_level);
-                if (local_kwd->num > 0) {
-                    ADD_SEND (args, node, rb_intern("dup"), INT2FIX(0));
-                    flag |= VM_CALL_KW_SPLAT_MUT;
-                }
+                assert(local_kwd->num > 0);
+                ADD_SEND (args, node, rb_intern("dup"), INT2FIX(0));
             }
             else {
                 ADD_INSN1(args, node, newhash, INT2FIX(0));
-                flag |= VM_CALL_KW_SPLAT_MUT;
             }
             for (i = 0; i < local_kwd->num; ++i) {
                 ID id = local_kwd->table[i];
@@ -9565,13 +9565,13 @@ compile_super(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, i
                 ADD_GETLOCAL(args, node, idx, lvar_level);
             }
             ADD_SEND(args, node, id_core_hash_merge_ptr, INT2FIX(i * 2 + 1));
-            flag |= VM_CALL_KW_SPLAT;
+            flag |= VM_CALL_KW_SPLAT| VM_CALL_KW_SPLAT_MUT;
         }
         else if (local_body->param.flags.has_kwrest) {
             int idx = local_body->local_table_size - local_kwd->rest_start;
             ADD_GETLOCAL(args, node, idx, lvar_level);
             argc++;
-            flag |= VM_CALL_KW_SPLAT | VM_CALL_KW_SPLAT_MUT;
+            flag |= VM_CALL_KW_SPLAT;
         }
     }
 
@@ -10166,7 +10166,7 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
         CHECK(compile_super(iseq, ret, node, popped, type));
         break;
       case NODE_LIST:{
-        CHECK(compile_array(iseq, ret, node, popped) >= 0);
+        CHECK(compile_array(iseq, ret, node, popped, TRUE) >= 0);
         break;
       }
       case NODE_ZLIST:{
@@ -10288,6 +10288,12 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
       case NODE_LINE:{
         if (!popped) {
             ADD_INSN1(ret, node, putobject, rb_node_line_lineno_val(node));
+        }
+        break;
+      }
+      case NODE_ENCODING:{
+        if (!popped) {
+            ADD_INSN1(ret, node, putobject, rb_node_encoding_val(node));
         }
         break;
       }
@@ -10413,8 +10419,14 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
         }
         else {
             CHECK(COMPILE(ret, "argscat head", RNODE_ARGSCAT(node)->nd_head));
-            CHECK(COMPILE(ret, "argscat body", RNODE_ARGSCAT(node)->nd_body));
-            ADD_INSN(ret, node, concatarray);
+            const NODE *body_node = RNODE_ARGSCAT(node)->nd_body;
+            if (nd_type_p(body_node, NODE_LIST)) {
+                CHECK(compile_array(iseq, ret, body_node, popped, FALSE) >= 0);
+            }
+            else {
+                CHECK(COMPILE(ret, "argscat body", body_node));
+                ADD_INSN(ret, node, concattoarray);
+            }
         }
         break;
       }
@@ -10427,8 +10439,14 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
         }
         else {
             CHECK(COMPILE(ret, "argspush head", RNODE_ARGSPUSH(node)->nd_head));
-            CHECK(compile_array_1(iseq, ret, RNODE_ARGSPUSH(node)->nd_body));
-            ADD_INSN(ret, node, concatarray);
+            const NODE *body_node = RNODE_ARGSPUSH(node)->nd_body;
+            if (static_literal_node_p(body_node, iseq, false)) {
+                ADD_INSN1(ret, body_node, putobject, static_literal_value(body_node, iseq));
+            }
+            else {
+                CHECK(COMPILE_(ret, "array element", body_node, FALSE));
+            }
+            ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
         }
         break;
       }
@@ -10839,7 +10857,7 @@ dump_disasm_list_with_cursor(const LINK_ELEMENT *link, const LINK_ELEMENT *curr,
           case ISEQ_ELEMENT_LABEL:
             {
                 lobj = (LABEL *)link;
-                printf(LABEL_FORMAT" [sp: %d]%s\n", lobj->label_no, lobj->sp,
+                printf(LABEL_FORMAT" [sp: %d, unremovable: %d, refcnt: %d]%s\n", lobj->label_no, lobj->sp, lobj->unremovable, lobj->refcnt,
                        dest == lobj ? " <---" : "");
                 break;
             }
@@ -12869,6 +12887,8 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     load_body->param.flags.ambiguous_param0 = (param_flags >> 7) & 1;
     load_body->param.flags.accepts_no_kwarg = (param_flags >> 8) & 1;
     load_body->param.flags.ruby2_keywords = (param_flags >> 9) & 1;
+    load_body->param.flags.anon_rest = (param_flags >> 10) & 1;
+    load_body->param.flags.anon_kwrest = (param_flags >> 11) & 1;
     load_body->param.size = param_size;
     load_body->param.lead_num = param_lead_num;
     load_body->param.opt_num = param_opt_num;

@@ -255,7 +255,7 @@
         │   │           │               └── @ AssocNode (location: (25,4)-(25,6))
         │   │           │                   ├── key:
         │   │           │                   │   @ SymbolNode (location: (25,4)-(25,6))
-        │   │           │                   │   ├── flags: ∅
+        │   │           │                   │   ├── flags: forced_us_ascii_encoding
         │   │           │                   │   ├── opening_loc: ∅
         │   │           │                   │   ├── value_loc: (25,4)-(25,5) = "b"
         │   │           │                   │   ├── closing_loc: (25,5)-(25,6) = ":"
@@ -349,7 +349,6 @@
             │           └── block:
             │               @ BlockNode (location: (34,9)-(35,5))
             │               ├── locals: [:_]
-            │               ├── locals_body_index: 1
             │               ├── parameters:
             │               │   @ BlockParametersNode (location: (34,12)-(34,15))
             │               │   ├── parameters:
@@ -392,7 +391,6 @@
             │   │           └── block:
             │   │               @ BlockNode (location: (37,9)-(38,5))
             │   │               ├── locals: [:_]
-            │   │               ├── locals_body_index: 1
             │   │               ├── parameters:
             │   │               │   @ BlockParametersNode (location: (37,12)-(37,15))
             │   │               │   ├── parameters:
@@ -431,7 +429,6 @@
             │   │   │           └── block:
             │   │   │               @ BlockNode (location: (40,9)-(41,5))
             │   │   │               ├── locals: [:_]
-            │   │   │               ├── locals_body_index: 1
             │   │   │               ├── parameters:
             │   │   │               │   @ BlockParametersNode (location: (40,12)-(40,15))
             │   │   │               │   ├── parameters:

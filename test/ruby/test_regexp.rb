@@ -1807,6 +1807,23 @@ class TestRegexp < Test::Unit::TestCase
     end;
   end
 
+  def test_s_timeout_memory_leak
+    assert_no_memory_leak([], "#{<<~"begin;"}", "#{<<~"end;"}", "[Bug #20228]", rss: true)
+      Regexp.timeout = 0.001
+      regex = /^(a*)*$/
+      str = "a" * 1000000 + "x"
+
+      code = proc do
+        regex =~ str
+      rescue
+      end
+
+      10.times(&code)
+    begin;
+      1_000.times(&code)
+    end;
+  end
+
   def per_instance_redos_test(global_timeout, per_instance_timeout, expected_timeout)
     assert_separately([], "#{<<-"begin;"}\n#{<<-'end;'}")
       global_timeout = #{ EnvUtil.apply_timeout_scale(global_timeout).inspect }
@@ -2014,6 +2031,18 @@ class TestRegexp < Test::Unit::TestCase
     assert(/a(b+?(.|.)){2,3}z/.match? 'abbbcbbbcbbbcz')
     assert(/a(b*?(.|.)[bc]){2,5}z/.match? 'abcbbbcbcccbcz')
     assert(/^(?:.+){2,4}?b|b/.match? "aaaabaa")
+  end
+
+  def test_bug_20207 # [Bug #20207]
+    assert(!'clan'.match?(/(?=.*a)(?!.*n)/))
+  end
+
+  def test_bug_20212 # [Bug #20212]
+    regex = Regexp.new(
+      /\A((?=.*?[a-z])(?!.*--)[a-z\d]+[a-z\d-]*[a-z\d]+).((?=.*?[a-z])(?!.*--)[a-z\d]+[a-z\d-]*[a-z\d]+).((?=.*?[a-z])(?!.*--)[a-z]+[a-z-]*[a-z]+).((?=.*?[a-z])(?!.*--)[a-z]+[a-z-]*[a-z]+)\Z/x
+    )
+    string = "www.google.com"
+    100.times.each { assert(regex.match?(string)) }
   end
 
   def test_linear_time_p

@@ -1800,13 +1800,11 @@ io_binwrite_string(VALUE arg)
         // Write as much as possible:
         ssize_t result = io_binwrite_string_internal(p->fptr, ptr, remaining);
 
-        // If only the internal buffer is written, result will be zero [bytes of given data written]. This means we
-        // should try again.
         if (result == 0) {
-            errno = EWOULDBLOCK;
+            // If only the internal buffer is written, result will be zero [bytes of given data written]. This means we
+            // should try again immediately.
         }
-
-        if (result > 0) {
+        else if (result > 0) {
             if ((size_t)result == remaining) break;
             ptr += result;
             remaining -= result;
@@ -1977,7 +1975,7 @@ io_fwrite(VALUE str, rb_io_t *fptr, int nosync)
     if (converted)
         OBJ_FREEZE(str);
 
-    tmp = rb_str_tmp_frozen_acquire(str);
+    tmp = rb_str_tmp_frozen_no_embed_acquire(str);
     RSTRING_GETMEM(tmp, ptr, len);
     n = io_binwrite(tmp, ptr, len, fptr, nosync);
     rb_str_tmp_frozen_release(str, tmp);
@@ -5429,7 +5427,7 @@ maygvl_close(int fd, int keepgvl)
      * close() may block for certain file types (NFS, SO_LINGER sockets,
      * inotify), so let other threads run.
      */
-    return (int)(intptr_t)rb_thread_call_without_gvl(nogvl_close, &fd, RUBY_UBF_IO, 0);
+    return IO_WITHOUT_GVL_INT(nogvl_close, &fd);
 }
 
 static void*
@@ -5446,7 +5444,7 @@ maygvl_fclose(FILE *file, int keepgvl)
     if (keepgvl)
         return fclose(file);
 
-    return (int)(intptr_t)rb_thread_call_without_gvl(nogvl_fclose, file, RUBY_UBF_IO, 0);
+    return IO_WITHOUT_GVL_INT(nogvl_fclose, file);
 }
 
 static void free_io_buffer(rb_io_buffer_t *buf);
@@ -6967,8 +6965,7 @@ sysopen_func(void *ptr)
 static inline int
 rb_sysopen_internal(struct sysopen_struct *data)
 {
-    int fd;
-    fd = (int)(VALUE)rb_thread_call_without_gvl(sysopen_func, data, RUBY_UBF_IO, 0);
+    int fd = IO_WITHOUT_GVL_INT(sysopen_func, data);
     if (0 <= fd)
         rb_update_max_fd(fd);
     return fd;
@@ -13260,7 +13257,7 @@ copy_stream_body(VALUE arg)
         return copy_stream_fallback(stp);
     }
 
-    rb_thread_call_without_gvl(nogvl_copy_stream_func, (void*)stp, RUBY_UBF_IO, 0);
+    IO_WITHOUT_GVL(nogvl_copy_stream_func, stp);
     return Qnil;
 }
 
