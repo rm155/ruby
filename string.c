@@ -412,7 +412,6 @@ rb_fstring(VALUE str)
     }
 
     rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
-    rb_ractor_t *str_ractor = get_ractor_of_value(str);
 
     if (!FL_TEST_RAW(str, FL_FREEZE | STR_NOFREE))
         rb_str_resize(str, RSTRING_LEN(str));

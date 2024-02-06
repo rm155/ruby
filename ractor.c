@@ -2133,7 +2133,11 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         ractor_status_set(cr, ractor_terminated);
 	
 	unlock_ractor_set();
-	if (!cr->local_objspace) rb_remove_from_contained_ractor_tbl(cr);
+	if (cr->objspace_absorbed) {
+	    rb_remove_from_contained_ractor_tbl(cr);
+	    rb_objspace_free(cr->local_objspace);
+	    cr->local_objspace = NULL;
+	}
     }
     RB_VM_UNLOCK();
 

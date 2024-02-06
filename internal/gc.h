@@ -135,6 +135,7 @@ struct rb_objspace; /* in vm_core.h */
 typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
 typedef struct rb_thread_struct rb_thread_t; /* in vm_core.h */
 
+void rb_ractor_sched_signal_possible_waiters(rb_vm_t *vm);
 
 void rb_register_new_external_reference(struct rb_objspace *receiving_objspace, VALUE obj);
 void rb_add_zombie_thread(rb_thread_t *th);
@@ -159,7 +160,7 @@ typedef enum {
     OGS_FLAG_RUNNING_LOCAL_GC      = 0x010,
     OGS_FLAG_RUNNING_GLOBAL_GC     = 0x020,
     OGS_FLAG_ABSORBING_OBJSPACE    = 0x040,
-    OGS_FLAG_VM_COND_AND_BARRIER   = 0x080,
+    OGS_FLAG_COND_AND_BARRIER      = 0x080,
 };
 
 struct rb_order_chain_node {

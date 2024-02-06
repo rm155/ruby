@@ -237,6 +237,8 @@ struct rb_ractor_struct {
     struct rb_order_chain_node *oc_node;
 
     VALUE result_value;
+
+    bool objspace_absorbed;
 }; // rb_ractor_t is defined in vm_core.h
 
 

@@ -827,6 +827,13 @@ typedef struct rb_global_space {
     struct rb_order_chain_node *order_chain_head_node;
     rb_nativethread_lock_t order_chain_lock;
     rb_nativethread_cond_t order_chain_removal_cond;
+
+    struct {
+	rb_nativethread_lock_t mode_lock;
+	rb_nativethread_cond_t mode_change_cond;
+	int objspace_readers;
+	int absorbers;
+    } absorption;
 } rb_global_space_t;
 
 typedef struct rb_objspace {
@@ -1027,6 +1034,8 @@ typedef struct rb_objspace {
     bool external_writebarrier_allowed;
     rb_nativethread_lock_t external_writebarrier_allowed_lock;
     rb_nativethread_cond_t external_writebarrier_allowed_cond;
+
+    bool currently_absorbing;
 } rb_objspace_t;
 
 static void
@@ -1709,23 +1718,58 @@ static void end_global_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, unsigned
 # define BARRIER_WAITING(vm) (vm->ractor.sync.barrier_waiting)
 #endif
 
+static void
+barrier_join_within_vm_lock(rb_vm_t *vm, rb_ractor_t *cr)
+{
+    RUBY_DEBUG_LOG("barrier serial:%u", vm->ractor.sched.barrier_serial);
+    int lock_rec = vm->ractor.sync.lock_rec;
+    rb_ractor_t *lock_owner = vm->ractor.sync.lock_owner;
+    vm->ractor.sync.lock_rec = 0;
+    vm->ractor.sync.lock_owner = NULL;
+    rb_ractor_sched_barrier_join(vm, cr);
+    vm->ractor.sync.lock_rec = lock_rec;
+    vm->ractor.sync.lock_owner = lock_owner;
+}
+
 #define VM_COND_AND_BARRIER_WAIT(vm, cond, state_to_check) do { \
     ASSERT_vm_locking(); \
-    rb_ractor_object_graph_safety_advance(GET_RACTOR(), OGS_FLAG_VM_COND_AND_BARRIER); \
+    rb_ractor_t *_cr = GET_RACTOR(); \
+    rb_ractor_object_graph_safety_advance(_cr, OGS_FLAG_COND_AND_BARRIER); \
     while (BARRIER_WAITING(vm)) { \
-	RUBY_DEBUG_LOG("barrier serial:%u", vm->ractor.sched.barrier_serial); \
-	int lock_rec = vm->ractor.sync.lock_rec; \
-	rb_ractor_t *lock_owner = vm->ractor.sync.lock_owner; \
-	vm->ractor.sync.lock_rec = 0; \
-	vm->ractor.sync.lock_owner = NULL; \
-	rb_ractor_sched_barrier_join(vm, GET_RACTOR()); \
-	vm->ractor.sync.lock_rec = lock_rec; \
-	vm->ractor.sync.lock_owner = lock_owner; \
+	barrier_join_within_vm_lock(vm, _cr); \
     } \
-    if(state_to_check) break; \
-    rb_vm_cond_wait(vm, &cond); \
-    rb_ractor_object_graph_safety_withdraw(GET_RACTOR(), OGS_FLAG_VM_COND_AND_BARRIER); \
-} while(!state_to_check || BARRIER_WAITING(vm))
+    bool _need_repeat = true; \
+    if(state_to_check) { \
+	_need_repeat = false; \
+    } \
+    else { \
+	rb_vm_cond_wait(vm, &cond); \
+	_need_repeat = !state_to_check || BARRIER_WAITING(vm); \
+    } \
+    rb_ractor_object_graph_safety_withdraw(_cr, OGS_FLAG_COND_AND_BARRIER); \
+    if (!_need_repeat) break; \
+} while(true)
+
+#define COND_AND_BARRIER_WAIT(vm, lock, cond, state_to_check) do { \
+    ASSERT_vm_locking(); \
+    rb_ractor_t *_cr = GET_RACTOR(); \
+    rb_ractor_object_graph_safety_advance(_cr, OGS_FLAG_COND_AND_BARRIER); \
+    while (BARRIER_WAITING(vm)) { \
+	rb_native_mutex_unlock(&lock); \
+	barrier_join_within_vm_lock(vm, _cr); \
+	rb_native_mutex_lock(&lock); \
+    } \
+    bool _need_repeat = true; \
+    if(state_to_check) { \
+	_need_repeat = false; \
+    } \
+    else { \
+	rb_native_cond_wait(&cond, &lock); \
+	_need_repeat = !state_to_check || BARRIER_WAITING(vm); \
+    } \
+    rb_ractor_object_graph_safety_withdraw(_cr, OGS_FLAG_COND_AND_BARRIER); \
+    if (!_need_repeat) break; \
+} while(true)
 
 #define LOCAL_GC_BEGIN(objspace) \
 { \
@@ -2000,105 +2044,180 @@ static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
 static void rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap);
 
+static void
+objspace_absorb_enter(rb_global_space_t *global_space)
+{
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    ASSERT_vm_locking();
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    COND_AND_BARRIER_WAIT(GET_VM(), global_space->absorption.mode_lock, global_space->absorption.mode_change_cond, global_space->absorption.objspace_readers == 0);
+
+    global_space->absorption.absorbers++;
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+static void
+objspace_absorb_leave(rb_global_space_t *global_space)
+{
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    global_space->absorption.absorbers--;
+    if (global_space->absorption.absorbers == 0) {
+	rb_native_cond_broadcast(&global_space->absorption.mode_change_cond);
+    }
+
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+static void
+objspace_read_enter(rb_global_space_t *global_space)
+{
+    rb_objspace_t *current_objspace = &rb_objspace;
+    if (current_objspace && current_objspace->currently_absorbing) return;
+    
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    while (global_space->absorption.absorbers > 0) {
+	rb_native_cond_wait(&global_space->absorption.mode_change_cond, &global_space->absorption.mode_lock);
+    }
+    global_space->absorption.objspace_readers++;
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+static void
+objspace_read_leave(rb_global_space_t *global_space)
+{
+    rb_objspace_t *current_objspace = &rb_objspace;
+    if (current_objspace && current_objspace->currently_absorbing) return;
+    
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    global_space->absorption.objspace_readers--;
+    if (global_space->absorption.objspace_readers == 0) {
+	rb_native_cond_broadcast(&global_space->absorption.mode_change_cond);
+    }
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+#define WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace) { \
+    rb_global_space_t *_global_space = &rb_global_space; \
+    objspace_read_enter(_global_space); \
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj); \
+
+#define WITH_OBJSPACE_OF_VALUE_LEAVE(objspace) \
+    objspace_read_leave(_global_space); \
+}
+
 static int
 check_rvalue_consistency_force(const VALUE obj, int terminate)
 {
     int err = 0;
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
 
-    HEAP_LOCK_ENTER(objspace);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
     {
-        if (SPECIAL_CONST_P(obj)) {
-            fprintf(stderr, "check_rvalue_consistency: %p is a special const.\n", (void *)obj);
-            err++;
-        }
-        else if (!is_pointer_to_heap(objspace, (void *)obj)) {
-            /* check if it is in tomb_pages */
-            struct heap_page *page = NULL;
-            for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-                rb_size_pool_t *size_pool = &size_pools[i];
-                ccan_list_for_each(&size_pool->tomb_heap.pages, page, page_node) {
-                    if (page->start <= (uintptr_t)obj &&
-                            (uintptr_t)obj < (page->start + (page->total_slots * size_pool->slot_size))) {
-                        fprintf(stderr, "check_rvalue_consistency: %p is in a tomb_heap (%p).\n",
-                                (void *)obj, (void *)page);
-                        err++;
-                        goto skip;
-                    }
-                }
-            }
-            bp();
-            fprintf(stderr, "check_rvalue_consistency: %p is not a Ruby object.\n", (void *)obj);
-            err++;
-          skip:
-            ;
-        }
-        else {
-            const int wb_unprotected_bit = RVALUE_WB_UNPROTECTED_BITMAP(obj) != 0;
-            const int uncollectible_bit = RVALUE_UNCOLLECTIBLE_BITMAP(obj) != 0;
-            const int mark_bit = RVALUE_MARK_BITMAP(obj) != 0;
-            const int marking_bit = RVALUE_MARKING_BITMAP(obj) != 0;
-            const int remembered_bit = MARKED_IN_BITMAP(GET_HEAP_PAGE(obj)->remembered_bits, obj) != 0;
-            const int age = RVALUE_AGE_GET((VALUE)obj);
+	HEAP_LOCK_ENTER(objspace);
+	{
+	    if (SPECIAL_CONST_P(obj)) {
+		fprintf(stderr, "check_rvalue_consistency: %p is a special const.\n", (void *)obj);
+		err++;
+	    }
+	    else if (!is_pointer_to_heap(objspace, (void *)obj)) {
+		/* check if it is in tomb_pages */
+		struct heap_page *page = NULL;
+		for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+		    rb_size_pool_t *size_pool = &size_pools[i];
+		    ccan_list_for_each(&size_pool->tomb_heap.pages, page, page_node) {
+			if (page->start <= (uintptr_t)obj &&
+				(uintptr_t)obj < (page->start + (page->total_slots * size_pool->slot_size))) {
+			    fprintf(stderr, "check_rvalue_consistency: %p is in a tomb_heap (%p).\n",
+				    (void *)obj, (void *)page);
+			    err++;
+			    goto skip;
+			}
+		    }
+		}
+		bp();
+		fprintf(stderr, "check_rvalue_consistency: %p is not a Ruby object.\n", (void *)obj);
+		err++;
+skip:
+		;
+	    }
+	    else {
+		const int wb_unprotected_bit = RVALUE_WB_UNPROTECTED_BITMAP(obj) != 0;
+		const int uncollectible_bit = RVALUE_UNCOLLECTIBLE_BITMAP(obj) != 0;
+		const int mark_bit = RVALUE_MARK_BITMAP(obj) != 0;
+		const int marking_bit = RVALUE_MARKING_BITMAP(obj) != 0;
+		const int remembered_bit = MARKED_IN_BITMAP(GET_HEAP_PAGE(obj)->remembered_bits, obj) != 0;
+		const int age = RVALUE_AGE_GET((VALUE)obj);
 
-            if (GET_HEAP_PAGE(obj)->flags.in_tomb) {
-                fprintf(stderr, "check_rvalue_consistency: %s is in tomb page.\n", obj_info(obj));
-                err++;
-            }
-            if (BUILTIN_TYPE(obj) == T_NONE) {
-                fprintf(stderr, "check_rvalue_consistency: %s is T_NONE.\n", obj_info(obj));
-                err++;
-            }
-            if (BUILTIN_TYPE(obj) == T_ZOMBIE) {
-                fprintf(stderr, "check_rvalue_consistency: %s is T_ZOMBIE.\n", obj_info(obj));
-                err++;
-            }
+		if (GET_HEAP_PAGE(obj)->flags.in_tomb) {
+		    fprintf(stderr, "check_rvalue_consistency: %s is in tomb page.\n", obj_info(obj));
+		    err++;
+		}
+		if (BUILTIN_TYPE(obj) == T_NONE) {
+		    fprintf(stderr, "check_rvalue_consistency: %s is T_NONE.\n", obj_info(obj));
+		    err++;
+		}
+		if (BUILTIN_TYPE(obj) == T_ZOMBIE) {
+		    fprintf(stderr, "check_rvalue_consistency: %s is T_ZOMBIE.\n", obj_info(obj));
+		    err++;
+		}
 
-            obj_memsize_of((VALUE)obj, FALSE);
+		obj_memsize_of((VALUE)obj, FALSE);
 
-            /* check generation
-             *
-             * OLD == age == 3 && old-bitmap && mark-bit (except incremental marking)
-             */
-            if (age > 0 && wb_unprotected_bit) {
-                fprintf(stderr, "check_rvalue_consistency: %s is not WB protected, but age is %d > 0.\n", obj_info(obj), age);
-                err++;
-            }
+		/* check generation
+		 *
+		 * OLD == age == 3 && old-bitmap && mark-bit (except incremental marking)
+		 */
+		if (age > 0 && wb_unprotected_bit) {
+		    fprintf(stderr, "check_rvalue_consistency: %s is not WB protected, but age is %d > 0.\n", obj_info(obj), age);
+		    err++;
+		}
 
-            if (!is_marking(objspace) && uncollectible_bit && !mark_bit) {
-                fprintf(stderr, "check_rvalue_consistency: %s is uncollectible, but is not marked while !gc.\n", obj_info(obj));
-                err++;
-            }
+		if (!is_marking(objspace) && uncollectible_bit && !mark_bit) {
+		    fprintf(stderr, "check_rvalue_consistency: %s is uncollectible, but is not marked while !gc.\n", obj_info(obj));
+		    err++;
+		}
 
-            if (!is_full_marking(objspace)) {
-                if (uncollectible_bit && age != RVALUE_OLD_AGE && !wb_unprotected_bit) {
-                    fprintf(stderr, "check_rvalue_consistency: %s is uncollectible, but not old (age: %d) and not WB unprotected.\n",
-                            obj_info(obj), age);
-                    err++;
-                }
-                if (remembered_bit && age != RVALUE_OLD_AGE) {
-                    fprintf(stderr, "check_rvalue_consistency: %s is remembered, but not old (age: %d).\n",
-                            obj_info(obj), age);
-                    err++;
-                }
-            }
+		if (!is_full_marking(objspace)) {
+		    if (uncollectible_bit && age != RVALUE_OLD_AGE && !wb_unprotected_bit) {
+			fprintf(stderr, "check_rvalue_consistency: %s is uncollectible, but not old (age: %d) and not WB unprotected.\n",
+				obj_info(obj), age);
+			err++;
+		    }
+		    if (remembered_bit && age != RVALUE_OLD_AGE) {
+			fprintf(stderr, "check_rvalue_consistency: %s is remembered, but not old (age: %d).\n",
+				obj_info(obj), age);
+			err++;
+		    }
+		}
 
-            /*
-             * check coloring
-             *
-             *               marking:false marking:true
-             * marked:false  white         *invalid*
-             * marked:true   black         grey
-             */
-            if (is_incremental_marking(objspace) && marking_bit) {
-                if (!is_marking(objspace) && !mark_bit) {
-                    fprintf(stderr, "check_rvalue_consistency: %s is marking, but not marked.\n", obj_info(obj));
-                    err++;
-                }
-            }
-        }
+		/*
+		 * check coloring
+		 *
+		 *               marking:false marking:true
+		 * marked:false  white         *invalid*
+		 * marked:true   black         grey
+		 */
+		if (is_incremental_marking(objspace) && marking_bit) {
+		    if (!is_marking(objspace) && !mark_bit) {
+			fprintf(stderr, "check_rvalue_consistency: %s is marking, but not marked.\n", obj_info(obj));
+			err++;
+		    }
+		}
+	    }
+	}
+	HEAP_LOCK_LEAVE(objspace);
     }
-    HEAP_LOCK_LEAVE(objspace);
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 
     if (err > 0 && terminate) {
         rb_bug("check_rvalue_consistency_force: there is %d errors.", err);
@@ -2392,7 +2511,11 @@ rb_objspace_free(rb_objspace_t *objspace)
 
     rb_darray_free_without_gc(objspace->weak_references);
 
-    ccan_list_del(&objspace->objspace_node);
+    if (!objspace->ractor->objspace_absorbed) {
+	lock_ractor_set();
+	ccan_list_del(&objspace->objspace_node);
+	unlock_ractor_set();
+    }
 
     free(objspace);
 }
@@ -2992,14 +3115,31 @@ close_objspace(rb_objspace_t *objspace)
     heap_pages_sorted = NULL;
 
     ccan_list_del(&objspace->objspace_node);
-    rb_objspace_free(objspace);
 
     unlock_ractor_set();
 }
 
 void
+rb_ractor_sched_signal_possible_waiters(rb_vm_t *vm)
+{
+    rb_native_cond_broadcast(&vm->global_gc_finished);
+
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_cond_broadcast(&global_space->absorption.mode_change_cond);
+
+    rb_ractor_t *r = NULL;
+    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
+	rb_native_cond_signal(&r->sync.close_cond);
+	rb_native_cond_signal(&r->borrowing_sync.no_borrowers);
+	rb_native_cond_signal(&r->borrowing_sync.borrowing_allowed_cond);
+    }
+}
+
+void
 rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor)
 {
+    rb_global_space_t *global_space = &rb_global_space;
+
     rb_ractor_object_graph_safety_advance(receiving_ractor, OGS_FLAG_ABSORBING_OBJSPACE);
 
     rb_objspace_t *receiving_objspace = receiving_ractor->local_objspace;
@@ -3010,6 +3150,9 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     RB_VM_LOCK();
     {
 	VM_COND_AND_BARRIER_WAIT(GET_VM(), closing_ractor->sync.close_cond, closing_ractor->sync.ready_to_close);
+
+	objspace_absorb_enter(global_space);
+	receiving_objspace->currently_absorbing = true;
 
 	rb_borrowing_sync_lock(receiving_objspace->ractor);
 
@@ -3034,16 +3177,22 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
 	close_objspace(closing_objspace);
 
-	closing_ractor->local_objspace = NULL;
-	if (rb_ractor_status_p(closing_ractor, ractor_terminated)) rb_remove_from_contained_ractor_tbl(closing_ractor);
+	if (rb_ractor_status_p(closing_ractor, ractor_terminated)) {
+	    rb_remove_from_contained_ractor_tbl(closing_ractor);
+	    rb_objspace_free(closing_objspace);
+	    closing_ractor->local_objspace = NULL;
+	}
 
 	rb_borrowing_sync_unlock(receiving_objspace->ractor);
+
+	receiving_objspace->currently_absorbing = false;
+	closing_ractor->objspace_absorbed = true;
+	objspace_absorb_leave(global_space);
     }
     RB_VM_UNLOCK();
 
     receiving_objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_ABSORB;
 
-    rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->next_object_id_lock);
     if (global_space->prev_id_assigner == closing_ractor) {
 	global_space->prev_id_assigner = receiving_ractor;
@@ -4412,14 +4561,18 @@ make_io_zombie(rb_objspace_t *objspace, VALUE obj)
 static int
 delete_from_obj_id_tables(VALUE obj, st_data_t *o, st_data_t *id)
 {
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
-    rb_native_mutex_lock(&objspace->obj_id_lock);
-    int deletion_success = st_delete(objspace->obj_to_id_tbl, o, id);
-    if (deletion_success) {
-        GC_ASSERT(*id);
-        st_delete(objspace->id_to_obj_tbl, id, NULL);
+    int deletion_success;
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    {
+	rb_native_mutex_lock(&objspace->obj_id_lock);
+	deletion_success = st_delete(objspace->obj_to_id_tbl, o, id);
+	if (deletion_success) {
+	    GC_ASSERT(*id);
+	    st_delete(objspace->id_to_obj_tbl, id, NULL);
+	}
+	rb_native_mutex_unlock(&objspace->obj_id_lock);
     }
-    rb_native_mutex_unlock(&objspace->obj_id_lock);
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
     return deletion_success;
 }
 
@@ -5038,6 +5191,11 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->rglobalgc.shared_tracking_lock);
     order_chain_init(global_space);
+
+    rb_nativethread_lock_initialize(&global_space->absorption.mode_lock);
+    rb_native_cond_initialize(&global_space->absorption.mode_change_cond);
+    global_space->absorption.objspace_readers = 0;
+    global_space->absorption.absorbers = 0;
     return global_space;
 }
 
@@ -5049,6 +5207,9 @@ rb_global_space_free(rb_global_space_t *global_space)
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_destroy(&global_space->rglobalgc.shared_tracking_lock);
     order_chain_release(global_space);
+
+    rb_nativethread_lock_destroy(&global_space->absorption.mode_lock);
+    rb_native_cond_destroy(&global_space->absorption.mode_change_cond);
 }
 
 void
@@ -5602,8 +5763,11 @@ rb_gc_copy_finalizer(VALUE dest, VALUE obj)
     if (!FL_TEST(obj, FL_FINALIZE)) return;
     if (st_lookup(finalizer_table, obj, &data)) {
         table = (VALUE)data;
-	objspace = GET_OBJSPACE_OF_VALUE(dest);
-        st_insert(finalizer_table, dest, table);
+	WITH_OBJSPACE_OF_VALUE_ENTER(dest, objspace);
+	{
+	    st_insert(finalizer_table, dest, table);
+	}
+	WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
     }
     FL_SET(dest, FL_FINALIZE);
 }
@@ -5950,10 +6114,13 @@ rb_add_zombie_thread(rb_thread_t *th)
     rb_vm_t *vm = th->vm;
     th->sched.finished = false;
 
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(th->self);
-    rb_native_mutex_lock(&objspace->zombie_threads_lock);
-    ccan_list_add(&objspace->zombie_threads, &th->sched.node.zombie_threads);
-    rb_native_mutex_unlock(&objspace->zombie_threads_lock);
+    WITH_OBJSPACE_OF_VALUE_ENTER(th->self, objspace);
+    {
+	rb_native_mutex_lock(&objspace->zombie_threads_lock);
+	ccan_list_add(&objspace->zombie_threads, &th->sched.node.zombie_threads);
+	rb_native_mutex_unlock(&objspace->zombie_threads_lock);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 static int
@@ -5987,22 +6154,26 @@ void
 rb_add_to_contained_ractor_tbl(rb_ractor_t *r)
 {
     VALUE ractor_obj = r->pub.self;
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(ractor_obj);
-
-    rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
-    st_insert_no_gc(objspace->contained_ractor_tbl, (st_data_t)ractor_obj, INT2FIX(0));
-    rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
+    WITH_OBJSPACE_OF_VALUE_ENTER(ractor_obj, objspace);
+    {
+	rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
+	st_insert_no_gc(objspace->contained_ractor_tbl, (st_data_t)ractor_obj, INT2FIX(0));
+	rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 void
 rb_remove_from_contained_ractor_tbl(rb_ractor_t *r)
 {
     VALUE ractor_obj = r->pub.self;
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(ractor_obj);
-
-    rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
-    st_delete(objspace->contained_ractor_tbl, (st_data_t *) &ractor_obj, NULL);
-    rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
+    WITH_OBJSPACE_OF_VALUE_ENTER(ractor_obj, objspace);
+    {
+	rb_native_mutex_lock(&objspace->contained_ractor_tbl_lock);
+	st_delete(objspace->contained_ractor_tbl, (st_data_t *) &ractor_obj, NULL);
+	rb_native_mutex_unlock(&objspace->contained_ractor_tbl_lock);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 static void add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs);
@@ -6040,8 +6211,11 @@ void
 rb_register_new_external_reference(rb_objspace_t *receiving_objspace, VALUE obj)
 {
     if (RB_SPECIAL_CONST_P(obj)) return;
-    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    if (source_objspace != receiving_objspace) register_new_external_reference(receiving_objspace, source_objspace, obj);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, source_objspace);
+    {
+	if (source_objspace != receiving_objspace) register_new_external_reference(receiving_objspace, source_objspace, obj);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(source_objspace);
 }
 
 static void
@@ -6069,10 +6243,13 @@ rb_register_new_external_wmap_reference(VALUE *ptr)
     VALUE obj = *ptr;
     if (SPECIAL_CONST_P(obj)) return;
 
-    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
-    st_insert_no_gc(source_objspace->wmap_referenced_obj_tbl, ptr, INT2FIX(0));
-    rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, source_objspace);
+    {
+	rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
+	st_insert_no_gc(source_objspace->wmap_referenced_obj_tbl, ptr, INT2FIX(0));
+	rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(source_objspace);
 }
 
 void
@@ -6081,10 +6258,13 @@ rb_remove_from_external_weak_tables(VALUE *ptr)
     VALUE obj = *ptr;
     if (obj == Qundef || SPECIAL_CONST_P(obj) || !FL_TEST_RAW(obj, FL_SHAREABLE)) return;
 
-    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
-    st_delete(source_objspace->wmap_referenced_obj_tbl, &ptr, NULL);
-    rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, source_objspace);
+    {
+	rb_native_mutex_lock(&source_objspace->wmap_referenced_obj_tbl_lock);
+	st_delete(source_objspace->wmap_referenced_obj_tbl, &ptr, NULL);
+	rb_native_mutex_unlock(&source_objspace->wmap_referenced_obj_tbl_lock);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(source_objspace);
 }
 
 static void
@@ -6323,8 +6503,13 @@ lookup_id_in_objspace(rb_objspace_t *objspace, VALUE objid)
 bool
 rb_gc_is_ptr_to_obj(void *ptr)
 {
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE((VALUE)ptr);
-    return is_pointer_to_heap(objspace, ptr);
+    bool ret;
+    WITH_OBJSPACE_OF_VALUE_ENTER((VALUE)ptr, objspace);
+    {
+	ret = is_pointer_to_heap(objspace, ptr);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
+    return ret;
 }
 
 VALUE
@@ -6452,29 +6637,32 @@ static VALUE
 cached_object_id(VALUE obj)
 {
     VALUE id;
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
 
-    rb_native_mutex_lock(&objspace->obj_id_lock);
-    if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
-        GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    {
+	rb_native_mutex_lock(&objspace->obj_id_lock);
+	if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &id)) {
+	    GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
+	}
+	else {
+	    GC_ASSERT(!FL_TEST(obj, FL_SEEN_OBJ_ID));
+
+	    rb_global_space_t *global_space = &rb_global_space;
+	    rb_native_mutex_lock(&global_space->next_object_id_lock);
+	    id = global_space->next_object_id;
+	    global_space->next_object_id = rb_int_plus(id, INT2FIX(OBJ_ID_INCREMENT));
+	    global_space->prev_id_assigner = rb_current_allocating_ractor();
+	    rb_native_mutex_unlock(&global_space->next_object_id_lock);
+
+	    VALUE already_disabled = gc_disable_no_rest(objspace);
+	    st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
+	    st_insert(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
+	    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+	    FL_SET(obj, FL_SEEN_OBJ_ID);
+	}
+	rb_native_mutex_unlock(&objspace->obj_id_lock);
     }
-    else {
-        GC_ASSERT(!FL_TEST(obj, FL_SEEN_OBJ_ID));
-
-	rb_global_space_t *global_space = &rb_global_space;
-	rb_native_mutex_lock(&global_space->next_object_id_lock);
-        id = global_space->next_object_id;
-        global_space->next_object_id = rb_int_plus(id, INT2FIX(OBJ_ID_INCREMENT));
-	global_space->prev_id_assigner = rb_current_allocating_ractor();
-	rb_native_mutex_unlock(&global_space->next_object_id_lock);
-
-        VALUE already_disabled = gc_disable_no_rest(objspace);
-        st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
-        st_insert(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
-        if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
-        FL_SET(obj, FL_SEEN_OBJ_ID);
-    }
-    rb_native_mutex_unlock(&objspace->obj_id_lock);
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 
     return id;
 }
@@ -9530,18 +9718,21 @@ drop_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_s
     rb_atomic_t *refcount = rs->refcount;
     rb_atomic_t prev_count = RUBY_ATOMIC_FETCH_SUB(*refcount, 1);
     if (prev_count == 1) {
-	rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-	rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
-	if (*refcount == 0) {
-	    delete_reference_status(source_objspace->shared_reference_tbl, obj);
-	    free(refcount);
+	WITH_OBJSPACE_OF_VALUE_ENTER(obj, source_objspace);
+	{
+	    rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
+	    if (*refcount == 0) {
+		delete_reference_status(source_objspace->shared_reference_tbl, obj);
+		free(refcount);
 
-	    rb_global_space_t *global_space = &rb_global_space;
-	    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	    global_space->rglobalgc.shared_objects_total--;
-	    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+		rb_global_space_t *global_space = &rb_global_space;
+		rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+		global_space->rglobalgc.shared_objects_total--;
+		rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+	    }
+	    rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
 	}
-	rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
+	WITH_OBJSPACE_OF_VALUE_LEAVE(source_objspace);
     }
     free(rs);
 }
@@ -9549,31 +9740,34 @@ drop_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_s
 static void
 add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_status_t *rs)
 {
-    rb_objspace_t *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
-    gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, source_objspace);
+    {
+	rb_native_mutex_lock(&source_objspace->shared_reference_tbl_lock);
+	gc_reference_status_t *local_rs = get_reference_status(source_objspace->shared_reference_tbl, obj);
 
-    if (local_rs) {
-	ATOMIC_INC(*local_rs->refcount);
+	if (local_rs) {
+	    ATOMIC_INC(*local_rs->refcount);
+	}
+	else {
+	    VM_ASSERT(during_gc || (rb_current_allocating_ractor() == source_objspace->ractor) || (rb_current_allocating_ractor() == objspace->ractor));
+
+	    rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
+	    *refcount = 1;
+
+	    local_rs = malloc(sizeof(gc_reference_status_t));
+	    local_rs->refcount = refcount;
+	    local_rs->status = shared_object_local;
+	    set_reference_status(source_objspace->shared_reference_tbl, obj, local_rs);
+
+	    rb_global_space_t *global_space = &rb_global_space;
+	    rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
+	    global_space->rglobalgc.shared_objects_total++;
+	    rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
+	}
+	rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
+	rs->refcount = local_rs->refcount;
     }
-    else {
-	VM_ASSERT(during_gc || (rb_current_allocating_ractor() == source_objspace->ractor) || (rb_current_allocating_ractor() == objspace->ractor));
-
-	rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
-	*refcount = 1;
-
-	local_rs = malloc(sizeof(gc_reference_status_t));
-	local_rs->refcount = refcount;
-	local_rs->status = shared_object_local;
-	set_reference_status(source_objspace->shared_reference_tbl, obj, local_rs);
-
-	rb_global_space_t *global_space = &rb_global_space;
-	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
-	global_space->rglobalgc.shared_objects_total++;
-	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
-    }
-    rb_native_mutex_unlock(&source_objspace->shared_reference_tbl_lock);
-    rs->refcount = local_rs->refcount;
+    WITH_OBJSPACE_OF_VALUE_LEAVE(source_objspace);
 }
 
 static void
@@ -11438,13 +11632,15 @@ rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
     if (SPECIAL_CONST_P(a)) return;
     (void)VALGRIND_MAKE_MEM_DEFINED(&oldv, sizeof(oldv));
 
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(a);
-
-    if (UNLIKELY(!ruby_single_main_objspace && probably_broken_shareable_path_p(a, oldv))) {
-	lock_former_references(objspace);
-	record_former_reference(objspace, a, oldv);
-	unlock_former_references(objspace);
+    WITH_OBJSPACE_OF_VALUE_ENTER(a, objspace);
+    {
+	if (UNLIKELY(!ruby_single_main_objspace && probably_broken_shareable_path_p(a, oldv))) {
+	    lock_former_references(objspace);
+	    record_former_reference(objspace, a, oldv);
+	    unlock_former_references(objspace);
+	}
     }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 void
@@ -11462,28 +11658,32 @@ rb_gc_writebarrier(VALUE a, VALUE b)
     }
     else {
 	rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
-	rb_objspace_t *b_objspace = GET_OBJSPACE_OF_VALUE(b);
+	WITH_OBJSPACE_OF_VALUE_ENTER(b, b_objspace);
+	{
+	    if (FL_TEST_RAW(b, FL_SHAREABLE)) {
+		WITH_OBJSPACE_OF_VALUE_ENTER(a, a_objspace);
+		{
+		    if (a_objspace != b_objspace) {
+			register_new_external_reference(a_objspace, b_objspace, b);
+		    }
 
-	if (FL_TEST_RAW(b, FL_SHAREABLE)) {
-	    rb_objspace_t *a_objspace = GET_OBJSPACE_OF_VALUE(a);
-
-	    if (a_objspace != b_objspace) {
-		register_new_external_reference(a_objspace, b_objspace, b);
-	    }
-
-	    if (LIKELY(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace)) {
-		gc_writebarrier_safe_objspace(a, b, b_objspace);
+		    if (LIKELY(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace)) {
+			gc_writebarrier_safe_objspace(a, b, b_objspace);
+		    }
+		    else {
+			gc_writebarrier_parallel_objspace(a, b, b_objspace);
+		    }
+		}
+		WITH_OBJSPACE_OF_VALUE_LEAVE(a_objspace);
 	    }
 	    else {
-		gc_writebarrier_parallel_objspace(a, b, b_objspace);
+		VM_ASSERT(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace);
+		VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy);
+
+		gc_writebarrier_safe_objspace(a, b, b_objspace);
 	    }
 	}
-	else {
-	    VM_ASSERT(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace);
-	    VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy);
-
-	    gc_writebarrier_safe_objspace(a, b, b_objspace);
-	}
+	WITH_OBJSPACE_OF_VALUE_LEAVE(b_objspace);
     }
 }
 

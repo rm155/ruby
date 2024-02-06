@@ -1371,17 +1371,6 @@ ractor_sched_barrier_completed_p(rb_vm_t *vm)
     return (vm->ractor.sched.running_cnt - vm->ractor.sched.barrier_waiting_cnt) == 1;
 }
 
-static void
-ractor_sched_signal_possible_waiters(rb_vm_t *vm)
-{
-    rb_ractor_t *r = NULL;
-    ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
-	rb_native_cond_signal(&r->sync.close_cond);
-	rb_native_cond_signal(&r->borrowing_sync.no_borrowers);
-    }
-    rb_native_cond_broadcast(&vm->global_gc_finished);
-}
-
 void
 rb_ractor_sched_barrier_start(rb_vm_t *vm, rb_ractor_t *cr)
 {
@@ -1398,7 +1387,7 @@ rb_ractor_sched_barrier_start(rb_vm_t *vm, rb_ractor_t *cr)
     {
         vm->ractor.sched.barrier_waiting = true;
 
-	ractor_sched_signal_possible_waiters(vm);
+	rb_ractor_sched_signal_possible_waiters(vm);
 
         // release VM lock
         lock_rec = vm->ractor.sync.lock_rec;
