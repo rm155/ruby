@@ -3788,8 +3788,10 @@ static void gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_ca
 static VALUE
 newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx)
 {
-    rb_borrowing_sync_lock(objspace->ractor);
     rb_ractor_t *alloc_target_ractor = objspace->ractor;
+
+    VM_ASSERT(alloc_target_ractor->borrowing_sync.lock_owner == cr);
+
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
     rb_ractor_newobj_cache_t *cache = &alloc_target_ractor->newobj_borrowing_cache;
@@ -3845,7 +3847,6 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_poo
     }
     alloc_target_ractor->borrowing_sync.page_recently_locked[size_pool_idx] = false;
 
-    rb_borrowing_sync_unlock(objspace->ractor);
     return obj;
 }
 
@@ -3979,6 +3980,7 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
 	objspace = objspace->alloc_target_ractor->local_objspace;
     }
 
+    if (borrowing) rb_borrowing_sync_lock(objspace->ractor);
     if (!UNLIKELY(during_gc ||
                   ruby_gc_stressful ||
                   gc_event_newobj_hook_needed_p(objspace)) &&
@@ -4000,6 +4002,7 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
     	    gc_grey(objspace, obj);
 	}
     }
+    if (borrowing) rb_borrowing_sync_unlock(objspace->ractor);
     return obj;
 }
 
