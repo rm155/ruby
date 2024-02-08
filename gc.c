@@ -3645,25 +3645,25 @@ static void
 borrowing_count_increment(rb_ractor_t *r)
 {
     rb_vm_t *vm = GET_VM();
-    RB_VM_LOCK_ENTER();
+    RB_VM_LOCK_ENTER_NO_BARRIER();
     {
 	VM_COND_AND_BARRIER_WAIT(vm, r->borrowing_sync.borrowing_allowed_cond, r->borrowing_sync.borrowing_allowed);
 	r->borrowing_sync.borrower_count++;
     }
-    RB_VM_LOCK_LEAVE();
+    RB_VM_LOCK_LEAVE_NO_BARRIER();
 }
 
 static void
 borrowing_count_decrement(rb_ractor_t *r)
 {
-    RB_VM_LOCK_ENTER();
+    RB_VM_LOCK_ENTER_NO_BARRIER();
     {
 	r->borrowing_sync.borrower_count--;
 	if (r->borrowing_sync.borrower_count == 0) {
 	    rb_native_cond_signal(&r->borrowing_sync.no_borrowers);
 	}
     }
-    RB_VM_LOCK_LEAVE();
+    RB_VM_LOCK_LEAVE_NO_BARRIER();
 }
 
 static VALUE
