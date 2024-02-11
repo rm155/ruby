@@ -315,6 +315,9 @@ ractor_free(void *ptr)
     }
     rb_native_cond_destroy(&r->borrowing_sync.no_borrowers);
 
+    rb_native_cond_destroy(&r->borrowing_sync.borrowing_allowed_cond);
+    rb_native_mutex_destroy(&r->borrowing_sync.borrowing_allowed_lock);
+
     ractor_queue_free(&r->sync.recv_queue);
     ractor_queue_free(&r->sync.takers_queue);
     ractor_local_storage_free(r);
@@ -2255,6 +2258,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     rb_native_cond_initialize(&r->borrowing_sync.no_borrowers);
     r->borrowing_sync.borrowing_allowed = true;
     rb_native_cond_initialize(&r->borrowing_sync.borrowing_allowed_cond);
+    rb_native_mutex_initialize(&r->borrowing_sync.borrowing_allowed_lock);
 
 #if VM_CHECK_MODE > 0
     r->late_to_barrier = false;

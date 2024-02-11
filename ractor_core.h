@@ -216,6 +216,7 @@ struct rb_ractor_struct {
 
 	bool borrowing_allowed;
 	rb_nativethread_cond_t borrowing_allowed_cond;
+	rb_nativethread_lock_t borrowing_allowed_lock;
     } borrowing_sync;
 
     // gc.c rb_objspace_reachable_objects_from
