@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name = "prism"
-  spec.version = "0.21.0"
+  spec.version = "0.22.0"
   spec.authors = ["Shopify"]
   spec.email = ["ruby@shopify.com"]
 
@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
   spec.homepage = "https://github.com/ruby/prism"
   spec.license = "MIT"
 
-  spec.required_ruby_version = ">= 3.0.0"
+  spec.required_ruby_version = ">= 2.7.0"
 
   spec.require_paths = ["lib"]
   spec.files = [
@@ -83,13 +83,13 @@ Gem::Specification.new do |spec|
     "lib/prism/parse_result/comments.rb",
     "lib/prism/parse_result/newlines.rb",
     "lib/prism/pattern.rb",
-    "lib/prism/ripper_compat.rb",
     "lib/prism/serialize.rb",
     "lib/prism/translation.rb",
     "lib/prism/translation/parser.rb",
     "lib/prism/translation/parser/compiler.rb",
     "lib/prism/translation/parser/lexer.rb",
     "lib/prism/translation/parser/rubocop.rb",
+    "lib/prism/translation/ripper.rb",
     "lib/prism/visitor.rb",
     "src/diagnostic.c",
     "src/encoding.c",

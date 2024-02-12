@@ -68,17 +68,23 @@ module Prism
 
       # Parses a source buffer and returns the AST, the source code comments,
       # and the tokens emitted by the lexer.
-      def tokenize(source_buffer, _recover = false)
+      def tokenize(source_buffer, recover = false)
         @source_buffer = source_buffer
         source = source_buffer.source
 
         offset_cache = build_offset_cache(source)
-        result = unwrap(Prism.parse_lex(source, filepath: source_buffer.name), offset_cache)
+        result =
+          begin
+            unwrap(Prism.parse_lex(source, filepath: source_buffer.name), offset_cache)
+          rescue ::Parser::SyntaxError
+            raise if !recover
+          end
 
         program, tokens = result.value
+        ast = build_ast(program, offset_cache) if result.success?
 
         [
-          build_ast(program, offset_cache),
+          ast,
           build_comments(result.comments, offset_cache),
           build_tokens(tokens, offset_cache)
         ]
@@ -118,20 +124,21 @@ module Prism
       # build the parser gem AST.
       #
       # If the bytesize of the source is the same as the length, then we can
-      # just use the offset directly. Otherwise, we build a hash that functions
-      # as a cache for the conversion.
-      #
-      # This is a good opportunity for some optimizations. If the source file
-      # has any multi-byte characters, this can tank the performance of the
-      # translator. We could make this significantly faster by using a
-      # different data structure for the cache.
+      # just use the offset directly. Otherwise, we build an array where the
+      # index is the byte offset and the value is the character offset.
       def build_offset_cache(source)
         if source.bytesize == source.length
           -> (offset) { offset }
         else
-          Hash.new do |hash, offset|
-            hash[offset] = source.byteslice(0, offset).length
+          offset_cache = []
+          offset = 0
+
+          source.each_char do |char|
+            char.bytesize.times { offset_cache << offset }
+            offset += 1
           end
+
+          offset_cache << offset
         end
       end
 

@@ -16,6 +16,7 @@ use std::cell::Cell;
 use std::cmp;
 use std::cmp::min;
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::ffi::CStr;
 use std::mem;
 use std::os::raw::c_int;
@@ -532,9 +533,9 @@ fn gen_exit(exit_pc: *mut VALUE, asm: &mut Assembler) {
             vec![Opnd::const_ptr(exit_pc as *const u8)]
         );
 
-        // If --yjit-trace-exits option is enabled, record the exit stack
-        // while recording the side exits.
-        if get_option!(gen_trace_exits) {
+        // If --yjit-trace-exits is enabled, record the exit stack while recording
+        // the side exits. TraceExits::Counter is handled by gen_counted_exit().
+        if get_option!(trace_exits) == Some(TraceExits::All) {
             asm.ccall(
                 rb_yjit_record_exit_stack as *const u8,
                 vec![Opnd::const_ptr(exit_pc as *const u8)]
@@ -575,7 +576,7 @@ pub fn gen_outlined_exit(exit_pc: *mut VALUE, ctx: &Context, ocb: &mut OutlinedC
 }
 
 /// Get a side exit. Increment a counter in it if --yjit-stats is enabled.
-pub fn gen_counted_exit(side_exit: CodePtr, ocb: &mut OutlinedCb, counter: Option<Counter>) -> Option<CodePtr> {
+pub fn gen_counted_exit(exit_pc: *mut VALUE, side_exit: CodePtr, ocb: &mut OutlinedCb, counter: Option<Counter>) -> Option<CodePtr> {
     // The counter is only incremented when stats are enabled
     if !get_option!(gen_stats) {
         return Some(side_exit);
@@ -587,19 +588,34 @@ pub fn gen_counted_exit(side_exit: CodePtr, ocb: &mut OutlinedCb, counter: Optio
 
     let mut asm = Assembler::new();
 
-    // Load the pointer into a register
-    asm_comment!(asm, "increment counter {}", counter.get_name());
-    let ptr_reg = asm.load(Opnd::const_ptr(get_counter_ptr(&counter.get_name()) as *const u8));
-    let counter_opnd = Opnd::mem(64, ptr_reg, 0);
+    // Increment a counter
+    gen_counter_incr(&mut asm, counter);
 
-    // Increment and store the updated value
-    asm.incr_counter(counter_opnd, Opnd::UImm(1));
+    // Trace a counted exit if --yjit-trace-exits=counter is given.
+    // TraceExits::All is handled by gen_exit().
+    if get_option!(trace_exits) == Some(TraceExits::CountedExit(counter)) {
+        with_caller_saved_temp_regs(&mut asm, |asm| {
+            asm.ccall(rb_yjit_record_exit_stack as *const u8, vec![Opnd::const_ptr(exit_pc as *const u8)]);
+        });
+    }
 
     // Jump to the existing side exit
     asm.jmp(Target::CodePtr(side_exit));
 
     let ocb = ocb.unwrap();
     asm.compile(ocb, None).map(|(code_ptr, _)| code_ptr)
+}
+
+/// Preserve caller-saved stack temp registers during the call of a given block
+fn with_caller_saved_temp_regs<F, R>(asm: &mut Assembler, block: F) -> R where F: FnOnce(&mut Assembler) -> R {
+    for &reg in caller_saved_temp_regs() {
+        asm.cpush(Opnd::Reg(reg)); // save stack temps
+    }
+    let ret = block(asm);
+    for &reg in caller_saved_temp_regs().rev() {
+        asm.cpop_into(Opnd::Reg(reg)); // restore stack temps
+    }
+    ret
 }
 
 // Ensure that there is an exit for the start of the block being compiled.
@@ -2262,7 +2278,7 @@ fn jit_chain_guard(
     jit: &mut JITState,
     asm: &mut Assembler,
     ocb: &mut OutlinedCb,
-    depth_limit: i32,
+    depth_limit: u8,
     counter: Counter,
 ) {
     let target0_gen_fn = match jcc {
@@ -2273,7 +2289,7 @@ fn jit_chain_guard(
         JCC_JO_MUL => BranchGenFn::JOMulToTarget0,
     };
 
-    if (asm.ctx.get_chain_depth() as i32) < depth_limit {
+    if asm.ctx.get_chain_depth() < depth_limit {
         // Rewind Context to use the stack_size at the beginning of this instruction.
         let mut deeper = asm.ctx.with_stack_size(jit.stack_size_for_pc);
         deeper.increment_chain_depth();
@@ -2289,22 +2305,22 @@ fn jit_chain_guard(
 }
 
 // up to 8 different shapes for each
-pub const GET_IVAR_MAX_DEPTH: i32 = 8;
+pub const GET_IVAR_MAX_DEPTH: u8 = 8;
 
 // up to 8 different shapes for each
-pub const SET_IVAR_MAX_DEPTH: i32 = 8;
+pub const SET_IVAR_MAX_DEPTH: u8 = 8;
 
 // hashes and arrays
-pub const OPT_AREF_MAX_CHAIN_DEPTH: i32 = 2;
+pub const OPT_AREF_MAX_CHAIN_DEPTH: u8 = 2;
 
 // expandarray
-pub const EXPANDARRAY_MAX_CHAIN_DEPTH: i32 = 4;
+pub const EXPANDARRAY_MAX_CHAIN_DEPTH: u8 = 4;
 
 // up to 5 different methods for send
-pub const SEND_MAX_DEPTH: i32 = 5;
+pub const SEND_MAX_DEPTH: u8 = 5;
 
 // up to 20 different offsets for case-when
-pub const CASE_WHEN_MAX_DEPTH: i32 = 20;
+pub const CASE_WHEN_MAX_DEPTH: u8 = 20;
 
 pub const MAX_SPLAT_LENGTH: i32 = 127;
 
@@ -2326,7 +2342,7 @@ fn gen_set_ivar(
         handle_opt_send_shift_stack(asm, argc);
     }
 
-    // Save the PC and SP because the callee may allocate
+    // Save the PC and SP because the callee may allocate or raise FrozenError
     // Note that this modifies REG_SP, which is why we do it first
     jit_prepare_non_leaf_call(jit, asm);
 
@@ -2359,7 +2375,7 @@ fn gen_get_ivar(
     jit: &mut JITState,
     asm: &mut Assembler,
     ocb: &mut OutlinedCb,
-    max_chain_depth: i32,
+    max_chain_depth: u8,
     comptime_receiver: VALUE,
     ivar_name: ID,
     recv: Opnd,
@@ -2386,7 +2402,7 @@ fn gen_get_ivar(
     // Check if the comptime receiver is a T_OBJECT
     let receiver_t_object = unsafe { RB_TYPE_P(comptime_receiver, RUBY_T_OBJECT) };
     // Use a general C call at the last chain to avoid exits on megamorphic shapes
-    let megamorphic = asm.ctx.get_chain_depth() as i32 >= max_chain_depth;
+    let megamorphic = asm.ctx.get_chain_depth() >= max_chain_depth;
     if megamorphic {
         gen_counter_incr(asm, Counter::num_getivar_megamorphic);
     }
@@ -2401,7 +2417,7 @@ fn gen_get_ivar(
         // VALUE rb_ivar_get(VALUE obj, ID id)
         asm_comment!(asm, "call rb_ivar_get()");
 
-        // The function could raise exceptions.
+        // The function could raise RactorIsolationError.
         jit_prepare_non_leaf_call(jit, asm);
 
         let ivar_val = asm.ccall(rb_ivar_get as *const u8, vec![recv, Opnd::UImm(ivar_name)]);
@@ -2598,7 +2614,7 @@ fn gen_setinstancevariable(
     // Check if the comptime receiver is a T_OBJECT
     let receiver_t_object = unsafe { RB_TYPE_P(comptime_receiver, RUBY_T_OBJECT) };
     // Use a general C call at the last chain to avoid exits on megamorphic shapes
-    let megamorphic = asm.ctx.get_chain_depth() as i32 >= SET_IVAR_MAX_DEPTH;
+    let megamorphic = asm.ctx.get_chain_depth() >= SET_IVAR_MAX_DEPTH;
     if megamorphic {
         gen_counter_incr(asm, Counter::num_setivar_megamorphic);
     }
@@ -2658,7 +2674,7 @@ fn gen_setinstancevariable(
 
         let ic = jit.get_arg(1).as_u64(); // type IVC
 
-        // The function could raise exceptions.
+        // The function could raise FrozenError.
         // Note that this modifies REG_SP, which is why we do it first
         jit_prepare_non_leaf_call(jit, asm);
 
@@ -2716,7 +2732,7 @@ fn gen_setinstancevariable(
 
                     // It allocates so can trigger GC, which takes the VM lock
                     // so could yield to a different ractor.
-                    jit_prepare_non_leaf_call(jit, asm);
+                    jit_prepare_call_with_gc(jit, asm);
                     asm.ccall(rb_ensure_iv_list_size as *const u8,
                               vec![
                                   recv,
@@ -2797,7 +2813,7 @@ fn gen_defined(
             gen_block_given(jit, asm, out_opnd, pushval.into(), Qnil.into());
         }
         _ => {
-            // Save the PC and SP because the callee may allocate
+            // Save the PC and SP because the callee may allocate or call #respond_to?
             // Note that this modifies REG_SP, which is why we do it first
             jit_prepare_non_leaf_call(jit, asm);
 
@@ -2850,12 +2866,12 @@ fn gen_definedivar(
     // Specialize base on compile time values
     let comptime_receiver = jit.peek_at_self();
 
-    if comptime_receiver.shape_too_complex() || asm.ctx.get_chain_depth() as i32 >= GET_IVAR_MAX_DEPTH {
+    if comptime_receiver.shape_too_complex() || asm.ctx.get_chain_depth() >= GET_IVAR_MAX_DEPTH {
         // Fall back to calling rb_ivar_defined
 
         // Save the PC and SP because the callee may allocate
         // Note that this modifies REG_SP, which is why we do it first
-        jit_prepare_non_leaf_call(jit, asm);
+        jit_prepare_call_with_gc(jit, asm);
 
         // Call rb_ivar_defined(recv, ivar_name)
         let def_result = asm.ccall(rb_ivar_defined as *const u8, vec![recv, ivar_name.into()]);
@@ -3504,6 +3520,7 @@ fn gen_opt_aref_with(
     asm: &mut Assembler,
     _ocb: &mut OutlinedCb,
 ) -> Option<CodegenStatus>{
+    // We might allocate or raise
     jit_prepare_non_leaf_call(jit, asm);
 
     let key_opnd = Opnd::Value(jit.get_arg(0));
@@ -3830,7 +3847,7 @@ fn gen_opt_newarray_max(
 ) -> Option<CodegenStatus> {
     let num = jit.get_arg(0).as_u32();
 
-    // Save the PC and SP because we may allocate
+    // Save the PC and SP because we may call #max
     jit_prepare_non_leaf_call(jit, asm);
 
     extern "C" {
@@ -3883,7 +3900,7 @@ fn gen_opt_newarray_hash(
 
     let num = jit.get_arg(0).as_u32();
 
-    // Save the PC and SP because we may allocate
+    // Save the PC and SP because we may call #hash
     jit_prepare_non_leaf_call(jit, asm);
 
     extern "C" {
@@ -3918,7 +3935,7 @@ fn gen_opt_newarray_min(
 
     let num = jit.get_arg(0).as_u32();
 
-    // Save the PC and SP because we may allocate
+    // Save the PC and SP because we may call #min
     jit_prepare_non_leaf_call(jit, asm);
 
     extern "C" {
@@ -4021,7 +4038,13 @@ fn gen_opt_case_dispatch(
         all_fixnum
     }
 
-    if comptime_key.fixnum_p() && comptime_key.0 <= u32::MAX.as_usize() && case_hash_all_fixnum_p(case_hash) {
+    // If megamorphic, fallback to compiling branch instructions after opt_case_dispatch
+    let megamorphic = asm.ctx.get_chain_depth() >= CASE_WHEN_MAX_DEPTH;
+    if megamorphic {
+        gen_counter_incr(asm, Counter::num_opt_case_dispatch_megamorphic);
+    }
+
+    if comptime_key.fixnum_p() && comptime_key.0 <= u32::MAX.as_usize() && case_hash_all_fixnum_p(case_hash) && !megamorphic {
         if !assume_bop_not_redefined(jit, asm, ocb, INTEGER_REDEFINED_OP_FLAG, BOP_EQQ) {
             return None;
         }
@@ -4242,7 +4265,7 @@ fn gen_throw(
     }
 
     // THROW_DATA_NEW allocates. Save SP for GC and PC for allocation tracing as
-    // well as handling the catch table. However, not using jit_prepare_non_leaf_call
+    // well as handling the catch table. However, not using jit_prepare_call_with_gc
     // since we don't need a patch point for this implementation.
     jit_save_pc(jit, asm);
     gen_save_sp(asm);
@@ -4305,7 +4328,7 @@ fn jit_guard_known_klass(
     obj_opnd: Opnd,
     insn_opnd: YARVOpnd,
     sample_instance: VALUE,
-    max_chain_depth: i32,
+    max_chain_depth: u8,
     counter: Counter,
 ) {
     let val_type = asm.ctx.get_opnd_type(insn_opnd);
@@ -4476,7 +4499,7 @@ fn jit_rb_obj_not(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     let recv_opnd = asm.ctx.get_opnd_type(StackOpnd(0));
 
@@ -4511,7 +4534,7 @@ fn jit_rb_true(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "nil? == true");
     asm.stack_pop(1);
@@ -4529,7 +4552,7 @@ fn jit_rb_false(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "nil? == false");
     asm.stack_pop(1);
@@ -4547,14 +4570,14 @@ fn jit_rb_kernel_is_a(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     argc: i32,
-    known_recv_class: *const VALUE,
+    known_recv_class: Option<VALUE>,
 ) -> bool {
     if argc != 1 {
         return false;
     }
 
     // If this is a super call we might not know the class
-    if known_recv_class.is_null() {
+    if known_recv_class.is_none() {
         return false;
     }
 
@@ -4600,14 +4623,14 @@ fn jit_rb_kernel_instance_of(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     argc: i32,
-    known_recv_class: *const VALUE,
+    known_recv_class: Option<VALUE>,
 ) -> bool {
     if argc != 1 {
         return false;
     }
 
     // If this is a super call we might not know the class
-    if known_recv_class.is_null() {
+    if known_recv_class.is_none() {
         return false;
     }
 
@@ -4665,7 +4688,7 @@ fn jit_rb_mod_eqq(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     if argc != 1 {
         return false;
@@ -4699,7 +4722,7 @@ fn jit_rb_obj_equal(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "equal?");
     let obj1 = asm.stack_pop(1);
@@ -4723,7 +4746,7 @@ fn jit_rb_obj_not_equal(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     gen_equality_specialized(jit, asm, ocb, false) == Some(true)
 }
@@ -4737,7 +4760,7 @@ fn jit_rb_int_equal(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     // Check that both operands are fixnums
     guard_two_fixnums(jit, asm, ocb);
@@ -4762,7 +4785,7 @@ fn jit_rb_int_succ(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     // Guard the receiver is fixnum
     let recv_type = asm.ctx.get_opnd_type(StackOpnd(0));
@@ -4792,7 +4815,7 @@ fn jit_rb_int_div(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     if asm.ctx.two_fixnums_on_stack(jit) != Some(true) {
         return false;
@@ -4800,7 +4823,7 @@ fn jit_rb_int_div(
     guard_two_fixnums(jit, asm, ocb);
 
     // rb_fix_div_fix may GC-allocate for Bignum
-    jit_prepare_non_leaf_call(jit, asm);
+    jit_prepare_call_with_gc(jit, asm);
 
     asm_comment!(asm, "Integer#/");
     let obj = asm.stack_opnd(0);
@@ -4826,7 +4849,7 @@ fn jit_rb_int_lshift(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     if asm.ctx.two_fixnums_on_stack(jit) != Some(true) {
         return false;
@@ -4891,7 +4914,7 @@ fn jit_rb_int_rshift(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     if asm.ctx.two_fixnums_on_stack(jit) != Some(true) {
         return false;
@@ -4944,7 +4967,7 @@ fn jit_rb_int_xor(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     if asm.ctx.two_fixnums_on_stack(jit) != Some(true) {
         return false;
@@ -4971,7 +4994,7 @@ fn jit_rb_int_aref(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     if argc != 1 {
         return false;
@@ -5000,7 +5023,7 @@ fn jit_rb_float_plus(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     // Guard obj is Fixnum or Flonum to avoid rb_funcall on rb_num_coerce_bin
     let comptime_obj = jit.peek_at_stack(&asm.ctx, 0);
@@ -5044,7 +5067,7 @@ fn jit_rb_float_minus(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     // Guard obj is Fixnum or Flonum to avoid rb_funcall on rb_num_coerce_bin
     let comptime_obj = jit.peek_at_stack(&asm.ctx, 0);
@@ -5088,7 +5111,7 @@ fn jit_rb_float_mul(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     // Guard obj is Fixnum or Flonum to avoid rb_funcall on rb_num_coerce_bin
     let comptime_obj = jit.peek_at_stack(&asm.ctx, 0);
@@ -5132,7 +5155,7 @@ fn jit_rb_float_div(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     // Guard obj is Fixnum or Flonum to avoid rb_funcall on rb_num_coerce_bin
     let comptime_obj = jit.peek_at_stack(&asm.ctx, 0);
@@ -5177,7 +5200,7 @@ fn jit_rb_str_uplus(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool
 {
     if argc != 0 {
@@ -5185,7 +5208,7 @@ fn jit_rb_str_uplus(
     }
 
     // We allocate when we dup the string
-    jit_prepare_non_leaf_call(jit, asm);
+    jit_prepare_call_with_gc(jit, asm);
     asm.spill_temps(); // For ccall. Unconditionally spill them for RegTemps consistency.
 
     asm_comment!(asm, "Unary plus on string");
@@ -5221,7 +5244,7 @@ fn jit_rb_str_length(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "String#length");
     extern "C" {
@@ -5248,7 +5271,7 @@ fn jit_rb_str_bytesize(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "String#bytesize");
 
@@ -5280,7 +5303,7 @@ fn jit_rb_str_getbyte(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "String#getbyte");
     extern "C" {
@@ -5313,9 +5336,9 @@ fn jit_rb_str_to_s(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    known_recv_class: *const VALUE,
+    known_recv_class: Option<VALUE>,
 ) -> bool {
-    if !known_recv_class.is_null() && unsafe { *known_recv_class == rb_cString } {
+    if unsafe { known_recv_class == Some(rb_cString) } {
         asm_comment!(asm, "to_s on plain string");
         // The method returns the receiver, which is already on the stack.
         // No stack movement.
@@ -5333,7 +5356,7 @@ fn jit_rb_str_empty_p(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     let recv_opnd = asm.stack_pop(1);
 
@@ -5363,7 +5386,7 @@ fn jit_rb_str_concat(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     // The << operator can accept integer codepoints for characters
     // as the argument. We only specially optimise string arguments.
@@ -5434,7 +5457,7 @@ fn jit_rb_ary_empty_p(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     let array_opnd = asm.stack_pop(1);
     let array_reg = asm.load(array_opnd);
@@ -5458,7 +5481,7 @@ fn jit_rb_ary_length(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     let array_opnd = asm.stack_pop(1);
     let array_reg = asm.load(array_opnd);
@@ -5482,12 +5505,12 @@ fn jit_rb_ary_push(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "Array#<<");
 
     // rb_ary_push allocates memory for buffer extension
-    jit_prepare_non_leaf_call(jit, asm);
+    jit_prepare_call_with_gc(jit, asm);
 
     let item_opnd = asm.stack_opnd(0);
     let ary_opnd = asm.stack_opnd(1);
@@ -5495,6 +5518,27 @@ fn jit_rb_ary_push(
     asm.stack_pop(2); // Keep them on stack during ccall for GC
 
     let ret_opnd = asm.stack_push(Type::TArray);
+    asm.mov(ret_opnd, ret);
+    true
+}
+
+// Just a leaf method, but not using `Primitive.attr! :leaf` since BOP methods can't use it.
+fn jit_rb_hash_empty_p(
+    _jit: &mut JITState,
+    asm: &mut Assembler,
+    _ocb: &mut OutlinedCb,
+    _ci: *const rb_callinfo,
+    _cme: *const rb_callable_method_entry_t,
+    _block: Option<BlockHandler>,
+    _argc: i32,
+    _known_recv_class: Option<VALUE>,
+) -> bool {
+    asm_comment!(asm, "Hash#empty?");
+
+    let hash_opnd = asm.stack_pop(1);
+    let ret = asm.ccall(rb_hash_empty_p as *const u8, vec![hash_opnd]);
+
+    let ret_opnd = asm.stack_push(Type::UnknownImm);
     asm.mov(ret_opnd, ret);
     true
 }
@@ -5507,18 +5551,17 @@ fn jit_obj_respond_to(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     argc: i32,
-    known_recv_class: *const VALUE,
+    known_recv_class: Option<VALUE>,
 ) -> bool {
     // respond_to(:sym) or respond_to(:sym, true)
     if argc != 1 && argc != 2 {
         return false;
     }
 
-    if known_recv_class.is_null() {
-        return false;
-    }
-
-    let recv_class = unsafe { *known_recv_class };
+    let recv_class = match known_recv_class {
+        Some(class) => class,
+        None => return false,
+    };
 
     // Get the method_id from compile time. We will later add a guard against it.
     let mid_sym = jit.peek_at_stack(&asm.ctx, (argc - 1) as isize);
@@ -5614,7 +5657,7 @@ fn jit_rb_f_block_given_p(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm.stack_pop(1);
     let out_opnd = asm.stack_push(Type::UnknownImm);
@@ -5653,7 +5696,7 @@ fn jit_thread_s_current(
     _cme: *const rb_callable_method_entry_t,
     _block: Option<BlockHandler>,
     _argc: i32,
-    _known_recv_class: *const VALUE,
+    _known_recv_class: Option<VALUE>,
 ) -> bool {
     asm_comment!(asm, "Thread.current");
     asm.stack_pop(1);
@@ -5867,7 +5910,7 @@ fn gen_send_cfunc(
     ci: *const rb_callinfo,
     cme: *const rb_callable_method_entry_t,
     block: Option<BlockHandler>,
-    recv_known_klass: *const VALUE,
+    recv_known_class: Option<VALUE>,
     flags: u32,
     argc: i32,
 ) -> Option<CodegenStatus> {
@@ -5913,7 +5956,7 @@ fn gen_send_cfunc(
         let codegen_p = lookup_cfunc_codegen(unsafe { (*cme).def });
         let expected_stack_after = asm.ctx.get_stack_size() as i32 - argc;
         if let Some(known_cfunc_codegen) = codegen_p {
-            if known_cfunc_codegen(jit, asm, ocb, ci, cme, block, argc, recv_known_klass) {
+            if known_cfunc_codegen(jit, asm, ocb, ci, cme, block, argc, recv_known_class) {
                 assert_eq!(expected_stack_after, asm.ctx.get_stack_size() as i32);
                 gen_counter_incr(asm, Counter::num_send_cfunc_inline);
                 // cfunc codegen generated code. Terminate the block so
@@ -5922,32 +5965,6 @@ fn gen_send_cfunc(
                 return Some(EndBlock);
             }
         }
-    }
-
-    // Log the name of the method we're calling to,
-    // note that we intentionally don't do this for inlined cfuncs
-    if get_option!(gen_stats) {
-        // TODO: extract code to get method name string into its own function
-
-        // Assemble the method name string
-        let mid = unsafe { vm_ci_mid(ci) };
-        let class_name = if recv_known_klass != ptr::null() {
-            unsafe { cstr_to_rust_string(rb_class2name(*recv_known_klass)) }.unwrap()
-        } else {
-            "Unknown".to_string()
-        };
-        let method_name = if mid != 0 {
-            unsafe { cstr_to_rust_string(rb_id2name(mid)) }.unwrap()
-        } else {
-            "Unknown".to_string()
-        };
-        let name_str = format!("{}#{}", class_name, method_name);
-
-        // Get an index for this cfunc name
-        let cfunc_idx = get_cfunc_idx(&name_str);
-
-        // Increment the counter for this cfunc
-        asm.ccall(incr_cfunc_counter as *const u8, vec![cfunc_idx.into()]);
     }
 
     // Check for interrupts
@@ -6137,6 +6154,20 @@ fn gen_send_cfunc(
     // Push the return value on the Ruby stack
     let stack_ret = asm.stack_push(Type::Unknown);
     asm.mov(stack_ret, ret);
+
+    // Log the name of the method we're calling to. We intentionally don't do this for inlined cfuncs.
+    // We also do this after the C call to minimize the impact of spill_temps() on asm.ccall().
+    if get_option!(gen_stats) {
+        // Assemble the method name string
+        let mid = unsafe { vm_ci_mid(ci) };
+        let name_str = get_method_name(recv_known_class, mid);
+
+        // Get an index for this cfunc name
+        let cfunc_idx = get_cfunc_idx(&name_str);
+
+        // Increment the counter for this cfunc
+        asm.ccall(incr_cfunc_counter as *const u8, vec![cfunc_idx.into()]);
+    }
 
     // Pop the stack frame (ec->cfp++)
     // Instead of recalculating, we can reuse the previous CFP, which is stored in a callee-saved
@@ -6608,6 +6639,9 @@ fn gen_send_iseq(
         }
     }
 
+    // Increment total ISEQ send count
+    gen_counter_incr(asm, Counter::num_send_iseq);
+
     // Shortcut for special `Primitive.attr! :leaf` builtins
     let builtin_attrs = unsafe { rb_yjit_iseq_builtin_attrs(iseq) };
     let builtin_func_raw = unsafe { rb_yjit_builtin_function(iseq) };
@@ -6629,7 +6663,7 @@ fn gen_send_iseq(
             }
 
             asm_comment!(asm, "inlined leaf builtin");
-            gen_counter_incr(asm, Counter::num_send_leaf_builtin);
+            gen_counter_incr(asm, Counter::num_send_iseq_leaf);
 
             // The callee may allocate, e.g. Integer#abs on a Bignum.
             // Save SP for GC, save PC for allocation tracing, and prepare
@@ -6663,7 +6697,7 @@ fn gen_send_iseq(
     // Inline simple ISEQs whose return value is known at compile time
     if let (Some(value), None, false) = (iseq_get_return_value(iseq), block_arg_type, opt_send_call) {
         asm_comment!(asm, "inlined simple ISEQ");
-        gen_counter_incr(asm, Counter::num_send_inline);
+        gen_counter_incr(asm, Counter::num_send_iseq_inline);
 
         // Pop receiver and arguments
         asm.stack_pop(argc as usize + if captured_opnd.is_some() { 0 } else { 1 });
@@ -7168,6 +7202,19 @@ fn gen_send_iseq(
         pc: None, // We are calling into jitted code, which will set the PC as necessary
     });
 
+    // Log the name of the method we're calling to. We intentionally don't do this for inlined ISEQs.
+    // We also do this after gen_push_frame() to minimize the impact of spill_temps() on asm.ccall().
+    if get_option!(gen_stats) {
+        // Assemble the ISEQ name string
+        let name_str = get_iseq_name(iseq);
+
+        // Get an index for this ISEQ name
+        let iseq_idx = get_iseq_idx(&name_str);
+
+        // Increment the counter for this cfunc
+        asm.ccall(incr_iseq_counter as *const u8, vec![iseq_idx.into()]);
+    }
+
     // No need to set cfp->pc since the callee sets it whenever calling into routines
     // that could look at it through jit_save_pc().
     // mov(cb, REG0, const_ptr_opnd(start_pc));
@@ -7516,6 +7563,10 @@ fn gen_send_dynamic<F: Fn(&mut Assembler) -> Opnd>(
         return None;
     }
 
+    // Rewind stack_size using ctx.with_stack_size to allow stack_size changes
+    // before you return None.
+    asm.ctx = asm.ctx.with_stack_size(jit.stack_size_for_pc);
+
     // Save PC and SP to prepare for dynamic dispatch
     jit_prepare_non_leaf_call(jit, asm);
 
@@ -7593,16 +7644,7 @@ fn gen_send_general(
 
     // Log the name of the method we're calling to
     #[cfg(feature = "disasm")]
-    {
-        let class_name = unsafe { cstr_to_rust_string(rb_class2name(comptime_recv_klass)) };
-        let method_name = unsafe { cstr_to_rust_string(rb_id2name(mid)) };
-        match (class_name, method_name) {
-            (Some(class_name), Some(method_name)) => {
-                asm_comment!(asm, "call to {}#{}", class_name, method_name);
-            }
-            _ => {}
-        }
-    }
+    asm_comment!(asm, "call to {}", get_method_name(Some(comptime_recv_klass), mid));
 
     // Gather some statistics about sends
     gen_counter_incr(asm, Counter::num_send);
@@ -7613,7 +7655,7 @@ fn gen_send_general(
         gen_counter_incr(asm, Counter::num_send_polymorphic);
     }
     // If megamorphic, let the caller fallback to dynamic dispatch
-    if asm.ctx.get_chain_depth() as i32 >= SEND_MAX_DEPTH {
+    if asm.ctx.get_chain_depth() >= SEND_MAX_DEPTH {
         gen_counter_incr(asm, Counter::send_megamorphic);
         return None;
     }
@@ -7685,7 +7727,7 @@ fn gen_send_general(
                     ci,
                     cme,
                     block,
-                    &comptime_recv_klass,
+                    Some(comptime_recv_klass),
                     flags,
                     argc,
                 );
@@ -8023,6 +8065,27 @@ fn gen_send_general(
     }
 }
 
+/// Assemble "{class_name}#{method_name}" from a class pointer and a method ID
+fn get_method_name(class: Option<VALUE>, mid: u64) -> String {
+    let class_name = class.and_then(|class| unsafe {
+        cstr_to_rust_string(rb_class2name(class))
+    }).unwrap_or_else(|| "Unknown".to_string());
+    let method_name = if mid != 0 {
+        unsafe { cstr_to_rust_string(rb_id2name(mid)) }
+    } else {
+        None
+    }.unwrap_or_else(|| "Unknown".to_string());
+    format!("{}#{}", class_name, method_name)
+}
+
+/// Assemble "{label}@{iseq_path}:{lineno}" (iseq_inspect() format) from an ISEQ
+fn get_iseq_name(iseq: IseqPtr) -> String {
+    let c_string = unsafe { rb_yjit_iseq_inspect(iseq) };
+    let string = unsafe { CStr::from_ptr(c_string) }.to_str()
+        .unwrap_or_else(|_| "not UTF-8").to_string();
+    unsafe { ruby_xfree(c_string as *mut c_void); }
+    string
+}
 
 /// Shifts the stack for send in order to remove the name of the method
 /// Comment below borrow from vm_call_opt_send in vm_insnhelper.c
@@ -8132,7 +8195,7 @@ fn gen_invokeblock_specialized(
     }
 
     // Fallback to dynamic dispatch if this callsite is megamorphic
-    if asm.ctx.get_chain_depth() as i32 >= SEND_MAX_DEPTH {
+    if asm.ctx.get_chain_depth() >= SEND_MAX_DEPTH {
         gen_counter_incr(asm, Counter::invokeblock_megamorphic);
         return None;
     }
@@ -8193,20 +8256,7 @@ fn gen_invokeblock_specialized(
             Counter::guard_invokeblock_iseq_block_changed,
         );
 
-        gen_send_iseq(
-            jit,
-            asm,
-            ocb,
-            comptime_iseq,
-            ci,
-            VM_FRAME_MAGIC_BLOCK,
-            None,
-            0 as _,
-            None,
-            flags,
-            argc,
-            Some(captured_opnd),
-        )
+        gen_send_iseq(jit, asm, ocb, comptime_iseq, ci, VM_FRAME_MAGIC_BLOCK, None, 0 as _, None, flags, argc, Some(captured_opnd))
     } else if comptime_handler.0 & 0x3 == 0x3 { // VM_BH_IFUNC_P
         // We aren't handling CALLER_SETUP_ARG and CALLER_REMOVE_EMPTY_KW_SPLAT yet.
         if flags & VM_CALL_ARGS_SPLAT != 0 {
@@ -8313,7 +8363,7 @@ fn gen_invokesuper_specialized(
     };
 
     // Fallback to dynamic dispatch if this callsite is megamorphic
-    if asm.ctx.get_chain_depth() as i32 >= SEND_MAX_DEPTH {
+    if asm.ctx.get_chain_depth() >= SEND_MAX_DEPTH {
         gen_counter_incr(asm, Counter::invokesuper_megamorphic);
         return None;
     }
@@ -8422,7 +8472,7 @@ fn gen_invokesuper_specialized(
             gen_send_iseq(jit, asm, ocb, iseq, ci, frame_type, None, cme, Some(block), ci_flags, argc, None)
         }
         VM_METHOD_TYPE_CFUNC => {
-            gen_send_cfunc(jit, asm, ocb, ci, cme, Some(block), ptr::null(), ci_flags, argc)
+            gen_send_cfunc(jit, asm, ocb, ci, cme, Some(block), None, ci_flags, argc)
         }
         _ => unreachable!(),
     }
@@ -8571,7 +8621,7 @@ fn gen_intern(
     _ocb: &mut OutlinedCb,
 ) -> Option<CodegenStatus> {
     // Save the PC and SP because we might allocate
-    jit_prepare_non_leaf_call(jit, asm);
+    jit_prepare_call_with_gc(jit, asm);
 
     let str = asm.stack_opnd(0);
     let sym = asm.ccall(rb_str_intern as *const u8, vec![str]);
@@ -9021,7 +9071,7 @@ fn gen_getblockparam(
     let level = jit.get_arg(1).as_u32();
 
     // Save the PC and SP because we might allocate
-    jit_prepare_non_leaf_call(jit, asm);
+    jit_prepare_call_with_gc(jit, asm);
     asm.spill_temps(); // For ccall. Unconditionally spill them for RegTemps consistency.
 
     // A mirror of the interpreter code. Checking for the case
@@ -9287,7 +9337,7 @@ fn get_gen_fn(opcode: VALUE) -> Option<InsnGenFn> {
 }
 
 // Return true when the codegen function generates code.
-// known_recv_klass is non-NULL when the caller has used jit_guard_known_klass().
+// known_recv_class has Some value when the caller has used jit_guard_known_klass().
 // See yjit_reg_method().
 type MethodGenFn = fn(
     jit: &mut JITState,
@@ -9297,7 +9347,7 @@ type MethodGenFn = fn(
     cme: *const rb_callable_method_entry_t,
     block: Option<BlockHandler>,
     argc: i32,
-    known_recv_class: *const VALUE,
+    known_recv_class: Option<VALUE>,
 ) -> bool;
 
 /// Methods for generating code for hardcoded (usually C) methods
@@ -9355,6 +9405,8 @@ pub fn yjit_reg_method_codegen_fns() {
         yjit_reg_method(rb_cArray, "length", jit_rb_ary_length);
         yjit_reg_method(rb_cArray, "size", jit_rb_ary_length);
         yjit_reg_method(rb_cArray, "<<", jit_rb_ary_push);
+
+        yjit_reg_method(rb_cHash, "empty?", jit_rb_hash_empty_p);
 
         yjit_reg_method(rb_mKernel, "respond_to?", jit_obj_respond_to);
         yjit_reg_method(rb_mKernel, "block_given?", jit_rb_f_block_given_p);

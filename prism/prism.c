@@ -2890,7 +2890,8 @@ pm_def_node_receiver_check(pm_parser_t *parser, const pm_node_t *node) {
 static pm_def_node_t *
 pm_def_node_create(
     pm_parser_t *parser,
-    const pm_token_t *name,
+    pm_constant_id_t name,
+    const pm_location_t *name_loc,
     pm_node_t *receiver,
     pm_parameters_node_t *parameters,
     pm_node_t *body,
@@ -2920,8 +2921,8 @@ pm_def_node_create(
             .type = PM_DEF_NODE,
             .location = { .start = def_keyword->start, .end = end },
         },
-        .name = pm_parser_constant_id_token(parser, name),
-        .name_loc = PM_LOCATION_TOKEN_VALUE(name),
+        .name = name,
+        .name_loc = *name_loc,
         .receiver = receiver,
         .parameters = parameters,
         .body = body,
@@ -9590,11 +9591,21 @@ parser_lex(pm_parser_t *parser) {
                     if (*parser->current.start != '_') {
                         size_t width = char_is_identifier_start(parser, parser->current.start);
 
-                        // If this isn't the beginning of an identifier, then it's an invalid
-                        // token as we've exhausted all of the other options. We'll skip past
-                        // it and return the next token.
+                        // If this isn't the beginning of an identifier, then
+                        // it's an invalid token as we've exhausted all of the
+                        // other options. We'll skip past it and return the next
+                        // token after adding an appropriate error message.
                         if (!width) {
-                            pm_parser_err_current(parser, PM_ERR_INVALID_TOKEN);
+                            pm_diagnostic_id_t diag_id;
+                            if (*parser->current.start >= 0x80) {
+                                diag_id = PM_ERR_INVALID_MULTIBYTE_CHARACTER;
+                            } else if (char_is_ascii_printable(*parser->current.start) || (*parser->current.start == '\\')) {
+                                diag_id = PM_ERR_INVALID_PRINTABLE_CHARACTER;
+                            } else {
+                                diag_id = PM_ERR_INVALID_CHARACTER;
+                            }
+
+                            PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, diag_id, *parser->current.start);
                             goto lex_next_token;
                         }
 
@@ -15616,11 +15627,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
              * methods to override the unary operators, we should ignore
              * the @ in the same way we do for symbols.
              */
-            name.end = parse_operator_symbol_name(&name);
+            pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &name);
+            pm_location_t name_loc = { .start = name.start, .end = parse_operator_symbol_name(&name) };
 
             return (pm_node_t *) pm_def_node_create(
                 parser,
-                &name,
+                name_id,
+                &name_loc,
                 receiver,
                 params,
                 statements,
@@ -17781,6 +17794,7 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
         .current = { .type = PM_TOKEN_EOF, .start = source, .end = source },
         .next_start = NULL,
         .heredoc_end = NULL,
+        .data_loc = { .start = NULL, .end = NULL },
         .comment_list = { 0 },
         .magic_comment_list = { 0 },
         .warning_list = { 0 },

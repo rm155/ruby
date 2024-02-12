@@ -234,7 +234,8 @@ module RubyVM::YJIT
     at_exit { print_and_dump_stats }
   end
 
-  class << self # :stopdoc:
+  class << self
+    # :stopdoc:
     private
 
     # Print stats and dump exit locations
@@ -315,16 +316,18 @@ module RubyVM::YJIT
       out.puts "num_send_polymorphic:  " + format_number_pct(13, stats[:num_send_polymorphic], stats[:num_send])
       out.puts "num_send_megamorphic:  " + format_number_pct(13, stats[:send_megamorphic], stats[:num_send])
       out.puts "num_send_dynamic:      " + format_number_pct(13, stats[:num_send_dynamic], stats[:num_send])
-      out.puts "num_send_inline:       " + format_number_pct(13, stats[:num_send_inline], stats[:num_send])
-      out.puts "num_send_leaf_builtin: " + format_number_pct(13, stats[:num_send_leaf_builtin], stats[:num_send])
       out.puts "num_send_cfunc:        " + format_number_pct(13, stats[:num_send_cfunc], stats[:num_send])
       out.puts "num_send_cfunc_inline: " + format_number_pct(13, stats[:num_send_cfunc_inline], stats[:num_send_cfunc])
+      out.puts "num_send_iseq:         " + format_number_pct(13, stats[:num_send_iseq], stats[:num_send])
+      out.puts "num_send_iseq_leaf:    " + format_number_pct(13, stats[:num_send_iseq_leaf], stats[:num_send_iseq])
+      out.puts "num_send_iseq_inline:  " + format_number_pct(13, stats[:num_send_iseq_inline], stats[:num_send_iseq])
       if stats[:num_send_x86_rel32] != 0 || stats[:num_send_x86_reg] != 0
         out.puts "num_send_x86_rel32:    " + format_number(13,  stats[:num_send_x86_rel32])
         out.puts "num_send_x86_reg:      " + format_number(13, stats[:num_send_x86_reg])
       end
-      out.puts "num_getivar_megamorphic: " + format_number(13, stats[:num_getivar_megamorphic])
-      out.puts "num_setivar_megamorphic: " + format_number(13, stats[:num_setivar_megamorphic])
+      out.puts "num_getivar_megamorphic: " + format_number(11, stats[:num_getivar_megamorphic])
+      out.puts "num_setivar_megamorphic: " + format_number(11, stats[:num_setivar_megamorphic])
+      out.puts "num_opt_case_megamorphic: " + format_number(10, stats[:num_opt_case_dispatch_megamorphic])
       out.puts "num_throw:             " + format_number(13, stats[:num_throw])
       out.puts "num_throw_break:       " + format_number_pct(13, stats[:num_throw_break], stats[:num_throw])
       out.puts "num_throw_retry:       " + format_number_pct(13, stats[:num_throw_retry], stats[:num_throw])
@@ -384,17 +387,12 @@ module RubyVM::YJIT
 
       print_sorted_exit_counts(stats, out: out, prefix: "exit_")
 
-      print_sorted_cfunc_calls(stats, out:out)
+      print_sorted_method_calls(stats[:cfunc_calls], stats[:num_send_cfunc], out: out, type: 'C')
+      print_sorted_method_calls(stats[:iseq_calls], stats[:num_send_iseq], out: out, type: 'ISEQ')
     end
 
-    def print_sorted_cfunc_calls(stats, out:, how_many: 20, left_pad: 4) # :nodoc:
-      calls = stats[:cfunc_calls]
-      if calls.empty?
-        return
-      end
-
-      # Total number of cfunc calls
-      num_send_cfunc = stats[:num_send_cfunc]
+    def print_sorted_method_calls(calls, num_calls, out:, type:, how_many: 20, left_pad: 4) # :nodoc:
+      return if calls.empty?
 
       # Sort calls by decreasing frequency and keep the top N
       pairs = calls.map { |k,v| [k, v] }
@@ -403,16 +401,13 @@ module RubyVM::YJIT
       pairs = pairs[0...how_many]
 
       top_n_total = pairs.sum { |name, count| count }
-      top_n_pct = 100.0 * top_n_total / num_send_cfunc
-      longest_name_len = pairs.max_by { |name, count| name.length }.first.length
+      top_n_pct = 100.0 * top_n_total / num_calls
 
-      out.puts "Top-#{pairs.size} most frequent C calls (#{"%.1f" % top_n_pct}% of C calls):"
+      out.puts "Top-#{pairs.size} most frequent #{type} calls (#{"%.1f" % top_n_pct}% of #{type} calls):"
 
       pairs.each do |name, count|
-        padding = longest_name_len + left_pad
-        padded_name = "%#{padding}s" % name
-        padded_count = format_number_pct(10, count, num_send_cfunc)
-        out.puts("#{padded_name}: #{padded_count}")
+        padded_count = format_number_pct(10, count, num_calls)
+        out.puts("#{padded_count}: #{name}")
       end
     end
 
@@ -434,12 +429,9 @@ module RubyVM::YJIT
 
         out.puts "Top-#{exits.size} most frequent exit ops (#{"%.1f" % top_n_exit_pct}% of exits):"
 
-        longest_insn_name_len = exits.max_by { |name, count| name.length }.first.length
         exits.each do |name, count|
-          padding = longest_insn_name_len + left_pad
-          padded_name = "%#{padding}s" % name
           padded_count = format_number_pct(10, count, total_exits)
-          out.puts("#{padded_name}: #{padded_count}")
+          out.puts("#{padded_count}: #{name}")
         end
       else
         out.puts "total_exits:           " + format_number(10, total_exits)
@@ -496,5 +488,7 @@ module RubyVM::YJIT
       formatted_pct = "%4.1f%%" % percentage
       "#{padded_count} (#{formatted_pct})"
     end
+
+    # :startdoc:
   end
 end

@@ -37,6 +37,11 @@ module IRB # :nodoc:
         [:irb_quit, OVERRIDE_PRIVATE_ONLY],
       ],
       [
+        :irb_exit!, :ForceExit, "cmd/force_exit",
+        [:exit!, OVERRIDE_PRIVATE_ONLY],
+      ],
+
+      [
         :irb_current_working_workspace, :CurrentWorkingWorkspace, "cmd/chws",
         [:cwws, NO_OVERRIDE],
         [:pwws, NO_OVERRIDE],
@@ -317,7 +322,6 @@ module IRB # :nodoc:
 
     @EXTEND_COMMANDS = [
       [:eval_history=, "ext/eval_history.rb"],
-      [:use_tracer=, "ext/tracer.rb"],
       [:use_loader=, "ext/use-loader.rb"],
     ]
 

@@ -3785,15 +3785,15 @@ unlock_own_borrowable_page(rb_ractor_t *cr, int size_pool_idx)
 static void gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache);
 
 static VALUE
-newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx)
+newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool vm_locked)
 {
     rb_ractor_t *alloc_target_ractor = objspace->ractor;
+    rb_ractor_t *cr = GET_RACTOR();
 
     VM_ASSERT(alloc_target_ractor->borrowing_sync.lock_owner == cr);
 
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
-    rb_ractor_newobj_cache_t *cache = &alloc_target_ractor->newobj_borrowing_cache;
 
     bool borrowable_page_locked = false;
     borrowable_page_locked = !rb_native_mutex_trylock(&alloc_target_ractor->borrowing_sync.page_lock[size_pool_idx]);
@@ -3814,7 +3814,6 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_poo
     if (UNLIKELY(obj == Qfalse)) {
         unsigned int lev;
         bool unlock_vm = false;
-
 
 	HEAP_LOCK_ENTER(objspace);
 	{
@@ -3850,11 +3849,10 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_poo
 }
 
 static VALUE
-newobj_alloc(rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx)
+newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool vm_locked)
 {
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
-    rb_ractor_newobj_cache_t *cache = &cr->newobj_cache;
 
     VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
 
@@ -3897,10 +3895,10 @@ newobj_zero_slot(VALUE obj)
     memset((char *)obj + sizeof(struct RBasic), 0, rb_gc_obj_slot_size(obj) - sizeof(struct RBasic));
 }
 
-ALWAYS_INLINE(static VALUE newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, int wb_protected, size_t size_pool_idx, bool borrowing));
+ALWAYS_INLINE(static VALUE newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t size_pool_idx, bool borrowing));
 
 static inline VALUE
-newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, int wb_protected, size_t size_pool_idx, bool borrowing)
+newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t size_pool_idx, bool borrowing)
 {
     VALUE obj;
     unsigned int lev;
@@ -3918,7 +3916,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *
 	}
     }
 
-    obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cr, size_pool_idx) : newobj_alloc(objspace, cr, size_pool_idx) ;
+    obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx);
 
     HEAP_LOCK_ENTER(objspace);
     {
@@ -3932,20 +3930,20 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *
 }
 
 NOINLINE(static VALUE newobj_slowpath_wb_protected(VALUE klass, VALUE flags,
-                                                   rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool borrowing));
+                                                   rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, borrowing));
 NOINLINE(static VALUE newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags,
-                                                     rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool borrowing));
+                                                     rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing));
 
 static VALUE
-newobj_slowpath_wb_protected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool borrowing)
+newobj_slowpath_wb_protected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing)
 {
-    return newobj_slowpath(klass, flags, objspace, cr, TRUE, size_pool_idx, borrowing);
+    return newobj_slowpath(klass, flags, objspace, cache, TRUE, size_pool_idx, borrowing);
 }
 
 static VALUE
-newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_t *cr, size_t size_pool_idx, bool borrowing)
+newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, borrowing)
 {
-    return newobj_slowpath(klass, flags, objspace, cr, FALSE, size_pool_idx, borrowing);
+    return newobj_slowpath(klass, flags, objspace, cache, FALSE, size_pool_idx, borrowing);
 }
 
 static inline int gc_mark_set(rb_objspace_t *objspace, VALUE obj);
@@ -3953,7 +3951,7 @@ static void gc_grey(rb_objspace_t *objspace, VALUE obj);
 static void gc_aging(VALUE obj);
 
 static inline VALUE
-newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t alloc_size)
+newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, int wb_protected, size_t alloc_size)
 {
     VALUE obj;
     rb_objspace_t *objspace = &rb_objspace;
@@ -3974,25 +3972,32 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
         flags |= (VALUE)size_pool_idx << SHAPE_FLAG_SHIFT;
     }
 
+
+    rb_ractor_newobj_cache_t *cache;
     bool borrowing = !!(objspace->alloc_target_ractor);
     if (borrowing) {
 	objspace = objspace->alloc_target_ractor->local_objspace;
+	cache = &objspace->alloc_target_ractor->newobj_borrowing_cache;
+    }
+    else {
+	cache = &cr->newobj_cache;
     }
 
     if (borrowing) rb_borrowing_sync_lock(objspace->ractor);
+
     if (!UNLIKELY(during_gc ||
                   ruby_gc_stressful ||
                   gc_event_newobj_hook_needed_p(objspace)) &&
             wb_protected) {
-        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cr, size_pool_idx) : newobj_alloc(objspace, cr, size_pool_idx);
+        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx);
         newobj_init(klass, flags, wb_protected, objspace, obj);
     }
     else {
         RB_DEBUG_COUNTER_INC(obj_newobj_slowpath);
 
         obj = wb_protected ?
-          newobj_slowpath_wb_protected(klass, flags, objspace, cr, size_pool_idx, borrowing) :
-          newobj_slowpath_wb_unprotected(klass, flags, objspace, cr, size_pool_idx, borrowing);
+          newobj_slowpath_wb_protected(klass, flags, objspace, cache, size_pool_idx, borrowing) :
+          newobj_slowpath_wb_unprotected(klass, flags, objspace, cache, size_pool_idx, borrowing);
     }
     
     if (borrowing && (is_incremental_marking(objspace) || objspace->waiting_for_object_graph_safety)) {
@@ -4002,13 +4007,7 @@ newobj_of0(VALUE klass, VALUE flags, int wb_protected, rb_ractor_t *cr, size_t a
 	}
     }
     if (borrowing) rb_borrowing_sync_unlock(objspace->ractor);
-    return obj;
-}
 
-static inline VALUE
-newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, int wb_protected, size_t alloc_size)
-{
-    VALUE obj = newobj_of0(klass, flags, wb_protected, cr, alloc_size);
     return newobj_fill(obj, v1, v2, v3);
 }
 

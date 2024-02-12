@@ -1947,6 +1947,9 @@ impl Context {
                         let mut new_type = self.get_local_type(idx);
                         new_type.upgrade(opnd_type);
                         self.set_local_type(idx, new_type);
+                        // Re-attach MapToLocal for this StackOpnd(idx). set_local_type() detaches
+                        // all MapToLocal mappings, including the one we're upgrading here.
+                        self.set_opnd_mapping(opnd, mapping);
                     }
                 }
             }
@@ -2957,7 +2960,7 @@ pub fn gen_branch_stub_hit_trampoline(ocb: &mut OutlinedCb) -> Option<CodePtr> {
 }
 
 /// Return registers to be pushed and popped on branch_stub_hit.
-fn caller_saved_temp_regs() -> impl Iterator<Item = &'static Reg> + DoubleEndedIterator {
+pub fn caller_saved_temp_regs() -> impl Iterator<Item = &'static Reg> + DoubleEndedIterator {
     let temp_regs = Assembler::get_temp_regs().iter();
     let len = temp_regs.len();
     // The return value gen_leave() leaves in C_RET_REG
@@ -3579,6 +3582,14 @@ mod tests {
         assert!(top_type == Type::Fixnum);
 
         // TODO: write more tests for Context type diff
+    }
+
+    #[test]
+    fn context_upgrade_local() {
+        let mut asm = Assembler::new();
+        asm.stack_push_local(0);
+        asm.ctx.upgrade_opnd_type(StackOpnd(0), Type::Nil);
+        assert_eq!(Type::Nil, asm.ctx.get_opnd_type(StackOpnd(0)));
     }
 
     #[test]
