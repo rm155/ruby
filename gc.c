@@ -3785,7 +3785,7 @@ unlock_own_borrowable_page(rb_ractor_t *cr, int size_pool_idx)
 static void gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache);
 
 static VALUE
-newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool vm_locked)
+newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
 {
     rb_ractor_t *alloc_target_ractor = objspace->ractor;
     rb_ractor_t *cr = GET_RACTOR();
@@ -3849,7 +3849,7 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
 }
 
 static VALUE
-newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool vm_locked)
+newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
 {
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
@@ -3930,7 +3930,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_new
 }
 
 NOINLINE(static VALUE newobj_slowpath_wb_protected(VALUE klass, VALUE flags,
-                                                   rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, borrowing));
+                                                   rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing));
 NOINLINE(static VALUE newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags,
                                                      rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing));
 
@@ -3941,7 +3941,7 @@ newobj_slowpath_wb_protected(VALUE klass, VALUE flags, rb_objspace_t *objspace, 
 }
 
 static VALUE
-newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, borrowing)
+newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing)
 {
     return newobj_slowpath(klass, flags, objspace, cache, FALSE, size_pool_idx, borrowing);
 }
@@ -3977,7 +3977,7 @@ newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v
     bool borrowing = !!(objspace->alloc_target_ractor);
     if (borrowing) {
 	objspace = objspace->alloc_target_ractor->local_objspace;
-	cache = &objspace->alloc_target_ractor->newobj_borrowing_cache;
+	cache = &objspace->ractor->newobj_borrowing_cache;
     }
     else {
 	cache = &cr->newobj_cache;
