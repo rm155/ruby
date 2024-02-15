@@ -9780,7 +9780,7 @@ add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_reference_st
     WITH_OBJSPACE_OF_VALUE_LEAVE(source_objspace);
 }
 
-static void
+static int
 confirmed_discovered_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
     rb_objspace_t *objspace = (rb_objspace_t *)argp;
@@ -9790,6 +9790,7 @@ confirmed_discovered_external_references_i(st_data_t key, st_data_t value, st_da
 	add_external_reference_usage(objspace, obj, rs);
 	rs->status = shared_object_marked;
     }
+    return ST_CONTINUE;
 }
 
 static void
