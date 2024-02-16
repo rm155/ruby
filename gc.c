@@ -3659,10 +3659,47 @@ borrowing_count_decrement(rb_ractor_t *r)
 {
     rb_native_mutex_lock(&r->borrowing_sync.borrowing_allowed_lock);
     r->borrowing_sync.borrower_count--;
+    VM_ASSERT(r->borrowing_sync.borrower_count >= 0);
     if (r->borrowing_sync.borrower_count == 0) {
 	rb_native_cond_signal(&r->borrowing_sync.no_borrowers);
     }
     rb_native_mutex_unlock(&r->borrowing_sync.borrowing_allowed_lock);
+}
+
+static void
+borrowing_alloc_target_push(rb_ractor_t *cr, rb_ractor_t *target)
+{
+    struct borrowing_target_node_t *btn = ALLOC(struct borrowing_target_node_t);
+    btn->target_ractor = target;
+    btn->next = cr->borrowing_target_top;
+    cr->borrowing_target_top = btn;
+}
+
+static rb_ractor_t *
+borrowing_alloc_target_pop(rb_ractor_t *cr)
+{
+    VM_ASSERT(cr->borrowing_target_top != NULL);
+    struct borrowing_target_node_t *btn = cr->borrowing_target_top;
+    cr->borrowing_target_top = btn->next;
+    rb_ractor_t *target = btn->target_ractor;
+    free(btn);
+    return target;
+}
+
+void
+rb_borrowing_status_pause(rb_ractor_t *cr)
+{
+    for (struct borrowing_target_node_t *btn = cr->borrowing_target_top; !!btn; btn = btn->next) {
+	borrowing_count_decrement(btn->target_ractor);
+    }
+}
+
+void
+rb_borrowing_status_resume(rb_ractor_t *cr)
+{
+    for (struct borrowing_target_node_t *btn = cr->borrowing_target_top; !!btn; btn = btn->next) {
+	borrowing_count_increment(btn->target_ractor);
+    }
 }
 
 static VALUE
@@ -3673,10 +3710,13 @@ borrowing_enter(VALUE args)
     rb_ractor_t *borrower = borrowing_data->borrower;
     rb_ractor_t *target_ractor = borrowing_data->target_ractor;
 
+    VM_ASSERT(borrower == GET_RACTOR());
+
     if (target_ractor == borrower) {
 	target_ractor = NULL;
     }
     else if (!!target_ractor) {
+	borrowing_alloc_target_push(borrower, target_ractor);
 	borrowing_count_increment(target_ractor);
     }
 
@@ -3693,6 +3733,8 @@ borrowing_exit(VALUE args)
 
     rb_ractor_t *borrower = borrowing_data->borrower;
     rb_ractor_t *target_to_restore = borrowing_data->old_target;
+
+    VM_ASSERT(borrower == GET_RACTOR());
     VM_ASSERT(target_to_restore != borrower);
 
     rb_ractor_t *finished_target = borrower->local_objspace->alloc_target_ractor;
@@ -3702,6 +3744,12 @@ borrowing_exit(VALUE args)
 
     if (!!finished_target) {
 	borrowing_count_decrement(finished_target);
+#if VM_CHECK_MODE > 0
+	rb_ractor_t *popped_target = borrowing_alloc_target_pop(borrower);
+	VM_ASSERT(popped_target == finished_target);
+#else
+	borrowing_alloc_target_pop(borrower);
+#endif
     }
 
     return Qnil;

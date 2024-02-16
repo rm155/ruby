@@ -58,10 +58,15 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
         // locking ractor and acquire VM lock will cause deadlock
         VM_ASSERT(cr->sync.locked_by != rb_ractor_self(cr) || cr->sync.locking_thread != GET_THREAD());
 #endif
+
+	rb_borrowing_status_pause(cr);
+
         // lock
         rb_native_mutex_lock(&vm->ractor.sync.lock);
         VM_ASSERT(vm->ractor.sync.lock_owner == NULL);
         VM_ASSERT(vm->ractor.sync.lock_rec == 0);
+
+	rb_borrowing_status_resume(cr);
 
 #ifdef RUBY_THREAD_PTHREAD_H
         if (!no_barrier &&

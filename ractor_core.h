@@ -153,6 +153,11 @@ enum ractor_status {
 
 struct rb_objspace;
 
+struct borrowing_target_node_t {
+    rb_ractor_t *target_ractor;
+    struct borrowing_target *next;
+};
+
 struct rb_ractor_struct {
     struct rb_ractor_pub pub;
 
@@ -240,8 +245,9 @@ struct rb_ractor_struct {
     VALUE result_value;
 
     bool objspace_absorbed;
-}; // rb_ractor_t is defined in vm_core.h
 
+    struct borrowing_target_node_t *borrowing_target_top;
+}; // rb_ractor_t is defined in vm_core.h
 
 static inline VALUE
 rb_ractor_self(const rb_ractor_t *r)
@@ -277,6 +283,9 @@ void unlock_ractor_set(void);
 
 void rb_borrowing_sync_lock(rb_ractor_t *r);
 void rb_borrowing_sync_unlock(rb_ractor_t *r);
+
+void rb_borrowing_status_pause(rb_ractor_t *cr);
+void rb_borrowing_status_resume(rb_ractor_t *cr);
 
 void rb_ractor_vm_barrier_interrupt_running_thread(rb_ractor_t *r);
 void rb_ractor_terminate_interrupt_main_thread(rb_ractor_t *r);

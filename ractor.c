@@ -2272,6 +2272,8 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 
     r->result_value = Qnil;
 
+    r->borrowing_target_top = NULL;
+
     // thread management
     rb_thread_sched_init(&r->threads.sched, false);
     rb_ractor_living_threads_init(r);
