@@ -125,7 +125,7 @@ VALUE rb_cSymbol;
     FL_SET((str), STR_NOEMBED);\
     FL_UNSET((str), STR_SHARED | STR_SHARED_ROOT | STR_BORROWED);\
 } while (0)
-#define STR_SET_EMBED(str) FL_UNSET((str), (STR_NOEMBED|STR_NOFREE))
+#define STR_SET_EMBED(str) FL_UNSET((str), STR_NOEMBED | STR_SHARED | STR_NOFREE)
 
 #define STR_SET_LEN(str, n) do { \
     RSTRING(str)->len = (n); \
@@ -2278,7 +2278,7 @@ rb_str_empty(VALUE str)
  *  call-seq:
  *    string + other_string -> new_string
  *
- *  Returns a new \String containing +other_string+ concatenated to +self+:
+ *  Returns a new +String+ containing +other_string+ concatenated to +self+:
  *
  *    "Hello from " + self.to_s # => "Hello from main"
  *
@@ -2349,7 +2349,7 @@ rb_str_opt_plus(VALUE str1, VALUE str2)
  *  call-seq:
  *    string * integer -> new_string
  *
- *  Returns a new \String containing +integer+ copies of +self+:
+ *  Returns a new +String+ containing +integer+ copies of +self+:
  *
  *    "Ho! " * 3 # => "Ho! Ho! Ho! "
  *    "Ho! " * 0 # => ""
@@ -2724,14 +2724,14 @@ rb_check_string_type(VALUE str)
  *  call-seq:
  *    String.try_convert(object) -> object, new_string, or nil
  *
- *  If +object+ is a \String object, returns +object+.
+ *  If +object+ is a +String+ object, returns +object+.
  *
  *  Otherwise if +object+ responds to <tt>:to_str</tt>,
  *  calls <tt>object.to_str</tt> and returns the result.
  *
  *  Returns +nil+ if +object+ does not respond to <tt>:to_str</tt>.
  *
- *  Raises an exception unless <tt>object.to_str</tt> returns a \String object.
+ *  Raises an exception unless <tt>object.to_str</tt> returns a +String+ object.
  */
 static VALUE
 rb_str_s_try_convert(VALUE dummy, VALUE str)
@@ -3066,7 +3066,7 @@ str_uplus(VALUE str)
  *
  * Returns a frozen, possibly pre-existing copy of the string.
  *
- * The returned \String will be deduplicated as long as it does not have
+ * The returned +String+ will be deduplicated as long as it does not have
  * any instance variables set on it and is not a String subclass.
  *
  * Note that <tt>-string</tt> variant is more convenient for defining
@@ -3759,7 +3759,7 @@ rb_str_cmp(VALUE str1, VALUE str2)
  *  Returns +false+ if the two strings' encodings are not compatible:
  *    "\u{e4 f6 fc}".encode("ISO-8859-1") == ("\u{c4 d6 dc}") # => false
  *
- *  If +object+ is not an instance of \String but responds to +to_str+, then the
+ *  If +object+ is not an instance of +String+ but responds to +to_str+, then the
  *  two strings are compared using <code>object.==</code>.
  */
 
@@ -4883,7 +4883,7 @@ static VALUE str_succ(VALUE str);
  *    s = '99zz99zz'
  *    s.succ # => "100aa00aa"
  *
- *  The successor to an empty \String is a new empty \String:
+ *  The successor to an empty +String+ is a new empty +String+:
  *
  *    ''.succ # => ""
  *
@@ -5023,7 +5023,7 @@ str_upto_i(VALUE str, VALUE arg)
  *    upto(other_string, exclusive = false) {|string| ... } -> self
  *    upto(other_string, exclusive = false) -> new_enumerator
  *
- *  With a block given, calls the block with each \String value
+ *  With a block given, calls the block with each +String+ value
  *  returned by successive calls to String#succ;
  *  the first value is +self+, the next is <tt>self.succ</tt>, and so on;
  *  the sequence terminates when value +other_string+ is reached;
@@ -6284,6 +6284,12 @@ str_byte_substr(VALUE str, long beg, long len, int empty)
     return str2;
 }
 
+VALUE
+rb_str_byte_substr(VALUE str, VALUE beg, VALUE len)
+{
+    return str_byte_substr(str, NUM2LONG(beg), NUM2LONG(len), TRUE);
+}
+
 static VALUE
 str_byte_aref(VALUE str, VALUE indx)
 {
@@ -6667,8 +6673,8 @@ rb_str_to_f(VALUE str)
  *  call-seq:
  *    to_s -> self or string
  *
- *  Returns +self+ if +self+ is a \String,
- *  or +self+ converted to a \String if +self+ is a subclass of \String.
+ *  Returns +self+ if +self+ is a +String+,
+ *  or +self+ converted to a +String+ if +self+ is a subclass of +String+.
  */
 
 static VALUE
@@ -10943,7 +10949,7 @@ rb_fs_setter(VALUE val, ID id, VALUE *var)
                  rb_id2str(id));
     }
     if (!NIL_P(val)) {
-        rb_warn_deprecated("`$;'", NULL);
+        rb_warn_deprecated("'$;'", NULL);
     }
     *var = val;
 }
@@ -11521,17 +11527,17 @@ rb_str_unicode_normalized_p(int argc, VALUE *argv, VALUE str)
 /**********************************************************************
  * Document-class: Symbol
  *
- * \Symbol objects represent named identifiers inside the Ruby interpreter.
+ * A +Symbol+ object represents a named identifier inside the Ruby interpreter.
  *
- * You can create a \Symbol object explicitly with:
+ * You can create a +Symbol+ object explicitly with:
  *
  * - A {symbol literal}[rdoc-ref:syntax/literals.rdoc@Symbol+Literals].
  *
- * The same \Symbol object will be
+ * The same +Symbol+ object will be
  * created for a given name or string for the duration of a program's
  * execution, regardless of the context or meaning of that name. Thus
  * if <code>Fred</code> is a constant in one context, a method in
- * another, and a class in a third, the \Symbol <code>:Fred</code>
+ * another, and a class in a third, the +Symbol+ <code>:Fred</code>
  * will be the same object in all three contexts.
  *
  *     module One
@@ -11574,18 +11580,18 @@ rb_str_unicode_normalized_p(int argc, VALUE *argv, VALUE str)
  *     local_variables
  *     # => [:seven]
  *
- * \Symbol objects are different from String objects in that
- * \Symbol objects represent identifiers, while String objects
- * represent text or data.
+ * A +Symbol+ object differs from a String object in that
+ * a +Symbol+ object represents an identifier, while a String object
+ * represents text or data.
  *
  * == What's Here
  *
- * First, what's elsewhere. \Class \Symbol:
+ * First, what's elsewhere. \Class +Symbol+:
  *
  * - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
  * - Includes {module Comparable}[rdoc-ref:Comparable@What-27s+Here].
  *
- * Here, class \Symbol provides methods that are useful for:
+ * Here, class +Symbol+ provides methods that are useful for:
  *
  * - {Querying}[rdoc-ref:Symbol@Methods+for+Querying]
  * - {Comparing}[rdoc-ref:Symbol@Methods+for+Comparing]
@@ -11744,11 +11750,13 @@ sym_inspect(VALUE sym)
     }
     else {
         rb_encoding *enc = STR_ENC_GET(str);
-
         VALUE orig_str = str;
-        RSTRING_GETMEM(orig_str, ptr, len);
 
+        len = RSTRING_LEN(orig_str);
         str = rb_enc_str_new(0, len + 1, enc);
+
+        // Get data pointer after allocation
+        ptr = RSTRING_PTR(orig_str);
         dest = RSTRING_PTR(str);
         memcpy(dest + 1, ptr, len);
 

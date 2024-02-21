@@ -1005,4 +1005,10 @@ rb_ractor_sched_barrier_join(rb_vm_t *vm, rb_ractor_t *cr)
     rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_BARRIER_WAITING);
 }
 
+bool
+rb_thread_lock_native_thread(void)
+{
+    return false;
+}
+
 #endif /* THREAD_SYSTEM_DEPENDENT_IMPLEMENTATION */

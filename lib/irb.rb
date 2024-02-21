@@ -9,7 +9,7 @@ require "reline"
 
 require_relative "irb/init"
 require_relative "irb/context"
-require_relative "irb/extend-command"
+require_relative "irb/command"
 
 require_relative "irb/ruby-lex"
 require_relative "irb/statement"
@@ -811,7 +811,7 @@ require_relative "irb/pager"
 #
 # === Commands
 #
-# Please use the `show_cmds` command to see the list of available commands.
+# Please use the `help` command to see the list of available commands.
 #
 # === IRB Sessions
 #
@@ -1082,16 +1082,17 @@ module IRB
       loop do
         code = readmultiline
         break unless code
-
-        if code != "\n"
-          yield build_statement(code), @line_no
-        end
+        yield build_statement(code), @line_no
         @line_no += code.count("\n")
       rescue RubyLex::TerminateLineInput
       end
     end
 
     def build_statement(code)
+      if code.match?(/\A\n*\z/)
+        return Statement::EmptyInput.new
+      end
+
       code.force_encoding(@context.io.encoding)
       command_or_alias, arg = code.split(/\s/, 2)
       # Transform a non-identifier alias (@, $) or keywords (next, break)
@@ -1235,7 +1236,7 @@ module IRB
         lines.map{ |l| l + "\n" }.join
       }
       # The "<top (required)>" in "(irb)" may be the top level of IRB so imitate the main object.
-      message = message.gsub(/\(irb\):(?<num>\d+):in `<(?<frame>top \(required\))>'/) { "(irb):#{$~[:num]}:in `<main>'" }
+      message = message.gsub(/\(irb\):(?<num>\d+):in (?<open_quote>[`'])<(?<frame>top \(required\))>'/) { "(irb):#{$~[:num]}:in #{$~[:open_quote]}<main>'" }
       puts message
       puts 'Maybe IRB bug!' if irb_bug
     rescue Exception => handler_exc

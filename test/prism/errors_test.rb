@@ -177,7 +177,7 @@ module Prism
 
     def test_incomplete_instance_var_string
       assert_errors expression('%@#@@#'), '%@#@@#', [
-        ["`@#' is not allowed as an instance variable name", 4..5],
+        ["'@#' is not allowed as an instance variable name", 4..5],
         ["unexpected instance variable, expecting end-of-input", 4..5]
       ]
     end
@@ -1258,7 +1258,7 @@ module Prism
 
     def test_unterminated_global_variable
       assert_errors expression("$"), "$", [
-        ["`$' is not allowed as a global variable name", 0..1]
+        ["'$' is not allowed as a global variable name", 0..1]
       ]
     end
 
@@ -2111,6 +2111,36 @@ module Prism
         ["cannot define singleton method for literals", 404..407]
       ]
       assert_errors expression(source), source, errors, compare_ripper: false
+    end
+
+    def test_assignment_to_literal_in_conditionals
+      source = <<~RUBY
+        if (a = 2); end
+        if ($a = 2); end
+        if (@a = 2); end
+        if (@@a = 2); end
+        if a elsif b = 2; end
+        unless (a = 2); end
+        unless ($a = 2); end
+        unless (@a = 2); end
+        unless (@@a = 2); end
+        while (a = 2); end
+        while ($a = 2); end
+        while (@a = 2); end
+        while (@@a = 2); end
+        until (a = 2); end
+        until ($a = 2); end
+        until (@a = 2); end
+        until (@@a = 2); end
+        foo if a = 2
+        foo if (a, b = 2)
+        (@foo = 1) ? a : b
+        !(a = 2)
+        not a = 2
+      RUBY
+      assert_warning_messages source, [
+        "found `= literal' in conditional, should be =="
+      ] * source.lines.count
     end
 
     private

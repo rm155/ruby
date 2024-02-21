@@ -457,13 +457,13 @@ check_local_id(VALUE bindval, volatile VALUE *pname)
 
     if (lid) {
         if (!rb_is_local_id(lid)) {
-            rb_name_err_raise("wrong local variable name `%1$s' for %2$s",
+            rb_name_err_raise("wrong local variable name '%1$s' for %2$s",
                               bindval, ID2SYM(lid));
         }
     }
     else {
         if (!rb_is_local_name(name)) {
-            rb_name_err_raise("wrong local variable name `%1$s' for %2$s",
+            rb_name_err_raise("wrong local variable name '%1$s' for %2$s",
                               bindval, name);
         }
         return 0;
@@ -536,7 +536,7 @@ bind_local_variable_get(VALUE bindval, VALUE sym)
 
     sym = ID2SYM(lid);
   undefined:
-    rb_name_err_raise("local variable `%1$s' is not defined for %2$s",
+    rb_name_err_raise("local variable '%1$s' is not defined for %2$s",
                       bindval, sym);
     UNREACHABLE_RETURN(Qundef);
 }
@@ -719,8 +719,13 @@ rb_vm_ifunc_new(rb_block_call_func_t func, const void *data, int min_argc, int m
     arity.argc.min = min_argc;
     arity.argc.max = max_argc;
     rb_execution_context_t *ec = GET_EC();
-    VALUE ret = rb_imemo_new(imemo_ifunc, (VALUE)func, (VALUE)data, arity.packed, (VALUE)rb_vm_svar_lep(ec, ec->cfp));
-    return (struct vm_ifunc *)ret;
+
+    struct vm_ifunc *ifunc = IMEMO_NEW(struct vm_ifunc, imemo_ifunc, (VALUE)rb_vm_svar_lep(ec, ec->cfp));
+    ifunc->func = func;
+    ifunc->data = data;
+    ifunc->argc = arity.argc;
+
+    return ifunc;
 }
 
 VALUE
@@ -1936,7 +1941,7 @@ method_owner(VALUE obj)
 void
 rb_method_name_error(VALUE klass, VALUE str)
 {
-#define MSG(s) rb_fstring_lit("undefined method `%1$s' for"s" `%2$s'")
+#define MSG(s) rb_fstring_lit("undefined method '%1$s' for"s" '%2$s'")
     VALUE c = klass;
     VALUE s = Qundef;
 
@@ -2091,7 +2096,7 @@ rb_obj_singleton_method(VALUE obj, VALUE vid)
     }
 
   /* undef: */
-    rb_name_err_raise("undefined singleton method `%1$s' for `%2$s'",
+    rb_name_err_raise("undefined singleton method '%1$s' for '%2$s'",
                       obj, vid);
     UNREACHABLE_RETURN(Qundef);
 }

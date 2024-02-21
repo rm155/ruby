@@ -1596,6 +1596,8 @@ iseq_insert_nop_between_end_and_cont(rb_iseq_t *iseq)
             }
         }
     }
+
+    RB_GC_GUARD(catch_table_ary);
 }
 
 static int
@@ -1792,7 +1794,7 @@ access_outer_variables(const rb_iseq_t *iseq, int level, ID id, bool write)
             COMPILE_ERROR(iseq, ISEQ_LAST_LINE(iseq), "can not yield from isolated Proc");
         }
         else {
-            COMPILE_ERROR(iseq, ISEQ_LAST_LINE(iseq), "can not access variable `%s' from isolated Proc", rb_id2name(id));
+            COMPILE_ERROR(iseq, ISEQ_LAST_LINE(iseq), "can not access variable '%s' from isolated Proc", rb_id2name(id));
         }
     }
 
@@ -1929,6 +1931,9 @@ iseq_set_arguments_keywords(rb_iseq_t *iseq, LINK_ANCHOR *const optargs,
                 break;
               case NODE_SYM:
                 dv = rb_node_sym_string_val(val_node);
+                break;
+              case NODE_REGX:
+                dv = rb_node_regx_string_val(val_node);
                 break;
               case NODE_LINE:
                 dv = rb_node_line_lineno_val(val_node);
@@ -4498,6 +4503,7 @@ compile_branch_condition(rb_iseq_t *iseq, LINK_ANCHOR *ret, const NODE *cond,
       case NODE_IMAGINARY:  /* NODE_IMAGINARY is always true */
       case NODE_TRUE:
       case NODE_STR:
+      case NODE_REGX:
       case NODE_ZLIST:
       case NODE_LAMBDA:
         /* printf("useless condition eliminate (%s)\n",  ruby_node_name(nd_type(cond))); */
@@ -4701,6 +4707,7 @@ static_literal_node_p(const NODE *node, const rb_iseq_t *iseq, bool hash_key)
     switch (nd_type(node)) {
       case NODE_LIT:
       case NODE_SYM:
+      case NODE_REGX:
       case NODE_LINE:
       case NODE_ENCODING:
       case NODE_INTEGER:
@@ -4739,6 +4746,8 @@ static_literal_value(const NODE *node, rb_iseq_t *iseq)
         return Qfalse;
       case NODE_SYM:
         return rb_node_sym_string_val(node);
+      case NODE_REGX:
+        return rb_node_regx_string_val(node);
       case NODE_LINE:
         return rb_node_line_lineno_val(node);
       case NODE_ENCODING:
@@ -4812,12 +4821,12 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
      *     putobject [1,2,3,...,100] (<- hidden array); concattoarray;
      *     push z; pushtoarray 1;
      *
-     * - If the last element is a keyword, newarraykwsplat should be emitted
-     *   to check and remove empty keyword arguments hash from array.
+     * - If the last element is a keyword, pushtoarraykwsplat should be emitted
+     *   to only push it onto the array if it is not empty
      *   (Note: a keyword is NODE_HASH which is not static_literal_node_p.)
      *
      *   [1,2,3,**kw] =>
-     *     putobject 1; putobject 2; putobject 3; push kw; newarraykwsplat
+     *     putobject 1; putobject 2; putobject 3; newarray 3; ...; pushtoarraykwsplat kw
      */
 
     const int max_stack_len = 0x100;
@@ -4872,14 +4881,21 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
                 EXPECT_NODE("compile_array", node, NODE_LIST, -1);
             }
 
-            NO_CHECK(COMPILE_(ret, "array element", RNODE_LIST(node)->nd_head, 0));
-            stack_len++;
-
             if (!RNODE_LIST(node)->nd_next && keyword_node_p(RNODE_LIST(node)->nd_head)) {
-                /* Reached the end, and the last element is a keyword */
-                ADD_INSN1(ret, line_node, newarraykwsplat, INT2FIX(stack_len));
-                if (!first_chunk) ADD_INSN(ret, line_node, concattoarray);
+                /* Create array or push existing non-keyword elements onto array */
+                if (stack_len == 0 && first_chunk) {
+                    ADD_INSN1(ret, line_node, newarray, INT2FIX(0));
+                }
+                else {
+                    FLUSH_CHUNK;
+                }
+                NO_CHECK(COMPILE_(ret, "array element", RNODE_LIST(node)->nd_head, 0));
+                ADD_INSN(ret, line_node, pushtoarraykwsplat);
                 return 1;
+            }
+            else {
+                NO_CHECK(COMPILE_(ret, "array element", RNODE_LIST(node)->nd_head, 0));
+                stack_len++;
             }
 
             /* If there are many pushed elements, flush them to avoid stack overflow */
@@ -4895,7 +4911,7 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, int pop
 static inline int
 static_literal_node_pair_p(const NODE *node, const rb_iseq_t *iseq)
 {
-    return RNODE_LIST(node)->nd_head && static_literal_node_p(RNODE_LIST(node)->nd_head, iseq, true) && static_literal_node_p(RNODE_LIST(RNODE_LIST(node)->nd_next)->nd_head, iseq, true);
+    return RNODE_LIST(node)->nd_head && static_literal_node_p(RNODE_LIST(node)->nd_head, iseq, true) && static_literal_node_p(RNODE_LIST(RNODE_LIST(node)->nd_next)->nd_head, iseq, false);
 }
 
 static int
@@ -5777,6 +5793,7 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
       case NODE_STR:
       case NODE_LIT:
       case NODE_SYM:
+      case NODE_REGX:
       case NODE_LINE:
       case NODE_FILE:
       case NODE_ENCODING:
@@ -7208,6 +7225,7 @@ iseq_compile_pattern_each(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *c
       }
       case NODE_LIT:
       case NODE_SYM:
+      case NODE_REGX:
       case NODE_LINE:
       case NODE_INTEGER:
       case NODE_FLOAT:
@@ -9633,7 +9651,7 @@ compile_match(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, i
     INIT_ANCHOR(val);
     switch ((int)type) {
       case NODE_MATCH:
-        ADD_INSN1(recv, node, putobject, RNODE_MATCH(node)->nd_lit);
+        ADD_INSN1(recv, node, putobject, rb_node_regx_string_val(node));
         ADD_INSN2(val, node, getspecial, INT2FIX(0),
                   INT2FIX(0));
         break;
@@ -9795,6 +9813,7 @@ compile_kw_arg(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, 
     }
     else if (nd_type_p(default_value, NODE_LIT) ||
              nd_type_p(default_value, NODE_SYM) ||
+             nd_type_p(default_value, NODE_REGX) ||
              nd_type_p(default_value, NODE_LINE) ||
              nd_type_p(default_value, NODE_INTEGER) ||
              nd_type_p(default_value, NODE_FLOAT) ||
@@ -10381,6 +10400,14 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
       case NODE_EVSTR:
         CHECK(compile_evstr(iseq, ret, RNODE_EVSTR(node)->nd_body, popped));
         break;
+      case NODE_REGX:{
+        if (!popped) {
+            VALUE lit = rb_node_regx_string_val(node);
+            ADD_INSN1(ret, node, putobject, lit);
+            RB_OBJ_WRITTEN(iseq, Qundef, lit);
+        }
+        break;
+      }
       case NODE_DREGX:
         compile_dregx(iseq, ret, node, popped);
         break;
@@ -10429,13 +10456,18 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const no
         else {
             CHECK(COMPILE(ret, "argspush head", RNODE_ARGSPUSH(node)->nd_head));
             const NODE *body_node = RNODE_ARGSPUSH(node)->nd_body;
-            if (static_literal_node_p(body_node, iseq, false)) {
+            if (keyword_node_p(body_node)) {
+                CHECK(COMPILE_(ret, "array element", body_node, FALSE));
+                ADD_INSN(ret, node, pushtoarraykwsplat);
+            }
+            else if (static_literal_node_p(body_node, iseq, false)) {
                 ADD_INSN1(ret, body_node, putobject, static_literal_value(body_node, iseq));
+                ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
             }
             else {
                 CHECK(COMPILE_(ret, "array element", body_node, FALSE));
+                ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
             }
-            ADD_INSN1(ret, node, pushtoarray, INT2FIX(1));
         }
         break;
       }
@@ -12713,6 +12745,7 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
     ibf_dump_write_small_value(dump, body->ci_size);
     ibf_dump_write_small_value(dump, body->stack_max);
     ibf_dump_write_small_value(dump, body->builtin_attrs);
+    ibf_dump_write_small_value(dump, body->prism ? 1 : 0);
 
 #undef IBF_BODY_OFFSET
 
@@ -12825,6 +12858,7 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     const unsigned int ci_size = (unsigned int)ibf_load_small_value(load, &reading_pos);
     const unsigned int stack_max = (unsigned int)ibf_load_small_value(load, &reading_pos);
     const unsigned int builtin_attrs = (unsigned int)ibf_load_small_value(load, &reading_pos);
+    const bool prism = (bool)ibf_load_small_value(load, &reading_pos);
 
     // setup fname and dummy frame
     VALUE path = ibf_load_object(load, location_pathobj_index);
@@ -12899,6 +12933,7 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     load_body->location.code_location.end_pos.lineno = location_code_location_end_pos_lineno;
     load_body->location.code_location.end_pos.column = location_code_location_end_pos_column;
     load_body->builtin_attrs = builtin_attrs;
+    load_body->prism = prism;
 
     load_body->ivc_size             = ivc_size;
     load_body->icvarc_size          = icvarc_size;
