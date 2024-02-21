@@ -519,6 +519,7 @@ rb_iseq_pathobj_new(VALUE path, VALUE realpath)
         if (!NIL_P(realpath)) realpath = rb_fstring(realpath);
         pathobj = rb_ary_new_from_args(2, rb_fstring(path), realpath);
         rb_obj_freeze(pathobj);
+	FL_SET_RAW(pathobj, RUBY_FL_SHAREABLE);
     }
     return pathobj;
 }
