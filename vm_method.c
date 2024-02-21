@@ -416,7 +416,7 @@ rb_vm_ci_lookup(ID mid, unsigned int flag, unsigned int argc, const struct rb_ca
     new_ci->flag = flag;
     new_ci->argc = argc;
 
-    RB_VM_LOCK_ENTER();
+    RB_CI_TABLE_ENTER();
     {
         st_table *ci_table = vm->ci_table;
         VM_ASSERT(ci_table);
@@ -425,7 +425,7 @@ rb_vm_ci_lookup(ID mid, unsigned int flag, unsigned int argc, const struct rb_ca
             st_update(ci_table, (st_data_t)new_ci, ci_lookup_i, (st_data_t)&ci);
         } while (ci == NULL);
     }
-    RB_VM_LOCK_LEAVE();
+    RB_CI_TABLE_LEAVE();
 
     VM_ASSERT(ci);
     VM_ASSERT(vm_ci_markable(ci));
@@ -438,12 +438,12 @@ rb_vm_ci_free(const struct rb_callinfo *ci)
 {
     rb_vm_t *vm = GET_VM();
 
-    RB_VM_LOCK_ENTER();
+    RB_CI_TABLE_ENTER();
     {
         st_data_t key = (st_data_t)ci;
         st_delete(vm->ci_table, &key, NULL);
     }
-    RB_VM_LOCK_LEAVE();
+    RB_CI_TABLE_LEAVE();
 }
 
 void

@@ -125,6 +125,21 @@ rb_vm_lock_leave_cr(struct rb_ractor_struct *cr, unsigned int *levp, const char 
 #define RB_VM_LOCK_LEAVE_NO_BARRIER()    RB_VM_LOCK_LEAVE_LEV(&_lev); }
 
 static inline void
+rb_enter_ci_lock(rb_vm_t *vm)
+{
+    rb_gc_safe_lock_enter(&vm->ci_table_lock);
+}
+
+static inline void
+rb_leave_ci_lock(rb_vm_t *vm)
+{
+    rb_gc_safe_lock_leave(&vm->ci_table_lock);
+}
+
+#define RB_CI_TABLE_ENTER() { rb_vm_t *_vm = GET_VM(); rb_enter_ci_lock(_vm);
+#define RB_CI_TABLE_LEAVE() rb_leave_ci_lock(_vm); }
+
+static inline void
 rb_enter_fstring_lock(rb_vm_t *vm)
 {
     rb_gc_safe_lock_enter(&vm->fstring_table_lock);

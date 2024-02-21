@@ -2879,7 +2879,11 @@ rb_vm_update_references(void *ptr)
     if (ptr) {
         rb_vm_t *vm = ptr;
 
-        rb_gc_update_tbl_refs(vm->ci_table);
+	RB_CI_TABLE_ENTER();
+	{
+	    rb_gc_update_tbl_refs(vm->ci_table);
+	}
+	RB_CI_TABLE_LEAVE();
 	RB_FSTRING_TABLE_ENTER();
 	{
 	    rb_gc_update_tbl_refs(vm->fstring_table);
@@ -3110,6 +3114,7 @@ ruby_vm_destruct(rb_vm_t *vm)
         if (vm->ci_table) {
             st_free_table(vm->ci_table);
             vm->ci_table = NULL;
+	    rb_gc_safe_lock_destroy(&vm->ci_table_lock);
         }
         if (vm->fstring_table) {
             st_free_table(vm->fstring_table);
@@ -3206,6 +3211,13 @@ vm_memsize(const void *ptr)
 {
     rb_vm_t *vm = GET_VM();
 
+    size_t ci_table_size;
+    RB_CI_TABLE_ENTER();
+    {
+        ci_table_size = rb_st_memsize(vm->ci_table);
+    }
+    RB_CI_TABLE_LEAVE();
+
     size_t fstring_table_size;
     RB_FSTRING_TABLE_ENTER();
     {
@@ -3223,8 +3235,8 @@ vm_memsize(const void *ptr)
         rb_vm_memsize_workqueue(&vm->workqueue) +
         rb_st_memsize(vm->defined_module_hash) +
         vm_memsize_at_exit_list(vm->at_exit) +
+	ci_table_size +
         fstring_table_size +
-        rb_st_memsize(vm->ci_table) +
         vm_memsize_builtin_function_table(vm->builtin_function_table) +
         rb_id_table_memsize(vm->negative_cme_table) +
         rb_st_memsize(vm->overloaded_cme_table) +
@@ -4353,6 +4365,7 @@ Init_vm_objects(void)
 
     vm->loading_table = st_init_strtable();
     vm->ci_table = st_init_table(&vm_ci_hashtype);
+    rb_gc_safe_lock_initialize(&vm->ci_table_lock);
     vm->fstring_table = st_init_table_with_size(&rb_fstring_hash_type, 10000);
     rb_gc_safe_lock_initialize(&vm->fstring_table_lock);
 }
