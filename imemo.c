@@ -39,14 +39,33 @@ rb_imemo_name(enum imemo_type type)
  * allocation
  * ========================================================================= */
 
+static int
+inherently_shareable_imemo_type(enum imemo_type type)
+{
+    switch (type) {
+      case imemo_cref:
+      case imemo_ifunc:
+      case imemo_ment:
+      case imemo_iseq:
+      case imemo_callinfo:
+      case imemo_callcache:
+      case imemo_constcache:
+	return 1;
+      default:
+	return 0;
+    }
+}
+
 VALUE
 rb_imemo_new(enum imemo_type type, VALUE v0)
 {
     size_t size = RVALUE_SIZE;
-    VALUE flags = T_IMEMO | FL_WB_PROTECTED | (type << FL_USHIFT);
+    VALUE flags = T_IMEMO | (type << FL_USHIFT);
     NEWOBJ_OF(obj, void, v0, flags, size, 0);
-
-    return (VALUE)obj;
+    if (inherently_shareable_imemo_type(type)) {
+	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+    }
+    return obj;
 }
 
 static rb_imemo_tmpbuf_t *
@@ -178,6 +197,8 @@ rb_imemo_memsize(VALUE obj)
  * mark
  * ========================================================================= */
 
+int rb_during_global_gc(void);
+
 static enum rb_id_table_iterator_result
 cc_table_mark_i(ID id, VALUE ccs_ptr, void *data)
 {
@@ -186,16 +207,16 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data)
     VM_ASSERT(vm_ccs_p(ccs));
     VM_ASSERT(id == ccs->cme->called_id);
 
-    if (METHOD_ENTRY_INVALIDATED(ccs->cme)) {
+    if (rb_during_global_gc() && METHOD_ENTRY_INVALIDATED(ccs->cme)) {
         rb_vm_ccs_free(ccs);
         return ID_TABLE_DELETE;
     }
     else {
         rb_gc_mark_movable((VALUE)ccs->cme);
 
-        for (int i=0; i<ccs->len; i++) {
+        for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
             VM_ASSERT(klass == ccs->entries[i].cc->klass);
-            VM_ASSERT(vm_cc_check_cme(ccs->entries[i].cc, ccs->cme));
+            VM_ASSERT(!rb_during_global_gc() || vm_cc_check_cme(ccs->entries[i].cc, ccs->cme));
 
             rb_gc_mark_movable((VALUE)ccs->entries[i].ci);
             rb_gc_mark_movable((VALUE)ccs->entries[i].cc);
@@ -453,7 +474,7 @@ static void
 vm_ccs_free(struct rb_class_cc_entries *ccs, int alive, VALUE klass)
 {
     if (ccs->entries) {
-        for (int i=0; i<ccs->len; i++) {
+        for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
             const struct rb_callcache *cc = ccs->entries[i].cc;
             if (!alive) {
                 void *ptr = asan_unpoison_object_temporary((VALUE)cc);
