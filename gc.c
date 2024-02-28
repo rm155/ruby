@@ -4141,7 +4141,7 @@ rb_data_typed_object_zalloc(VALUE klass, size_t size, const rb_data_type_t *type
     return obj;
 }
 
-size_t
+static size_t
 rb_objspace_data_type_memsize(VALUE obj)
 {
     size_t size = 0;
@@ -4268,11 +4268,13 @@ cvar_table_free_i(VALUE value, void *ctx)
     return ID_TABLE_CONTINUE;
 }
 
+#define ZOMBIE_OBJ_KEPT_FLAGS (FL_SEEN_OBJ_ID | FL_FINALIZE)
+
 static inline void
 make_zombie(rb_objspace_t *objspace, VALUE obj, void (*dfree)(void *), void *data)
 {
     struct RZombie *zombie = RZOMBIE(obj);
-    zombie->basic.flags = T_ZOMBIE | (zombie->basic.flags & FL_SEEN_OBJ_ID);
+    zombie->basic.flags = T_ZOMBIE | (zombie->basic.flags & ZOMBIE_OBJ_KEPT_FLAGS);
     zombie->dfree = dfree;
     zombie->data = data;
     VALUE prev, next = heap_pages_deferred_final;
@@ -5117,12 +5119,6 @@ objspace_each_pages(rb_objspace_t *objspace, each_page_callback *callback, void 
     objspace_each_exec(protected, &each_obj_data);
 }
 
-void
-rb_objspace_each_objects_without_setup(each_obj_callback *callback, void *data)
-{
-    objspace_each_objects(&rb_objspace, callback, data, FALSE);
-}
-
 struct os_each_struct {
     size_t num;
     VALUE of;
@@ -5510,15 +5506,22 @@ run_finalizer(rb_objspace_t *objspace, VALUE obj, VALUE table)
 static void
 run_final(rb_objspace_t *objspace, VALUE zombie)
 {
-    st_data_t key, table;
-
     if (RZOMBIE(zombie)->dfree) {
         RZOMBIE(zombie)->dfree(RZOMBIE(zombie)->data);
     }
 
-    key = (st_data_t)zombie;
-    if (st_delete(finalizer_table, &key, &table)) {
-        run_finalizer(objspace, zombie, (VALUE)table);
+    st_data_t key = (st_data_t)zombie;
+    if (FL_TEST_RAW(zombie, FL_FINALIZE)) {
+        st_data_t table;
+        if (st_delete(finalizer_table, &key, &table)) {
+            run_finalizer(objspace, zombie, (VALUE)table);
+        }
+        else {
+            rb_bug("FL_FINALIZE flag is set, but finalizers are not found");
+        }
+    }
+    else {
+        GC_ASSERT(!st_lookup(finalizer_table, key, NULL));
     }
 }
 
@@ -5698,9 +5701,12 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
         st_foreach(finalizer_table, force_chain_object, (st_data_t)&list);
         while (list) {
             struct force_finalize_list *curr = list;
-            st_data_t obj = (st_data_t)curr->obj;
             run_finalizer(objspace, curr->obj, curr->table);
+            FL_UNSET(curr->obj, FL_FINALIZE);
+
+            st_data_t obj = (st_data_t)curr->obj;
             st_delete(finalizer_table, &obj, 0);
+
             list = curr->next;
             xfree(curr);
         }
@@ -6092,29 +6098,15 @@ release_all_former_references(rb_vm_t *vm)
     }
 }
 
-static inline int
-is_swept_object(VALUE ptr)
-{
-    struct heap_page *page = GET_HEAP_PAGE(ptr);
-    return page->flags.before_sweep ? FALSE : TRUE;
-}
-
 /* garbage objects will be collected soon. */
-static inline int
+static inline bool
 is_garbage_object(rb_objspace_t *objspace, VALUE ptr)
 {
-    if (!is_lazy_sweeping(objspace) ||
-        is_swept_object(ptr) ||
-        MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(ptr), ptr)) {
-
-        return FALSE;
-    }
-    else {
-        return TRUE;
-    }
+    return is_lazy_sweeping(objspace) && GET_HEAP_PAGE(ptr)->flags.before_sweep &&
+        !MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(ptr), ptr);
 }
 
-static inline int
+static inline bool
 is_live_object(rb_objspace_t *objspace, VALUE ptr)
 {
     switch (BUILTIN_TYPE(ptr)) {
@@ -6126,18 +6118,13 @@ is_live_object(rb_objspace_t *objspace, VALUE ptr)
         break;
     }
 
-    if (!is_garbage_object(objspace, ptr)) {
-        return TRUE;
-    }
-    else {
-        return FALSE;
-    }
+    return !is_garbage_object(objspace, ptr);
 }
 
 static inline int
 is_markable_object(VALUE obj)
 {
-    if (rb_special_const_p(obj)) return FALSE; /* special const is not markable */
+    if (RB_SPECIAL_CONST_P(obj)) return FALSE; /* special const is not markable */
     check_rvalue_consistency(obj);
     return TRUE;
 }
@@ -8749,16 +8736,6 @@ rb_gc_remove_weak(VALUE parent_obj, VALUE *ptr)
     }
 }
 
-/* CAUTION: THIS FUNCTION ENABLE *ONLY BEFORE* SWEEPING.
- * This function is only for GC_END_MARK timing.
- */
-
-int
-rb_objspace_marked_object_p(VALUE obj)
-{
-    return RVALUE_MARKED(obj) ? TRUE : FALSE;
-}
-
 static inline void
 gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
 {
@@ -9925,8 +9902,20 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride,
         }
         else {
             if (BUILTIN_TYPE(obj) == T_ZOMBIE) {
-                GC_ASSERT((RBASIC(obj)->flags & ~FL_SEEN_OBJ_ID) == T_ZOMBIE);
                 data->zombie_object_count++;
+
+                if ((RBASIC(obj)->flags & ~ZOMBIE_OBJ_KEPT_FLAGS) != T_ZOMBIE) {
+                    fprintf(stderr, "verify_internal_consistency_i: T_ZOMBIE has extra flags set: %s\n",
+                            obj_info(obj));
+                    data->err_count++;
+                }
+
+                if (!!FL_TEST(obj, FL_FINALIZE) != !!st_is_member(finalizer_table, obj)) {
+                    fprintf(stderr, "verify_internal_consistency_i: FL_FINALIZE %s but %s finalizer_table: %s\n",
+                            FL_TEST(obj, FL_FINALIZE) ? "set" : "not set", st_is_member(finalizer_table, obj) ? "in" : "not in",
+                            obj_info(obj));
+                    data->err_count++;
+                }
             }
         }
         if (poisoned) {
@@ -12452,7 +12441,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
     GC_ASSERT(!RVALUE_MARKING((VALUE)src));
 
     /* Save off bits for current object. */
-    marked = rb_objspace_marked_object_p((VALUE)src);
+    marked = RVALUE_MARKED((VALUE)src);
     wb_unprotected = RVALUE_WB_UNPROTECTED((VALUE)src);
     uncollectible = RVALUE_UNCOLLECTIBLE((VALUE)src);
     bool remembered = RVALUE_REMEMBERED((VALUE)src);
@@ -16533,7 +16522,7 @@ rb_gcdebug_print_obj_condition(VALUE obj)
 
     if (is_lazy_sweeping(objspace)) {
         fprintf(stderr, "lazy sweeping?: true\n");
-        fprintf(stderr, "swept?: %s\n", is_swept_object(obj) ? "done" : "not yet");
+        fprintf(stderr, "page swept?: %s\n", GET_HEAP_PAGE(ptr)->flags.before_sweep ? "false" : "true");
     }
     else {
         fprintf(stderr, "lazy sweeping?: false\n");

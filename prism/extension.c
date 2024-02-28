@@ -21,12 +21,18 @@ VALUE rb_cPrismParseError;
 VALUE rb_cPrismParseWarning;
 VALUE rb_cPrismParseResult;
 
+VALUE rb_cPrismDebugEncoding;
+
 ID rb_option_id_filepath;
 ID rb_option_id_encoding;
 ID rb_option_id_line;
 ID rb_option_id_frozen_string_literal;
 ID rb_option_id_version;
 ID rb_option_id_scopes;
+ID rb_option_id_command_line_p;
+ID rb_option_id_command_line_n;
+ID rb_option_id_command_line_l;
+ID rb_option_id_command_line_a;
 
 /******************************************************************************/
 /* IO of Ruby code                                                            */
@@ -147,6 +153,14 @@ build_options_i(VALUE key, VALUE value, VALUE argument) {
         }
     } else if (key_id == rb_option_id_scopes) {
         if (!NIL_P(value)) build_options_scopes(options, value);
+    } else if (key_id == rb_option_id_command_line_p) {
+        if (!NIL_P(value)) pm_options_command_line_p_set(options, value == Qtrue);
+    } else if (key_id == rb_option_id_command_line_n) {
+        if (!NIL_P(value)) pm_options_command_line_n_set(options, value == Qtrue);
+    } else if (key_id == rb_option_id_command_line_l) {
+        if (!NIL_P(value)) pm_options_command_line_l_set(options, value == Qtrue);
+    } else if (key_id == rb_option_id_command_line_a) {
+        if (!NIL_P(value)) pm_options_command_line_a_set(options, value == Qtrue);
     } else {
         rb_raise(rb_eArgError, "unknown keyword: %"PRIsVALUE, key);
     }
@@ -951,6 +965,45 @@ named_captures(VALUE self, VALUE source) {
 
 /**
  * call-seq:
+ *   Debug::integer_parse(source) -> [Integer, String]
+ *
+ * Parses the given source string and returns the integer it represents, as well
+ * as a decimal string representation.
+ */
+static VALUE
+integer_parse(VALUE self, VALUE source) {
+    const uint8_t *start = (const uint8_t *) RSTRING_PTR(source);
+    size_t length = RSTRING_LEN(source);
+
+    pm_integer_t integer = { 0 };
+    pm_integer_parse(&integer, PM_INTEGER_BASE_UNKNOWN, start, start + length);
+
+    VALUE number = UINT2NUM(integer.head.value);
+    size_t shift = 0;
+
+    for (pm_integer_word_t *node = integer.head.next; node != NULL; node = node->next) {
+        VALUE receiver = rb_funcall(UINT2NUM(node->value), rb_intern("<<"), 1, ULONG2NUM(++shift * 32));
+        number = rb_funcall(receiver, rb_intern("|"), 1, number);
+    }
+
+    if (integer.negative) number = rb_funcall(number, rb_intern("-@"), 0);
+
+    pm_buffer_t buffer = { 0 };
+    pm_integer_string(&buffer, &integer);
+
+    VALUE string = rb_str_new(pm_buffer_value(&buffer), pm_buffer_length(&buffer));
+    pm_buffer_free(&buffer);
+    pm_integer_free(&integer);
+
+    VALUE result = rb_ary_new_capa(2);
+    rb_ary_push(result, number);
+    rb_ary_push(result, string);
+
+    return result;
+}
+
+/**
+ * call-seq:
  *   Debug::memsize(source) -> { length: xx, memsize: xx, node_count: xx }
  *
  * Return a hash of information about the given source string's memory usage.
@@ -1074,6 +1127,80 @@ format_errors(VALUE self, VALUE source, VALUE colorize) {
     return result;
 }
 
+/**
+ * call-seq: Debug::Encoding.all -> Array[Debug::Encoding]
+ *
+ * Return an array of all of the encodings that prism knows about.
+ */
+static VALUE
+encoding_all(VALUE self) {
+    VALUE encodings = rb_ary_new();
+
+    for (size_t index = 0; index < PM_ENCODING_MAXIMUM; index++) {
+        const pm_encoding_t *encoding = &pm_encodings[index];
+
+        VALUE encoding_argv[] = { rb_str_new_cstr(encoding->name), encoding->multibyte ? Qtrue : Qfalse };
+        rb_ary_push(encodings, rb_class_new_instance(2, encoding_argv, rb_cPrismDebugEncoding));
+    }
+
+    return encodings;
+}
+
+static const pm_encoding_t *
+encoding_find(VALUE name) {
+    const uint8_t *source = (const uint8_t *) RSTRING_PTR(name);
+    size_t length = RSTRING_LEN(name);
+
+    const pm_encoding_t *encoding = pm_encoding_find(source, source + length);
+    if (encoding == NULL) { rb_raise(rb_eArgError, "Unknown encoding: %s", source); }
+
+    return encoding;
+}
+
+/**
+ * call-seq: Debug::Encoding.width(source) -> Integer
+ *
+ * Returns the width of the first character in the given string if it is valid
+ * in the encoding. If it is not, this function returns 0.
+ */
+static VALUE
+encoding_char_width(VALUE self, VALUE name, VALUE value) {
+    return ULONG2NUM(encoding_find(name)->char_width((const uint8_t *) RSTRING_PTR(value), RSTRING_LEN(value)));
+}
+
+/**
+ * call-seq: Debug::Encoding.alnum?(source) -> true | false
+ *
+ * Returns true if the first character in the given string is an alphanumeric
+ * character in the encoding.
+ */
+static VALUE
+encoding_alnum_char(VALUE self, VALUE name, VALUE value) {
+    return encoding_find(name)->alnum_char((const uint8_t *) RSTRING_PTR(value), RSTRING_LEN(value)) > 0 ? Qtrue : Qfalse;
+}
+
+/**
+ * call-seq: Debug::Encoding.alpha?(source) -> true | false
+ *
+ * Returns true if the first character in the given string is an alphabetic
+ * character in the encoding.
+ */
+static VALUE
+encoding_alpha_char(VALUE self, VALUE name, VALUE value) {
+    return encoding_find(name)->alpha_char((const uint8_t *) RSTRING_PTR(value), RSTRING_LEN(value)) > 0 ? Qtrue : Qfalse;
+}
+
+/**
+ * call-seq: Debug::Encoding.upper?(source) -> true | false
+ *
+ * Returns true if the first character in the given string is an uppercase
+ * character in the encoding.
+ */
+static VALUE
+encoding_isupper_char(VALUE self, VALUE name, VALUE value) {
+    return encoding_find(name)->isupper_char((const uint8_t *) RSTRING_PTR(value), RSTRING_LEN(value)) ? Qtrue : Qfalse;
+}
+
 /******************************************************************************/
 /* Initialization of the extension                                            */
 /******************************************************************************/
@@ -1117,6 +1244,10 @@ Init_prism(void) {
     rb_option_id_frozen_string_literal = rb_intern_const("frozen_string_literal");
     rb_option_id_version = rb_intern_const("version");
     rb_option_id_scopes = rb_intern_const("scopes");
+    rb_option_id_command_line_p = rb_intern_const("command_line_p");
+    rb_option_id_command_line_n = rb_intern_const("command_line_n");
+    rb_option_id_command_line_l = rb_intern_const("command_line_l");
+    rb_option_id_command_line_a = rb_intern_const("command_line_a");
 
     /**
      * The version of the prism library.
@@ -1148,10 +1279,20 @@ Init_prism(void) {
     // internal tasks. We expose these to make them easier to test.
     VALUE rb_cPrismDebug = rb_define_module_under(rb_cPrism, "Debug");
     rb_define_singleton_method(rb_cPrismDebug, "named_captures", named_captures, 1);
+    rb_define_singleton_method(rb_cPrismDebug, "integer_parse", integer_parse, 1);
     rb_define_singleton_method(rb_cPrismDebug, "memsize", memsize, 1);
     rb_define_singleton_method(rb_cPrismDebug, "profile_file", profile_file, 1);
     rb_define_singleton_method(rb_cPrismDebug, "inspect_node", inspect_node, 1);
     rb_define_singleton_method(rb_cPrismDebug, "format_errors", format_errors, 2);
+
+    // Next, define the functions that are exposed through the private
+    // Debug::Encoding class.
+    rb_cPrismDebugEncoding = rb_define_class_under(rb_cPrismDebug, "Encoding", rb_cObject);
+    rb_define_singleton_method(rb_cPrismDebugEncoding, "all", encoding_all, 0);
+    rb_define_singleton_method(rb_cPrismDebugEncoding, "_width", encoding_char_width, 2);
+    rb_define_singleton_method(rb_cPrismDebugEncoding, "_alnum?", encoding_alnum_char, 2);
+    rb_define_singleton_method(rb_cPrismDebugEncoding, "_alpha?", encoding_alpha_char, 2);
+    rb_define_singleton_method(rb_cPrismDebugEncoding, "_upper?", encoding_isupper_char, 2);
 
     // Next, initialize the other APIs.
     Init_prism_api_node();

@@ -247,6 +247,11 @@ module Prism
 
           if node.call_operator_loc.nil?
             case name
+            when :-@
+              case (receiver = node.receiver).type
+              when :integer_node, :float_node, :rational_node, :imaginary_node
+                return visit(numeric_negate(node.message_loc, receiver))
+              end
             when :!
               return visit_block(builder.not_op(token(node.message_loc), token(node.opening_loc), visit(node.receiver), token(node.closing_loc)), block)
             when :[]
@@ -792,7 +797,7 @@ module Prism
 
         # 1i
         def visit_imaginary_node(node)
-          visit_numeric(node, builder.complex([node.value, srange(node.location)]))
+          visit_numeric(node, builder.complex([imaginary_value(node), srange(node.location)]))
         end
 
         # { foo: }
@@ -937,7 +942,7 @@ module Prism
         # "foo #{bar}"
         # ^^^^^^^^^^^^
         def visit_interpolated_string_node(node)
-          if node.opening&.start_with?("<<")
+          if node.heredoc?
             children, closing = visit_heredoc(node)
             builder.string_compose(token(node.opening_loc), children, closing)
           else
@@ -962,7 +967,7 @@ module Prism
         # `foo #{bar}`
         # ^^^^^^^^^^^^
         def visit_interpolated_x_string_node(node)
-          if node.opening.start_with?("<<")
+          if node.heredoc?
             children, closing = visit_heredoc(node)
             builder.xstring_compose(token(node.opening_loc), children, closing)
           else
@@ -1266,7 +1271,8 @@ module Prism
         # foo => ^(bar)
         #        ^^^^^^
         def visit_pinned_expression_node(node)
-          builder.pin(token(node.operator_loc), visit(node.expression))
+          expression = builder.begin(token(node.lparen_loc), visit(node.expression), token(node.rparen_loc))
+          builder.pin(token(node.operator_loc), expression)
         end
 
         # foo = 1 and bar => ^foo
@@ -1325,7 +1331,7 @@ module Prism
         # 1r
         # ^^
         def visit_rational_node(node)
-          visit_numeric(node, builder.rational([node.value, srange(node.location)]))
+          visit_numeric(node, builder.rational([rational_value(node), srange(node.location)]))
         end
 
         # redo
@@ -1479,8 +1485,8 @@ module Prism
         # "foo"
         # ^^^^^
         def visit_string_node(node)
-          if node.opening&.start_with?("<<")
-            children, closing = visit_heredoc(InterpolatedStringNode.new(node.send(:source), node.opening_loc, [node.copy(opening_loc: nil, closing_loc: nil, location: node.content_loc)], node.closing_loc, node.location))
+          if node.heredoc?
+            children, closing = visit_heredoc(node.to_interpolated)
             builder.string_compose(token(node.opening_loc), children, closing)
           elsif node.opening == "?"
             builder.character([node.unescaped, srange(node.location)])
@@ -1640,8 +1646,8 @@ module Prism
         # `foo`
         # ^^^^^
         def visit_x_string_node(node)
-          if node.opening&.start_with?("<<")
-            children, closing = visit_heredoc(InterpolatedXStringNode.new(node.opening_loc, [StringNode.new(0, nil, node.content_loc, nil, node.unescaped, node.content_loc)], node.closing_loc, node.location))
+          if node.heredoc?
+            children, closing = visit_heredoc(node.to_interpolated)
             builder.xstring_compose(token(node.opening_loc), children, closing)
           else
             builder.xstring_compose(
@@ -1690,6 +1696,26 @@ module Prism
           forwarding
         end
 
+        # Because we have mutated the AST to allow for newlines in the middle of
+        # a rational, we need to manually handle the value here.
+        def imaginary_value(node)
+          Complex(0, node.numeric.is_a?(RationalNode) ? rational_value(node.numeric) : node.numeric.value)
+        end
+
+        # Negate the value of a numeric node. This is a special case where you
+        # have a negative sign on one line and then a number on the next line.
+        # In normal Ruby, this will always be a method call. The parser gem,
+        # however, marks this as a numeric literal. We have to massage the tree
+        # here to get it into the correct form.
+        def numeric_negate(message_loc, receiver)
+          case receiver.type
+          when :integer_node, :float_node
+            receiver.copy(value: -receiver.value, location: message_loc.join(receiver.location))
+          when :rational_node, :imaginary_node
+            receiver.copy(numeric: numeric_negate(message_loc, receiver.numeric), location: message_loc.join(receiver.location))
+          end
+        end
+
         # Blocks can have a special set of parameters that automatically expand
         # when given arrays if they have a single required parameter and no
         # other parameters.
@@ -1702,6 +1728,16 @@ module Prism
             parameters.keywords.empty? &&
             parameters.keyword_rest.nil? &&
             parameters.block.nil?
+        end
+
+        # Because we have mutated the AST to allow for newlines in the middle of
+        # a rational, we need to manually handle the value here.
+        def rational_value(node)
+          if node.numeric.is_a?(IntegerNode)
+            Rational(node.numeric.value)
+          else
+            Rational(node.slice.gsub(/\s/, "").chomp("r"))
+          end
         end
 
         # Locations in the parser gem AST are generated using this class. We

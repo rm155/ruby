@@ -43,6 +43,7 @@
 #include "ruby/assert.h"
 #include "builtin.h"
 #include "shape.h"
+#include "yjit.h"
 
 /* Flags of RObject
  *
@@ -3239,6 +3240,7 @@ rb_to_integer_with_id_exception(VALUE val, const char *method, ID mid, int raise
     VALUE v;
 
     if (RB_INTEGER_TYPE_P(val)) return val;
+    rb_yjit_lazy_push_frame(GET_EC()->cfp->pc);
     v = try_to_int(val, mid, raise);
     if (!raise && NIL_P(v)) return Qnil;
     if (!RB_INTEGER_TYPE_P(v)) {

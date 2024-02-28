@@ -1415,7 +1415,7 @@ last_expr_node(NODE *expr)
         if (nd_type_p(expr, NODE_BLOCK)) {
             expr = RNODE_BLOCK(RNODE_BLOCK(expr)->nd_end)->nd_head;
         }
-        else if (nd_type_p(expr, NODE_BEGIN)) {
+        else if (nd_type_p(expr, NODE_BEGIN) && RNODE_BEGIN(expr)->nd_body) {
             expr = RNODE_BEGIN(expr)->nd_body;
         }
         else {
@@ -3234,7 +3234,7 @@ endless_command : command
                         $$ = rescued_expr(p, $1, $4, &@1, &@2, &@4);
                     /*% ripper: rescue_mod!($:1, $:4) %*/
                     }
-                | keyword_not opt_nl endless_command
+                | keyword_not '\n'? endless_command
                     {
                         $$ = call_uni_op(p, method_cond(p, $3, &@3), METHOD_NOT, &@1, &@$);
                     /*% ripper: unary!(ID2VAL(idNOT), $:3) %*/
@@ -3268,7 +3268,7 @@ expr		: command_call
                         $$ = logop(p, idOR, $1, $3, &@2, &@$);
                     /*% ripper: binary!($:1, ID2VAL(idOR), $:3) %*/
                     }
-                | keyword_not opt_nl expr
+                | keyword_not '\n'? expr
                     {
                         $$ = call_uni_op(p, method_cond(p, $3, &@3), METHOD_NOT, &@1, &@$);
                     /*% ripper: unary!(ID2VAL(idNOT), $:3) %*/
@@ -3988,13 +3988,13 @@ arg		: lhs '=' lex_ctxt arg_rhs
                         $$ = logop(p, idOROP, $1, $3, &@2, &@$);
                     /*% ripper: binary!($:1, ID2VAL(idOROP), $:3) %*/
                     }
-                | keyword_defined opt_nl begin_defined arg
+                | keyword_defined '\n'? begin_defined arg
                     {
                         p->ctxt.in_defined = $3.in_defined;
                         $$ = new_defined(p, $4, &@$);
                     /*% ripper: defined!($:4) %*/
                     }
-                | arg '?' arg opt_nl ':' arg
+                | arg '?' arg '\n'? ':' arg
                     {
                         value_expr($1);
                         $$ = new_if(p, $1, $3, $6, &@$);
@@ -4044,7 +4044,7 @@ endless_arg	: arg %prec modifier_rescue
                         $$ = rescued_expr(p, $1, $4, &@1, &@2, &@4);
                     /*% ripper: rescue_mod!($:1, $:4) %*/
                     }
-                | keyword_not opt_nl endless_arg
+                | keyword_not '\n'? endless_arg
                     {
                         $$ = call_uni_op(p, method_cond(p, $3, &@3), METHOD_NOT, &@1, &@$);
                     /*% ripper: unary!(ID2VAL(idNOT), $:3) %*/
@@ -4408,7 +4408,7 @@ primary		: literal
                         $$ = NEW_YIELD(0, &@$);
                     /*% ripper: yield0! %*/
                     }
-                | keyword_defined opt_nl '(' begin_defined expr rparen
+                | keyword_defined '\n'? '(' begin_defined expr rparen
                     {
                         p->ctxt.in_defined = $4.in_defined;
                         $$ = new_defined(p, $5, &@$);
@@ -5095,12 +5095,12 @@ block_param_def	: '|' opt_bv_decl '|'
                 ;
 
 
-opt_bv_decl	: opt_nl
+opt_bv_decl	: '\n'?
                     {
                         $$ = 0;
                     /*% ripper: Qfalse %*/
                     }
-                | opt_nl ';' bv_decls opt_nl
+                | '\n'? ';' bv_decls '\n'?
                     {
                         $$ = 0;
                     /*% ripper: get_value($:3) %*/
@@ -6942,20 +6942,16 @@ call_op2	: call_op
                 | tCOLON2
                 ;
 
-opt_nl		: /* none */
-                | '\n'
+rparen		: '\n'? ')'
                 ;
 
-rparen		: opt_nl ')'
+rbracket	: '\n'? ']'
                 ;
 
-rbracket	: opt_nl ']'
+rbrace		: '\n'? '}'
                 ;
 
-rbrace		: opt_nl '}'
-                ;
-
-trailer		: opt_nl
+trailer		: '\n'?
                 | ','
                 ;
 
@@ -7637,7 +7633,7 @@ yycompile(struct parser_params *p, VALUE fname, int line)
         p->ruby_sourcefile = "(none)";
     }
     else {
-        p->ruby_sourcefile_string = rb_fstring(fname);
+        p->ruby_sourcefile_string = rb_str_to_interned_str(fname);
         p->ruby_sourcefile = StringValueCStr(fname);
     }
     p->ruby_sourceline = line - 1;
@@ -13017,10 +13013,12 @@ match_op(struct parser_params *p, NODE *node1, NODE *node2, const YYLTYPE *op_lo
           case NODE_REGX:
             {
                 const VALUE lit = rb_node_regx_string_val(n);
-                NODE *match = NEW_MATCH2(node1, node2, loc);
-                RNODE_MATCH2(match)->nd_args = reg_named_capture_assign(p, lit, loc);
-                nd_set_line(match, line);
-                return match;
+                if (!NIL_P(lit)) {
+                    NODE *match = NEW_MATCH2(node1, node2, loc);
+                    RNODE_MATCH2(match)->nd_args = reg_named_capture_assign(p, lit, loc);
+                    nd_set_line(match, line);
+                    return match;
+                }
             }
         }
     }
@@ -13483,7 +13481,7 @@ rb_parser_trace_lex_state(struct parser_params *p, enum lex_state_e from,
 VALUE
 rb_parser_lex_state_name(struct parser_params *p, enum lex_state_e state)
 {
-    return rb_fstring(append_lex_state_name(p, state, rb_str_new(0, 0)));
+    return rb_str_to_interned_str(append_lex_state_name(p, state, rb_str_new(0, 0)));
 }
 
 static void
@@ -14024,13 +14022,13 @@ shareable_literal_constant(struct parser_params *p, enum shareability shareable,
         return value;
 
       case NODE_STR:
-        lit = rb_fstring(rb_node_str_string_val(value));
+        lit = rb_str_to_interned_str(rb_node_str_string_val(value));
         value = NEW_LIT(lit, loc);
         RB_OBJ_WRITE(p->ast, &RNODE_LIT(value)->nd_lit, lit);
         return value;
 
       case NODE_FILE:
-        lit = rb_fstring(rb_node_file_path_val(value));
+        lit = rb_str_to_interned_str(rb_node_file_path_val(value));
         value = NEW_LIT(lit, loc);
         RB_OBJ_WRITTEN(p->ast, Qnil, RNODE_LIT(value)->nd_lit);
         return value;
@@ -15074,6 +15072,9 @@ nd_value(struct parser_params *p, NODE *node)
 void
 rb_parser_warn_duplicate_keys(struct parser_params *p, NODE *hash)
 {
+#ifndef UNIVERSAL_PARSER
+    static const
+#endif
     struct st_hash_type literal_type = {
         literal_cmp,
         literal_hash,

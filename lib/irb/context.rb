@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 #
 #   irb/context.rb - irb context
 #   	by Keiju ISHITSUKA(keiju@ruby-lang.org)
@@ -164,6 +164,18 @@ module IRB
     def use_tracer=(val)
       require_relative "ext/tracer" if val
       IRB.conf[:USE_TRACER] = val
+    end
+
+    def eval_history=(val)
+      self.class.remove_method(__method__)
+      require_relative "ext/eval_history"
+      __send__(__method__, val)
+    end
+
+    def use_loader=(val)
+      self.class.remove_method(__method__)
+      require_relative "ext/use-loader"
+      __send__(__method__, val)
     end
 
     private def build_completor
@@ -467,9 +479,7 @@ module IRB
     # StdioInputMethod or RelineInputMethod or ReadlineInputMethod, see #io
     # for more information.
     def prompting?
-      verbose? || (STDIN.tty? && @io.kind_of?(StdioInputMethod) ||
-                   @io.kind_of?(RelineInputMethod) ||
-                   (defined?(ReadlineInputMethod) && @io.kind_of?(ReadlineInputMethod)))
+      verbose? || @io.prompting?
     end
 
     # The return value of the last statement evaluated.
