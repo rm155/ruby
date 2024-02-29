@@ -6324,9 +6324,8 @@ fn gen_send_cfunc(
     // Push a dynamic number of items from the splat array to the stack when calling a vargs method
     let dynamic_splat_size = if variable_splat {
         asm_comment!(asm, "variable length splat");
-        let just_splat = usize::from(!kw_splat && kw_arg.is_null()).into();
         let stack_splat_array = asm.lea(asm.stack_opnd(0));
-        Some(asm.ccall(rb_yjit_splat_varg_cfunc as _, vec![stack_splat_array, just_splat]))
+        Some(asm.ccall(rb_yjit_splat_varg_cfunc as _, vec![stack_splat_array]))
     } else {
         None
     };
@@ -8006,6 +8005,12 @@ fn gen_send_dynamic<F: Fn(&mut Assembler) -> Opnd>(
 
     // Save PC and SP to prepare for dynamic dispatch
     jit_prepare_non_leaf_call(jit, asm);
+
+    // Squash stack canary that might be left over from elsewhere
+    assert_eq!(false, asm.get_leaf_ccall());
+    if cfg!(debug_assertions) {
+        asm.store(asm.ctx.sp_opnd(0), 0.into());
+    }
 
     // Dispatch a method
     let ret = vm_sendish(asm);

@@ -5293,7 +5293,7 @@ should_be_finalizable(VALUE obj)
     rb_check_frozen(obj);
 }
 
-VALUE
+static VALUE
 rb_define_finalizer_no_check(VALUE obj, VALUE block)
 {
     rb_objspace_t *objspace = &rb_objspace;
@@ -5439,10 +5439,10 @@ rb_gc_copy_finalizer(VALUE dest, VALUE obj)
 	WITH_OBJSPACE_OF_VALUE_ENTER(dest, objspace);
 	{
 	    st_insert(finalizer_table, dest, table);
+	    FL_SET(dest, FL_FINALIZE);
 	}
 	WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
     }
-    FL_SET(dest, FL_FINALIZE);
 }
 
 static VALUE
@@ -5512,6 +5512,7 @@ run_final(rb_objspace_t *objspace, VALUE zombie)
 
     st_data_t key = (st_data_t)zombie;
     if (FL_TEST_RAW(zombie, FL_FINALIZE)) {
+        FL_UNSET(zombie, FL_FINALIZE);
         st_data_t table;
         if (st_delete(finalizer_table, &key, &table)) {
             run_finalizer(objspace, zombie, (VALUE)table);
@@ -5701,11 +5702,12 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
         st_foreach(finalizer_table, force_chain_object, (st_data_t)&list);
         while (list) {
             struct force_finalize_list *curr = list;
-            run_finalizer(objspace, curr->obj, curr->table);
-            FL_UNSET(curr->obj, FL_FINALIZE);
 
             st_data_t obj = (st_data_t)curr->obj;
             st_delete(finalizer_table, &obj, 0);
+            FL_UNSET(curr->obj, FL_FINALIZE);
+
+            run_finalizer(objspace, curr->obj, curr->table);
 
             list = curr->next;
             xfree(curr);
@@ -6651,7 +6653,7 @@ static VALUE
 count_objects(int argc, VALUE *argv, VALUE os)
 {
     rb_objspace_t *objspace = &rb_objspace;
-    size_t counts[T_MASK+1];
+    size_t counts[T_MASK + 1] = { 0 };
     size_t freed = 0;
     size_t total = 0;
     size_t i;
@@ -6661,10 +6663,6 @@ count_objects(int argc, VALUE *argv, VALUE os)
         hash = argv[0];
         if (!RB_TYPE_P(hash, T_HASH))
             rb_raise(rb_eTypeError, "non-hash given");
-    }
-
-    for (i = 0; i <= T_MASK; i++) {
-        counts[i] = 0;
     }
 
     rb_ractor_t *r = GET_RACTOR();
