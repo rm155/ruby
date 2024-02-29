@@ -5657,9 +5657,21 @@ force_chain_object(st_data_t key, st_data_t val, st_data_t arg)
     return ST_CONTINUE;
 }
 
+static int
+get_size_pool_idx(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+{
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+	if(&size_pools[i] == size_pool) {
+	    return i;
+	}
+    }
+    return -1;
+}
+
 static void
 gc_each_object(rb_objspace_t *objspace, void (*func)(VALUE obj, void *data), void *data)
 {
+    rb_ractor_t *r = GET_RACTOR();
     for (size_t i = 0; i < heap_allocated_pages; i++) {
         struct heap_page *page = heap_pages_sorted[i];
 
@@ -6447,17 +6459,6 @@ type_sym(size_t type)
 #undef COUNT_TYPE
         default:              return SIZET2NUM(type); break;
     }
-}
-
-static int
-get_size_pool_idx(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
-{
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	if(&size_pools[i] == size_pool) {
-	    return i;
-	}
-    }
-    return -1;
 }
 
 struct count_objects_data {
