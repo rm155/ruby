@@ -3128,7 +3128,6 @@ ruby_vm_destruct(rb_vm_t *vm)
 
 	rb_native_mutex_destroy(&vm->ractor.main_ractor->mark_object_ary_lock);
 
-	rb_global_space_free(vm->global_space);
 	rb_ractor_t *r = NULL;
 	ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
 	    if (r->local_objspace && r != vm->ractor.main_ractor) {

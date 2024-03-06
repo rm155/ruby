@@ -834,7 +834,22 @@ typedef struct rb_global_space {
 	int objspace_readers;
 	int absorbers;
     } absorption;
+
+    struct {
+	rb_nativethread_lock_t global_pages_lock;
+
+        struct heap_page **sorted;
+        size_t allocated_pages;
+        size_t sorted_length;
+        uintptr_t range[2];
+    } all_pages;
 } rb_global_space_t;
+
+#define all_pages_sorted_global       global_space->all_pages.sorted
+#define all_allocated_pages_global    global_space->all_pages.allocated_pages
+#define all_pages_sorted_length_global global_space->all_pages.sorted_length
+#define all_pages_lomem_global	global_space->all_pages.range[0]
+#define all_pages_himem_global	global_space->all_pages.range[1]
 
 typedef struct rb_objspace {
     struct {
@@ -1017,6 +1032,8 @@ typedef struct rb_objspace {
     struct ccan_list_head zombie_threads;
     rb_nativethread_lock_t zombie_threads_lock;
 
+    bool belong_to_single_main_ractor;
+
     rb_ractor_t *ractor;
     struct ccan_list_node objspace_node;
 
@@ -1054,6 +1071,7 @@ heap_lock_enter(rb_objspace_t *objspace, rb_ractor_t *cr)
 static void
 heap_lock_leave(rb_objspace_t *objspace, rb_ractor_t *cr)
 {
+    VM_ASSERT(objspace->heap_lock_owner == cr);
     objspace->heap_lock_level--;
     if (objspace->heap_lock_level == 0) {
 	objspace->heap_lock_owner = NULL;
@@ -1357,6 +1375,8 @@ struct heap_page {
     /* If set, the object is not movable */
     bits_t pinned_bits[HEAP_PAGE_BITMAP_LIMIT];
     bits_t age_bits[HEAP_PAGE_BITMAP_LIMIT * RVALUE_AGE_BIT_COUNT];
+
+    bool unlinked;
 };
 
 /*
@@ -2426,7 +2446,7 @@ rb_objspace_alloc(void)
 
 static void free_stack_chunks(mark_stack_t *);
 static void mark_stack_free_cache(mark_stack_t *);
-static void heap_page_free(rb_objspace_t *objspace, struct heap_page *page);
+static void heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked);
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
@@ -2448,7 +2468,7 @@ rb_objspace_free(rb_objspace_t *objspace)
         size_t i;
         size_t total_heap_pages = heap_allocated_pages;
         for (i = 0; i < total_heap_pages; ++i) {
-            heap_page_free(objspace, heap_pages_sorted[i]);
+            heap_page_free(objspace, heap_pages_sorted[i], false);
         }
         free(heap_pages_sorted);
         heap_allocated_pages = 0;
@@ -2499,6 +2519,8 @@ rb_objspace_free(rb_objspace_t *objspace)
 	unlock_ractor_set();
     }
 
+    if (objspace == GET_VM()->objspace) rb_global_space_free(GET_VM()->global_space);
+
     free(objspace);
 }
 
@@ -2512,28 +2534,45 @@ rb_objspace_free_all_non_main(rb_vm_t *vm) {
     }
 }
 
-static void
-heap_pages_expand_sorted_to(rb_objspace_t *objspace, size_t next_length)
+static struct heap_page **
+page_list_expand_sorted_to_size(struct heap_page **sorted_list, size_t sorted_list_length, size_t target_size)
 {
     struct heap_page **sorted;
-    size_t size = size_mul_or_raise(next_length, sizeof(struct heap_page *), rb_eRuntimeError);
-
-    gc_report(3, objspace, "heap_pages_expand_sorted: next_length: %"PRIdSIZE", size: %"PRIdSIZE"\n",
-              next_length, size);
-
-    if (heap_pages_sorted_length > 0) {
-        sorted = (struct heap_page **)realloc(heap_pages_sorted, size);
-        if (sorted) heap_pages_sorted = sorted;
+    if (sorted_list_length > 0) {
+        sorted = (struct heap_page **)realloc(sorted_list, target_size);
     }
     else {
-        sorted = heap_pages_sorted = (struct heap_page **)malloc(size);
+        sorted = (struct heap_page **)malloc(target_size);
     }
 
     if (sorted == 0) {
         rb_memerror();
     }
+    return sorted;
+}
 
+static void
+heap_pages_expand_sorted_to(rb_objspace_t *objspace, size_t next_length)
+{
+    size_t length_diff = next_length - heap_pages_sorted_length;
+    size_t size = size_mul_or_raise(next_length, sizeof(struct heap_page *), rb_eRuntimeError);
+
+    gc_report(3, objspace, "heap_pages_expand_sorted: next_length: %"PRIdSIZE", size: %"PRIdSIZE"\n",
+              next_length, size);
+
+    heap_pages_sorted = page_list_expand_sorted_to_size(heap_pages_sorted, heap_pages_sorted_length, size);
     heap_pages_sorted_length = next_length;
+
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->all_pages.global_pages_lock);
+
+    size_t next_length_global = length_diff + all_pages_sorted_length_global;
+    size_t global_size = size_mul_or_raise(next_length_global, sizeof(struct heap_page *), rb_eRuntimeError);
+    all_pages_sorted_global = page_list_expand_sorted_to_size(all_pages_sorted_global, all_pages_sorted_length_global, global_size);
+    all_pages_sorted_length_global = next_length_global;
+
+    rb_native_mutex_unlock(&global_space->all_pages.global_pages_lock);
+
 }
 
 static void
@@ -2652,12 +2691,32 @@ heap_page_body_free(struct heap_page_body *page_body)
 }
 
 static void
-heap_page_free(rb_objspace_t *objspace, struct heap_page *page)
+heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked)
 {
     heap_allocated_pages--;
+
+    rb_global_space_t *global_space = &rb_global_space;
+    if (!global_pages_locked) rb_native_mutex_lock(&global_space->all_pages.global_pages_lock);
+    all_allocated_pages_global--;
+    if (!global_pages_locked) rb_native_mutex_unlock(&global_space->all_pages.global_pages_lock);
+
     page->size_pool->total_freed_pages++;
     heap_page_body_free(GET_PAGE_BODY(page->start));
     free(page);
+}
+
+static void
+set_sorted_page_list_range(struct heap_page **sorted_page_list, size_t list_allocated_pages, uintptr_t *lo, uintptr_t *hi)
+{
+    struct heap_page *hipage = sorted_page_list[list_allocated_pages - 1];
+    uintptr_t himem = (uintptr_t)hipage->start + (hipage->total_slots * hipage->slot_size);
+    GC_ASSERT(himem <= *hi);
+    *hi = himem;
+
+    struct heap_page *lopage = sorted_page_list[0];
+    uintptr_t lomem = (uintptr_t)lopage->start;
+    GC_ASSERT(lomem >= *lo);
+    *lo = lomem;
 }
 
 static void
@@ -2674,12 +2733,14 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
     }
 
     if (has_pages_in_tomb_heap) {
-        for (i = j = 0; j < heap_allocated_pages; i++) {
+	int unlinked_pages = 0;
+        for (i = j = 0; j < heap_allocated_pages - unlinked_pages; i++) {
             struct heap_page *page = heap_pages_sorted[i];
 
             if (page->flags.in_tomb && page->free_slots == page->total_slots) {
                 heap_unlink_page(objspace, SIZE_POOL_TOMB_HEAP(page->size_pool), page);
-                heap_page_free(objspace, page);
+		page->unlinked = true;
+		unlinked_pages++;
             }
             else {
                 if (i != j) {
@@ -2689,17 +2750,32 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
             }
         }
 
-        struct heap_page *hipage = heap_pages_sorted[heap_allocated_pages - 1];
-        uintptr_t himem = (uintptr_t)hipage->start + (hipage->total_slots * hipage->slot_size);
-        GC_ASSERT(himem <= heap_pages_himem);
-        heap_pages_himem = himem;
+	set_sorted_page_list_range(heap_pages_sorted, heap_allocated_pages - unlinked_pages, &heap_pages_lomem, &heap_pages_himem);
 
-        struct heap_page *lopage = heap_pages_sorted[0];
-        uintptr_t lomem = (uintptr_t)lopage->start;
-        GC_ASSERT(lomem >= heap_pages_lomem);
-        heap_pages_lomem = lomem;
+        GC_ASSERT(j == heap_allocated_pages - unlinked_pages);
 
-        GC_ASSERT(j == heap_allocated_pages);
+	rb_global_space_t *global_space = &rb_global_space;
+	rb_native_mutex_lock(&global_space->all_pages.global_pages_lock);
+
+        for (i = j = 0; j < all_allocated_pages_global; i++) {
+            struct heap_page *page = all_pages_sorted_global[i];
+
+            if (page->unlinked) {
+                heap_page_free(objspace, page, true);
+            }
+            else {
+                if (i != j) {
+                    all_pages_sorted_global[j] = page;
+                }
+                j++;
+            }
+        }
+
+	set_sorted_page_list_range(all_pages_sorted_global, all_allocated_pages_global, &all_pages_lomem_global, &all_pages_himem_global);
+
+        GC_ASSERT(j == all_allocated_pages_global);
+
+	rb_native_mutex_unlock(&global_space->all_pages.global_pages_lock);
     }
 }
 
@@ -2752,16 +2828,16 @@ heap_page_body_allocate(void)
 }
 
 static void
-insert_into_heap_pages_sorted(rb_objspace_t *objspace, struct heap_page *page, uintptr_t start)
+insert_into_sorted_page_list(rb_objspace_t *objspace, struct heap_page **sorted_list, size_t allocated_pages, struct heap_page *page, uintptr_t start)
 {
     uintptr_t hi, lo, mid;
     lo = 0;
-    hi = (uintptr_t)heap_allocated_pages;
+    hi = (uintptr_t)allocated_pages;
     while (lo < hi) {
         struct heap_page *mid_page;
 
         mid = (lo + hi) / 2;
-        mid_page = heap_pages_sorted[mid];
+        mid_page = sorted_list[mid];
         if ((uintptr_t)mid_page->start < start) {
             lo = mid + 1;
         }
@@ -2773,11 +2849,11 @@ insert_into_heap_pages_sorted(rb_objspace_t *objspace, struct heap_page *page, u
         }
     }
 
-    if (hi < (uintptr_t)heap_allocated_pages) {
-        MEMMOVE(&heap_pages_sorted[hi+1], &heap_pages_sorted[hi], struct heap_page_header*, heap_allocated_pages - hi);
+    if (hi < (uintptr_t)allocated_pages) {
+        MEMMOVE(&sorted_list[hi+1], &sorted_list[hi], struct heap_page_header*, allocated_pages - hi);
     }
 
-    heap_pages_sorted[hi] = page;
+    sorted_list[hi] = page;
 }
 
 static struct heap_page *
@@ -2824,9 +2900,17 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
     end = start + (limit * (int)stride);
 
     /* setup heap_pages_sorted */
-    insert_into_heap_pages_sorted(objspace, page, start);
+    insert_into_sorted_page_list(objspace, heap_pages_sorted, heap_allocated_pages, page, start);
 
     heap_allocated_pages++;
+
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->all_pages.global_pages_lock);
+
+    insert_into_sorted_page_list(objspace, all_pages_sorted_global, all_allocated_pages_global, page, start);
+    all_allocated_pages_global++;
+
+    rb_native_mutex_unlock(&global_space->all_pages.global_pages_lock);
 
     GC_ASSERT(heap_eden_total_pages(objspace) + heap_allocatable_pages(objspace) <= heap_pages_sorted_length);
     GC_ASSERT(heap_eden_total_pages(objspace) + heap_tomb_total_pages(objspace) == heap_allocated_pages - 1);
@@ -2841,6 +2925,13 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 
     if (heap_pages_lomem == 0 || heap_pages_lomem > start) heap_pages_lomem = start;
     if (heap_pages_himem < end) heap_pages_himem = end;
+
+    rb_native_mutex_lock(&global_space->all_pages.global_pages_lock);
+
+    if (all_pages_lomem_global == 0 || all_pages_lomem_global > start) all_pages_lomem_global = start;
+    if (all_pages_himem_global < end) all_pages_himem_global = end;
+
+    rb_native_mutex_unlock(&global_space->all_pages.global_pages_lock);
 
     page->start = start;
     page->total_slots = limit;
@@ -2925,7 +3016,7 @@ insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int s
     rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
 
     heap_add_page(objspace, size_pool, heap, page);
-    insert_into_heap_pages_sorted(objspace, page, page->start);
+    insert_into_sorted_page_list(objspace, heap_pages_sorted, heap_allocated_pages, page, page->start);
     size_pool->allocatable_pages--;
     heap_allocated_pages++;
 
@@ -4211,22 +4302,34 @@ heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
     }
 }
 
-PUREFUNC(static inline int is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr);)
-static inline int
-is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr)
+PUREFUNC(static inline struct heap_page * global_heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr);)
+static inline struct heap_page *
+global_heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
 {
-    register uintptr_t p = (uintptr_t)ptr;
-    register struct heap_page *page;
+    rb_global_space_t *global_space = &rb_global_space;
+    struct heap_page **res;
 
-    RB_DEBUG_COUNTER_INC(gc_isptr_trial);
+    if (ptr < (uintptr_t)all_pages_lomem_global ||
+            ptr > (uintptr_t)all_pages_himem_global) {
+        return NULL;
+    }
 
-    if (p < heap_pages_lomem || p > heap_pages_himem) return FALSE;
-    RB_DEBUG_COUNTER_INC(gc_isptr_range);
+    res = bsearch((void *)ptr, all_pages_sorted_global,
+                  (size_t)all_allocated_pages_global, sizeof(struct heap_page *),
+                  ptr_in_page_body_p);
 
-    if (p % BASE_SLOT_SIZE != 0) return FALSE;
-    RB_DEBUG_COUNTER_INC(gc_isptr_align);
+    if (res) {
+        return *res;
+    }
+    else {
+        return NULL;
+    }
+}
 
-    page = heap_page_for_ptr(objspace, (uintptr_t)ptr);
+PUREFUNC(static inline int pointer_is_on_page(register uintptr_t p, register struct heap_page *page);)
+static inline int
+pointer_is_on_page(register uintptr_t p, register struct heap_page *page)
+{
     if (page) {
         RB_DEBUG_COUNTER_INC(gc_isptr_maybe);
         if (page->flags.in_tomb) {
@@ -4243,22 +4346,104 @@ is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr)
     return FALSE;
 }
 
-static int
-is_pointer_to_any_objspace_heap(void *ptr) //TODO: speed up
+PUREFUNC(static inline int heap_page_possible(rb_objspace_t *objspace, register uintptr_t p, uintptr_t lomem, uintptr_t himem);)
+static inline int
+heap_page_possible(rb_objspace_t *objspace, register uintptr_t p, uintptr_t lomem, uintptr_t himem)
 {
-    int found = FALSE;
-    rb_vm_t *vm = GET_VM();
+    RB_DEBUG_COUNTER_INC(gc_isptr_trial);
 
-    lock_ractor_set();
-    rb_objspace_t *os = NULL;
-    ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
-	if (is_pointer_to_heap(os, ptr)) {
-	    found = true;
-	    break;
+    if (p < lomem || p > himem) return FALSE;
+    RB_DEBUG_COUNTER_INC(gc_isptr_range);
+
+    if (p % BASE_SLOT_SIZE != 0) return FALSE;
+    RB_DEBUG_COUNTER_INC(gc_isptr_align);
+
+    return TRUE;
+}
+
+PUREFUNC(static inline int is_pointer_to_local_heap(rb_objspace_t *objspace, const void *ptr);)
+static inline int
+is_pointer_to_local_heap(rb_objspace_t *objspace, const void *ptr)
+{
+    register uintptr_t p = (uintptr_t)ptr;
+    register struct heap_page *page = NULL;
+
+    if (during_gc) {
+	if (heap_page_possible(objspace, p, heap_pages_lomem, heap_pages_himem) == TRUE) {
+	    page = heap_page_for_ptr(objspace, (uintptr_t)ptr);
 	}
+	return pointer_is_on_page(p, page);
     }
-    unlock_ractor_set();
-    return found;
+    else {
+	int ret;
+	HEAP_LOCK_ENTER(objspace);
+	{
+	    if (heap_page_possible(objspace, p, heap_pages_lomem, heap_pages_himem) == TRUE) {
+		page = heap_page_for_ptr(objspace, (uintptr_t)ptr);
+	    }
+	    ret = pointer_is_on_page(p, page);
+	}
+	HEAP_LOCK_LEAVE(objspace);
+	return ret;
+    }
+}
+
+PUREFUNC(static inline int is_pointer_to_global_heap(rb_objspace_t *objspace, const void *ptr);)
+static inline int
+is_pointer_to_global_heap(rb_objspace_t *objspace, const void *ptr)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    register uintptr_t p = (uintptr_t)ptr;
+    register struct heap_page *page = NULL;
+
+    if (objspace->flags.during_global_gc) {
+	if (heap_page_possible(global_space, p, all_pages_lomem_global, all_pages_himem_global) == TRUE) {
+	    page = global_heap_page_for_ptr(objspace, (uintptr_t)ptr);
+	}
+	return pointer_is_on_page(p, page);
+    }
+    else {
+	rb_objspace_t *page_objspace;
+	int ret;
+
+	rb_native_mutex_lock(&global_space->all_pages.global_pages_lock);
+	if (heap_page_possible(global_space, p, all_pages_lomem_global, all_pages_himem_global) == TRUE) {
+	    page = global_heap_page_for_ptr(objspace, (uintptr_t)ptr);
+	    if (page) {
+		page_objspace = page->objspace;
+		rb_native_mutex_unlock(&global_space->all_pages.global_pages_lock);
+		HEAP_LOCK_ENTER(page_objspace);
+		{
+		    ret = pointer_is_on_page(p, page);
+		}
+		HEAP_LOCK_LEAVE(page_objspace);
+		return ret;
+	    }
+	}
+	rb_native_mutex_unlock(&global_space->all_pages.global_pages_lock);
+	return FALSE;
+    }
+}
+
+PUREFUNC(static inline int is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr);)
+static inline int
+is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr)
+{
+    if (is_pointer_to_local_heap(objspace, ptr)) {
+	return TRUE;
+    }
+    else if (!objspace->belong_to_single_main_ractor) {
+	int ret;
+	SUSPEND_HEAP_LOCK_BEGIN(objspace);
+	{
+	    ret = is_pointer_to_global_heap(objspace, ptr);
+	}
+	SUSPEND_HEAP_LOCK_END(objspace);
+	return ret;
+    }
+    else {
+	return FALSE;
+    }
 }
 
 static enum rb_id_table_iterator_result
@@ -4725,7 +4910,10 @@ Init_main_heap(void)
 void
 rb_assign_main_ractor_objspace(rb_ractor_t *ractor)
 {
+    VM_ASSERT(ractor == ruby_single_main_ractor);
+
     rb_vm_t *vm = GET_VM();
+    vm->objspace->belong_to_single_main_ractor = true;
     ractor->local_objspace = vm->objspace;
     vm->objspace->ractor = ractor;
 }
@@ -4736,8 +4924,10 @@ rb_create_ractor_local_objspace(rb_ractor_t *ractor)
     ractor->local_objspace = rb_objspace_alloc();
     ractor->local_objspace->ractor = ractor;
     Init_heap(ractor->local_objspace);
-    if (ractor != GET_VM()->ractor.main_ractor) {
+    rb_vm_t *vm = GET_VM();
+    if (ractor != vm->ractor.main_ractor) {
 	ruby_single_main_objspace = NULL;
+	vm->objspace->belong_to_single_main_ractor = false;
     }
     rb_objspace_gc_enable(ractor->local_objspace);
 }
@@ -4877,6 +5067,8 @@ rb_global_space_init(void)
     rb_native_cond_initialize(&global_space->absorption.mode_change_cond);
     global_space->absorption.objspace_readers = 0;
     global_space->absorption.absorbers = 0;
+
+    rb_nativethread_lock_initialize(&global_space->all_pages.global_pages_lock);
     return global_space;
 }
 
@@ -4891,6 +5083,16 @@ rb_global_space_free(rb_global_space_t *global_space)
 
     rb_nativethread_lock_destroy(&global_space->absorption.mode_lock);
     rb_native_cond_destroy(&global_space->absorption.mode_change_cond);
+
+    rb_nativethread_lock_destroy(&global_space->all_pages.global_pages_lock);
+
+    if (all_pages_sorted_global) {
+        free(all_pages_sorted_global);
+        all_allocated_pages_global = 0;
+        all_pages_sorted_length_global = 0;
+        all_pages_lomem_global = 0;
+        all_pages_himem_global = 0;
+    }
 }
 
 void
@@ -8238,7 +8440,7 @@ gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
 {
     (void)VALGRIND_MAKE_MEM_DEFINED(&obj, sizeof(obj));
 
-    if (is_pointer_to_heap(objspace, (void *)obj)) {
+    if (is_pointer_to_heap(objspace, (void *)obj) && GET_OBJSPACE_OF_VALUE(obj) == objspace) {
         void *ptr = asan_unpoison_object_temporary(obj);
 
         /* Garbage can live on the stack, so do not mark or pin */
@@ -10975,11 +11177,11 @@ gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
 }
 
 static bool
-probably_broken_shareable_path_p(VALUE a, VALUE oldv)
+probably_broken_shareable_path_p(rb_objspace_t *objspace, VALUE a, VALUE oldv)
 {
     return !!oldv &&
 	FL_TEST_RAW(a, FL_SHAREABLE) &&
-	is_pointer_to_any_objspace_heap((void *)oldv) &&
+	is_pointer_to_heap(objspace, (void *)oldv) &&
 	!RB_TYPE_P(oldv, T_NONE) &&
 	FL_TEST_RAW(oldv, FL_SHAREABLE);
 }
@@ -10992,7 +11194,7 @@ rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
 
     WITH_OBJSPACE_OF_VALUE_ENTER(a, objspace);
     {
-	if (UNLIKELY(!ruby_single_main_objspace && probably_broken_shareable_path_p(a, oldv))) {
+	if (UNLIKELY(!ruby_single_main_objspace && probably_broken_shareable_path_p(objspace, a, oldv))) {
 	    lock_former_references(objspace);
 	    record_former_reference(objspace, a, oldv);
 	    unlock_former_references(objspace);
