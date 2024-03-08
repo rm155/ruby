@@ -2109,23 +2109,30 @@ static void
 prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
 {
     memset(result, 0, sizeof(pm_parse_result_t));
-    pm_options_t *options = &result->options;
 
+    pm_options_t *options = &result->options;
     pm_options_line_set(options, 1);
-    pm_options_command_line_p_set(options, opt->do_print);
-    pm_options_command_line_n_set(options, opt->do_loop);
-    pm_options_command_line_l_set(options, opt->do_line);
-    pm_options_command_line_a_set(options, opt->do_split);
+
+    uint8_t command_line = 0;
+    if (opt->do_split) command_line |= PM_OPTIONS_COMMAND_LINE_A;
+    if (opt->do_line) command_line |= PM_OPTIONS_COMMAND_LINE_L;
+    if (opt->do_loop) command_line |= PM_OPTIONS_COMMAND_LINE_N;
+    if (opt->do_print) command_line |= PM_OPTIONS_COMMAND_LINE_P;
+    if (opt->xflag) command_line |= PM_OPTIONS_COMMAND_LINE_X;
 
     VALUE error;
     if (strcmp(opt->script, "-") == 0) {
         rb_raise(rb_eRuntimeError, "Prism support for streaming code from stdin is not currently supported");
     }
     else if (opt->e_script) {
+        command_line |= PM_OPTIONS_COMMAND_LINE_E;
+        pm_options_command_line_set(options, command_line);
+
         prism_opt_init(opt);
         error = pm_parse_string(result, opt->e_script, rb_str_new2("-e"));
     }
     else {
+        pm_options_command_line_set(options, command_line);
         error = pm_load_file(result, opt->script_name);
 
         // If reading the file did not error, at that point we load the command
@@ -2195,7 +2202,7 @@ process_options_global_setup(const ruby_cmdline_options_t *opt, const rb_iseq_t 
 
     if ((rb_e_script = opt->e_script) != 0) {
         rb_str_freeze(rb_e_script);
-        rb_gc_register_mark_object(opt->e_script);
+        rb_vm_register_global_object(opt->e_script);
     }
 
     rb_execution_context_t *ec = GET_EC();
@@ -3063,7 +3070,7 @@ ruby_process_options(int argc, char **argv)
     }
     set_progname(external_str_new_cstr(script_name));  /* for the time being */
     rb_argv0 = rb_str_new4(rb_progname);
-    rb_gc_register_mark_object(rb_argv0);
+    rb_vm_register_global_object(rb_argv0);
 
 #ifndef HAVE_SETPROCTITLE
     ruby_init_setproctitle(argc, argv);

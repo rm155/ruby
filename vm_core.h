@@ -643,6 +643,8 @@ void rb_gc_safe_lock_initialize(rb_gc_safe_lock_t *gs_lock);
 void rb_gc_safe_lock_destroy(rb_gc_safe_lock_t *gs_lock);
 bool rb_gc_safe_lock_acquired(rb_gc_safe_lock_t *gs_lock);
 
+VALUE rb_pin_array_list_new(VALUE next);
+
 typedef struct rb_vm_struct {
     VALUE self;
 
@@ -761,8 +763,6 @@ typedef struct rb_vm_struct {
     VALUE orig_progname, progname;
     VALUE coverages, me2counter;
     int coverage_mode;
-
-    st_table * defined_module_hash;
 
     struct rb_objspace *objspace;
     struct ccan_list_head objspace_set; //TODO: Remove once Ractors handle their own objspace upon ending

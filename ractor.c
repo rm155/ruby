@@ -204,34 +204,6 @@ ractor_queue_mark(struct rb_ractor_queue *rq)
     }
 }
 
-static void
-ractor_mark_object_ary_mark_all(rb_ractor_t *r)
-{
-    long i, len;
-    const VALUE *obj_ary;
-
-    rb_native_mutex_lock(&r->mark_object_ary_lock);
-
-    rb_gc_mark_movable(r->mark_object_ary);
-
-    len = RARRAY_LEN(r->mark_object_ary);
-    obj_ary = RARRAY_CONST_PTR(r->mark_object_ary);
-    for (i=0; i < len; i++) {
-	const VALUE *ptr;
-	long j, jlen;
-
-	rb_gc_mark(*obj_ary);
-	jlen = RARRAY_LEN(*obj_ary);
-	ptr = RARRAY_CONST_PTR(*obj_ary);
-	for (j=0; j < jlen; j++) {
-	    rb_gc_mark(*ptr++);
-	}
-	obj_ary++;
-    }
-
-    rb_native_mutex_unlock(&r->mark_object_ary_lock);
-}
-
 static void ractor_local_storage_mark(rb_ractor_t *r);
 static void ractor_local_storage_free(rb_ractor_t *r);
 
@@ -272,8 +244,6 @@ rb_ractor_related_objects_mark(void *ptr)
     ractor_local_storage_mark(r);
 
     rb_gc_mark(r->result_value);
-
-    ractor_mark_object_ary_mark_all(r);
 }
 
 void
@@ -2205,27 +2175,10 @@ rb_ractor_living_threads_init(rb_ractor_t *r)
     r->threads.blocking_cnt = 0;
 }
 
-struct mark_object_ary_init_args {
-    rb_ractor_t *r;
-    int capa;
-};
-
-static VALUE
-ractor_mark_object_ary_init_no_redirection(VALUE args)
-{
-    struct mark_object_ary_init_args *init_args = (struct mark_object_ary_init_args *)args;
-    init_args->r->mark_object_ary = rb_ary_hidden_new(init_args->capa);
-    return Qnil;
-}
-
 void
-rb_ractor_mark_object_ary_init(rb_ractor_t *r, int capa)
+rb_ractor_mark_object_ary_init(rb_ractor_t *r)
 {
-    struct mark_object_ary_init_args args = {
-	.r = r,
-	.capa = capa,
-    };
-    rb_run_with_redirected_allocation(r, ractor_mark_object_ary_init_no_redirection, (VALUE)&args);
+    rb_run_with_redirected_allocation(r, rb_pin_array_list_new, Qnil);
 }
 
 static void

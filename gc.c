@@ -5346,7 +5346,7 @@ internal_object_p(VALUE obj)
             break;
           case T_CLASS:
             if (!p->as.basic.klass) break;
-            if (FL_TEST(obj, FL_SINGLETON)) {
+            if (RCLASS_SINGLETON_P(obj)) {
                 return rb_singleton_class_internal_p(obj);
             }
             return 0;
@@ -6186,9 +6186,7 @@ is_live_object(rb_objspace_t *objspace, VALUE ptr)
 static inline int
 is_markable_object(VALUE obj)
 {
-    if (RB_SPECIAL_CONST_P(obj)) return FALSE; /* special const is not markable */
-    check_rvalue_consistency(obj);
-    return TRUE;
+    return !RB_SPECIAL_CONST_P(obj);
 }
 
 int
@@ -8046,23 +8044,14 @@ rb_gc_mark_values(long n, const VALUE *values)
     }
 }
 
-static void
-gc_mark_stack_values(rb_objspace_t *objspace, long n, const VALUE *values)
-{
-    long i;
-
-    for (i=0; i<n; i++) {
-        if (is_markable_object(values[i])) {
-            gc_mark_and_pin(objspace, values[i]);
-        }
-    }
-}
-
 void
 rb_gc_mark_vm_stack_values(long n, const VALUE *values)
 {
     rb_objspace_t *objspace = &rb_objspace;
-    gc_mark_stack_values(objspace, n, values);
+
+    for (long i = 0; i < n; i++) {
+        gc_mark_and_pin(objspace, values[i]);
+    }
 }
 
 static int
@@ -8392,21 +8381,14 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_execution_context_t *ec
 }
 #endif
 
-static void
-each_machine_stack_value(const rb_execution_context_t *ec, void (*cb)(rb_objspace_t *, VALUE))
-{
-    rb_objspace_t *objspace = &rb_objspace;
-    VALUE *stack_start, *stack_end;
-
-    GET_STACK_BOUNDS(stack_start, stack_end, 0);
-    RUBY_DEBUG_LOG("ec->th:%u stack_start:%p stack_end:%p", rb_ec_thread_ptr(ec)->serial, stack_start, stack_end);
-    each_stack_location(objspace, ec, stack_start, stack_end, cb);
-}
-
 void
 rb_gc_mark_machine_stack(const rb_execution_context_t *ec)
 {
-    each_machine_stack_value(ec, gc_mark_maybe);
+    VALUE *stack_start, *stack_end;
+    GET_STACK_BOUNDS(stack_start, stack_end, 0);
+    RUBY_DEBUG_LOG("ec->th:%u stack_start:%p stack_end:%p", rb_ec_thread_ptr(ec)->serial, stack_start, stack_end);
+
+    rb_gc_mark_locations(stack_start, stack_end);
 }
 
 static void
@@ -11325,14 +11307,6 @@ rb_copy_wb_protected_attribute(VALUE dest, VALUE obj)
     check_rvalue_consistency(dest);
 }
 
-/* RGENGC analysis information */
-
-VALUE
-rb_obj_rgengc_writebarrier_protected_p(VALUE obj)
-{
-    return RBOOL(!RVALUE_WB_UNPROTECTED(obj));
-}
-
 VALUE
 rb_obj_rgengc_promoted_p(VALUE obj)
 {
@@ -11396,10 +11370,6 @@ rb_gc_force_recycle(VALUE obj)
     /* no-op */
 }
 
-#ifndef MARK_OBJECT_ARY_BUCKET_SIZE
-#define MARK_OBJECT_ARY_BUCKET_SIZE 1024
-#endif
-
 static void
 register_mark_object_no_redirection(VALUE obj)
 {
@@ -11408,21 +11378,7 @@ register_mark_object_no_redirection(VALUE obj)
     if (!is_pointer_to_heap(objspace, (void *)obj))
         return;
 
-    VALUE already_disabled = rb_objspace_gc_disable(objspace);
-    rb_native_mutex_lock(&r->mark_object_ary_lock);
-
-    VALUE ary_ary = GET_VM()->mark_object_ary;
-    VALUE ary = rb_ary_last(0, 0, ary_ary);
-
-    if (NIL_P(ary) || RARRAY_LEN(ary) >= MARK_OBJECT_ARY_BUCKET_SIZE) {
-	ary = rb_ary_hidden_new(MARK_OBJECT_ARY_BUCKET_SIZE);
-	rb_ary_push(ary_ary, ary);
-    }
-
-    rb_ary_push(ary, obj);
-
-    rb_native_mutex_unlock(&r->mark_object_ary_lock);
-    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+    rb_vm_register_global_object(obj);
 }
 
 void
