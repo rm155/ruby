@@ -244,6 +244,9 @@ rb_ractor_related_objects_mark(void *ptr)
     ractor_local_storage_mark(r);
 
     rb_gc_mark(r->result_value);
+    rb_native_mutex_lock(&r->mark_object_ary_lock);
+    rb_gc_mark_movable(r->mark_object_ary);
+    rb_native_mutex_unlock(&r->mark_object_ary_lock);
 }
 
 void
@@ -251,7 +254,9 @@ rb_ractor_update_references(void *ptr)
 {
     rb_ractor_t *r = (rb_ractor_t *)ptr;
 
+    rb_native_mutex_lock(&r->mark_object_ary_lock);
     r->mark_object_ary = rb_gc_location(r->mark_object_ary);
+    rb_native_mutex_unlock(&r->mark_object_ary_lock);
 }
 
 static void
@@ -2175,10 +2180,18 @@ rb_ractor_living_threads_init(rb_ractor_t *r)
     r->threads.blocking_cnt = 0;
 }
 
+VALUE
+rb_ractor_mark_object_ary_init_no_redirection(VALUE ractor_arg)
+{
+    rb_ractor_t *r = (rb_ractor_t *)ractor_arg;
+    r->mark_object_ary = rb_pin_array_list_new(Qnil);
+    return Qnil;
+}
+
 void
 rb_ractor_mark_object_ary_init(rb_ractor_t *r)
 {
-    r->mark_object_ary = rb_run_with_redirected_allocation(r, rb_pin_array_list_new, Qnil);
+    rb_run_with_redirected_allocation(r, rb_ractor_mark_object_ary_init_no_redirection, (VALUE)r);
 }
 
 static void

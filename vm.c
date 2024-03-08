@@ -2889,7 +2889,6 @@ rb_vm_update_references(void *ptr)
 	    rb_gc_update_tbl_refs(vm->fstring_table);
 	}
 	RB_FSTRING_TABLE_LEAVE();
-        vm->mark_object_ary = rb_gc_location(vm->mark_object_ary);
         vm->load_path = rb_gc_location(vm->load_path);
         vm->load_path_snapshot = rb_gc_location(vm->load_path_snapshot);
 
@@ -2977,7 +2976,6 @@ rb_vm_mark(void *ptr)
     if (ptr) {
         rb_vm_t *vm = ptr;
 
-        rb_gc_mark_movable(vm->mark_object_ary);
         rb_gc_mark_movable(vm->load_path);
         rb_gc_mark_movable(vm->load_path_snapshot);
         rb_gc_mark_movable(vm->load_path_check_cache);
@@ -4420,6 +4418,12 @@ pin_array_list_append(VALUE obj, VALUE item)
     return obj;
 }
 
+VALUE
+rb_pin_array_list_append(VALUE obj, VALUE item)
+{
+    return pin_array_list_append(obj, item);
+}
+
 void
 rb_vm_register_global_object(VALUE obj)
 {
@@ -4440,21 +4444,7 @@ rb_vm_register_global_object(VALUE obj)
         break;
     }
 
-    rb_ractor_t *r = rb_current_allocating_ractor();
-    struct rb_objspace *objspace = r->local_objspace;
-
-    VALUE already_disabled = rb_objspace_gc_disable(objspace);
-    rb_native_mutex_lock(&r->mark_object_ary_lock);
-    {
-        VALUE list = GET_VM()->mark_object_ary;
-        VALUE head = pin_array_list_append(list, obj);
-        if (head != list) {
-            GET_VM()->mark_object_ary = head;
-        }
-        RB_GC_GUARD(obj);
-    }
-    rb_native_mutex_unlock(&r->mark_object_ary_lock);
-    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+    rb_gc_register_in_mark_object_ary(obj);
 }
 
 void
@@ -4464,7 +4454,6 @@ Init_vm_objects(void)
 
     /* initialize mark object array, hash */
     rb_ractor_mark_object_ary_init(vm->ractor.main_ractor);
-    vm->mark_object_ary = vm->ractor.main_ractor->mark_object_ary;
     rb_native_mutex_initialize(&vm->ractor.main_ractor->mark_object_ary_lock);
 
     vm->loading_table = st_init_strtable();

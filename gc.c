@@ -11437,6 +11437,29 @@ rb_gc_unregister_address(VALUE *addr)
 }
 
 void
+rb_gc_register_in_mark_object_ary(VALUE obj)
+{
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    {
+	rb_ractor_t *r = objspace->ractor;
+
+	VALUE already_disabled = rb_objspace_gc_disable(objspace);
+	rb_native_mutex_lock(&r->mark_object_ary_lock);
+
+        VALUE list = r->mark_object_ary;
+        VALUE head = rb_pin_array_list_append(list, obj);
+        if (head != list) {
+            r->mark_object_ary = head;
+        }
+        RB_GC_GUARD(obj);
+
+	rb_native_mutex_unlock(&r->mark_object_ary_lock);
+	if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
+}
+
+void
 rb_global_variable(VALUE *var)
 {
     rb_gc_register_address(var);
