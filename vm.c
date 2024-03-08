@@ -4441,7 +4441,7 @@ rb_vm_register_global_object(VALUE obj)
     }
 
     rb_ractor_t *r = rb_current_allocating_ractor();
-    rb_objspace_t *objspace = r->local_objspace;
+    struct rb_objspace *objspace = r->local_objspace;
 
     VALUE already_disabled = rb_objspace_gc_disable(objspace);
     rb_native_mutex_lock(&r->mark_object_ary_lock);
@@ -4463,7 +4463,7 @@ Init_vm_objects(void)
     rb_vm_t *vm = GET_VM();
 
     /* initialize mark object array, hash */
-    rb_ractor_mark_object_ary_init(vm->ractor.main_ractor, 128);
+    rb_ractor_mark_object_ary_init(vm->ractor.main_ractor);
     vm->mark_object_ary = vm->ractor.main_ractor->mark_object_ary;
     rb_native_mutex_initialize(&vm->ractor.main_ractor->mark_object_ary_lock);
 

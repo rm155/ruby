@@ -2178,7 +2178,7 @@ rb_ractor_living_threads_init(rb_ractor_t *r)
 void
 rb_ractor_mark_object_ary_init(rb_ractor_t *r)
 {
-    rb_run_with_redirected_allocation(r, rb_pin_array_list_new, Qnil);
+    r->mark_object_ary = rb_run_with_redirected_allocation(r, rb_pin_array_list_new, Qnil);
 }
 
 static void
@@ -2219,7 +2219,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 #endif
 
     if (r != GET_VM()->ractor.main_ractor) {
-	rb_ractor_mark_object_ary_init(r, 128);
+	rb_ractor_mark_object_ary_init(r);
 	rb_native_mutex_initialize(&r->mark_object_ary_lock);
     }
 
