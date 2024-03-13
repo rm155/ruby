@@ -8458,7 +8458,7 @@ gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
 {
     (void)VALGRIND_MAKE_MEM_DEFINED(&obj, sizeof(obj));
 
-    if (is_pointer_to_heap(objspace, (void *)obj) && GET_OBJSPACE_OF_VALUE(obj) == objspace) {
+    if (is_pointer_to_heap(objspace, (void *)obj)) {
         void *ptr = asan_unpoison_object_temporary(obj);
 
         /* Garbage can live on the stack, so do not mark or pin */
