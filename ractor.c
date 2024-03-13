@@ -2197,6 +2197,9 @@ rb_ractor_mark_object_ary_init(rb_ractor_t *r)
 static void
 ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 {
+#if VM_CHECK_MODE > 0
+    r->during_setup = true;
+#endif
     ractor_queue_setup(&r->sync.recv_queue);
     ractor_queue_setup(&r->sync.takers_queue);
     rb_native_mutex_initialize(&r->sync.lock);

@@ -864,6 +864,10 @@ thread_create_core(VALUE thval, struct thread_create_params *params)
 
     rb_ractor_living_threads_insert(th->ractor, th);
 
+#if VM_CHECK_MODE > 0
+    th->ractor->during_setup = false;
+#endif
+
     /* kick thread */
     err = native_thread_create(th);
     if (err) {

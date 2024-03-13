@@ -843,6 +843,12 @@ typedef struct rb_global_space {
         size_t sorted_length;
         uintptr_t range[2];
     } all_pages;
+
+#if VM_CHECK_MODE > 0
+    st_table *setup_objects_tbl;
+    rb_nativethread_lock_t setup_objects_tbl_lock;
+    rb_ractor_t *setup_objects_tbl_lock_owner;
+#endif
 } rb_global_space_t;
 
 #define all_pages_sorted_global       global_space->all_pages.sorted
@@ -3964,6 +3970,23 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
     }
     alloc_target_ractor->borrowing_sync.page_recently_locked[size_pool_idx] = false;
 
+#if VM_CHECK_MODE > 0
+    if (alloc_target_ractor->during_setup) {
+	rb_global_space_t *global_space = &rb_global_space;
+	bool newly_locked = false;
+	if (global_space->setup_objects_tbl_lock_owner != cr) {
+	    rb_native_mutex_lock(&global_space->setup_objects_tbl_lock);
+	    global_space->setup_objects_tbl_lock_owner = cr;
+	    newly_locked = true;
+	}
+	st_insert_no_gc(global_space->setup_objects_tbl, (st_data_t)obj, INT2FIX(0));
+	if (newly_locked) {
+	    global_space->setup_objects_tbl_lock_owner = NULL;
+	    rb_native_mutex_unlock(&global_space->setup_objects_tbl_lock);
+	}
+    }
+#endif
+
     return obj;
 }
 
@@ -4937,6 +4960,10 @@ rb_global_tables_init(void)
 {
     rb_global_space_t *global_space = &rb_global_space;
     global_space->absorbed_thread_tbl = st_init_numtable();
+
+#if VM_CHECK_MODE > 0
+    global_space->setup_objects_tbl = st_init_numtable();
+#endif
 }
 
 static void
@@ -5069,6 +5096,10 @@ rb_global_space_init(void)
     global_space->absorption.absorbers = 0;
 
     rb_nativethread_lock_initialize(&global_space->all_pages.global_pages_lock);
+#if VM_CHECK_MODE > 0
+    rb_nativethread_lock_initialize(&global_space->setup_objects_tbl_lock);
+    global_space->setup_objects_tbl_lock_owner = NULL;
+#endif
     return global_space;
 }
 
@@ -5093,6 +5124,11 @@ rb_global_space_free(rb_global_space_t *global_space)
         all_pages_lomem_global = 0;
         all_pages_himem_global = 0;
     }
+
+#if VM_CHECK_MODE > 0
+    st_free_table(global_space->setup_objects_tbl);
+    rb_nativethread_lock_destroy(&global_space->setup_objects_tbl_lock);
+#endif
 }
 
 void
@@ -8574,13 +8610,25 @@ check_not_tnone(VALUE obj)
     }
 }
 
+#if VM_CHECK_MODE > 0
+bool
+made_during_setup(VALUE obj)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    rb_native_mutex_lock(&global_space->setup_objects_tbl_lock);
+    bool ret = !!st_lookup(global_space->setup_objects_tbl, (st_data_t)obj, NULL);
+    rb_native_mutex_unlock(&global_space->setup_objects_tbl_lock);
+    return ret;
+}
+#endif
+
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
 static void reachable_objects_from_callback(VALUE obj);
 
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || made_during_setup(obj));
 
     //TODO: Improve condition efficiency
     if (using_local_limits(objspace)) {
@@ -8622,7 +8670,9 @@ gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
     }
     else {
 	VM_ASSERT(dont_gc_val() == TRUE);
-        reachable_objects_from_callback(obj);
+	if (GET_OBJSPACE_OF_VALUE(obj) == objspace) {
+	    reachable_objects_from_callback(obj);
+	}
     }
 }
 
