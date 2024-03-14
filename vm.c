@@ -2976,6 +2976,10 @@ rb_vm_mark(void *ptr)
     if (ptr) {
         rb_vm_t *vm = ptr;
 
+        for (struct global_object_list *list = vm->global_object_list; list; list = list->next) {
+            rb_gc_mark_maybe(*list->varptr);
+        }
+
         rb_gc_mark_movable(vm->load_path);
         rb_gc_mark_movable(vm->load_path_snapshot);
         rb_gc_mark_movable(vm->load_path_check_cache);
@@ -3109,6 +3113,12 @@ ruby_vm_destruct(rb_vm_t *vm)
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
 
+        struct global_object_list *next;
+        for (struct global_object_list *list = vm->global_object_list; list; list = next) {
+            next = list->next;
+            xfree(list);
+        }
+
 	rb_native_mutex_destroy(&vm->subclass_list_lock);
 	rb_native_mutex_destroy(&vm->classpath_lock);
 
@@ -3121,6 +3131,7 @@ ruby_vm_destruct(rb_vm_t *vm)
 	    }
 	}
 	rb_objspace_free_all_non_main(vm);
+
         if (objspace) {
             if (rb_free_at_exit) {
                 rb_objspace_free_objects(objspace);
@@ -4515,6 +4526,12 @@ rb_ruby_debug_ptr(void)
 }
 
 bool rb_free_at_exit = false;
+
+bool
+ruby_free_at_exit_p(void)
+{
+    return rb_free_at_exit;
+}
 
 /* iseq.c */
 VALUE rb_insn_operand_intern(const rb_iseq_t *iseq,

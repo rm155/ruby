@@ -1698,8 +1698,14 @@ strio_read_nonblock(int argc, VALUE *argv, VALUE self)
     return val;
 }
 
+/*
+ * See IO#write
+ */
 #define strio_syswrite rb_io_write
 
+/*
+ * See IO#write_nonblock
+ */
 static VALUE
 strio_syswrite_nonblock(int argc, VALUE *argv, VALUE self)
 {
@@ -1825,6 +1831,15 @@ strio_set_encoding(int argc, VALUE *argv, VALUE self)
     return self;
 }
 
+/*
+ *  call-seq:
+ *     strio.set_encoding_by_bom  => strio or nil
+ *
+ *  Sets the encoding according to the BOM (Byte Order Mark) in the
+ *  string.
+ *
+ *  Returns +self+ if the BOM is found, otherwise +nil.
+ */
 static VALUE
 strio_set_encoding_by_bom(VALUE self)
 {
@@ -1857,10 +1872,15 @@ Init_stringio(void)
 
     VALUE StringIO = rb_define_class("StringIO", rb_cObject);
 
+    /* The version string */
     rb_define_const(StringIO, "VERSION", rb_str_new_cstr(STRINGIO_VERSION));
 
     rb_include_module(StringIO, rb_mEnumerable);
     rb_define_alloc_func(StringIO, strio_s_allocate);
+
+    /* Maximum length that a StringIO instance can hold */
+    rb_define_const(StringIO, "MAX_LENGTH", LONG2NUM(LONG_MAX));
+
     rb_define_singleton_method(StringIO, "new", strio_s_new, -1);
     rb_define_singleton_method(StringIO, "open", strio_s_open, -1);
     rb_define_method(StringIO, "initialize", strio_initialize, -1);

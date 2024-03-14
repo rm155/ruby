@@ -36,7 +36,7 @@ The following default gems are updated.
 
 The following bundled gems are updated.
 
-* minitest 5.22.2
+* minitest 5.22.3
 * test-unit 3.6.2
 * net-ftp 0.3.4
 * net-imap 0.4.10
@@ -50,7 +50,7 @@ The following bundled gems are promoted from default gems.
 * mutex_m 0.2.0
 * getoptlong 0.2.1
 * base64 0.2.0
-* bigdecimal 3.1.6
+* bigdecimal 3.1.7
 * observer 0.1.2
 * abbrev 0.1.2
 * resolv-replace 0.1.1
@@ -84,6 +84,8 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
 
 ## C API updates
 
+* `rb_newobj` and `rb_newobj_of` (and corresponding macros `RB_NEWOBJ`, `RB_NEWOBJ_OF`, `NEWOBJ`, `NEWOBJ_OF`) have been removed [[Feature #20265]].
+
 ## Implementation improvements
 
 * `Array#each` is rewritten in Ruby for better performance [[Feature #20182]].
@@ -95,3 +97,4 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
 [Feature #19117]: https://bugs.ruby-lang.org/issues/19117
 [Bug #20064]:     https://bugs.ruby-lang.org/issues/20064
 [Feature #20182]: https://bugs.ruby-lang.org/issues/20182
+[Feature #20265]: https://bugs.ruby-lang.org/issues/20265

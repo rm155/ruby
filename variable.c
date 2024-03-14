@@ -1996,6 +1996,7 @@ iterate_over_shapes_with_callback(rb_shape_t *shape, rb_ivar_foreach_callback_fu
 {
     switch ((enum shape_type)shape->type) {
       case SHAPE_ROOT:
+      case SHAPE_T_OBJECT:
         return false;
       case SHAPE_IVAR:
         ASSUME(callback);
@@ -2029,7 +2030,6 @@ iterate_over_shapes_with_callback(rb_shape_t *shape, rb_ivar_foreach_callback_fu
         }
         return false;
       case SHAPE_FROZEN:
-      case SHAPE_T_OBJECT:
         return iterate_over_shapes_with_callback(rb_shape_get_parent(shape), callback, itr_data);
       case SHAPE_OBJ_TOO_COMPLEX:
       default:
@@ -3256,6 +3256,19 @@ rb_const_location_from(VALUE klass, ID id, int exclude, int recurse, int visibil
             if (exclude && klass == rb_cObject) {
                 goto not_found;
             }
+
+            if (UNDEF_P(ce->value)) { // autoload
+                VALUE autoload_const_value = autoload_data(klass, id);
+                if (RTEST(autoload_const_value)) {
+                    struct autoload_const *autoload_const;
+                    struct autoload_data *autoload_data = get_autoload_data(autoload_const_value, &autoload_const);
+
+                    if (!UNDEF_P(autoload_const->value) && RTEST(rb_mutex_owned_p(autoload_data->mutex))) {
+                        return rb_assoc_new(autoload_const->file, INT2NUM(autoload_const->line));
+                    }
+                }
+            }
+
             if (NIL_P(ce->file)) return rb_ary_new();
             return rb_assoc_new(ce->file, INT2NUM(ce->line));
         }
