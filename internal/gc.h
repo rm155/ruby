@@ -136,6 +136,10 @@ void rb_remove_from_absorbed_threads_tbl(rb_thread_t *th);
 void rb_add_to_contained_ractor_tbl(rb_ractor_t *r);
 void rb_remove_from_contained_ractor_tbl(rb_ractor_t *r);
 
+#if VM_CHECK_MODE > 0
+void add_to_setup_objects_tbl(VALUE obj);
+#endif
+
 void rb_register_new_external_wmap_reference(VALUE *ptr);
 void rb_remove_from_external_weak_tables(VALUE *ptr);
 
