@@ -247,6 +247,10 @@ rb_ractor_related_objects_mark(void *ptr)
     rb_native_mutex_lock(&r->mark_object_ary_lock);
     rb_gc_mark_movable(r->mark_object_ary);
     rb_native_mutex_unlock(&r->mark_object_ary_lock);
+
+    for (struct global_object_list *list = r->global_object_list; list; list = list->next) {
+	rb_gc_mark_maybe(*list->varptr);
+    }
 }
 
 void
@@ -299,6 +303,12 @@ ractor_free(void *ptr)
     rb_hook_list_free(&r->pub.hooks);
 
     rb_native_mutex_destroy(&r->mark_object_ary_lock);
+
+    struct global_object_list *next;
+    for (struct global_object_list *list = r->global_object_list; list; list = next) {
+	next = list->next;
+	xfree(list);
+    }
 
     ruby_xfree(r);
 }

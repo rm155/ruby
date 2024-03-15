@@ -11434,14 +11434,14 @@ rb_gc_register_mark_object(VALUE obj)
 void
 rb_gc_register_address(VALUE *addr)
 {
-    rb_vm_t *vm = GET_VM();
-
     VALUE obj = *addr;
 
+    rb_ractor_t *r = GET_RACTOR();
+    VM_ASSERT(SPECIAL_CONST_P(obj) || GET_RACTOR_OF_VALUE(obj) == r || FL_TEST_RAW(obj, FL_SHAREABLE));
     struct global_object_list *tmp = ALLOC(struct global_object_list);
-    tmp->next = vm->global_object_list;
+    tmp->next = r->global_object_list;
     tmp->varptr = addr;
-    vm->global_object_list = tmp;
+    r->global_object_list = tmp;
 
     /*
      * Because some C extensions have assignment-then-register bugs,
@@ -11458,23 +11458,24 @@ rb_gc_register_address(VALUE *addr)
 void
 rb_gc_unregister_address(VALUE *addr)
 {
-    rb_vm_t *vm = GET_VM();
-    struct global_object_list *tmp = vm->global_object_list;
+    rb_ractor_t *r = GET_RACTOR();
+    VM_ASSERT(SPECIAL_CONST_P(*addr) || GET_RACTOR_OF_VALUE(*addr) == r || FL_TEST_RAW(*addr, FL_SHAREABLE));
+    struct global_object_list *tmp = r->global_object_list;
 
     if (tmp->varptr == addr) {
-        vm->global_object_list = tmp->next;
-        xfree(tmp);
-        return;
+	r->global_object_list = tmp->next;
+	xfree(tmp);
+	return;
     }
     while (tmp->next) {
-        if (tmp->next->varptr == addr) {
-            struct global_object_list *t = tmp->next;
+	if (tmp->next->varptr == addr) {
+	    struct global_object_list *t = tmp->next;
 
-            tmp->next = tmp->next->next;
-            xfree(t);
-            break;
-        }
-        tmp = tmp->next;
+	    tmp->next = tmp->next->next;
+	    xfree(t);
+	    break;
+	}
+	tmp = tmp->next;
     }
 }
 

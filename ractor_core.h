@@ -158,6 +158,11 @@ struct borrowing_target_node_t {
     struct borrowing_target *next;
 };
 
+struct global_object_list {
+    VALUE *varptr;
+    struct global_object_list *next;
+};
+
 struct rb_ractor_struct {
     struct rb_ractor_pub pub;
 
@@ -239,6 +244,8 @@ struct rb_ractor_struct {
 
     VALUE mark_object_ary;
     rb_nativethread_lock_t mark_object_ary_lock;
+
+    struct global_object_list *global_object_list;
 
     struct rb_order_chain_node *oc_node;
 

@@ -646,11 +646,6 @@ bool rb_gc_safe_lock_acquired(rb_gc_safe_lock_t *gs_lock);
 VALUE rb_pin_array_list_new(VALUE next);
 VALUE rb_pin_array_list_append(VALUE obj, VALUE item);
 
-struct global_object_list {
-    VALUE *varptr;
-    struct global_object_list *next;
-};
-
 typedef struct rb_vm_struct {
     VALUE self;
 
@@ -730,7 +725,6 @@ typedef struct rb_vm_struct {
     unsigned int thread_ignore_deadlock: 1;
 
     /* object management */
-    struct global_object_list *global_object_list;
     const VALUE special_exceptions[ruby_special_error_count];
 
     /* load */

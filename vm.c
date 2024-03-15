@@ -2976,10 +2976,6 @@ rb_vm_mark(void *ptr)
     if (ptr) {
         rb_vm_t *vm = ptr;
 
-        for (struct global_object_list *list = vm->global_object_list; list; list = list->next) {
-            rb_gc_mark_maybe(*list->varptr);
-        }
-
         rb_gc_mark_movable(vm->load_path);
         rb_gc_mark_movable(vm->load_path_snapshot);
         rb_gc_mark_movable(vm->load_path_check_cache);
@@ -3112,12 +3108,6 @@ ruby_vm_destruct(rb_vm_t *vm)
 	    rb_gc_safe_lock_destroy(&vm->fstring_table_lock);
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
-
-        struct global_object_list *next;
-        for (struct global_object_list *list = vm->global_object_list; list; list = next) {
-            next = list->next;
-            xfree(list);
-        }
 
 	rb_native_mutex_destroy(&vm->subclass_list_lock);
 	rb_native_mutex_destroy(&vm->classpath_lock);
