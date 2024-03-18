@@ -11508,8 +11508,6 @@ rb_global_variable(VALUE *var)
     rb_gc_register_address(var);
 }
 
-#define GC_NOTIFY 0
-
 enum {
     gc_stress_no_major,
     gc_stress_no_immediate_sweep,
@@ -16168,7 +16166,6 @@ str_len_no_raise(VALUE str)
             memcpy(buff + pos, (s), rb_strlen_lit(s) + 1); \
         } \
     } while (0)
-#define TF(c) ((c) != 0 ? "true" : "false")
 #define C(c, s) ((c) != 0 ? (s) : " ")
 
 static size_t
@@ -16430,7 +16427,6 @@ rb_raw_obj_info_buitin_type(char *const buff, const size_t buff_size, const VALU
     return pos;
 }
 
-#undef TF
 #undef C
 
 const char *
@@ -16439,17 +16435,6 @@ rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj)
     asan_unpoisoning_object(obj) {
         size_t pos = rb_raw_obj_info_common(buff, buff_size, obj);
         pos = rb_raw_obj_info_buitin_type(buff, buff_size, obj, pos);
-        if (pos >= buff_size) {} // truncated
-    }
-
-    return buff;
-}
-
-const char *
-rb_raw_obj_info_basic(char *const buff, const size_t buff_size, VALUE obj)
-{
-    asan_unpoisoning_object(obj) {
-        size_t pos = rb_raw_obj_info_common(buff, buff_size, obj);
         if (pos >= buff_size) {} // truncated
     }
 
@@ -16496,11 +16481,17 @@ obj_info(VALUE obj)
 static const char *
 obj_info_basic(VALUE obj)
 {
+    const char *ret;
     RB_VM_LOCK_ENTER();
     {
 	rb_atomic_t index = atomic_inc_wraparound(&obj_info_buffers_index, OBJ_INFO_BUFFERS_NUM);
 	char *const buff = obj_info_buffers[index];
-	const char *ret = rb_raw_obj_info_basic(buff, OBJ_INFO_BUFFERS_SIZE, obj);
+
+	asan_unpoisoning_object(obj) {
+	    rb_raw_obj_info_common(buff, OBJ_INFO_BUFFERS_SIZE, obj);
+	}
+
+	ret = buff;
     }
     RB_VM_LOCK_LEAVE();
     return ret;

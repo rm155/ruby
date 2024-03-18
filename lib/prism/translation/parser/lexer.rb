@@ -217,6 +217,8 @@ module Prism
           index = 0
           length = lexed.length
 
+          heredoc_identifier_stack = []
+
           while index < length
             token, state = lexed[index]
             index += 1
@@ -275,6 +277,9 @@ module Prism
             when :tSPACE
               value = nil
             when :tSTRING_BEG
+              if token.type == :HEREDOC_START
+                heredoc_identifier_stack.push(value.match(/<<[-~]?["'`]?(?<heredoc_identifier>.*?)["'`]?\z/)[:heredoc_identifier])
+              end
               if ["\"", "'"].include?(value) && (next_token = lexed[index][0]) && next_token.type == :STRING_END
                 next_location = token.location.join(next_token.location)
                 type = :tSTRING
@@ -284,19 +289,40 @@ module Prism
               elsif ["\"", "'"].include?(value) && (next_token = lexed[index][0]) && next_token.type == :STRING_CONTENT && next_token.value.lines.count <= 1 && (next_next_token = lexed[index + 1][0]) && next_next_token.type == :STRING_END
                 next_location = token.location.join(next_next_token.location)
                 type = :tSTRING
-                value = next_token.value
+                value = next_token.value.gsub("\\\\", "\\")
                 location = Range.new(source_buffer, offset_cache[next_location.start_offset], offset_cache[next_location.end_offset])
                 index += 2
               elsif value.start_with?("<<")
                 quote = value[2] == "-" || value[2] == "~" ? value[3] : value[2]
-                value = "<<#{quote == "'" || quote == "\"" ? quote : "\""}"
+                if quote == "`"
+                  type = :tXSTRING_BEG
+                  value = "<<`"
+                else
+                  value = "<<#{quote == "'" || quote == "\"" ? quote : "\""}"
+                end
               end
             when :tSTRING_CONTENT
               unless (lines = token.value.lines).one?
                 start_offset = offset_cache[token.location.start_offset]
                 lines.map do |line|
-                  end_offset = start_offset + line.length
-                  tokens << [:tSTRING_CONTENT, [line, Range.new(source_buffer, offset_cache[start_offset], offset_cache[end_offset])]]
+                  newline = line.end_with?("\r\n") ? "\r\n" : "\n"
+                  chomped_line = line.chomp
+                  if match = chomped_line.match(/(?<backslashes>\\+)\z/)
+                    adjustment = match[:backslashes].size / 2
+                    adjusted_line = chomped_line.delete_suffix("\\" * adjustment)
+                    if match[:backslashes].size.odd?
+                      adjusted_line.delete_suffix!("\\")
+                      adjustment += 2
+                    else
+                      adjusted_line << newline
+                    end
+                  else
+                    adjusted_line = line
+                    adjustment = 0
+                  end
+
+                  end_offset = start_offset + adjusted_line.length + adjustment
+                  tokens << [:tSTRING_CONTENT, [adjusted_line, Range.new(source_buffer, offset_cache[start_offset], offset_cache[end_offset])]]
                   start_offset = end_offset
                 end
                 next
@@ -306,7 +332,7 @@ module Prism
             when :tSTRING_END
               if token.type == :HEREDOC_END && value.end_with?("\n")
                 newline_length = value.end_with?("\r\n") ? 2 : 1
-                value = value.sub(/\r?\n\z/, '')
+                value = heredoc_identifier_stack.pop
                 location = Range.new(source_buffer, offset_cache[token.location.start_offset], offset_cache[token.location.end_offset - newline_length])
               elsif token.type == :REGEXP_END
                 value = value[0]
