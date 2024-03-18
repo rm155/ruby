@@ -838,12 +838,6 @@ typedef struct rb_global_space {
         size_t sorted_length;
         uintptr_t range[2];
     } all_pages;
-
-#if VM_CHECK_MODE > 0
-    st_table *setup_objects_tbl;
-    rb_nativethread_lock_t setup_objects_tbl_lock;
-    rb_ractor_t *setup_objects_tbl_lock_owner;
-#endif
 } rb_global_space_t;
 
 #define all_pages_sorted_global       global_space->all_pages.sorted
@@ -877,6 +871,10 @@ typedef struct rb_objspace {
         unsigned int during_global_gc : 1;
         unsigned int during_incremental_marking : 1;
         unsigned int measure_gc : 1;
+
+#if VM_CHECK_MODE > 0
+	unsigned int during_stack_location_marking : 1;
+#endif
     } flags;
 
     rb_event_flag_t hook_events;
@@ -1040,9 +1038,6 @@ typedef struct rb_objspace {
     int local_gc_level;
     bool running_global_gc;
     struct rb_objspace *current_parent_objspace;
-#if VM_CHECK_MODE > 0
-    bool parent_in_setup_objects_tbl;
-#endif
 
     rb_ractor_t *alloc_target_ractor;
     struct rb_objspace *global_gc_current_target;
@@ -3912,32 +3907,6 @@ unlock_own_borrowable_page(rb_ractor_t *cr, int size_pool_idx)
 
 static void gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache);
 
-#if VM_CHECK_MODE > 0
-void add_to_setup_objects_tbl(VALUE obj)
-{
-    rb_ractor_t *cr = GET_RACTOR();
-    rb_global_space_t *global_space = &rb_global_space;
-    bool newly_locked = false;
-    if (global_space->setup_objects_tbl_lock_owner != cr) {
-	rb_native_mutex_lock(&global_space->setup_objects_tbl_lock);
-	global_space->setup_objects_tbl_lock_owner = cr;
-	newly_locked = true;
-    }
-    st_insert_no_gc(global_space->setup_objects_tbl, (st_data_t)obj, INT2FIX(0));
-    if (newly_locked) {
-	global_space->setup_objects_tbl_lock_owner = NULL;
-	rb_native_mutex_unlock(&global_space->setup_objects_tbl_lock);
-    }
-}
-
-void
-remove_from_setup_objects_tbl(VALUE obj)
-{
-    rb_global_space_t *global_space = &rb_global_space;
-    st_delete(global_space->setup_objects_tbl, &obj, NULL);
-}
-#endif
-
 static VALUE
 newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
 {
@@ -3998,12 +3967,6 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
 	rb_native_mutex_unlock(&alloc_target_ractor->borrowing_sync.page_lock[size_pool_idx]);
     }
     alloc_target_ractor->borrowing_sync.page_recently_locked[size_pool_idx] = false;
-
-#if VM_CHECK_MODE > 0
-    if (alloc_target_ractor->during_setup || cr->during_ractor_copy) {
-	add_to_setup_objects_tbl(obj);
-    }
-#endif
 
     return obj;
 }
@@ -4604,10 +4567,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 
     if (RVALUE_WB_UNPROTECTED(obj)) CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), obj);
 
-#if VM_CHECK_MODE > 0
-    remove_from_setup_objects_tbl(obj);
-#endif
-
 #if RGENGC_CHECK_MODE
 #define CHECK(x) if (x(obj) != FALSE) rb_bug("obj_free: " #x "(%s) != FALSE", obj_info(obj))
         CHECK(RVALUE_WB_UNPROTECTED);
@@ -4959,10 +4918,6 @@ rb_global_tables_init(void)
 {
     rb_global_space_t *global_space = &rb_global_space;
     global_space->absorbed_thread_tbl = st_init_numtable();
-
-#if VM_CHECK_MODE > 0
-    global_space->setup_objects_tbl = st_init_numtable();
-#endif
 }
 
 static void
@@ -5095,10 +5050,6 @@ rb_global_space_init(void)
     global_space->absorption.absorbers = 0;
 
     rb_nativethread_lock_initialize(&global_space->all_pages.global_pages_lock);
-#if VM_CHECK_MODE > 0
-    rb_nativethread_lock_initialize(&global_space->setup_objects_tbl_lock);
-    global_space->setup_objects_tbl_lock_owner = NULL;
-#endif
     return global_space;
 }
 
@@ -5123,11 +5074,6 @@ rb_global_space_free(rb_global_space_t *global_space)
         all_pages_lomem_global = 0;
         all_pages_himem_global = 0;
     }
-
-#if VM_CHECK_MODE > 0
-    st_free_table(global_space->setup_objects_tbl);
-    rb_nativethread_lock_destroy(&global_space->setup_objects_tbl_lock);
-#endif
 }
 
 void
@@ -8044,12 +7990,18 @@ ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS(static void each_location(rb_objspace_t *ob
 static void
 each_location(rb_objspace_t *objspace, register const VALUE *x, register long n, void (*cb)(rb_objspace_t *, VALUE))
 {
+#if VM_CHECK_MODE > 0
+    objspace->flags.during_stack_location_marking = TRUE;
+#endif
     VALUE v;
     while (n--) {
         v = *x;
         cb(objspace, v);
         x++;
     }
+#if VM_CHECK_MODE > 0
+    objspace->flags.during_stack_location_marking = FALSE;
+#endif
 }
 
 static void
@@ -8609,30 +8561,13 @@ check_not_tnone(VALUE obj)
     }
 }
 
-#if VM_CHECK_MODE > 0
-bool
-made_during_setup(VALUE obj)
-{
-    rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->setup_objects_tbl_lock);
-    bool ret = !!st_lookup(global_space->setup_objects_tbl, (st_data_t)obj, NULL);
-    rb_native_mutex_unlock(&global_space->setup_objects_tbl_lock);
-    return ret;
-}
-#endif
-
 NOINLINE(static void gc_mark_ptr(rb_objspace_t *objspace, VALUE obj));
 static void reachable_objects_from_callback(VALUE obj);
 
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-#if VM_CHECK_MODE > 0
-    if (objspace->parent_in_setup_objects_tbl) {
-	add_to_setup_objects_tbl(obj);
-    }
-#endif
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || made_during_setup(obj));
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || objspace->flags.during_stack_location_marking || objspace->current_parent_objspace != objspace);
 
     //TODO: Improve condition efficiency
     if (using_local_limits(objspace)) {
@@ -8810,17 +8745,11 @@ gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
         objspace->rgengc.parent_object = Qfalse;
     }
 
+#if VM_CHECK_MODE > 0
+    objspace->current_parent_objspace = GET_OBJSPACE_OF_VALUE(obj);
+#else
     if (!using_local_limits(objspace)) {
 	objspace->current_parent_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    }
-#if VM_CHECK_MODE > 0
-    if (GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace))
-    {
-	objspace->parent_in_setup_objects_tbl = false;
-    }
-    else {
-	VM_ASSERT(made_during_setup(obj));
-	objspace->parent_in_setup_objects_tbl = true;
     }
 #endif
 }

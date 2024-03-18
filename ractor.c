@@ -522,9 +522,6 @@ static VALUE
 ractor_basket_accept(struct rb_ractor_basket *b, rb_ractor_t *receiver)
 {
     if (b->type.e == basket_type_will) {
-#if VM_CHECK_MODE > 0
-	add_to_setup_objects_tbl(b->p.send.v);
-#endif
 	rb_absorb_objspace_of_closing_ractor(receiver, RACTOR_PTR(b->sender));
     }
     VALUE v = ractor_basket_value(b);
@@ -1494,9 +1491,6 @@ ractor_wait_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_
 static VALUE
 ractor_yield(rb_execution_context_t *ec, rb_ractor_t *cr, VALUE obj, VALUE move)
 {
-#if VM_CHECK_MODE > 0
-    add_to_setup_objects_tbl(obj);
-#endif
     struct rb_ractor_queue *ts = &cr->sync.takers_queue;
 
     while (!ractor_try_yield(ec, cr, ts, obj, move, false, false)) {
