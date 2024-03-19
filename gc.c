@@ -9324,9 +9324,18 @@ keep_marked_shared_object_references_i(st_data_t key, st_data_t value, st_data_t
 	    drop_external_reference_usage(objspace, obj, rs);
 	    return ST_DELETE;
 	case shared_object_marked:
-	case shared_object_added_externally:
+	    VM_ASSERT(using_local_limits(objspace) || RVALUE_MARKED(obj));
 	    rs->status = shared_object_unmarked;
 	    return ST_CONTINUE;
+	case shared_object_added_externally:
+	    if (LIKELY(using_local_limits(objspace) || RVALUE_MARKED(obj))) {
+		rs->status = shared_object_unmarked;
+		return ST_CONTINUE;
+	    }
+	    else {
+		drop_external_reference_usage(objspace, obj, rs);
+		return ST_DELETE;
+	    }
 	default:
 	    rb_bug("update_shared_object_references_i: unreachable");
     }
