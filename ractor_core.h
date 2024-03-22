@@ -256,10 +256,6 @@ struct rb_ractor_struct {
     bool objspace_absorbed;
 
     struct borrowing_target_node_t *borrowing_target_top;
-
-#if VM_CHECK_MODE > 0
-    bool during_setup;
-#endif
 }; // rb_ractor_t is defined in vm_core.h
 
 static inline VALUE
