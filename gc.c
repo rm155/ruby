@@ -908,6 +908,9 @@ typedef struct rb_objspace {
     st_table *external_reference_tbl;
     rb_nativethread_lock_t external_reference_tbl_lock;
 
+    st_table *received_obj_tbl;
+    rb_nativethread_lock_t received_obj_tbl_lock;
+
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
@@ -2482,6 +2485,9 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->external_reference_tbl);
     rb_nativethread_lock_destroy(&objspace->external_reference_tbl_lock);
 
+    st_free_table(objspace->received_obj_tbl);
+    rb_nativethread_lock_destroy(&objspace->received_obj_tbl_lock);
+
     st_free_table(objspace->wmap_referenced_obj_tbl);
     rb_nativethread_lock_destroy(&objspace->wmap_referenced_obj_tbl_lock);
 
@@ -3709,12 +3715,75 @@ newobj_fill(VALUE obj, VALUE v1, VALUE v2, VALUE v3)
     return obj;
 }
 
+struct received_obj_list {
+    VALUE received_obj;
+    struct received_obj_list *next;
+};
+
+static void
+register_received_obj(rb_objspace_t *objspace, uintptr_t borrowing_id, VALUE obj)
+{
+    rb_native_mutex_lock(&objspace->received_obj_tbl_lock);
+    struct received_obj_list *new_item;
+    new_item = ALLOC(struct received_obj_list);
+    new_item->received_obj = obj;
+
+    st_data_t data;
+    int list_found = st_lookup(objspace->received_obj_tbl, (st_data_t)borrowing_id, &data);
+    struct received_obj_list *lst = list_found ? (struct received_obj_list *)data : NULL;
+    new_item->next = lst;
+
+    st_insert_no_gc(objspace->received_obj_tbl, (st_data_t)GET_RACTOR()->borrowing_sync.borrowing_id, (st_data_t)new_item);
+    rb_native_mutex_unlock(&objspace->received_obj_tbl_lock);
+}
+
+static int
+mark_received_obj_list(st_data_t key, st_data_t val, st_data_t arg)
+{
+    struct received_obj_list *p = (struct received_obj_list *)val;
+    rb_objspace_t *objspace = (rb_objspace_t *)arg;
+    while (p) {
+        gc_mark_and_pin(objspace, p->received_obj);
+	p = p->next;
+    }
+    return ST_CONTINUE;
+}
+
+static void
+mark_received_received_obj_tbl(rb_objspace_t *objspace)
+{
+    rb_native_mutex_lock(&objspace->received_obj_tbl_lock);
+    st_foreach(objspace->received_obj_tbl, mark_received_obj_list, (st_data_t)objspace);
+    rb_native_mutex_unlock(&objspace->received_obj_tbl_lock);
+}
+
+static void
+removed_received_obj_list(rb_objspace_t *objspace, uintptr_t borrowing_id)
+{
+    rb_native_mutex_lock(&objspace->received_obj_tbl_lock);
+    st_data_t data;
+    int list_found = st_lookup(objspace->received_obj_tbl, (st_data_t)borrowing_id, &data);
+    if (list_found) {
+	struct received_obj_list *p = (struct received_obj_list *)data;
+	struct received_obj_list *next = NULL;
+	while (p) {
+	    next = p->next;
+	    free(p);
+	    p = next;
+	}
+    }
+
+    st_delete(objspace->received_obj_tbl, &borrowing_id, NULL);
+    rb_native_mutex_unlock(&objspace->received_obj_tbl_lock);
+}
+
 struct borrowing_data_args {
     rb_ractor_t *borrower;
     rb_ractor_t *target_ractor;
     rb_ractor_t *old_target;
     VALUE (*func)(VALUE);
     VALUE func_args;
+    uintptr_t old_borrowing_id;
 };
 
 static void
@@ -3787,6 +3856,9 @@ borrowing_enter(VALUE args)
 
     VM_ASSERT(borrower == GET_RACTOR());
 
+    borrowing_data->old_borrowing_id = borrower->borrowing_sync.borrowing_id;
+    borrower->borrowing_sync.borrowing_id = (uintptr_t)borrowing_data;
+
     if (target_ractor == borrower) {
 	target_ractor = NULL;
     }
@@ -3814,10 +3886,15 @@ borrowing_exit(VALUE args)
 
     rb_ractor_t *finished_target = borrower->local_objspace->alloc_target_ractor;
     VM_ASSERT(finished_target != borrower);
+    uintptr_t finished_borrowing_id = borrower->borrowing_sync.borrowing_id;
 
     borrower->local_objspace->alloc_target_ractor = target_to_restore;
+    borrower->borrowing_sync.borrowing_id = (uintptr_t)borrowing_data->old_borrowing_id;
 
     if (!!finished_target) {
+	rb_borrowing_sync_lock(finished_target);
+	removed_received_obj_list(finished_target->local_objspace, finished_borrowing_id);
+	rb_borrowing_sync_unlock(finished_target);
 	borrowing_count_decrement(finished_target);
 #if VM_CHECK_MODE > 0
 	rb_ractor_t *popped_target = borrowing_alloc_target_pop(borrower);
@@ -3852,6 +3929,7 @@ rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALU
 	.old_target = NULL,
 	.func = func,
 	.func_args = func_args,
+	.old_borrowing_id = 0,
     };
     VALUE bd_args = (VALUE)&borrowing_data;
     borrowing_enter(bd_args);
@@ -4125,7 +4203,10 @@ newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v
     	    gc_grey(objspace, obj);
 	}
     }
-    if (borrowing) rb_borrowing_sync_unlock(objspace->ractor);
+    if (borrowing) {
+	register_received_obj(objspace, GET_RACTOR()->borrowing_sync.borrowing_id, obj);
+	rb_borrowing_sync_unlock(objspace->ractor);
+    }
 
     return newobj_fill(obj, v1, v2, v3);
 }
@@ -4855,6 +4936,9 @@ Init_heap(rb_objspace_t *objspace)
     rb_nativethread_lock_initialize(&objspace->shared_reference_tbl_lock);
     objspace->external_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->external_reference_tbl_lock);
+    
+    objspace->received_obj_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->received_obj_tbl_lock);
 
     objspace->wmap_referenced_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->wmap_referenced_obj_tbl_lock);
@@ -9550,6 +9634,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     if (using_local_limits(objspace) || !during_gc) {
 	MARK_CHECKPOINT("shared_reference_tbl");
 	mark_and_pin_shared_reference_tbl(objspace);
+	mark_received_received_obj_tbl(objspace);
     }
 
     if (stress_to_class) rb_gc_mark(stress_to_class);

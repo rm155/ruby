@@ -2240,6 +2240,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->borrowing_sync.borrowing_allowed = true;
     rb_native_cond_initialize(&r->borrowing_sync.borrowing_allowed_cond);
     rb_native_mutex_initialize(&r->borrowing_sync.borrowing_allowed_lock);
+    r->borrowing_sync.borrowing_id = 0;
 
 #if VM_CHECK_MODE > 0
     r->late_to_barrier = false;
