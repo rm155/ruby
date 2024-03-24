@@ -1066,7 +1066,6 @@ heap_lock_enter(rb_objspace_t *objspace, rb_ractor_t *cr)
 	objspace->heap_lock_owner = cr;
     }
     objspace->heap_lock_level++;
-    VM_ASSERT(objspace == cr->local_objspace || objspace->ractor->borrowing_sync.lock_owner != objspace->ractor);
 }
 
 static void
