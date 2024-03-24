@@ -11996,7 +11996,7 @@ gc_current_status(rb_objspace_t *objspace)
 static void
 begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 {
-    if (vm->ractor.sync.lock_owner != cr && !objspace->running_global_gc && objspace->local_gc_level == 0) {
+    if (!objspace->running_global_gc && objspace->local_gc_level == 0) {
 	rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_RUNNING_LOCAL_GC);
 	rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
 	while (objspace->ractor->borrowing_sync.borrower_count != 0) {
@@ -12023,7 +12023,7 @@ end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 
     objspace->local_gc_level--;
 
-    if (vm->ractor.sync.lock_owner != cr && !objspace->running_global_gc && objspace->local_gc_level == 0) {
+    if (!objspace->running_global_gc && objspace->local_gc_level == 0) {
 	rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
 	objspace->ractor->borrowing_sync.borrowing_allowed = true;
 	rb_native_cond_broadcast(&objspace->ractor->borrowing_sync.borrowing_allowed_cond);
