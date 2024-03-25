@@ -11,7 +11,7 @@ Note that each entry is kept to a minimum, see links for details.
   as if they were frozen. If they are mutated a deprecation warning is emited.
   These warnings can be enabled with `-W:deprecated` or by setting `Warning[:deprecated] = true`.
   To disable this change you can run Ruby with the `--disable-frozen-string-literal` command line
-  argument. [Feature #20205]
+  argument. [[Feature #20205]]
 
 * `it` is added to reference a block parameter. [[Feature #18980]]
 
@@ -31,7 +31,7 @@ Note: We're only listing outstanding class updates.
 * Exception
 
   * Exception#set_backtrace now accepts arrays of `Thread::Backtrace::Location`.
-    `Kernel#raise`, `Thread#raise` and `Fiber#raise` also accept this new format. [Feature #13557]
+    `Kernel#raise`, `Thread#raise` and `Fiber#raise` also accept this new format. [[Feature #13557]]
 
 ## Stdlib updates
 
@@ -45,7 +45,8 @@ The following default gems are updated.
 * irb 1.12.0
 * net-http 0.4.1
 * prism 0.24.0
-* reline 0.5.0.pre.1
+* rdoc 6.6.3.1
+* reline 0.5.0
 * resolv 0.4.0
 * stringio 3.1.1
 * strscan 3.1.1
@@ -74,7 +75,7 @@ The following bundled gems are promoted from default gems.
 * drb 2.2.1
 * nkf 0.2.0
 * syslog 0.1.2
-* csv 3.2.8
+* csv 3.3.0
 
 See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/logger/releases) or changelog for details of the default gems or bundled gems.
 
@@ -108,11 +109,13 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
 
 ## JIT
 
+[Feature #13557]: https://bugs.ruby-lang.org/issues/13557
 [Feature #16495]: https://bugs.ruby-lang.org/issues/16495
 [Feature #18980]: https://bugs.ruby-lang.org/issues/18980
 [Feature #19117]: https://bugs.ruby-lang.org/issues/19117
 [Bug #19918]:     https://bugs.ruby-lang.org/issues/19918
 [Bug #20064]:     https://bugs.ruby-lang.org/issues/20064
 [Feature #20182]: https://bugs.ruby-lang.org/issues/20182
+[Feature #20205]: https://bugs.ruby-lang.org/issues/20205
 [Bug #20218]:     https://bugs.ruby-lang.org/issues/20218
 [Feature #20265]: https://bugs.ruby-lang.org/issues/20265

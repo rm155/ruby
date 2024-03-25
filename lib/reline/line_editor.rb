@@ -85,7 +85,7 @@ class Reline::LineEditor
     end
   end
 
-  private def check_multiline_prompt(buffer)
+  private def check_multiline_prompt(buffer, mode_string)
     if @vi_arg
       prompt = "(arg: #{@vi_arg}) "
     elsif @searching_prompt
@@ -97,7 +97,6 @@ class Reline::LineEditor
       prompt_list = @prompt_proc.(buffer).map { |pr| pr.gsub("\n", "\\n") }
       prompt_list.map!{ prompt } if @vi_arg or @searching_prompt
       prompt_list = [prompt] if prompt_list.empty?
-      mode_string = check_mode_string
       prompt_list = prompt_list.map{ |pr| mode_string + pr } if mode_string
       prompt = prompt_list[@line_index]
       prompt = prompt_list[0] if prompt.nil?
@@ -109,7 +108,6 @@ class Reline::LineEditor
       end
       prompt_list
     else
-      mode_string = check_mode_string
       prompt = mode_string + prompt if mode_string
       [prompt] * buffer.size
     end
@@ -153,7 +151,7 @@ class Reline::LineEditor
     scroll_into_view
     Reline::IOGate.move_cursor_up @rendered_screen.cursor_y
     @rendered_screen.base_y = Reline::IOGate.cursor_pos.y
-    @rendered_screen.lines = nil
+    @rendered_screen.lines = []
     @rendered_screen.cursor_y = 0
     render_differential
   end
@@ -164,7 +162,7 @@ class Reline::LineEditor
       scrolldown = render_differential
       Reline::IOGate.scroll_down scrolldown
       Reline::IOGate.move_cursor_column 0
-      @rendered_screen.lines = nil
+      @rendered_screen.lines = []
       @rendered_screen.cursor_y = 0
       case @old_trap
       when 'DEFAULT', 'SYSTEM_DEFAULT'
@@ -217,7 +215,7 @@ class Reline::LineEditor
     @dialogs = []
     @resized = false
     @cache = {}
-    @rendered_screen = RenderedScreen.new(base_y: 0, lines: nil, cursor_y: 0)
+    @rendered_screen = RenderedScreen.new(base_y: 0, lines: [], cursor_y: 0)
     reset_line
   end
 
@@ -319,8 +317,8 @@ class Reline::LineEditor
   end
 
   def prompt_list
-    with_cache(__method__, whole_lines, @vi_arg, @searching_prompt) do |lines|
-      check_multiline_prompt(lines)
+    with_cache(__method__, whole_lines, check_mode_string, @vi_arg, @searching_prompt) do |lines, mode_string|
+      check_multiline_prompt(lines, mode_string)
     end
   end
 
@@ -372,12 +370,12 @@ class Reline::LineEditor
         # do nothing
       elsif level == :blank
         Reline::IOGate.move_cursor_column base_x
-        @output.write "\e[0m#{' ' * width}"
+        @output.write "#{Reline::IOGate::RESET_COLOR}#{' ' * width}"
       else
         x, w, content = new_items[level]
         content = Reline::Unicode.take_range(content, base_x - x, width) unless x == base_x && w == width
         Reline::IOGate.move_cursor_column base_x
-        @output.write "\e[0m#{content}\e[0m"
+        @output.write "#{Reline::IOGate::RESET_COLOR}#{content}#{Reline::IOGate::RESET_COLOR}"
       end
       base_x += width
     end
@@ -421,7 +419,7 @@ class Reline::LineEditor
     Reline::IOGate.move_cursor_up @rendered_screen.cursor_y
     Reline::IOGate.move_cursor_column 0
 
-    num_lines = @rendered_screen.lines&.size
+    num_lines = @rendered_screen.lines.size
     return unless num_lines && num_lines >= 1
 
     Reline::IOGate.move_cursor_down num_lines - 1
@@ -430,7 +428,7 @@ class Reline::LineEditor
       Reline::IOGate.move_cursor_up 1
     end
     Reline::IOGate.erase_after_cursor
-    @rendered_screen.lines = nil
+    @rendered_screen.lines = []
     @rendered_screen.cursor_y = 0
   end
 
@@ -455,7 +453,7 @@ class Reline::LineEditor
   def render_differential
     wrapped_cursor_x, wrapped_cursor_y = wrapped_cursor_position
 
-    rendered_lines = @rendered_screen.lines || []
+    rendered_lines = @rendered_screen.lines
     new_lines = wrapped_lines.flatten[screen_scroll_top, screen_height].map do |l|
       [[0, Reline::Unicode.calculate_width(l, true), l]]
     end
@@ -528,7 +526,7 @@ class Reline::LineEditor
     @cleared = false
     Reline::IOGate.clear_screen
     @screen_size = Reline::IOGate.get_screen_size
-    @rendered_screen.lines = nil
+    @rendered_screen.lines = []
     @rendered_screen.base_y = 0
     @rendered_screen.cursor_y = 0
   end

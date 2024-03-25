@@ -3629,6 +3629,9 @@ CODE
   end
 
   def test_chilled_string_setivar
+    deprecated = Warning[:deprecated]
+    Warning[:deprecated] = false
+
     String.class_eval <<~RUBY, __FILE__, __LINE__ + 1
       def setivar!
         @ivar = 42
@@ -3641,6 +3644,20 @@ CODE
     ensure
       String.undef_method(:setivar!)
     end
+  ensure
+    Warning[:deprecated] = deprecated
+  end
+
+  def test_chilled_string_substring
+    deprecated = Warning[:deprecated]
+    Warning[:deprecated] = false
+    chilled_string = eval('"a chilled string."')
+    substring = chilled_string[0..-1]
+    assert_equal("a chilled string.", substring)
+    chilled_string[0..-1] = "This string is defrosted."
+    assert_equal("a chilled string.", substring)
+  ensure
+    Warning[:deprecated] = deprecated
   end
 
   private

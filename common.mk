@@ -471,8 +471,6 @@ ruby.imp: $(COMMONOBJS)
 	$(Q){ \
 	$(NM) -Pgp $(COMMONOBJS) | \
 	awk 'BEGIN{print "#!"}; $$2~/^[A-TV-Z]$$/&&$$1!~/^$(SYMBOL_PREFIX)(Init_|InitVM_|ruby_static_id_|.*_threadptr_|rb_ec_)|^\./{print $$1}'; \
-	($(CHDIR) $(srcdir) && \
-	 exec sed -n '/^RJIT_FUNC_EXPORTED/!d;N;s/.*\n\(rb_[a-zA-Z_0-9]*\).*/$(SYMBOL_PREFIX)\1/p' cont.c gc.c thread*c vm*.c) \
 	} | \
 	sort -u -o $@
 
@@ -1006,6 +1004,15 @@ yes-test-spec: yes-test-spec-precheck
 		$(srcdir)/spec/mspec/bin/mspec run -B $(srcdir)/spec/default.mspec $(MSPECOPT) $(SPECOPTS)
 	$(ACTIONS_ENDGROUP)
 no-test-spec:
+
+test-prism-spec: $(TEST_RUNNABLE)-test-prism-spec
+yes-test-prism-spec: yes-test-spec-precheck
+	$(ACTIONS_GROUP)
+	$(gnumake_recursive)$(Q) \
+	$(RUNRUBY) -r./$(arch)-fake -r$(tooldir)/rubyspec_temp \
+		$(srcdir)/spec/mspec/bin/mspec run -B $(srcdir)/spec/default.mspec -B $(srcdir)/spec/prism.mspec $(MSPECOPT) $(SPECOPTS)
+	$(ACTIONS_ENDGROUP)
+no-test-prism-spec:
 
 check: $(DOT_WAIT) test-spec
 

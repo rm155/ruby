@@ -147,7 +147,7 @@ static int rb_threadptr_pending_interrupt_empty_p(const rb_thread_t *th);
 static const char *thread_status_name(rb_thread_t *th, int detail);
 static int hrtime_update_expire(rb_hrtime_t *, const rb_hrtime_t);
 NORETURN(static void async_bug_fd(const char *mesg, int errno_arg, int fd));
-static int consume_communication_pipe(int fd);
+MAYBE_UNUSED(static int consume_communication_pipe(int fd));
 
 static volatile int system_working = 1;
 static rb_internal_thread_specific_key_t specific_key_count;
@@ -260,6 +260,8 @@ timeout_prepare(rb_hrtime_t **to, rb_hrtime_t *rel, rb_hrtime_t *end,
 }
 
 MAYBE_UNUSED(NOINLINE(static int thread_start_func_2(rb_thread_t *th, VALUE *stack_start)));
+MAYBE_UNUSED(static bool th_has_dedicated_nt(const rb_thread_t *th));
+MAYBE_UNUSED(static int waitfd_to_waiting_flag(int wfd_event));
 
 #include THREAD_IMPL_SRC
 
@@ -526,9 +528,6 @@ void
 ruby_thread_init_stack(rb_thread_t *th, void *local_in_parent_frame)
 {
     native_thread_init_stack(th, local_in_parent_frame);
-#ifdef RUBY_ASAN_ENABLED
-    th->asan_fake_stack_handle = asan_get_thread_fake_stack_handle();
-#endif
 }
 
 const VALUE *

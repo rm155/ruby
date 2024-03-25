@@ -1025,7 +1025,7 @@ typedef struct rb_objspace {
     rb_postponed_job_handle_t finalize_deferred_pjob;
 
 #ifdef RUBY_ASAN_ENABLED
-    rb_execution_context_t *marking_machine_context_ec;
+    const rb_execution_context_t *marking_machine_context_ec;
 #endif
 
     const struct rb_callcache *global_cc_cache_table[VM_GLOBAL_CC_CACHE_TABLE_SIZE]; // vm_eval.c
@@ -2698,6 +2698,40 @@ heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_page
     page->size_pool->total_freed_pages++;
     heap_page_body_free(GET_PAGE_BODY(page->start));
     free(page);
+}
+
+static void *
+rb_aligned_malloc(size_t alignment, size_t size)
+{
+    /* alignment must be a power of 2 */
+    GC_ASSERT(((alignment - 1) & alignment) == 0);
+    GC_ASSERT(alignment % sizeof(void*) == 0);
+
+    void *res;
+
+#if defined __MINGW32__
+    res = __mingw_aligned_malloc(size, alignment);
+#elif defined _WIN32
+    void *_aligned_malloc(size_t, size_t);
+    res = _aligned_malloc(size, alignment);
+#elif defined(HAVE_POSIX_MEMALIGN)
+    if (posix_memalign(&res, alignment, size) != 0) {
+        return NULL;
+    }
+#elif defined(HAVE_MEMALIGN)
+    res = memalign(alignment, size);
+#else
+    char* aligned;
+    res = malloc(alignment + size + sizeof(void*));
+    aligned = (char*)res + alignment + sizeof(void*);
+    aligned -= ((VALUE)aligned & (alignment - 1));
+    ((void**)aligned)[-1] = res;
+    res = (void*)aligned;
+#endif
+
+    GC_ASSERT((uintptr_t)res % alignment == 0);
+
+    return res;
 }
 
 static void
@@ -8363,11 +8397,11 @@ gc_mark_machine_stack_location_maybe(rb_objspace_t *objspace, VALUE obj)
     gc_mark_maybe(objspace, obj);
 
 #ifdef RUBY_ASAN_ENABLED
-    rb_execution_context_t *ec = objspace->marking_machine_context_ec;
+    const rb_execution_context_t *ec = objspace->marking_machine_context_ec;
     void *fake_frame_start;
     void *fake_frame_end;
     bool is_fake_frame = asan_get_fake_stack_extents(
-        ec->thread_ptr->asan_fake_stack_handle, obj,
+        ec->machine.asan_fake_stack_handle, obj,
         ec->machine.stack_start, ec->machine.stack_end,
         &fake_frame_start, &fake_frame_end
     );
@@ -8452,13 +8486,25 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_execution_context_t *ec
 #endif
 
 void
-rb_gc_mark_machine_stack(const rb_execution_context_t *ec)
+rb_gc_mark_machine_context(const rb_execution_context_t *ec)
 {
+    rb_objspace_t *objspace = &rb_objspace;
+#ifdef RUBY_ASAN_ENABLED
+    objspace->marking_machine_context_ec = ec;
+#endif
+
     VALUE *stack_start, *stack_end;
+
     GET_STACK_BOUNDS(stack_start, stack_end, 0);
     RUBY_DEBUG_LOG("ec->th:%u stack_start:%p stack_end:%p", rb_ec_thread_ptr(ec)->serial, stack_start, stack_end);
 
-    rb_gc_mark_locations(stack_start, stack_end);
+    each_stack_location(objspace, ec, stack_start, stack_end, gc_mark_machine_stack_location_maybe);
+    int num_regs = sizeof(ec->machine.regs)/(sizeof(VALUE));
+    each_location(objspace, (VALUE*)&ec->machine.regs, num_regs, gc_mark_machine_stack_location_maybe);
+
+#ifdef RUBY_ASAN_ENABLED
+    objspace->marking_machine_context_ec = NULL;
+#endif
 }
 
 static void
@@ -13382,7 +13428,9 @@ gc_compact_stats(VALUE self)
 static void
 root_obj_check_moved_i(const char *category, VALUE obj, void *data)
 {
-    if (gc_object_moved_p(&rb_objspace, obj)) {
+    rb_objspace_t *objspace = data;
+
+    if (gc_object_moved_p(objspace, obj)) {
         rb_bug("ROOT %s points to MOVED: %p -> %s", category, (void *)obj, obj_info(rb_gc_location(obj)));
     }
 }
@@ -13399,9 +13447,11 @@ reachable_object_check_moved_i(VALUE ref, void *data)
 static int
 heap_check_moved_i(void *vstart, void *vend, size_t stride, void *data)
 {
+    rb_objspace_t *objspace = data;
+
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        if (gc_object_moved_p(&rb_objspace, v)) {
+        if (gc_object_moved_p(objspace, v)) {
             /* Moved object still on the heap, something may have a reference. */
         }
         else {
@@ -13566,8 +13616,8 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
 
     gc_start_internal(NULL, self, Qtrue, Qtrue, Qtrue, Qfalse, Qtrue);
 
-    objspace_reachable_objects_from_root(objspace, root_obj_check_moved_i, NULL);
-    objspace_each_objects(objspace, heap_check_moved_i, NULL, TRUE);
+    objspace_reachable_objects_from_root(objspace, root_obj_check_moved_i, objspace);
+    objspace_each_objects(objspace, heap_check_moved_i, objspace, TRUE);
 
     objspace->rcompactor.compare_func = NULL;
     return gc_compact_stats(self);
@@ -14738,40 +14788,6 @@ rb_memerror(void)
     }
     ec->errinfo = exc;
     EC_JUMP_TAG(ec, TAG_RAISE);
-}
-
-void *
-rb_aligned_malloc(size_t alignment, size_t size)
-{
-    /* alignment must be a power of 2 */
-    GC_ASSERT(((alignment - 1) & alignment) == 0);
-    GC_ASSERT(alignment % sizeof(void*) == 0);
-
-    void *res;
-
-#if defined __MINGW32__
-    res = __mingw_aligned_malloc(size, alignment);
-#elif defined _WIN32
-    void *_aligned_malloc(size_t, size_t);
-    res = _aligned_malloc(size, alignment);
-#elif defined(HAVE_POSIX_MEMALIGN)
-    if (posix_memalign(&res, alignment, size) != 0) {
-        return NULL;
-    }
-#elif defined(HAVE_MEMALIGN)
-    res = memalign(alignment, size);
-#else
-    char* aligned;
-    res = malloc(alignment + size + sizeof(void*));
-    aligned = (char*)res + alignment + sizeof(void*);
-    aligned -= ((VALUE)aligned & (alignment - 1));
-    ((void**)aligned)[-1] = res;
-    res = (void*)aligned;
-#endif
-
-    GC_ASSERT((uintptr_t)res % alignment == 0);
-
-    return res;
 }
 
 static void

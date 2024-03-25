@@ -287,15 +287,14 @@ location_label(rb_backtrace_location_t *loc)
  *	    1.times do
  *	      puts caller_locations(0).first.label
  *	    end
- *
  *	  end
  *	end
  *
  * The result of calling +foo+ is this:
  *
- *	label: foo
- *	label: block in foo
- *	label: block (2 levels) in foo
+ *	foo
+ *	block in foo
+ *	block (2 levels) in foo
  *
  */
 static VALUE
@@ -315,9 +314,28 @@ location_base_label(rb_backtrace_location_t *loc)
 }
 
 /*
- * Returns the base label of this frame.
+ * Returns the base label of this frame, which is usually equal to the label,
+ * without decoration.
  *
- * Usually same as #label, without decoration.
+ * Consider the following example:
+ *
+ *	def foo
+ *	  puts caller_locations(0).first.base_label
+ *
+ *	  1.times do
+ *	    puts caller_locations(0).first.base_label
+ *
+ *	    1.times do
+ *	      puts caller_locations(0).first.base_label
+ *	    end
+ *	  end
+ *	end
+ *
+ * The result of calling +foo+ is this:
+ *
+ *	foo
+ *	foo
+ *	foo
  */
 static VALUE
 location_base_label_m(VALUE self)
@@ -571,6 +589,13 @@ is_internal_location(const rb_control_frame_t *cfp)
     return strncmp(prefix, RSTRING_PTR(file), prefix_len) == 0;
 }
 
+static bool
+is_rescue_or_ensure_frame(const rb_control_frame_t *cfp)
+{
+    enum rb_iseq_type type = ISEQ_BODY(cfp->iseq)->type;
+    return type == ISEQ_TYPE_RESCUE || type == ISEQ_TYPE_ENSURE;
+}
+
 static void
 bt_update_cfunc_loc(unsigned long cfunc_counter, rb_backtrace_location_t *cfunc_loc, const rb_iseq_t *iseq, const VALUE *pc)
 {
@@ -600,6 +625,7 @@ rb_ec_partial_backtrace_object(const rb_execution_context_t *ec, long start_fram
     VALUE btobj = Qnil;
     rb_backtrace_location_t *loc = NULL;
     unsigned long cfunc_counter = 0;
+    bool skip_next_frame = FALSE;
 
     // In the case the thread vm_stack or cfp is not initialized, there is no backtrace.
     if (end_cfp == NULL) {
@@ -641,18 +667,21 @@ rb_ec_partial_backtrace_object(const rb_execution_context_t *ec, long start_fram
                 if (start_frame > 0) {
                     start_frame--;
                 }
-                else if (!skip_internal || !is_internal_location(cfp)) {
-                    const rb_iseq_t *iseq = cfp->iseq;
-                    const VALUE *pc = cfp->pc;
-                    loc = &bt->backtrace[bt->backtrace_size++];
-                    RB_OBJ_WRITE(btobj, &loc->cme, rb_vm_frame_method_entry(cfp));
-                    RB_OBJ_WRITE(btobj, &loc->iseq, iseq);
-                    loc->pc = pc;
-                    bt_update_cfunc_loc(cfunc_counter, loc-1, iseq, pc);
-                    if (do_yield) {
-                        bt_yield_loc(loc - cfunc_counter, cfunc_counter+1, btobj);
+                else if (!(skip_internal && is_internal_location(cfp))) {
+                    if (!skip_next_frame) {
+                        const rb_iseq_t *iseq = cfp->iseq;
+                        const VALUE *pc = cfp->pc;
+                        loc = &bt->backtrace[bt->backtrace_size++];
+                        RB_OBJ_WRITE(btobj, &loc->cme, rb_vm_frame_method_entry(cfp));
+                        RB_OBJ_WRITE(btobj, &loc->iseq, iseq);
+                        loc->pc = pc;
+                        bt_update_cfunc_loc(cfunc_counter, loc-1, iseq, pc);
+                        if (do_yield) {
+                            bt_yield_loc(loc - cfunc_counter, cfunc_counter+1, btobj);
+                        }
+                        cfunc_counter = 0;
                     }
-                    cfunc_counter = 0;
+                    skip_next_frame = is_rescue_or_ensure_frame(cfp);
                 }
             }
         }
@@ -671,9 +700,12 @@ rb_ec_partial_backtrace_object(const rb_execution_context_t *ec, long start_fram
         }
     }
 
+    // When a backtrace entry corresponds to a method defined in C (e.g. rb_define_method), the reported file:line
+    // is the one of the caller Ruby frame, so if the last entry is a C frame we find the caller Ruby frame here.
     if (cfunc_counter > 0) {
         for (; cfp != end_cfp; cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp)) {
-            if (cfp->iseq && cfp->pc && (!skip_internal || !is_internal_location(cfp))) {
+            if (cfp->iseq && cfp->pc && !(skip_internal && is_internal_location(cfp))) {
+                VM_ASSERT(!skip_next_frame); // ISEQ_TYPE_RESCUE/ISEQ_TYPE_ENSURE should have a caller Ruby ISEQ, not a cfunc
                 bt_update_cfunc_loc(cfunc_counter, loc, cfp->iseq, cfp->pc);
                 RB_OBJ_WRITTEN(btobj, Qundef, cfp->iseq);
                 if (do_yield) {
