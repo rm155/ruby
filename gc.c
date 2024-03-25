@@ -11481,15 +11481,16 @@ rb_gc_force_recycle(VALUE obj)
     /* no-op */
 }
 
-static void
+static VALUE
 register_mark_object_no_redirection(VALUE obj)
 {
     rb_ractor_t *r = rb_current_allocating_ractor();
     rb_objspace_t *objspace = r->local_objspace;
     if (!is_pointer_to_heap(objspace, (void *)obj))
-        return;
+        return Qnil;
 
     rb_vm_register_global_object(obj);
+    return Qnil;
 }
 
 void
