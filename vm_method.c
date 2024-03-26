@@ -548,10 +548,14 @@ static void delete_overloaded_cme(const rb_callable_method_entry_t *cme);
 void
 rb_free_method_entry(const rb_method_entry_t *me)
 {
-    if (me->def && me->def->iseq_overload) {
-        delete_overloaded_cme((const rb_callable_method_entry_t *)me);
+    RB_VM_LOCK_ENTER_NO_BARRIER();
+    {
+	if (me->def && me->def->iseq_overload) {
+	    delete_overloaded_cme((const rb_callable_method_entry_t *)me);
+	}
+	rb_method_definition_release(me->def);
     }
-    rb_method_definition_release(me->def);
+    RB_VM_LOCK_LEAVE_NO_BARRIER();
 }
 
 static inline rb_method_entry_t *search_method(VALUE klass, ID id, VALUE *defined_class_ptr);
