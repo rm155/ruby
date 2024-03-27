@@ -12520,8 +12520,8 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
     return FALSE;
 }
 
-static int
-update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src, st_data_t *srcid, st_data_t *id)
+static void
+update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src)
 {
     rb_native_mutex_lock(&objspace->obj_id_lock);
     if (FL_TEST((VALUE)src, FL_SEEN_OBJ_ID)) {
@@ -12545,7 +12545,6 @@ update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src, st_dat
         GC_ASSERT(!st_lookup(objspace->obj_to_id_tbl, (st_data_t)src, NULL));
     }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
-    return id_found;
 }
 
 static VALUE
@@ -12587,7 +12586,7 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
         DURING_GC_COULD_MALLOC_REGION_END();
     }
 
-    update_obj_id_mapping(objspace, dest, src, &srcid, &id);
+    update_obj_id_mapping(objspace, dest, src);
 
 #if VM_CHECK_MODE > 0
     rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
