@@ -12524,16 +12524,25 @@ static int
 update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src, st_data_t *srcid, st_data_t *id)
 {
     rb_native_mutex_lock(&objspace->obj_id_lock);
-    int id_found = st_lookup(objspace->obj_to_id_tbl, *srcid, id);
-    if (id_found) {
+    if (FL_TEST((VALUE)src, FL_SEEN_OBJ_ID)) {
+        /* If the source object's object_id has been seen, we need to update
+         * the object to object id mapping. */
+        st_data_t srcid = (st_data_t)src, id;
+
         gc_report(4, objspace, "Moving object with seen id: %p -> %p\n", (void *)src, (void *)dest);
         /* Resizing the st table could cause a malloc */
         DURING_GC_COULD_MALLOC_REGION_START();
         {
-	    st_delete(objspace->obj_to_id_tbl, srcid, 0);
-	    st_insert(objspace->obj_to_id_tbl, (st_data_t)dest, *id);
+            if (!st_delete(objspace->obj_to_id_tbl, &srcid, &id)) {
+                rb_bug("gc_move: object ID seen, but not in mapping table: %s", obj_info((VALUE)src));
+            }
+
+            st_insert(objspace->obj_to_id_tbl, (st_data_t)dest, id);
         }
         DURING_GC_COULD_MALLOC_REGION_END();
+    }
+    else {
+        GC_ASSERT(!st_lookup(objspace->obj_to_id_tbl, (st_data_t)src, NULL));
     }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
     return id_found;
@@ -12578,10 +12587,6 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
         DURING_GC_COULD_MALLOC_REGION_END();
     }
 
-    st_data_t srcid = (st_data_t)src, id;
-
-    /* If the source object's object_id has been seen, we need to update
-     * the object to object id mapping. */
     update_obj_id_mapping(objspace, dest, src, &srcid, &id);
 
 #if VM_CHECK_MODE > 0
