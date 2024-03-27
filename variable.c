@@ -134,7 +134,7 @@ classname(VALUE klass, bool *permanent)
 
     VALUE classpath;
 
-    RB_VM_LOCK_ENTER();
+    RB_VM_LOCK_ENTER_NO_BARRIER();
     {
 	rb_vm_t *vm = GET_VM();
 	rb_native_mutex_lock(&vm->classpath_lock);
@@ -145,7 +145,7 @@ classname(VALUE klass, bool *permanent)
 	    *permanent = RCLASS_EXT(klass)->permanent_classpath;
 	}
     }
-    RB_VM_LOCK_LEAVE();
+    RB_VM_LOCK_LEAVE_NO_BARRIER();
 
     return classpath == 0 ? Qnil : classpath;
 }
