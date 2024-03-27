@@ -270,6 +270,8 @@ file_options(int argc, VALUE *argv, pm_string_t *input, pm_options_t *options) {
     }
 }
 
+#ifndef PRISM_EXCLUDE_SERIALIZATION
+
 /******************************************************************************/
 /* Serializing the AST                                                        */
 /******************************************************************************/
@@ -350,6 +352,8 @@ dump_file(int argc, VALUE *argv, VALUE self) {
 
     return value;
 }
+
+#endif
 
 /******************************************************************************/
 /* Extracting values for the parse result                                     */
@@ -726,7 +730,7 @@ parse_input(pm_string_t *input, const pm_options_t *options) {
  *       parsed. This should be an array of arrays of symbols or nil. Scopes are
  *       ordered from the outermost scope to the innermost one.
  * * `version` - the version of Ruby syntax that prism should used to parse Ruby
- *       code. By default prism assumes you want to parse with the latest vesion
+ *       code. By default prism assumes you want to parse with the latest version
  *       of Ruby syntax (which you can trigger with `nil` or `"latest"`). You
  *       may also restrict the syntax to a specific version of Ruby. The
  *       supported values are `"3.3.0"` and `"3.4.0"`.
@@ -1129,6 +1133,8 @@ profile_file(VALUE self, VALUE filepath) {
     return Qnil;
 }
 
+#ifndef PRISM_EXCLUDE_PRETTYPRINT
+
 /**
  * call-seq:
  *   Debug::inspect_node(source) -> inspected
@@ -1158,6 +1164,8 @@ inspect_node(VALUE self, VALUE source) {
 
     return string;
 }
+
+#endif
 
 /**
  * call-seq:
@@ -1349,8 +1357,6 @@ Init_prism(void) {
     rb_define_const(rb_cPrism, "VERSION", rb_str_new2(EXPECTED_PRISM_VERSION));
 
     // First, the functions that have to do with lexing and parsing.
-    rb_define_singleton_method(rb_cPrism, "dump", dump, -1);
-    rb_define_singleton_method(rb_cPrism, "dump_file", dump_file, -1);
     rb_define_singleton_method(rb_cPrism, "lex", lex, -1);
     rb_define_singleton_method(rb_cPrism, "lex_file", lex_file, -1);
     rb_define_singleton_method(rb_cPrism, "parse", parse, -1);
@@ -1363,6 +1369,11 @@ Init_prism(void) {
     rb_define_singleton_method(rb_cPrism, "parse_success?", parse_success_p, -1);
     rb_define_singleton_method(rb_cPrism, "parse_file_success?", parse_file_success_p, -1);
 
+#ifndef PRISM_EXCLUDE_SERIALIZATION
+    rb_define_singleton_method(rb_cPrism, "dump", dump, -1);
+    rb_define_singleton_method(rb_cPrism, "dump_file", dump_file, -1);
+#endif
+
     // Next, the functions that will be called by the parser to perform various
     // internal tasks. We expose these to make them easier to test.
     VALUE rb_cPrismDebug = rb_define_module_under(rb_cPrism, "Debug");
@@ -1370,9 +1381,12 @@ Init_prism(void) {
     rb_define_singleton_method(rb_cPrismDebug, "integer_parse", integer_parse, 1);
     rb_define_singleton_method(rb_cPrismDebug, "memsize", memsize, 1);
     rb_define_singleton_method(rb_cPrismDebug, "profile_file", profile_file, 1);
-    rb_define_singleton_method(rb_cPrismDebug, "inspect_node", inspect_node, 1);
     rb_define_singleton_method(rb_cPrismDebug, "format_errors", format_errors, 2);
     rb_define_singleton_method(rb_cPrismDebug, "static_inspect", static_inspect, -1);
+
+#ifndef PRISM_EXCLUDE_PRETTYPRINT
+    rb_define_singleton_method(rb_cPrismDebug, "inspect_node", inspect_node, 1);
+#endif
 
     // Next, define the functions that are exposed through the private
     // Debug::Encoding class.

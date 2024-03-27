@@ -151,7 +151,7 @@
 #else
     #ifndef xmalloc
         /**
-         * The malloc function that should be used. This can be overriden with
+         * The malloc function that should be used. This can be overridden with
          * the PRISM_XALLOCATOR define.
          */
         #define xmalloc malloc
@@ -159,7 +159,7 @@
 
     #ifndef xrealloc
         /**
-         * The realloc function that should be used. This can be overriden with
+         * The realloc function that should be used. This can be overridden with
          * the PRISM_XALLOCATOR define.
          */
         #define xrealloc realloc
@@ -167,7 +167,7 @@
 
     #ifndef xcalloc
         /**
-         * The calloc function that should be used. This can be overriden with
+         * The calloc function that should be used. This can be overridden with
          * the PRISM_XALLOCATOR define.
          */
         #define xcalloc calloc
@@ -175,11 +175,32 @@
 
     #ifndef xfree
         /**
-         * The free function that should be used. This can be overriden with the
+         * The free function that should be used. This can be overridden with the
          * PRISM_XALLOCATOR define.
          */
         #define xfree free
     #endif
+#endif
+
+/**
+ * If PRISM_BUILD_MINIMAL is defined, then we're going to define every possible
+ * switch that will turn off certain features of prism.
+ */
+#ifdef PRISM_BUILD_MINIMAL
+    /** Exclude the serialization API. */
+    #define PRISM_EXCLUDE_SERIALIZATION
+
+    /** Exclude the JSON serialization API. */
+    #define PRISM_EXCLUDE_JSON
+
+    /** Exclude the Array#pack parser API. */
+    #define PRISM_EXCLUDE_PACK
+
+    /** Exclude the prettyprint API. */
+    #define PRISM_EXCLUDE_PRETTYPRINT
+
+    /** Exclude the full set of encodings, using the minimal only. */
+    #define PRISM_ENCODING_EXCLUDE_FULL
 #endif
 
 #endif

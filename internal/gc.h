@@ -235,7 +235,6 @@ typedef struct ractor_newobj_cache {
 } rb_ractor_newobj_cache_t;
 
 /* gc.c */
-extern VALUE *ruby_initial_gc_stress_ptr;
 extern int ruby_disable_gc;
 RUBY_ATTR_MALLOC void *ruby_mimmalloc(size_t size);
 void ruby_mimfree(void *ptr);
@@ -246,7 +245,7 @@ VALUE rb_objspace_gc_disable(struct rb_objspace *);
 VALUE rb_gc_deactivate(rb_vm_t *vm);
 struct rb_objspace *get_objspace_of_value(VALUE v);
 void ruby_gc_set_params(void);
-void rb_copy_wb_protected_attribute(VALUE dest, VALUE obj);
+void rb_gc_copy_attributes(VALUE dest, VALUE obj);
 size_t rb_size_mul_or_raise(size_t, size_t, VALUE); /* used in compile.c */
 size_t rb_size_mul_add_or_raise(size_t, size_t, size_t, VALUE); /* used in iseq.h */
 size_t rb_malloc_grow_capa(size_t current_capacity, size_t type_size);
@@ -277,6 +276,8 @@ void rb_gc_mark_weak(VALUE *ptr);
 void rb_gc_remove_weak(VALUE parent_obj, VALUE *ptr);
 
 void rb_gc_ref_update_table_values_only(st_table *tbl);
+
+void rb_gc_initial_stress_set(VALUE flag);
 
 #define rb_gc_mark_and_move_ptr(ptr) do { \
     VALUE _obj = (VALUE)*(ptr); \
