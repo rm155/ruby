@@ -9959,13 +9959,17 @@ check_generation_i(const VALUE child, void *ptr)
 
     if (RGENGC_CHECK_MODE) GC_ASSERT(RVALUE_OLD_P(parent));
 
-    if (!RVALUE_OLD_P(child)) {
-        if (!RVALUE_REMEMBERED(parent) &&
-            !RVALUE_REMEMBERED(child) &&
-            !RVALUE_UNCOLLECTIBLE(child)) {
-            fprintf(stderr, "verify_internal_consistency_reachable_i: WB miss (O->Y) %s -> %s\n", obj_info(parent), obj_info(child));
-            data->err_count++;
-        }
+    rb_objspace_t *objspace = &rb_objspace;
+    bool absorption_correction_needed = objspace->rgengc.need_major_gc & GPR_FLAG_MAJOR_BY_ABSORB;
+    if (!absorption_correction_needed) {
+	if (!RVALUE_OLD_P(child)) {
+	    if (!RVALUE_REMEMBERED(parent) &&
+		    !RVALUE_REMEMBERED(child) &&
+		    !RVALUE_UNCOLLECTIBLE(child)) {
+		fprintf(stderr, "verify_internal_consistency_reachable_i: WB miss (O->Y) %s -> %s\n", obj_info(parent), obj_info(child));
+		data->err_count++;
+	    }
+	}
     }
 }
 
