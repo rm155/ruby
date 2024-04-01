@@ -3059,25 +3059,12 @@ obj_traverse_reachable_i(VALUE obj, void *ptr)
     }
 }
 
-static VALUE
-create_traverse_rec(VALUE d)
-{
-    struct obj_traverse_data *data = (struct obj_traverse_data *)d;
-    data->rec_hash = rb_ident_hash_new();
-    data->rec = RHASH_ST_TABLE(data->rec_hash);
-    return (VALUE)data->rec;
-}
-
 static struct st_table *
 obj_traverse_rec(struct obj_traverse_data *data)
 {
     if (UNLIKELY(!data->rec)) {
-	if (rb_redirecting_allocation()) {
-	    rb_run_with_redirected_allocation(NULL, create_traverse_rec, (VALUE)data);
-	}
-	else {
-	    create_traverse_rec((VALUE)data);
-	}
+	data->rec_hash = rb_ident_hash_new();
+	data->rec = RHASH_ST_TABLE(data->rec_hash);
     }
     return data->rec;
 }
@@ -3438,7 +3425,7 @@ struct obj_traverse_replace_data {
     rb_obj_traverse_replace_enter_func enter_func;
     rb_obj_traverse_replace_leave_func leave_func;
 
-    st_table *rec;
+    st_table *id_replacement_rec;
     VALUE rec_hash;
 
     VALUE replacement;
@@ -3508,27 +3495,14 @@ obj_iv_hash_traverse_replace_i(st_data_t * _key, st_data_t * val, st_data_t ptr,
     return ST_CONTINUE;
 }
 
-static VALUE
-create_traverse_replace_rec(VALUE d)
-{
-    struct obj_traverse_replace_data *data = (struct obj_traverse_replace_data *)d;
-    data->rec_hash = rb_ident_hash_new();
-    data->rec = RHASH_ST_TABLE(data->rec_hash);
-    return (VALUE)data->rec;
-}
-
 static struct st_table *
 obj_traverse_replace_rec(struct obj_traverse_replace_data *data)
 {
-    if (UNLIKELY(!data->rec)) {
-	if (rb_redirecting_allocation()) {
-	    rb_run_with_redirected_allocation(NULL, create_traverse_replace_rec, (VALUE)data);
-	}
-	else {
-	    create_traverse_replace_rec((VALUE)data);
-	}
+    if (UNLIKELY(!data->id_replacement_rec)) {
+	data->rec_hash = rb_ident_hash_new();
+	data->id_replacement_rec = RHASH_ST_TABLE(data->rec_hash);
     }
-    return data->rec;
+    return data->id_replacement_rec;
 }
 
 static void
@@ -3571,12 +3545,12 @@ obj_traverse_replace_i(VALUE obj, struct obj_traverse_replace_data *data)
 
     replacement = (st_data_t)data->replacement;
 
-    if (UNLIKELY(st_lookup(obj_traverse_replace_rec(data), (st_data_t)obj, &replacement))) {
+    if (UNLIKELY(st_lookup(obj_traverse_replace_rec(data), (st_data_t)rb_obj_id(obj), &replacement))) {
         data->replacement = (VALUE)replacement;
         return 0;
     }
     else {
-        st_insert(obj_traverse_replace_rec(data), (st_data_t)obj, replacement);
+        st_insert(obj_traverse_replace_rec(data), (st_data_t)rb_obj_id(obj), replacement);
     }
 
     if (!data->move) {
@@ -3760,7 +3734,7 @@ rb_obj_traverse_replace(VALUE obj,
     struct obj_traverse_replace_data data = {
         .enter_func = enter_func,
         .leave_func = leave_func,
-        .rec = NULL,
+        .id_replacement_rec = NULL,
         .replacement = Qundef,
         .move = move,
     };
