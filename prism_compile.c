@@ -528,6 +528,38 @@ pm_compile_regexp_dynamic(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_
     PUSH_INSN2(ret, *node_location, toregexp, INT2FIX(parse_regexp_flags(node) & 0xFF), INT2FIX(length));
 }
 
+static VALUE
+pm_source_file_value(const pm_source_file_node_t *node, const pm_scope_node_t *scope_node)
+{
+    const pm_string_t *filepath = &node->filepath;
+    size_t length = pm_string_length(filepath);
+
+    if (length > 0) {
+        rb_encoding *filepath_encoding = scope_node->filepath_encoding != NULL ? scope_node->filepath_encoding : rb_utf8_encoding();
+        return rb_fstring(rb_enc_str_new((const char *) pm_string_source(filepath), length, filepath_encoding));
+    }
+    else {
+        return rb_fstring_lit("<compiled>");
+    }
+}
+
+/**
+ * Return a static literal string, optionally with attached debugging
+ * information.
+ */
+static VALUE
+pm_static_literal_string(rb_iseq_t *iseq, VALUE string, int line_number)
+{
+    if (ISEQ_COMPILE_DATA(iseq)->option->debug_frozen_string_literal || RTEST(ruby_debug)) {
+        VALUE debug_info = rb_ary_new_from_args(2, rb_iseq_path(iseq), INT2FIX(line_number));
+        rb_ivar_set(string, id_debug_created_info, rb_obj_freeze(debug_info));
+        return rb_str_freeze(string);
+    }
+    else {
+        return rb_fstring(string);
+    }
+}
+
 /**
  * Certain nodes can be compiled literally. This function returns the literal
  * value described by the given node. For example, an array node with all static
@@ -588,8 +620,11 @@ pm_static_literal_value(rb_iseq_t *iseq, const pm_node_t *node, const pm_scope_n
         const pm_interpolated_regular_expression_node_t *cast = (const pm_interpolated_regular_expression_node_t *) node;
         return parse_regexp_concat(iseq, scope_node, (const pm_node_t *) cast, &cast->parts);
       }
-      case PM_INTERPOLATED_STRING_NODE:
-        return pm_static_literal_concat(&((const pm_interpolated_string_node_t *) node)->parts, scope_node, true);
+      case PM_INTERPOLATED_STRING_NODE: {
+        VALUE string = pm_static_literal_concat(&((const pm_interpolated_string_node_t *) node)->parts, scope_node, false);
+        int line_number = pm_node_line_number(scope_node->parser, node);
+        return pm_static_literal_string(iseq, string, line_number);
+      }
       case PM_INTERPOLATED_SYMBOL_NODE: {
         const pm_interpolated_symbol_node_t *cast = (const pm_interpolated_symbol_node_t *) node;
         VALUE string = pm_static_literal_concat(&cast->parts, scope_node, true);
@@ -612,19 +647,15 @@ pm_static_literal_value(rb_iseq_t *iseq, const pm_node_t *node, const pm_scope_n
         return rb_enc_from_encoding(scope_node->encoding);
       case PM_SOURCE_FILE_NODE: {
         const pm_source_file_node_t *cast = (const pm_source_file_node_t *) node;
-        size_t length = pm_string_length(&cast->filepath);
-
-        if (length > 0) {
-            return rb_enc_str_new((const char *) pm_string_source(&cast->filepath), length, scope_node->encoding);
-        }
-        else {
-            return rb_fstring_lit("<compiled>");
-        }
+        return pm_source_file_value(cast, scope_node);
       }
       case PM_SOURCE_LINE_NODE:
         return INT2FIX(pm_node_line_number(scope_node->parser, node));
-      case PM_STRING_NODE:
-        return rb_fstring(parse_string_encoded(scope_node, node, &((pm_string_node_t *)node)->unescaped));
+      case PM_STRING_NODE: {
+        VALUE string = parse_string_encoded(scope_node, node, &((const pm_string_node_t *) node)->unescaped);
+        int line_number = pm_node_line_number(scope_node->parser, node);
+        return pm_static_literal_string(iseq, string, line_number);
+      }
       case PM_SYMBOL_NODE:
         return ID2SYM(parse_string_symbol(scope_node, (const pm_symbol_node_t *) node));
       case PM_TRUE_NODE:
@@ -2669,6 +2700,7 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
     if (previous) {
         scope->parser = previous->parser;
         scope->encoding = previous->encoding;
+        scope->filepath_encoding = previous->filepath_encoding;
         scope->constants = previous->constants;
     }
 
@@ -4299,7 +4331,10 @@ pm_compile_case_node_dispatch(rb_iseq_t *iseq, VALUE dispatch, const pm_node_t *
         break;
       case PM_STRING_NODE: {
         const pm_string_node_t *cast = (const pm_string_node_t *) node;
-        key = rb_fstring(parse_string_encoded(scope_node, node, &cast->unescaped));
+        VALUE string = parse_string_encoded(scope_node, node, &cast->unescaped);
+
+        int line_number = pm_node_line_number(scope_node->parser, node);
+        key = pm_static_literal_string(iseq, string, line_number);
         break;
       }
       default:
@@ -6773,27 +6808,38 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // ^^^^^^^^
         const pm_pre_execution_node_t *cast = (const pm_pre_execution_node_t *) node;
 
-        DECL_ANCHOR(pre_ex);
-        INIT_ANCHOR(pre_ex);
+        LINK_ANCHOR *outer_pre = scope_node->pre_execution_anchor;
+        RUBY_ASSERT(outer_pre != NULL);
+
+        // BEGIN{} nodes can be nested, so here we're going to do the same thing
+        // that we did for the top-level compilation where we create two
+        // anchors and then join them in the correct order into the resulting
+        // anchor.
+        DECL_ANCHOR(inner_pre);
+        INIT_ANCHOR(inner_pre);
+        scope_node->pre_execution_anchor = inner_pre;
+
+        DECL_ANCHOR(inner_body);
+        INIT_ANCHOR(inner_body);
 
         if (cast->statements != NULL) {
             const pm_node_list_t *body = &cast->statements->body;
+
             for (size_t index = 0; index < body->size; index++) {
-                pm_compile_node(iseq, body->nodes[index], pre_ex, true, scope_node);
+                pm_compile_node(iseq, body->nodes[index], inner_body, true, scope_node);
             }
         }
 
         if (!popped) {
-            PUSH_INSN(pre_ex, location, putnil);
+            PUSH_INSN(inner_body, location, putnil);
         }
 
-        pre_ex->last->next = ret->anchor.next;
-        ret->anchor.next = pre_ex->anchor.next;
-        ret->anchor.next->prev = pre_ex->anchor.next;
-
-        if (ret->last == (LINK_ELEMENT *)ret) {
-            ret->last = pre_ex->last;
-        }
+        // Now that everything has been compiled, join both anchors together
+        // into the correct outer pre execution anchor, and reset the value so
+        // that subsequent BEGIN{} nodes can be compiled correctly.
+        ADD_SEQ(outer_pre, inner_pre);
+        ADD_SEQ(outer_pre, inner_body);
+        scope_node->pre_execution_anchor = outer_pre;
 
         return;
       }
@@ -8074,7 +8120,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // ^^^^^^^^
         if (!popped) {
             const pm_source_file_node_t *cast = (const pm_source_file_node_t *) node;
-            VALUE string = rb_fstring(parse_string(scope_node, &cast->filepath));
+            VALUE string = pm_source_file_value(cast, scope_node);
 
             if (PM_NODE_FLAG_P(cast, PM_STRING_FLAGS_FROZEN)) {
                 PUSH_INSN1(ret, location, putobject, string);
@@ -8131,7 +8177,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // ^^^^^
         if (!popped) {
             const pm_string_node_t *cast = (const pm_string_node_t *) node;
-            VALUE value = rb_fstring(parse_string_encoded(scope_node, node, &cast->unescaped));
+            VALUE value = parse_string_encoded(scope_node, node, &cast->unescaped);
+            value = pm_static_literal_string(iseq, value, location.line);
 
             if (PM_NODE_FLAG_P(node, PM_STRING_FLAGS_FROZEN)) {
                 PUSH_INSN1(ret, location, putobject, value);
@@ -8306,6 +8353,20 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
     }
 }
 
+/** True if the given iseq can have pre execution blocks. */
+static inline bool
+pm_iseq_pre_execution_p(rb_iseq_t *iseq)
+{
+    switch (ISEQ_BODY(iseq)->type) {
+      case ISEQ_TYPE_TOP:
+      case ISEQ_TYPE_EVAL:
+      case ISEQ_TYPE_MAIN:
+        return true;
+      default:
+        return false;
+    }
+}
+
 /**
  * This is the main entry-point into the prism compiler. It accepts the iseq
  * that it should be compiling instruction into and a pointer to the scope node
@@ -8319,7 +8380,32 @@ pm_iseq_compile_node(rb_iseq_t *iseq, pm_scope_node_t *node)
     DECL_ANCHOR(ret);
     INIT_ANCHOR(ret);
 
-    pm_compile_node(iseq, (const pm_node_t *) node, ret, false, node);
+    if (pm_iseq_pre_execution_p(iseq)) {
+        // Because these ISEQs can have BEGIN{}, we're going to create two
+        // anchors to compile them, a "pre" and a "body". We'll mark the "pre"
+        // on the scope node so that when BEGIN{} is found, its contents will be
+        // added to the "pre" anchor.
+        DECL_ANCHOR(pre);
+        INIT_ANCHOR(pre);
+        node->pre_execution_anchor = pre;
+
+        // Now we'll compile the body as normal. We won't compile directly into
+        // the "ret" anchor yet because we want to add the "pre" anchor to the
+        // beginning of the "ret" anchor first.
+        DECL_ANCHOR(body);
+        INIT_ANCHOR(body);
+        pm_compile_node(iseq, (const pm_node_t *) node, body, false, node);
+
+        // Now we'll join both anchors together so that the content is in the
+        // correct order.
+        ADD_SEQ(ret, pre);
+        ADD_SEQ(ret, body);
+    }
+    else {
+        // In other circumstances, we can just compile the node directly into
+        // the "ret" anchor.
+        pm_compile_node(iseq, (const pm_node_t *) node, ret, false, node);
+    }
 
     CHECK(iseq_setup_insn(iseq, ret));
     return iseq_setup(iseq, ret);
@@ -8373,43 +8459,91 @@ pm_parse_process_error_utf8_p(const pm_parser_t *parser, const pm_location_t *lo
 static VALUE
 pm_parse_process_error(const pm_parse_result_t *result)
 {
-    const pm_diagnostic_t *head = (const pm_diagnostic_t *) result->parser.error_list.head;
+    const pm_parser_t *parser = &result->parser;
+    const pm_diagnostic_t *head = (const pm_diagnostic_t *) parser->error_list.head;
     bool valid_utf8 = true;
 
-    for (const pm_diagnostic_t *error = head; error != NULL; error = (const pm_diagnostic_t *) error->node.next) {
-        // Any errors with the level PM_ERROR_LEVEL_ARGUMENT effectively take
-        // over as the only argument that gets raised. This is to allow priority
-        // messages that should be handled before anything else.
-        if (error->level == PM_ERROR_LEVEL_ARGUMENT) {
-            return rb_exc_new(rb_eArgError, error->message, strlen(error->message));
-        }
+    pm_buffer_t buffer = { 0 };
+    const pm_string_t *filepath = &parser->filepath;
 
-        // It is implicitly assumed that the error messages will be encodeable
-        // as UTF-8. Because of this, we can't include source examples that
-        // contain invalid byte sequences. So if any source examples include
-        // invalid UTF-8 byte sequences, we will skip showing source examples
-        // entirely.
-        if (valid_utf8 && !pm_parse_process_error_utf8_p(&result->parser, &error->location)) {
-            valid_utf8 = false;
+    for (const pm_diagnostic_t *error = head; error != NULL; error = (const pm_diagnostic_t *) error->node.next) {
+        switch (error->level) {
+          case PM_ERROR_LEVEL_SYNTAX:
+            // It is implicitly assumed that the error messages will be
+            // encodeable as UTF-8. Because of this, we can't include source
+            // examples that contain invalid byte sequences. So if any source
+            // examples include invalid UTF-8 byte sequences, we will skip
+            // showing source examples entirely.
+            if (valid_utf8 && !pm_parse_process_error_utf8_p(parser, &error->location)) {
+                valid_utf8 = false;
+            }
+            break;
+          case PM_ERROR_LEVEL_ARGUMENT: {
+            // Any errors with the level PM_ERROR_LEVEL_ARGUMENT take over as
+            // the only argument that gets raised. This is to allow priority
+            // messages that should be handled before anything else.
+            int32_t line_number = (int32_t) pm_location_line_number(parser, &error->location);
+
+            pm_buffer_append_format(
+                &buffer,
+                "%.*s:%" PRIi32 ": %s",
+                (int) pm_string_length(filepath),
+                pm_string_source(filepath),
+                line_number,
+                error->message
+            );
+
+            if (pm_parse_process_error_utf8_p(parser, &error->location)) {
+                pm_buffer_append_byte(&buffer, '\n');
+
+                pm_list_node_t *list_node = (pm_list_node_t *) error;
+                pm_list_t error_list = { .size = 1, .head = list_node, .tail = list_node };
+
+                pm_parser_errors_format(parser, &error_list, &buffer, rb_stderr_tty_p(), false);
+            }
+
+            VALUE value = rb_exc_new(rb_eArgError, pm_buffer_value(&buffer), pm_buffer_length(&buffer));
+            pm_buffer_free(&buffer);
+
+            return value;
+          }
+          case PM_ERROR_LEVEL_LOAD: {
+            // Load errors are much simpler, because they don't include any of
+            // the source in them. We create the error directly from the
+            // message.
+            VALUE message = rb_enc_str_new_cstr(error->message, rb_locale_encoding());
+            VALUE value = rb_exc_new3(rb_eLoadError, message);
+            rb_ivar_set(value, rb_intern_const("@path"), Qnil);
+            return value;
+          }
         }
     }
 
-    pm_buffer_t buffer = { 0 };
-    pm_buffer_append_string(&buffer, "syntax errors found\n", 20);
+    pm_buffer_append_format(
+        &buffer,
+        "%.*s:%" PRIi32 ": syntax error%s found\n",
+        (int) pm_string_length(filepath),
+        pm_string_source(filepath),
+        (int32_t) pm_location_line_number(parser, &head->location),
+        (parser->error_list.size > 1) ? "s" : ""
+    );
 
     if (valid_utf8) {
-        pm_parser_errors_format(&result->parser, &buffer, rb_stderr_tty_p());
+        pm_parser_errors_format(parser, &parser->error_list, &buffer, rb_stderr_tty_p(), true);
     }
     else {
-        const pm_string_t *filepath = &result->parser.filepath;
-
         for (const pm_diagnostic_t *error = head; error != NULL; error = (pm_diagnostic_t *) error->node.next) {
             if (error != head) pm_buffer_append_byte(&buffer, '\n');
-            pm_buffer_append_format(&buffer, "%.*s:%" PRIi32 ": %s", (int) pm_string_length(filepath), pm_string_source(filepath), (int32_t) pm_location_line_number(&result->parser, &error->location), error->message);
+            pm_buffer_append_format(&buffer, "%.*s:%" PRIi32 ": %s", (int) pm_string_length(filepath), pm_string_source(filepath), (int32_t) pm_location_line_number(parser, &error->location), error->message);
         }
     }
 
     VALUE error = rb_exc_new(rb_eSyntaxError, pm_buffer_value(&buffer), pm_buffer_length(&buffer));
+
+    rb_encoding *filepath_encoding = result->node.filepath_encoding != NULL ? result->node.filepath_encoding : rb_utf8_encoding();
+    VALUE path = rb_enc_str_new((const char *) pm_string_source(filepath), pm_string_length(filepath), filepath_encoding);
+
+    rb_ivar_set(error, rb_intern_const("@path"), path);
     pm_buffer_free(&buffer);
 
     return error;
@@ -8428,7 +8562,10 @@ pm_parse_process(pm_parse_result_t *result, pm_node_t *node)
     // First, set up the scope node so that the AST node is attached and can be
     // freed regardless of whether or we return an error.
     pm_scope_node_t *scope_node = &result->node;
+    rb_encoding *filepath_encoding = scope_node->filepath_encoding;
+
     pm_scope_node_init(node, scope_node, NULL);
+    scope_node->filepath_encoding = filepath_encoding;
 
     // If there are errors, raise an appropriate error and free the result.
     if (parser->error_list.size > 0) {
@@ -8627,6 +8764,7 @@ pm_parse_string(pm_parse_result_t *result, VALUE source, VALUE filepath)
     pm_string_constant_init(&result->input, RSTRING_PTR(source), RSTRING_LEN(source));
     pm_options_encoding_set(&result->options, rb_enc_name(encoding));
 
+    result->node.filepath_encoding = rb_enc_get(filepath);
     pm_options_filepath_set(&result->options, RSTRING_PTR(filepath));
     RB_GC_GUARD(filepath);
 

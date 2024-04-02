@@ -1,14 +1,6 @@
 # frozen_string_literal: true
 
-## Command line
-MSpec.register(:exclude, "The -S command line option runs launcher found in PATH, but only code after the first /#!.*ruby.*/-ish line in target file")
-MSpec.register(:exclude, "The -x command line option runs code after the first /#!.*ruby.*/-ish line in target file")
-MSpec.register(:exclude, "The -x command line option fails when /#!.*ruby.*/-ish line in target file is not found")
-MSpec.register(:exclude, "The -x command line option behaves as -x was set when non-ruby shebang is encountered on first line")
-MSpec.register(:exclude, "The --debug flag produces debugging info on attempted frozen string modification")
-
 ## Language
-MSpec.register(:exclude, "The BEGIN keyword runs multiple begins in FIFO order")
 MSpec.register(:exclude, "Executing break from within a block works when passing through a super call")
 MSpec.register(:exclude, "The defined? keyword when called with a method name in a void context warns about the void context when parsing it")
 MSpec.register(:exclude, "Hash literal expands an '**{}' or '**obj' element with the last key/value pair taking precedence")
@@ -17,8 +9,6 @@ MSpec.register(:exclude, "Hash literal merges multiple nested '**obj' in Hash li
 MSpec.register(:exclude, "Hash literal raises a SyntaxError at parse time when Symbol key with invalid bytes")
 MSpec.register(:exclude, "Hash literal raises a SyntaxError at parse time when Symbol key with invalid bytes and 'key: value' syntax used")
 MSpec.register(:exclude, "The next statement in a method is invalid and raises a SyntaxError")
-MSpec.register(:exclude, "Pattern matching variable pattern does not support using variable name (except _) several times")
-MSpec.register(:exclude, "Pattern matching Hash pattern raise SyntaxError when keys duplicate in pattern")
 MSpec.register(:exclude, "Regexps with encoding modifiers supports /e (EUC encoding) with interpolation")
 MSpec.register(:exclude, "Regexps with encoding modifiers supports /e (EUC encoding) with interpolation /o")
 MSpec.register(:exclude, "Regexps with encoding modifiers preserves EUC-JP as /e encoding through interpolation")
@@ -33,10 +23,6 @@ MSpec.register(:exclude, "A Symbol literal raises an SyntaxError at parse time w
 ## Core
 MSpec.register(:exclude, "IO.popen with a leading Array argument accepts a trailing Hash of Process.exec options")
 MSpec.register(:exclude, "IO.popen with a leading Array argument accepts an IO mode argument following the Array")
-MSpec.register(:exclude, "Kernel#eval includes file and line information in syntax error")
-MSpec.register(:exclude, "Kernel#eval evaluates string with given filename and negative linenumber")
-MSpec.register(:exclude, "Kernel#eval with a magic encoding comment allows spaces before the magic encoding comment")
-MSpec.register(:exclude, "Kernel#eval with a magic encoding comment allows a shebang line and some spaces before the magic encoding comment")
 MSpec.register(:exclude, "TracePoint#eval_script is the evald source code")
 MSpec.register(:exclude, "TracePoint#event returns the type of event")
 MSpec.register(:exclude, "TracePoint#inspect returns a String showing the event, method, path and line for a :return event")
@@ -60,6 +46,4 @@ MSpec.register(:exclude, "Coverage.result does not clear counters when stop: fal
 MSpec.register(:exclude, "Coverage.result clears counters (sets 0 values) when stop: false and clear: true specified")
 MSpec.register(:exclude, "Coverage.result does not clear counters when stop: false and clear: false specified")
 MSpec.register(:exclude, "Coverage.start measures coverage within eval")
-MSpec.register(:exclude, "ERB#filename raises an exception if there are errors processing content")
-MSpec.register(:exclude, "ERB#filename uses '(erb)' as filename when filename is not set")
 MSpec.register(:exclude, "Socket.gethostbyaddr using an IPv6 address with an explicit address family raises SocketError when the address is not supported by the family")

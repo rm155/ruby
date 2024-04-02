@@ -1000,6 +1000,7 @@ rb_iseq_translate_threaded_code(rb_iseq_t *iseq)
 
 #if USE_YJIT
     rb_yjit_live_iseq_count++;
+    rb_yjit_iseq_alloc_count++;
 #endif
 
     return COMPILE_OK;
@@ -11322,6 +11323,7 @@ iseq_build_from_ary_body(rb_iseq_t *iseq, LINK_ANCHOR *const anchor,
         }
     }
     DATA_PTR(labels_wrapper) = 0;
+    RB_GC_GUARD(labels_wrapper);
     validate_labels(iseq, labels_table);
     if (!ret) return ret;
     return iseq_setup(iseq, anchor);
