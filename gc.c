@@ -8881,6 +8881,13 @@ gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
 #endif
 }
 
+static inline void
+gc_mark_reset_parent(rb_objspace_t *objspace)
+{
+    objspace->rgengc.parent_object = Qfalse;
+    objspace->current_parent_objspace = objspace;
+}
+
 static bool
 gc_declarative_marking_p(const rb_data_type_t *type)
 {
@@ -9190,6 +9197,7 @@ gc_mark_stacked_objects_all(rb_objspace_t *objspace)
 static void
 mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace)
 {
+    gc_mark_reset_parent(objspace);
     rb_native_mutex_lock(&objspace->shared_reference_tbl_lock);
     mark_set(objspace, objspace->shared_reference_tbl);
     rb_native_mutex_unlock(&objspace->shared_reference_tbl_lock);
@@ -9605,8 +9613,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 
     if (categoryp) *categoryp = "xxx";
 
-    objspace->rgengc.parent_object = Qfalse;
-    objspace->current_parent_objspace = objspace;
+    gc_mark_reset_parent(objspace);
 
 #if PRINT_ROOT_TICKS
 #define MARK_CHECKPOINT_PRINT_TICK(category) do { \
@@ -16985,6 +16992,8 @@ mark_former_references(rb_objspace_t *objspace, VALUE obj)
 {
     VM_ASSERT(!using_local_limits(objspace) || objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
 
+    gc_mark_set_parent(objspace, obj);
+
     struct former_reference_list *list;
     struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, obj);
     for (list = fmr_ref_list; list; list = list->next) {
@@ -17000,6 +17009,7 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
     VALUE obj = (VALUE)key;
     struct former_reference_list *fmr_ref_list = (struct former_reference_list *)value;
     if (RVALUE_MARKED(obj)) {
+	gc_mark_set_parent(objspace, obj);
 	struct former_reference_list *list;
 	for (list = fmr_ref_list; list; list = list->next) {
 	    if (list->marked) {
