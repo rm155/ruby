@@ -2415,40 +2415,6 @@ rb_gc_initial_stress_set(VALUE flag)
     initial_stress = flag;
 }
 
-rb_objspace_t *
-rb_objspace_alloc(void)
-{
-    rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
-
-    objspace->flags.gc_stressful = RTEST(initial_stress);
-    objspace->gc_stress_mode = initial_stress;
-
-    objspace->flags.measure_gc = 1;
-    malloc_limit = gc_params.malloc_limit_min;
-    objspace->finalize_deferred_pjob = rb_postponed_job_preregister(0, gc_finalize_deferred, NULL);
-    if (objspace->finalize_deferred_pjob == POSTPONED_JOB_HANDLE_INVALID) {
-        rb_bug("Could not preregister postponed job for GC");
-    }
-
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-
-        size_pool->slot_size = (1 << i) * BASE_SLOT_SIZE;
-
-        ccan_list_head_init(&SIZE_POOL_EDEN_HEAP(size_pool)->pages);
-        ccan_list_head_init(&SIZE_POOL_TOMB_HEAP(size_pool)->pages);
-    }
-
-    rb_darray_make(&objspace->weak_references, 0);
-
-    // TODO: debug why on Windows Ruby crashes on boot when GC is on.
-#ifdef _WIN32
-    dont_gc_on();
-#endif
-
-    return objspace;
-}
-
 static void free_stack_chunks(mark_stack_t *);
 static void mark_stack_free_cache(mark_stack_t *);
 static void heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked);
@@ -4934,9 +4900,38 @@ static const struct st_hash_type object_id_hash_type = {
     object_id_hash,
 };
 
-void
-Init_heap(rb_objspace_t *objspace)
+static rb_objspace_t *
+objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
 {
+    ractor->local_objspace = objspace;
+    objspace->ractor = ractor;
+
+    objspace->flags.gc_stressful = RTEST(initial_stress);
+    objspace->gc_stress_mode = initial_stress;
+
+    objspace->flags.measure_gc = 1;
+    malloc_limit = gc_params.malloc_limit_min;
+    objspace->finalize_deferred_pjob = rb_postponed_job_preregister(0, gc_finalize_deferred, NULL);
+    if (objspace->finalize_deferred_pjob == POSTPONED_JOB_HANDLE_INVALID) {
+        rb_bug("Could not preregister postponed job for GC");
+    }
+
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+        rb_size_pool_t *size_pool = &size_pools[i];
+
+        size_pool->slot_size = (1 << i) * BASE_SLOT_SIZE;
+
+        ccan_list_head_init(&SIZE_POOL_EDEN_HEAP(size_pool)->pages);
+        ccan_list_head_init(&SIZE_POOL_TOMB_HEAP(size_pool)->pages);
+    }
+
+    rb_darray_make(&objspace->weak_references, 0);
+
+    // TODO: debug why on Windows Ruby crashes on boot when GC is on.
+#ifdef _WIN32
+    dont_gc_on();
+#endif
+
 #if defined(INIT_HEAP_PAGE_ALLOC_USE_MMAP)
     /* Need to determine if we can use mmap at runtime. */
     heap_page_alloc_use_mmap = INIT_HEAP_PAGE_ALLOC_USE_MMAP;
@@ -5003,12 +4998,18 @@ Init_heap(rb_objspace_t *objspace)
     lock_ractor_set();
     ccan_list_add_tail(&GET_VM()->objspace_set, &objspace->objspace_node);
     unlock_ractor_set();
+
+    return objspace;
 }
 
-void
-Init_main_heap(void)
+rb_objspace_t *
+rb_objspace_alloc(void)
 {
-    Init_heap(GET_VM()->objspace);
+    rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
+    ruby_current_vm_ptr->objspace = objspace;
+    ruby_single_main_objspace = objspace;
+    ruby_current_vm_ptr->ractor.main_ractor = rb_ractor_main_alloc();
+    return objspace_setup(objspace, ruby_current_vm_ptr->ractor.main_ractor);
 }
 
 void
@@ -5025,9 +5026,8 @@ rb_assign_main_ractor_objspace(rb_ractor_t *ractor)
 void
 rb_create_ractor_local_objspace(rb_ractor_t *ractor)
 {
-    ractor->local_objspace = rb_objspace_alloc();
-    ractor->local_objspace->ractor = ractor;
-    Init_heap(ractor->local_objspace);
+    rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
+    objspace_setup(objspace, ractor);
     rb_vm_t *vm = GET_VM();
     if (ractor != vm->ractor.main_ractor) {
 	ruby_single_main_objspace = NULL;

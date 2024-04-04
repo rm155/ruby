@@ -4287,11 +4287,10 @@ Init_BareVM(void)
     ruby_current_vm_ptr = vm;
 
     vm->global_space = rb_global_space_init();
-    vm->objspace = ruby_single_main_objspace = rb_objspace_alloc();
+    rb_objspace_alloc();
 
     vm->global_gc_underway = false;
     rb_native_cond_initialize(&vm->global_gc_finished);
-
     vm->negative_cme_table = rb_id_table_create(16);
     vm->overloaded_cme_table = st_init_numtable();
     vm->constant_cache = rb_id_table_create(0);
@@ -4303,7 +4302,7 @@ Init_BareVM(void)
     // setup main thread
     th->nt = ZALLOC(struct rb_native_thread);
     th->vm = vm;
-    th->ractor = vm->ractor.main_ractor = rb_ractor_main_alloc();
+    th->ractor = vm->ractor.main_ractor;
     rb_assign_main_ractor_objspace(th->ractor);
     Init_native_thread(th);
     rb_jit_cont_init();
