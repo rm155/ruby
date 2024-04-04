@@ -573,8 +573,6 @@ static const rb_parser_config_t rb_global_parser_config = {
     .enc_isascii = enc_isascii,
     .enc_mbc_to_codepoint = enc_mbc_to_codepoint,
 
-    .ractor_make_shareable = rb_ractor_make_shareable,
-
     .local_defined = local_defined,
     .dvar_defined = dvar_defined,
 
@@ -996,52 +994,14 @@ rb_node_encoding_val(const NODE *node)
 }
 
 VALUE
-rb_node_const_decl_val(const NODE *node)
+rb_script_lines_for(VALUE path)
 {
-    VALUE path;
-    switch (nd_type(node)) {
-      case NODE_CDECL:
-        if (RNODE_CDECL(node)->nd_vid) {
-            path = rb_id2str(RNODE_CDECL(node)->nd_vid);
-            goto end;
-        }
-        else {
-            node = RNODE_CDECL(node)->nd_else;
-        }
-        break;
-      case NODE_COLON2:
-        break;
-      case NODE_COLON3:
-        // ::Const
-        path = rb_str_new_cstr("::");
-        rb_str_append(path, rb_id2str(RNODE_COLON3(node)->nd_mid));
-        goto end;
-      default:
-        rb_bug("unexpected node: %s", ruby_node_name(nd_type(node)));
-        UNREACHABLE_RETURN(0);
-    }
-
-    path = rb_ary_new();
-    if (node) {
-        for (; node && nd_type_p(node, NODE_COLON2); node = RNODE_COLON2(node)->nd_head) {
-            rb_ary_push(path, rb_id2str(RNODE_COLON2(node)->nd_mid));
-        }
-        if (node && nd_type_p(node, NODE_CONST)) {
-            // Const::Name
-            rb_ary_push(path, rb_id2str(RNODE_CONST(node)->nd_vid));
-        }
-        else if (node && nd_type_p(node, NODE_COLON3)) {
-            // ::Const::Name
-            rb_ary_push(path, rb_id2str(RNODE_COLON3(node)->nd_mid));
-            rb_ary_push(path, rb_str_new(0, 0));
-        }
-        else {
-            // expression::Name
-            rb_ary_push(path, rb_str_new_cstr("..."));
-        }
-        path = rb_ary_join(rb_ary_reverse(path), rb_str_new_cstr("::"));
-    }
-  end:
-    path = rb_fstring(path);
-    return path;
+    VALUE hash, lines;
+    ID script_lines;
+    CONST_ID(script_lines, "SCRIPT_LINES__");
+    if (!rb_const_defined_at(rb_cObject, script_lines)) return Qnil;
+    hash = rb_const_get_at(rb_cObject, script_lines);
+    if (!RB_TYPE_P(hash, T_HASH)) return Qnil;
+    rb_hash_aset(hash, path, lines = rb_ary_new());
+    return lines;
 }
