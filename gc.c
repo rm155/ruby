@@ -10775,7 +10775,7 @@ gc_compact_plane(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *
         VALUE vp = (VALUE)p;
         GC_ASSERT(vp % sizeof(RVALUE) == 0);
 
-        if ((bitset & 1) && (!using_local_limits(objspace) || !FL_TEST_RAW(vp, FL_SHAREABLE))) {
+        if ((bitset & 1)) {
             objspace->rcompactor.considered_count_table[BUILTIN_TYPE(vp)]++;
 
             if (gc_is_moveable_obj(objspace, vp)) {
@@ -12483,6 +12483,10 @@ static int
 gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 {
     GC_ASSERT(!SPECIAL_CONST_P(obj));
+
+    if (using_local_limits(objspace) && FL_TEST_RAW(obj, FL_SHAREABLE)) {
+	return FALSE;
+    }
 
     switch (BUILTIN_TYPE(obj)) {
       case T_NONE:
