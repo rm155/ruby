@@ -7012,7 +7012,7 @@ read_barrier_handler(uintptr_t original_address)
         rb_bug("read_barrier_handler: segmentation fault at %p", (void *)original_address);
     }
 
-    RB_VM_LOCK_ENTER();
+    RB_VM_LOCK_ENTER_NO_BARRIER();
     {
 	HEAP_LOCK_ENTER(objspace);
 	{
@@ -7024,7 +7024,7 @@ read_barrier_handler(uintptr_t original_address)
 	}
 	HEAP_LOCK_LEAVE(objspace);
     }
-    RB_VM_LOCK_LEAVE();
+    RB_VM_LOCK_LEAVE_NO_BARRIER();
 }
 #endif
 
