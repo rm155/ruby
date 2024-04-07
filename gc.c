@@ -17028,8 +17028,8 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
 	    else {
 		if (!RVALUE_MARKED(list->fmr_ref)) {
 		    *new_marks_added = true;
-		    gc_mark_and_pin(objspace, list->fmr_ref);
 		}
+		gc_mark_and_pin(objspace, list->fmr_ref);
 		list->marked = true;
 	    }
 	}
