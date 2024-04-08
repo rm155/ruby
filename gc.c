@@ -1050,6 +1050,7 @@ typedef struct rb_objspace {
     rb_nativethread_cond_t external_writebarrier_allowed_cond;
 
     bool currently_absorbing;
+    bool freeing_all;
 
     bool waiting_for_object_graph_safety;
 } rb_objspace_t;
@@ -5975,12 +5976,14 @@ gc_each_object(rb_objspace_t *objspace, void (*func)(VALUE obj, void *data), voi
 
 	int size_pool_idx = get_size_pool_idx(objspace, page->size_pool);
 	bool using_borrowable_page = false;
-	rb_borrowing_sync_lock(r);
-	if (current_borrowable_page(r, size_pool_idx) == page) {
-	    lock_own_borrowable_page(r, size_pool_idx);
-	    using_borrowable_page = true;
+	if (!objspace->freeing_all) {
+	    rb_borrowing_sync_lock(r);
+	    if (current_borrowable_page(r, size_pool_idx) == page) {
+		lock_own_borrowable_page(r, size_pool_idx);
+		using_borrowable_page = true;
+	    }
+	    rb_borrowing_sync_unlock(r);
 	}
-	rb_borrowing_sync_unlock(r);
 
         short stride = page->slot_size;
 
@@ -6025,7 +6028,9 @@ rb_objspace_free_objects_i(VALUE obj, void *data)
 void
 rb_objspace_free_objects(rb_objspace_t *objspace)
 {
+    objspace->freeing_all = true;
     gc_each_object(objspace, rb_objspace_free_objects_i, objspace);
+    objspace->freeing_all = false;
 }
 
 static void
