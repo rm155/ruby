@@ -8699,7 +8699,7 @@ static void reachable_objects_from_callback(VALUE obj);
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || objspace->flags.during_stack_location_marking || objspace->current_parent_objspace != objspace);
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || objspace->flags.during_stack_location_marking || objspace->current_parent_objspace != objspace || GET_RACTOR_OF_VALUE(obj) == rb_current_allocating_ractor());
 
     //TODO: Improve condition efficiency
     if (using_local_limits(objspace)) {
