@@ -292,6 +292,7 @@ void unlock_ractor_set(void);
 
 void rb_borrowing_sync_lock(rb_ractor_t *r);
 void rb_borrowing_sync_unlock(rb_ractor_t *r);
+void rb_ractor_wait_for_no_borrowers(rb_ractor_t *r);
 
 void rb_borrowing_status_pause(rb_ractor_t *cr);
 void rb_borrowing_status_resume(rb_ractor_t *cr);

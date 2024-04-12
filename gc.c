@@ -9340,9 +9340,7 @@ wait_for_object_graph_safety(rb_objspace_t *objspace)
     rb_native_mutex_unlock(&global_space->order_chain_lock);
 
     rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-    while (objspace->ractor->borrowing_sync.borrower_count != 0) {
-	rb_native_cond_wait(&objspace->ractor->borrowing_sync.no_borrowers, &objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-    }
+    rb_ractor_wait_for_no_borrowers(objspace->ractor);
     objspace->ractor->borrowing_sync.borrowing_allowed = false;
     rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
 
@@ -12073,9 +12071,7 @@ begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
     if (!objspace->running_global_gc && objspace->local_gc_level == 0) {
 	rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_RUNNING_LOCAL_GC);
 	rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-	while (objspace->ractor->borrowing_sync.borrower_count != 0) {
-	    rb_native_cond_wait(&objspace->ractor->borrowing_sync.no_borrowers, &objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-	}
+	rb_ractor_wait_for_no_borrowers(objspace->ractor);
 	objspace->ractor->borrowing_sync.borrowing_allowed = false;
 	rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
     }

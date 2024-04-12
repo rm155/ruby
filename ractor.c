@@ -2369,6 +2369,7 @@ rb_ractor_teardown(rb_execution_context_t *ec)
 {
     rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
     rb_borrowing_sync_lock(cr);
+    rb_ractor_wait_for_no_borrowers(cr);
     ractor_close_incoming(ec, cr);
     ractor_close_outgoing(ec, cr);
     rb_borrowing_sync_unlock(cr);
@@ -2487,6 +2488,14 @@ rb_borrowing_sync_unlock(rb_ractor_t *r)
     if (r->borrowing_sync.lock_lev == 0) {
 	r->borrowing_sync.lock_owner = NULL;
 	rb_native_mutex_unlock(&r->borrowing_sync.lock);
+    }
+}
+
+void
+rb_ractor_wait_for_no_borrowers(rb_ractor_t *r)
+{
+    while (r->borrowing_sync.borrower_count != 0) {
+	rb_native_cond_wait(&r->borrowing_sync.no_borrowers, &r->borrowing_sync.borrowing_allowed_lock);
     }
 }
 
