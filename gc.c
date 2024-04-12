@@ -11514,8 +11514,18 @@ register_mark_object_no_redirection(VALUE obj)
 void
 rb_gc_register_mark_object(VALUE obj)
 {
-    rb_ractor_t *r = rb_special_const_p(obj) ? NULL : GET_RACTOR_OF_VALUE(obj);
-    return rb_run_with_redirected_allocation(r, register_mark_object_no_redirection, obj);
+    VALUE ret;
+    if (rb_special_const_p(obj)) {
+	ret = register_mark_object_no_redirection(obj);
+    }
+    else {
+	WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+	{
+	    ret = rb_run_with_redirected_allocation(objspace->ractor, register_mark_object_no_redirection, obj);
+	}
+	WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
+    }
+    return ret;
 }
 
 void
