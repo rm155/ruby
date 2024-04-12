@@ -3764,7 +3764,7 @@ mark_received_received_obj_tbl(rb_objspace_t *objspace)
 }
 
 static void
-removed_received_obj_list(rb_objspace_t *objspace, uintptr_t borrowing_id)
+remove_received_obj_list(rb_objspace_t *objspace, uintptr_t borrowing_id)
 {
     rb_native_mutex_lock(&objspace->received_obj_tbl_lock);
     st_data_t data;
@@ -3899,7 +3899,9 @@ borrowing_exit(VALUE args)
 
     if (!!finished_target) {
 	rb_borrowing_sync_lock(finished_target);
-	removed_received_obj_list(finished_target->local_objspace, finished_borrowing_id);
+	if (LIKELY(!finished_target->borrowing_sync.borrowing_closed)) {
+	    remove_received_obj_list(finished_target->local_objspace, finished_borrowing_id);
+	}
 	rb_borrowing_sync_unlock(finished_target);
 	borrowing_count_decrement(finished_target);
 #if VM_CHECK_MODE > 0
@@ -3927,7 +3929,7 @@ run_redirected_func(VALUE args)
 }
 
 VALUE
-rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args)
+rb_attempt_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args, bool *borrowing_success)
 {
     struct borrowing_data_args borrowing_data = {
 	.borrower = GET_RACTOR(),
@@ -3939,7 +3941,28 @@ rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALU
     };
     VALUE bd_args = (VALUE)&borrowing_data;
     borrowing_enter(bd_args);
-    return rb_ensure(run_redirected_func, bd_args, borrowing_exit, bd_args);
+    if (UNLIKELY(target_ractor && target_ractor->borrowing_sync.borrowing_closed)) {
+	if (borrowing_success) *borrowing_success = false;
+	borrowing_exit(bd_args);
+	return Qfalse;
+    }
+    else {
+	if (borrowing_success) *borrowing_success = true;
+	return rb_ensure(run_redirected_func, bd_args, borrowing_exit, bd_args);
+    }
+}
+
+VALUE
+rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args)
+{
+    bool success;
+    VALUE ret = rb_attempt_run_with_redirected_allocation(target_ractor, func, func_args, &success);
+    if (LIKELY(success)) {
+	return ret;
+    }
+    else {
+	rb_bug("Failed to borrow from Ractor #%d", target_ractor->pub.id);
+    }
 }
 
 bool

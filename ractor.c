@@ -1103,7 +1103,7 @@ ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
 	.success = false,
     };
 
-    VALUE ret = rb_run_with_redirected_allocation(r, ractor_send_given_redirected_allocation, (VALUE)&args);
+    VALUE ret = rb_attempt_run_with_redirected_allocation(r, ractor_send_given_redirected_allocation, (VALUE)&args, NULL);
     if (!args.success) {
         rb_raise(rb_eRactorClosedError, "The incoming-port is already closed");
     }
@@ -2374,6 +2374,7 @@ rb_ractor_teardown(rb_execution_context_t *ec)
     rb_ractor_t *cr = rb_ec_ractor_ptr(ec);
     rb_borrowing_sync_lock(cr);
     rb_ractor_wait_for_no_borrowers(cr);
+    cr->borrowing_sync.borrowing_closed = true;
     ractor_close_incoming(ec, cr);
     ractor_close_outgoing(ec, cr);
     rb_borrowing_sync_unlock(cr);

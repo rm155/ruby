@@ -224,6 +224,7 @@ struct rb_ractor_struct {
 	rb_atomic_t borrower_count;
 	rb_nativethread_cond_t no_borrowers;
 
+	bool borrowing_closed;
 	bool borrowing_allowed;
 	rb_nativethread_cond_t borrowing_allowed_cond;
 	rb_nativethread_lock_t borrowing_allowed_lock;
