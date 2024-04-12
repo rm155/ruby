@@ -979,7 +979,7 @@ ractor_receive_if(rb_execution_context_t *ec, VALUE crv, VALUE b)
     }
 }
 
-static void
+static bool
 ractor_send_basket(rb_execution_context_t *ec, rb_ractor_t *r, struct rb_ractor_basket *b)
 {
     bool closed = false;
@@ -996,9 +996,7 @@ ractor_send_basket(rb_execution_context_t *ec, rb_ractor_t *r, struct rb_ractor_
     }
     RACTOR_UNLOCK(r);
 
-    if (closed) {
-        rb_raise(rb_eRactorClosedError, "The incoming-port is already closed");
-    }
+    return !closed;
 }
 
 // Ractor#send
@@ -1080,6 +1078,7 @@ struct ractor_send_args {
     rb_ractor_t *r;
     VALUE obj;
     VALUE move;
+    bool success;
 };
 
 static VALUE
@@ -1088,7 +1087,7 @@ ractor_send_given_redirected_allocation(VALUE args)
     struct ractor_send_args *p = (struct ractor_send_args *)args;
     struct rb_ractor_basket basket;
     ractor_basket_fill(rb_ec_ractor_ptr(p->ec), &basket, p->obj, p->move, false);
-    ractor_send_basket(p->ec, p->r, &basket);
+    p->success = ractor_send_basket(p->ec, p->r, &basket);
     return p->r->pub.self;
 }
 
@@ -1101,9 +1100,14 @@ ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
 	.r = r,
 	.obj = obj,
 	.move = move,
+	.success = false,
     };
 
-    return rb_run_with_redirected_allocation(r, ractor_send_given_redirected_allocation, (VALUE)&args);
+    VALUE ret = rb_run_with_redirected_allocation(r, ractor_send_given_redirected_allocation, (VALUE)&args);
+    if (!args.success) {
+        rb_raise(rb_eRactorClosedError, "The incoming-port is already closed");
+    }
+    return ret;
 }
 
 // Ractor#take
