@@ -8,17 +8,16 @@ Note that each entry is kept to a minimum, see links for details.
 ## Language changes
 
 * String literals in files without a `frozen_string_literal` comment now behave
-  as if they were frozen. If they are mutated a deprecation warning is emited.
+  as if they were frozen. If they are mutated a deprecation warning is emitted.
   These warnings can be enabled with `-W:deprecated` or by setting `Warning[:deprecated] = true`.
-  To disable this change you can run Ruby with the `--disable-frozen-string-literal` command line
-  argument. [[Feature #20205]]
+  To disable this change, you can run Ruby with the `--disable-frozen-string-literal`
+  command line argument. [[Feature #20205]]
 
 * `it` is added to reference a block parameter. [[Feature #18980]]
 
 * Keyword splatting `nil` when calling methods is now supported.
-  `**nil` is treated similar to `**{}`, passing no keywords,
-  and not calling any conversion methods.
-  [[Bug #20064]]
+  `**nil` is treated similarly to `**{}`, passing no keywords,
+  and not calling any conversion methods.  [[Bug #20064]]
 
 * Block passing is no longer allowed in index.  [[Bug #19918]]
 
@@ -45,9 +44,10 @@ The following default gems are updated.
 * irb 1.12.0
 * json 2.7.2
 * net-http 0.4.1
-* prism 0.24.0
+* optparse 0.5.0
+* prism 0.25.0
 * rdoc 6.6.3.1
-* reline 0.5.0
+* reline 0.5.1
 * resolv 0.4.0
 * stringio 3.1.1
 * strscan 3.1.1
@@ -112,7 +112,14 @@ See GitHub releases like [GitHub Releases of Logger](https://github.com/ruby/log
 
 ## JIT
 
+## Miscellaneous changes
+
+* Passing a block to a method which doesn't use the passed block will show
+  a warning on verbose mode (`-w`).
+  [[Feature #15554]]
+
 [Feature #13557]: https://bugs.ruby-lang.org/issues/13557
+[Feature #15554]: https://bugs.ruby-lang.org/issues/15554
 [Feature #16495]: https://bugs.ruby-lang.org/issues/16495
 [Feature #18290]: https://bugs.ruby-lang.org/issues/18290
 [Feature #18980]: https://bugs.ruby-lang.org/issues/18980

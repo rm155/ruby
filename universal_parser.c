@@ -88,11 +88,6 @@
 #define compile_callback         p->config->compile_callback
 #define reg_named_capture_assign p->config->reg_named_capture_assign
 
-#undef FIXNUM_P
-#define FIXNUM_P p->config->fixnum_p
-#undef SYMBOL_P
-#define SYMBOL_P p->config->symbol_p
-
 #define rb_attr_get p->config->attr_get
 
 #define rb_ary_new           p->config->ary_new
@@ -100,9 +95,6 @@
 #undef rb_ary_new_from_args
 #define rb_ary_new_from_args p->config->ary_new_from_args
 #define rb_ary_unshift       p->config->ary_unshift
-#undef rb_ary_new2
-#define rb_ary_new2          p->config->ary_new2
-#define rb_ary_clear         p->config->ary_clear
 #define rb_ary_modify        p->config->ary_modify
 #undef RARRAY_LEN
 #define RARRAY_LEN           p->config->array_len
@@ -133,9 +125,6 @@
 #define rb_str_cat_cstr                   p->config->str_cat_cstr
 #define rb_str_subseq                     p->config->str_subseq
 #define rb_str_new_frozen                 p->config->str_new_frozen
-#define rb_str_buf_new                    p->config->str_buf_new
-#undef rb_str_buf_cat
-#define rb_str_buf_cat                    p->config->str_buf_cat
 #define rb_str_modify                     p->config->str_modify
 #define rb_str_set_len                    p->config->str_set_len
 #define rb_str_cat                        p->config->str_cat
@@ -147,8 +136,6 @@
 #define rb_str_to_interned_str            p->config->str_to_interned_str
 #define is_ascii_string                   p->config->is_ascii_string
 #define rb_enc_str_new                    p->config->enc_str_new
-#define rb_enc_str_buf_cat                p->config->enc_str_buf_cat
-#define rb_str_buf_append                 p->config->str_buf_append
 #define rb_str_vcatf                      p->config->str_vcatf
 #undef StringValueCStr
 #define StringValueCStr(v)                p->config->string_value_cstr(&(v))
@@ -162,8 +149,6 @@
 #define rb_filesystem_str_new_cstr        p->config->filesystem_str_new_cstr
 #define rb_obj_as_string                  p->config->obj_as_string
 
-#undef NUM2INT
-#define NUM2INT             p->config->num2int
 #undef INT2NUM
 #define INT2NUM             p->config->int2num
 
@@ -245,8 +230,6 @@
 
 #undef RBOOL
 #define RBOOL p->config->rbool
-#undef UNDEF_P
-#define UNDEF_P p->config->undef_p
 #undef RTEST
 #define RTEST p->config->rtest
 #undef NIL_P
@@ -257,17 +240,12 @@
 #define Qtrue p->config->qtrue
 #undef Qfalse
 #define Qfalse p->config->qfalse
-#undef Qundef
-#define Qundef p->config->qundef
 #define rb_eArgError p->config->eArgError()
 #undef rb_long2int
 #define rb_long2int p->config->long2int
 #define rb_enc_mbminlen p->config->enc_mbminlen
 #define rb_enc_isascii p->config->enc_isascii
 #define rb_enc_mbc_to_codepoint p->config->enc_mbc_to_codepoint
-
-#undef st_init_table_with_size
-#define st_init_table_with_size rb_parser_st_init_table_with_size
 
 #define rb_ast_new() \
     rb_ast_new(p->config)

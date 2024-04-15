@@ -1672,6 +1672,26 @@ class TestRipper::ParserEvents < Test::Unit::TestCase
     assert_equal(%w"frozen_string_literal nottrue", args)
   end
 
+  def test_warning_duplicated_when_clause
+    fmt, *args = warning(<<~STR)
+      a = 1
+      case a
+      when 1
+      when 1
+      when 2
+      else
+      end
+    STR
+    assert_match(/duplicated 'when' clause/, fmt)
+    assert_equal([3], args)
+  end
+
+  def test_warn_duplicated_hash_keys
+    fmt, *args = warn("{ a: 1, a: 2 }")
+    assert_match(/is duplicated and overwritten on line/, fmt)
+    assert_equal([:a, 1], args)
+  end
+
   def test_warn_cr_in_middle
     fmt = nil
     assert_warn("") {fmt, = warn("\r;")}

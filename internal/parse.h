@@ -51,7 +51,7 @@ size_t rb_ruby_parser_memsize(const void *ptr);
 
 void rb_ruby_parser_set_options(rb_parser_t *p, int print, int loop, int chomp, int split);
 rb_parser_t *rb_ruby_parser_set_context(rb_parser_t *p, const struct rb_iseq_struct *base, int main);
-void rb_ruby_parser_set_script_lines(rb_parser_t *p, VALUE lines_array);
+void rb_ruby_parser_set_script_lines(rb_parser_t *p);
 void rb_ruby_parser_error_tolerant(rb_parser_t *p);
 rb_ast_t* rb_ruby_parser_compile_file_path(rb_parser_t *p, VALUE fname, VALUE file, int start);
 void rb_ruby_parser_keep_tokens(rb_parser_t *p);
@@ -65,11 +65,8 @@ int rb_ruby_parser_end_seen_p(rb_parser_t *p);
 int rb_ruby_parser_set_yydebug(rb_parser_t *p, int flag);
 rb_parser_string_t *rb_str_to_parser_string(rb_parser_t *p, VALUE str);
 
-void rb_parser_check_literal_when(struct parser_params *p, NODE *arg, const YYLTYPE *loc);
-void rb_parser_warn_duplicate_keys(struct parser_params *p, NODE *hash);
 int rb_parser_dvar_defined_ref(struct parser_params*, ID, ID**);
 ID rb_parser_internal_id(struct parser_params*);
-VALUE rb_parser_node_case_when_optimizable_literal(struct parser_params *p, const NODE *const node);
 int rb_parser_reg_fragment_check(struct parser_params*, rb_parser_string_t*, int);
 int rb_reg_named_capture_assign_iter_impl(struct parser_params *p, const char *s, long len, rb_encoding *enc, NODE **succ_block, const rb_code_location_t *loc);
 int rb_parser_local_defined(struct parser_params *p, ID id, const struct rb_iseq_struct *iseq);

@@ -195,12 +195,6 @@ enc_codelen(int c, void *enc)
     return rb_enc_codelen(c, (rb_encoding *)enc);
 }
 
-static VALUE
-enc_str_buf_cat(VALUE str, const char *ptr, long len, void *enc)
-{
-    return rb_enc_str_buf_cat(str, ptr, len, (rb_encoding *)enc);
-}
-
 static int
 enc_mbcput(unsigned int c, void *buf, void *enc)
 {
@@ -298,12 +292,6 @@ rbool(VALUE v)
 }
 
 static int
-undef_p(VALUE v)
-{
-    return RB_UNDEF_P(v);
-}
-
-static int
 rtest(VALUE obj)
 {
     return (int)RB_TEST(obj);
@@ -355,18 +343,6 @@ static int *
 rb_errno_ptr2(void)
 {
     return rb_errno_ptr();
-}
-
-static int
-fixnum_p(VALUE obj)
-{
-    return (int)RB_FIXNUM_P(obj);
-}
-
-static int
-symbol_p(VALUE obj)
-{
-    return (int)RB_SYMBOL_P(obj);
 }
 
 static void *
@@ -447,17 +423,12 @@ static const rb_parser_config_t rb_global_parser_config = {
     .compile_callback = rb_suppress_tracing,
     .reg_named_capture_assign = reg_named_capture_assign,
 
-    .fixnum_p = fixnum_p,
-    .symbol_p = symbol_p,
-
     .attr_get = rb_attr_get,
 
     .ary_new = rb_ary_new,
     .ary_push = rb_ary_push,
     .ary_new_from_args = rb_ary_new_from_args,
     .ary_unshift = rb_ary_unshift,
-    .ary_new2 = rb_ary_new2,
-    .ary_clear = rb_ary_clear,
     .ary_modify = rb_ary_modify,
     .array_len = rb_array_len,
     .array_aref = RARRAY_AREF,
@@ -483,8 +454,6 @@ static const rb_parser_config_t rb_global_parser_config = {
     .str_cat_cstr = rb_str_cat_cstr,
     .str_subseq = rb_str_subseq,
     .str_new_frozen = rb_str_new_frozen,
-    .str_buf_new = rb_str_buf_new,
-    .str_buf_cat = rb_str_buf_cat,
     .str_modify = rb_str_modify,
     .str_set_len = rb_str_set_len,
     .str_cat = rb_str_cat,
@@ -494,8 +463,6 @@ static const rb_parser_config_t rb_global_parser_config = {
     .str_to_interned_str = rb_str_to_interned_str,
     .is_ascii_string = is_ascii_string2,
     .enc_str_new = enc_str_new,
-    .enc_str_buf_cat = enc_str_buf_cat,
-    .str_buf_append = rb_str_buf_append,
     .str_vcatf = rb_str_vcatf,
     .string_value_cstr = rb_string_value_cstr,
     .rb_sprintf = rb_sprintf,
@@ -505,7 +472,6 @@ static const rb_parser_config_t rb_global_parser_config = {
     .filesystem_str_new_cstr = rb_filesystem_str_new_cstr,
     .obj_as_string = rb_obj_as_string,
 
-    .num2int = rb_num2int_inline,
     .int2num = rb_int2num_inline,
 
     .stderr_tty_p = rb_stderr_tty_p,
@@ -586,13 +552,11 @@ static const rb_parser_config_t rb_global_parser_config = {
     .strtod = ruby_strtod,
 
     .rbool = rbool,
-    .undef_p = undef_p,
     .rtest = rtest,
     .nil_p = nil_p,
     .qnil = Qnil,
     .qtrue = Qtrue,
     .qfalse = Qfalse,
-    .qundef = Qundef,
     .eArgError = arg_error,
     .long2int = rb_long2int,
 
@@ -658,12 +622,12 @@ rb_parser_set_context(VALUE vparser, const struct rb_iseq_struct *base, int main
 }
 
 void
-rb_parser_set_script_lines(VALUE vparser, VALUE lines)
+rb_parser_set_script_lines(VALUE vparser)
 {
     struct ruby_parser *parser;
 
     TypedData_Get_Struct(vparser, struct ruby_parser, &ruby_parser_data_type, parser);
-    rb_ruby_parser_set_script_lines(parser->parser_params, lines);
+    rb_ruby_parser_set_script_lines(parser->parser_params);
 }
 
 void
@@ -763,10 +727,49 @@ rb_parser_set_yydebug(VALUE vparser, VALUE flag)
     rb_ruby_parser_set_yydebug(parser->parser_params, RTEST(flag));
     return flag;
 }
+
+void
+rb_set_script_lines_for(VALUE vparser, VALUE path)
+{
+    struct ruby_parser *parser;
+    VALUE hash;
+    ID script_lines;
+    CONST_ID(script_lines, "SCRIPT_LINES__");
+    if (!rb_const_defined_at(rb_cObject, script_lines)) return;
+    hash = rb_const_get_at(rb_cObject, script_lines);
+    if (RB_TYPE_P(hash, T_HASH)) {
+        rb_hash_aset(hash, path, Qtrue);
+        TypedData_Get_Struct(vparser, struct ruby_parser, &ruby_parser_data_type, parser);
+        rb_ruby_parser_set_script_lines(parser->parser_params);
+    }
+}
 #endif
 
 VALUE
+rb_parser_build_script_lines_from(rb_parser_ary_t *lines)
+{
+    int i;
+    if (lines->data_type != PARSER_ARY_DATA_SCRIPT_LINE) {
+        rb_bug("unexpected rb_parser_ary_data_type (%d) for script lines", lines->data_type);
+    }
+    VALUE script_lines = rb_ary_new_capa(lines->len);
+    for (i = 0; i < lines->len; i++) {
+        rb_parser_string_t *str = (rb_parser_string_t *)lines->data[i];
+        rb_ary_push(script_lines, rb_enc_str_new(str->ptr, str->len, str->enc));
+    }
+    return script_lines;
+}
+
+VALUE
 rb_str_new_parser_string(rb_parser_string_t *str)
+{
+    VALUE string = rb_enc_interned_str(str->ptr, str->len, str->enc);
+    rb_enc_str_coderange(string);
+    return string;
+}
+
+VALUE
+rb_str_new_mutable_parser_string(rb_parser_string_t *str)
 {
     return rb_enc_str_new(str->ptr, str->len, str->enc);
 }
@@ -963,15 +966,17 @@ rb_node_encoding_val(const NODE *node)
     return rb_enc_from_encoding(RNODE_ENCODING(node)->enc);
 }
 
-VALUE
-rb_script_lines_for(VALUE path)
+void
+rb_parser_aset_script_lines_for(VALUE path, rb_parser_ary_t *lines)
 {
-    VALUE hash, lines;
-    ID script_lines;
-    CONST_ID(script_lines, "SCRIPT_LINES__");
-    if (!rb_const_defined_at(rb_cObject, script_lines)) return Qnil;
-    hash = rb_const_get_at(rb_cObject, script_lines);
-    if (!RB_TYPE_P(hash, T_HASH)) return Qnil;
-    rb_hash_aset(hash, path, lines = rb_ary_new());
-    return lines;
+    VALUE hash, script_lines;
+    ID script_lines_id;
+    if (NIL_P(path) || !lines || FIXNUM_P((VALUE)lines)) return;
+    CONST_ID(script_lines_id, "SCRIPT_LINES__");
+    if (!rb_const_defined_at(rb_cObject, script_lines_id)) return;
+    hash = rb_const_get_at(rb_cObject, script_lines_id);
+    if (!RB_TYPE_P(hash, T_HASH)) return;
+    if (rb_hash_lookup(hash, path) == Qnil) return;
+    script_lines = rb_parser_build_script_lines_from(lines);
+    rb_hash_aset(hash, path, script_lines);
 }

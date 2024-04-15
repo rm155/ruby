@@ -151,22 +151,19 @@ enum feature_flag_bits {
     SEP \
     X(parsetree) \
     SEP \
-    X(parsetree_with_comment) \
-    SEP \
     X(insns) \
-    SEP \
-    X(insns_without_opt) \
     /* END OF DUMPS */
 enum dump_flag_bits {
     dump_version_v,
-    dump_error_tolerant,
+    dump_opt_error_tolerant,
+    dump_opt_comment,
+    dump_opt_optimize,
     EACH_DUMPS(DEFINE_DUMP, COMMA),
-    dump_error_tolerant_bits = (DUMP_BIT(yydebug) |
-                                DUMP_BIT(parsetree) |
-                                DUMP_BIT(parsetree_with_comment)),
     dump_exit_bits = (DUMP_BIT(yydebug) | DUMP_BIT(syntax) |
-                      DUMP_BIT(parsetree) | DUMP_BIT(parsetree_with_comment) |
-                      DUMP_BIT(insns) | DUMP_BIT(insns_without_opt))
+                      DUMP_BIT(parsetree) | DUMP_BIT(insns)),
+    dump_optional_bits = (DUMP_BIT(opt_error_tolerant) |
+                          DUMP_BIT(opt_comment) |
+                          DUMP_BIT(opt_optimize))
 };
 
 static inline void
@@ -222,6 +219,7 @@ cmdline_options_init(ruby_cmdline_options_t *opt)
 #elif defined(YJIT_FORCE_ENABLE)
     opt->features.set |= FEATURE_BIT(yjit);
 #endif
+    opt->dump |= DUMP_BIT(opt_optimize);
     opt->backtrace_length_limit = LONG_MIN;
 
     return opt;
@@ -372,11 +370,12 @@ usage(const char *name, int help, int highlight, int columns)
         M("-y",                           ", --yydebug", "Print parser log; backward compatibility not guaranteed."),
     };
     static const struct ruby_opt_message dumps[] = {
-        M("insns",                                   "", "Instruction sequences."),
-        M("insns_without_opt",                       "", "Instruction sequences compiled with no optimization."),
-        M("yydebug(+error-tolerant)",                "", "yydebug of yacc parser generator."),
-        M("parsetree(+error-tolerant)",              "", "Abstract syntax tree (AST)."),
-        M("parsetree_with_comment(+error-tolerant)", "", "AST with comments."),
+        M("insns",              "", "Instruction sequences."),
+        M("yydebug",            "", "yydebug of yacc parser generator."),
+        M("parsetree",          "", "Abstract syntax tree (AST)."),
+        M("-optimize",          "", "Disable optimization (affects insns)."),
+        M("+error-tolerant",    "", "Error-tolerant parsing (affects yydebug, parsetree)."),
+        M("+comment",           "", "Add comments to AST (affects parsetree)."),
     };
     static const struct ruby_opt_message features[] = {
         M("gems",                  "", "Rubygems (only for debugging, default: "DEFAULT_RUBYGEMS_ENABLED")."),
@@ -440,39 +439,31 @@ usage(const char *name, int help, int highlight, int columns)
 #define rubylib_path_new rb_str_new
 
 static void
-push_include(const char *path, VALUE (*filter)(VALUE))
+ruby_push_include(const char *path, VALUE (*filter)(VALUE))
 {
     const char sep = PATH_SEP_CHAR;
     const char *p, *s;
     VALUE load_path = GET_VM()->load_path;
-
-    p = path;
-    while (*p) {
-        while (*p == sep)
-            p++;
-        if (!*p) break;
-        for (s = p; *s && *s != sep; s = CharNext(s));
-        rb_ary_push(load_path, (*filter)(rubylib_path_new(p, s - p)));
-        p = s;
-    }
-}
-
 #ifdef __CYGWIN__
-static void
-push_include_cygwin(const char *path, VALUE (*filter)(VALUE))
-{
-    const char *p, *s;
     char rubylib[FILENAME_MAX];
     VALUE buf = 0;
+# define is_path_sep(c) ((c) == sep || (c) == ';')
+#else
+# define is_path_sep(c) ((c) == sep)
+#endif
 
+    if (path == 0) return;
     p = path;
     while (*p) {
-        unsigned int len;
-        while (*p == ';')
+        long len;
+        while (is_path_sep(*p))
             p++;
         if (!*p) break;
-        for (s = p; *s && *s != ';'; s = CharNext(s));
+        for (s = p; *s && !is_path_sep(*s); s = CharNext(s));
         len = s - p;
+#undef is_path_sep
+
+#ifdef __CYGWIN__
         if (*s) {
             if (!buf) {
                 buf = rb_str_new(p, len);
@@ -489,23 +480,14 @@ push_include_cygwin(const char *path, VALUE (*filter)(VALUE))
 #else
 # error no cygwin_conv_path
 #endif
-        if (CONV_TO_POSIX_PATH(p, rubylib) == 0)
+        if (CONV_TO_POSIX_PATH(p, rubylib) == 0) {
             p = rubylib;
-        push_include(p, filter);
-        if (!*s) break;
-        p = s + 1;
-    }
-}
-
-#define push_include push_include_cygwin
+            len = strlen(p);
+        }
 #endif
-
-void
-ruby_push_include(const char *path, VALUE (*filter)(VALUE))
-{
-    if (path == 0)
-        return;
-    push_include(path, filter);
+        rb_ary_push(load_path, (*filter)(rubylib_path_new(p, len)));
+        p = s;
+    }
 }
 
 static VALUE
@@ -513,6 +495,7 @@ identical_path(VALUE path)
 {
     return path;
 }
+
 static VALUE
 locale_path(VALUE path)
 {
@@ -978,7 +961,7 @@ name_match_p(const char *name, const char *str, size_t len)
         if (*str != '-' && *str != '_') return 0;
         while (ISALNUM(*name)) name++;
         if (*name != '-' && *name != '_') return 0;
-        ++name;
+        if (!*++name) return 1;
         ++str;
         if (--len == 0) return 1;
     }
@@ -1098,21 +1081,45 @@ memtermspn(const char *str, char term, int len)
 static const char additional_opt_sep = '+';
 
 static unsigned int
-dump_additional_option(const char *str, int len, unsigned int bits, const char *name)
+dump_additional_option_flag(const char *str, int len, unsigned int bits, bool set)
+{
+#define SET_DUMP_OPT(bit) if (NAME_MATCH_P(#bit, str, len)) { \
+        return set ? (bits | DUMP_BIT(opt_ ## bit)) : (bits & ~DUMP_BIT(opt_ ## bit)); \
+    }
+    SET_DUMP_OPT(error_tolerant);
+    SET_DUMP_OPT(comment);
+    SET_DUMP_OPT(optimize);
+#undef SET_DUMP_OPT
+    rb_warn("don't know how to dump with%s '%.*s'", set ? "" : "out", len, str);
+    return bits;
+}
+
+static unsigned int
+dump_additional_option(const char *str, int len, unsigned int bits)
 {
     int w;
     for (; len-- > 0 && *str++ == additional_opt_sep; len -= w, str += w) {
         w = memtermspn(str, additional_opt_sep, len);
-#define SET_ADDITIONAL(bit) if (NAME_MATCH_P(#bit, str, w)) { \
-            if (bits & DUMP_BIT(bit)) \
-                rb_warn("duplicate option to dump %s: '%.*s'", name, w, str); \
-            bits |= DUMP_BIT(bit); \
-            continue; \
+        bool set = true;
+        if (*str == '-' || *str == '+') {
+            set = *str++ == '+';
+            --w;
         }
-        if (dump_error_tolerant_bits & bits) {
-            SET_ADDITIONAL(error_tolerant);
+        else {
+            int n = memtermspn(str, '-', w);
+            if (str[n] == '-') {
+                if (NAME_MATCH_P("with", str, n)) {
+                    str += n;
+                    w -= n;
+                }
+                else if (NAME_MATCH_P("without", str, n)) {
+                    set = false;
+                    str += n;
+                    w -= n;
+                }
+            }
         }
-        rb_warn("don't know how to dump %s with '%.*s'", name, w, str);
+        bits = dump_additional_option_flag(str, w, bits, set);
     }
     return bits;
 }
@@ -1121,12 +1128,17 @@ static void
 dump_option(const char *str, int len, void *arg)
 {
     static const char list[] = EACH_DUMPS(LITERAL_NAME_ELEMENT, ", ");
+    unsigned int *bits_ptr = (unsigned int *)arg;
+    if (*str == '+' || *str == '-') {
+        bool set = *str++ == '+';
+        *bits_ptr = dump_additional_option_flag(str, --len, *bits_ptr, set);
+        return;
+    }
     int w = memtermspn(str, additional_opt_sep, len);
 
 #define SET_WHEN_DUMP(bit) \
-    if (NAME_MATCH_P(#bit, (str), (w))) { \
-        *(unsigned int *)arg |= \
-            dump_additional_option(str + w, len - w, DUMP_BIT(bit), #bit); \
+    if (NAME_MATCH_P(#bit "-", (str), (w))) { \
+        *bits_ptr = dump_additional_option(str + w, len - w, *bits_ptr | DUMP_BIT(bit)); \
         return; \
     }
     EACH_DUMPS(SET_WHEN_DUMP, ;);
@@ -2049,12 +2061,13 @@ process_script(ruby_cmdline_options_t *opt)
 {
     rb_ast_t *ast;
     VALUE parser = rb_parser_new();
+    const unsigned int dump = opt->dump;
 
-    if (opt->dump & DUMP_BIT(yydebug)) {
+    if (dump & DUMP_BIT(yydebug)) {
         rb_parser_set_yydebug(parser, Qtrue);
     }
 
-    if (opt->dump & DUMP_BIT(error_tolerant)) {
+    if ((dump & dump_exit_bits) && (dump & DUMP_BIT(opt_error_tolerant))) {
         rb_parser_error_tolerant(parser);
     }
 
@@ -2338,8 +2351,6 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 
 #ifdef _WIN32
     translit_char_bin(RSTRING_PTR(opt->script_name), '\\', '/');
-#elif defined DOSISH
-    translit_char(RSTRING_PTR(opt->script_name), '\\', '/');
 #endif
 
     ruby_gc_set_params();
@@ -2497,10 +2508,10 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
         if (!dump) return Qtrue;
     }
 
-    if (dump & (DUMP_BIT(parsetree)|DUMP_BIT(parsetree_with_comment))) {
+    if (dump & DUMP_BIT(parsetree)) {
         VALUE tree;
         if (result.ast) {
-            int comment = dump & DUMP_BIT(parsetree_with_comment);
+            int comment = opt->dump & DUMP_BIT(opt_comment);
             tree = rb_parser_dump_tree(result.ast->body.root, comment);
         }
         else {
@@ -2508,7 +2519,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
         }
         rb_io_write(rb_stdout, tree);
         rb_io_flush(rb_stdout);
-        dump &= ~DUMP_BIT(parsetree)&~DUMP_BIT(parsetree_with_comment);
+        dump &= ~DUMP_BIT(parsetree);
         if (!dump) {
             dispose_result();
             return Qtrue;
@@ -2533,7 +2544,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
         GetBindingPtr(rb_const_get(rb_cObject, rb_intern("TOPLEVEL_BINDING")), toplevel_binding);
         const struct rb_block *base_block = toplevel_context(toplevel_binding);
         const rb_iseq_t *parent = vm_block_iseq(base_block);
-        bool optimize = !(dump & DUMP_BIT(insns_without_opt));
+        bool optimize = (opt->dump & DUMP_BIT(opt_optimize)) != 0;
 
         if (!result.ast) {
             pm_parse_result_t *pm = &result.prism;
@@ -2547,7 +2558,7 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
         }
     }
 
-    if (dump & (DUMP_BIT(insns) | DUMP_BIT(insns_without_opt))) {
+    if (dump & DUMP_BIT(insns)) {
         rb_io_write(rb_stdout, rb_iseq_disasm((const rb_iseq_t *)iseq));
         rb_io_flush(rb_stdout);
         dump &= ~DUMP_BIT(insns);
@@ -2581,7 +2592,7 @@ struct load_file_arg {
     VALUE f;
 };
 
-VALUE rb_script_lines_for(VALUE path);
+void rb_set_script_lines_for(VALUE vparser, VALUE path);
 
 static VALUE
 load_file_internal(VALUE argp_v)
@@ -2686,10 +2697,7 @@ load_file_internal(VALUE argp_v)
     rb_parser_set_options(parser, opt->do_print, opt->do_loop,
                           opt->do_line, opt->do_split);
 
-    VALUE lines = rb_script_lines_for(orig_fname);
-    if (!NIL_P(lines)) {
-        rb_parser_set_script_lines(parser, lines);
-    }
+    rb_set_script_lines_for(parser, orig_fname);
 
     if (NIL_P(f)) {
         f = rb_str_new(0, 0);

@@ -19,6 +19,7 @@ VALUE rb_parser_set_context(VALUE, const struct rb_iseq_struct *, int);
 VALUE rb_parser_new(void);
 rb_ast_t *rb_parser_compile_string_path(VALUE vparser, VALUE fname, VALUE src, int line);
 VALUE rb_str_new_parser_string(rb_parser_string_t *str);
+VALUE rb_str_new_mutable_parser_string(rb_parser_string_t *str);
 
 VALUE rb_node_str_string_val(const NODE *);
 VALUE rb_node_sym_string_val(const NODE *);
@@ -38,9 +39,11 @@ RUBY_SYMBOL_EXPORT_END
 VALUE rb_parser_end_seen_p(VALUE);
 VALUE rb_parser_encoding(VALUE);
 VALUE rb_parser_set_yydebug(VALUE, VALUE);
+VALUE rb_parser_build_script_lines_from(rb_parser_ary_t *script_lines);
+void rb_parser_aset_script_lines_for(VALUE path, rb_parser_ary_t *script_lines);
 void rb_parser_set_options(VALUE, int, int, int, int);
 void *rb_parser_load_file(VALUE parser, VALUE name);
-void rb_parser_set_script_lines(VALUE vparser, VALUE lines_array);
+void rb_parser_set_script_lines(VALUE vparser);
 void rb_parser_error_tolerant(VALUE vparser);
 void rb_parser_keep_tokens(VALUE vparser);
 

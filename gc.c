@@ -2416,6 +2416,55 @@ rb_gc_initial_stress_set(VALUE flag)
     initial_stress = flag;
 }
 
+static void * Alloc_GC_impl(void);
+
+#if USE_SHARED_GC
+# include "dln.h"
+# define Alloc_GC rb_gc_functions->init
+
+void
+ruby_external_gc_init()
+{
+    rb_gc_function_map_t *map = malloc(sizeof(rb_gc_function_map_t));
+    rb_gc_functions = map;
+
+    char *gc_so_path = getenv("RUBY_GC_LIBRARY_PATH");
+    if (!gc_so_path) {
+        map->init = Alloc_GC_impl;
+        return;
+    }
+
+    void *h = dln_open(gc_so_path);
+    if (!h) {
+        rb_bug(
+            "ruby_external_gc_init: Shared library %s cannot be opened.",
+            gc_so_path
+        );
+    }
+
+    void *gc_init_func = dln_symbol(h, "Init_GC");
+    if (!gc_init_func) {
+        rb_bug(
+            "ruby_external_gc_init: Init_GC func not exported by library %s",
+            gc_so_path
+        );
+    }
+
+    map->init = gc_init_func;
+}
+#else
+# define Alloc_GC Alloc_GC_impl
+#endif
+
+rb_objspace_t *
+rb_objspace_alloc(void)
+{
+#if USE_SHARED_GC
+    ruby_external_gc_init();
+#endif
+    return (rb_objspace_t *)Alloc_GC();
+}
+
 static void free_stack_chunks(mark_stack_t *);
 static void mark_stack_free_cache(mark_stack_t *);
 static void heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked);
@@ -4895,8 +4944,8 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 }
 
 
-#define OBJ_ID_INCREMENT (sizeof(RVALUE) / 2)
-#define OBJ_ID_INITIAL (OBJ_ID_INCREMENT * 2)
+#define OBJ_ID_INCREMENT (sizeof(RVALUE))
+#define OBJ_ID_INITIAL (OBJ_ID_INCREMENT)
 
 static int
 object_id_cmp(st_data_t x, st_data_t y)
@@ -5026,8 +5075,8 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     return objspace;
 }
 
-rb_objspace_t *
-rb_objspace_alloc(void)
+static void *
+Alloc_GC_impl(void)
 {
     rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
     ruby_current_vm_ptr->objspace = objspace;
@@ -5426,6 +5475,7 @@ objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void
     objspace_each_exec(protected, &each_obj_data);
 }
 
+#if GC_CAN_COMPILE_COMPACTION
 static void
 objspace_each_pages(rb_objspace_t *objspace, each_page_callback *callback, void *data, bool protected)
 {
@@ -5440,6 +5490,7 @@ objspace_each_pages(rb_objspace_t *objspace, each_page_callback *callback, void 
     }
     objspace_each_exec(protected, &each_obj_data);
 }
+#endif
 
 struct os_each_struct {
     size_t num;
@@ -6403,29 +6454,32 @@ id2ref(VALUE objid)
 #define NUM2PTR(x) NUM2ULL(x)
 #endif
     rb_objspace_t *objspace = &rb_objspace;
-    VALUE ptr;
-    VALUE orig;
-    void *p0;
 
     objid = rb_to_int(objid);
     if (FIXNUM_P(objid) || rb_big_size(objid) <= SIZEOF_VOIDP) {
-        ptr = NUM2PTR(objid);
-        if (ptr == Qtrue) return Qtrue;
-        if (ptr == Qfalse) return Qfalse;
-        if (NIL_P(ptr)) return Qnil;
-        if (FIXNUM_P(ptr)) return (VALUE)ptr;
-        if (FLONUM_P(ptr)) return (VALUE)ptr;
+        VALUE ptr = NUM2PTR(objid);
+        if (SPECIAL_CONST_P(ptr)) {
+            if (ptr == Qtrue) return Qtrue;
+            if (ptr == Qfalse) return Qfalse;
+            if (NIL_P(ptr)) return Qnil;
+            if (FIXNUM_P(ptr)) return ptr;
+            if (FLONUM_P(ptr)) return ptr;
 
-        ptr = obj_id_to_ref(objid);
-        if ((ptr % sizeof(RVALUE)) == (4 << 2)) {
-            ID symid = ptr / sizeof(RVALUE);
-            p0 = (void *)ptr;
-            if (!rb_static_id_valid_p(symid))
-                rb_raise(rb_eRangeError, "%p is not symbol id value", p0);
-            return ID2SYM(symid);
+            if (SYMBOL_P(ptr)) {
+                // Check that the symbol is valid
+                if (rb_static_id_valid_p(SYM2ID(ptr))) {
+                    return ptr;
+                }
+                else {
+                    rb_raise(rb_eRangeError, "%p is not symbol id value", (void *)ptr);
+                }
+            }
+
+            rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not id value", rb_int2str(objid, 10));
         }
     }
 
+    VALUE orig;
     if (!UNDEF_P(orig = rb_gc_id2ref_obj_tbl(objid)) &&
         is_live_object(objspace, orig)) {
 	if (GET_OBJSPACE_OF_VALUE(orig) == objspace || rb_ractor_shareable_p(orig)) {
@@ -6459,18 +6513,12 @@ os_id2ref(VALUE os, VALUE objid)
 static VALUE
 rb_find_object_id(VALUE obj, VALUE (*get_heap_object_id)(VALUE))
 {
-    if (STATIC_SYM_P(obj)) {
-        return (SYM2ID(obj) * sizeof(RVALUE) + (4 << 2)) | FIXNUM_FLAG;
-    }
-    else if (FLONUM_P(obj)) {
+    if (SPECIAL_CONST_P(obj)) {
 #if SIZEOF_LONG == SIZEOF_VOIDP
         return LONG2NUM((SIGNED_VALUE)obj);
 #else
         return LL2NUM((SIGNED_VALUE)obj);
 #endif
-    }
-    else if (SPECIAL_CONST_P(obj)) {
-        return LONG2NUM((SIGNED_VALUE)obj);
     }
 
     return get_heap_object_id(obj);
@@ -12389,15 +12437,15 @@ gc_set_candidate_object_i(void *vstart, void *vend, size_t stride, void *data)
     for (; v != (VALUE)vend; v += stride) {
         asan_unpoisoning_object(v) {
             switch (BUILTIN_TYPE(v)) {
-            case T_NONE:
-            case T_ZOMBIE:
+              case T_NONE:
+              case T_ZOMBIE:
                 break;
-            case T_STRING:
+              case T_STRING:
                 // precompute the string coderange. This both save time for when it will be
                 // eventually needed, and avoid mutating heap pages after a potential fork.
                 rb_enc_str_coderange(v);
                 // fall through
-            default:
+              default:
                 if (!RVALUE_OLD_P(v) && !RVALUE_WB_UNPROTECTED(v)) {
                     RVALUE_AGE_SET_CANDIDATE(objspace, v);
                 }
@@ -13623,7 +13671,7 @@ gc_verify_compaction_references(rb_execution_context_t *ec, VALUE self, VALUE do
 
             /* Find out which pool has the most pages */
             size_t max_existing_pages = 0;
-            for(int i = 0; i < SIZE_POOL_COUNT; i++) {
+            for (int i = 0; i < SIZE_POOL_COUNT; i++) {
                 rb_size_pool_t *size_pool = &size_pools[i];
                 rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
                 max_existing_pages = MAX(max_existing_pages, heap->total_pages);

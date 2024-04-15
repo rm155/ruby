@@ -15,17 +15,17 @@
 #include "node.h"
 #include "rubyparser.h"
 #include "internal/parse.h"
-#define T_NODE 0x1b
 
 #else
 
 #include "internal.h"
 #include "internal/hash.h"
-#include "internal/variable.h"
 #include "ruby/ruby.h"
 #include "vm_core.h"
 
 #endif
+
+#include "internal/variable.h"
 
 #define NODE_BUF_DEFAULT_SIZE (sizeof(struct RNode) * 16)
 
@@ -87,16 +87,10 @@ rb_node_buffer_new(void)
 typedef void node_itr_t(rb_ast_t *ast, void *ctx, NODE *node);
 static void iterate_node_values(rb_ast_t *ast, node_buffer_list_t *nb, node_itr_t * func, void *ctx);
 
-/* Setup NODE structure.
- * NODE is not an object managed by GC, but it imitates an object
- * so that it can work with `RB_TYPE_P(obj, T_NODE)`.
- * This dirty hack is needed because Ripper jumbles NODEs and other type
- * objects.
- */
 void
 rb_node_init(NODE *n, enum node_type type)
 {
-    RNODE(n)->flags = T_NODE;
+    RNODE(n)->flags = 0;
     nd_init_type(RNODE(n), type);
     RNODE(n)->nd_loc.beg_pos.lineno = 0;
     RNODE(n)->nd_loc.beg_pos.column = 0;
@@ -351,18 +345,24 @@ iterate_node_values(rb_ast_t *ast, node_buffer_list_t *nb, node_itr_t * func, vo
     }
 }
 
-void
-rb_ast_mark_and_move(rb_ast_t *ast, bool reference_updating)
+static void
+script_lines_free(rb_ast_t *ast, rb_parser_ary_t *script_lines)
 {
-    if (ast->node_buffer) {
-        if (ast->body.script_lines) rb_gc_mark_and_move(&ast->body.script_lines);
+    for (long i = 0; i < script_lines->len; i++) {
+        parser_string_free(ast, (rb_parser_string_t *)script_lines->data[i]);
     }
+    xfree(script_lines->data);
+    xfree(script_lines);
 }
 
 void
 rb_ast_free(rb_ast_t *ast)
 {
     if (ast->node_buffer) {
+        if (ast->body.script_lines && !FIXNUM_P((VALUE)ast->body.script_lines)) {
+            script_lines_free(ast, ast->body.script_lines);
+            ast->body.script_lines = NULL;
+        }
         rb_node_buffer_free(ast, ast->node_buffer);
         ast->node_buffer = 0;
     }
