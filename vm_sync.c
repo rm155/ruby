@@ -223,7 +223,9 @@ rb_vm_barrier(void)
         VM_ASSERT(cr == GET_RACTOR());
         VM_ASSERT(rb_ractor_status_p(cr, ractor_running));
 
+	rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_BARRIER_CREATING);
         rb_ractor_sched_barrier_start(vm, cr);
+	rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_BARRIER_CREATING);
     }
 }
 
