@@ -112,7 +112,11 @@ class Reline::LineEditor
     else
       prompt = @prompt
     end
-    if @prompt_proc
+    if !@is_multiline
+      mode_string = check_mode_string
+      prompt = mode_string + prompt if mode_string
+      [prompt] + [''] * (buffer.size - 1)
+    elsif @prompt_proc
       prompt_list = @prompt_proc.(buffer).map { |pr| pr.gsub("\n", "\\n") }
       prompt_list.map!{ prompt } if @vi_arg or @searching_prompt
       prompt_list = [prompt] if prompt_list.empty?
@@ -1220,7 +1224,7 @@ class Reline::LineEditor
   end
 
   def line()
-    current_line unless eof?
+    @buffer_of_lines.join("\n") unless eof?
   end
 
   def current_line
@@ -1304,14 +1308,12 @@ class Reline::LineEditor
       end
       target = before
     end
-    if @is_multiline
-      lines = whole_lines
-      if @line_index > 0
-        preposing = lines[0..(@line_index - 1)].join("\n") + "\n" + preposing
-      end
-      if (lines.size - 1) > @line_index
-        postposing = postposing + "\n" + lines[(@line_index + 1)..-1].join("\n")
-      end
+    lines = whole_lines
+    if @line_index > 0
+      preposing = lines[0..(@line_index - 1)].join("\n") + "\n" + preposing
+    end
+    if (lines.size - 1) > @line_index
+      postposing = postposing + "\n" + lines[(@line_index + 1)..-1].join("\n")
     end
     [preposing.encode(@encoding), target.encode(@encoding), postposing.encode(@encoding)]
   end
@@ -1333,20 +1335,16 @@ class Reline::LineEditor
 
   def delete_text(start = nil, length = nil)
     if start.nil? and length.nil?
-      if @is_multiline
-        if @buffer_of_lines.size == 1
-          @buffer_of_lines[@line_index] = ''
-          @byte_pointer = 0
-        elsif @line_index == (@buffer_of_lines.size - 1) and @line_index > 0
-          @buffer_of_lines.pop
-          @line_index -= 1
-          @byte_pointer = 0
-        elsif @line_index < (@buffer_of_lines.size - 1)
-          @buffer_of_lines.delete_at(@line_index)
-          @byte_pointer = 0
-        end
-      else
-        set_current_line('', 0)
+      if @buffer_of_lines.size == 1
+        @buffer_of_lines[@line_index] = ''
+        @byte_pointer = 0
+      elsif @line_index == (@buffer_of_lines.size - 1) and @line_index > 0
+        @buffer_of_lines.pop
+        @line_index -= 1
+        @byte_pointer = 0
+      elsif @line_index < (@buffer_of_lines.size - 1)
+        @buffer_of_lines.delete_at(@line_index)
+        @byte_pointer = 0
       end
     elsif not start.nil? and not length.nil?
       if current_line
@@ -1502,7 +1500,7 @@ class Reline::LineEditor
     byte_size = Reline::Unicode.get_next_mbchar_size(current_line, @byte_pointer)
     if (@byte_pointer < current_line.bytesize)
       @byte_pointer += byte_size
-    elsif @is_multiline and @config.editing_mode_is?(:emacs) and @byte_pointer == current_line.bytesize and @line_index < @buffer_of_lines.size - 1
+    elsif @config.editing_mode_is?(:emacs) and @byte_pointer == current_line.bytesize and @line_index < @buffer_of_lines.size - 1
       @byte_pointer = 0
       @line_index += 1
     end
@@ -1515,7 +1513,7 @@ class Reline::LineEditor
     if @byte_pointer > 0
       byte_size = Reline::Unicode.get_prev_mbchar_size(current_line, @byte_pointer)
       @byte_pointer -= byte_size
-    elsif @is_multiline and @config.editing_mode_is?(:emacs) and @byte_pointer == 0 and @line_index > 0
+    elsif @config.editing_mode_is?(:emacs) and @byte_pointer == 0 and @line_index > 0
       @line_index -= 1
       @byte_pointer = current_line.bytesize
     end
@@ -1543,131 +1541,95 @@ class Reline::LineEditor
   end
   alias_method :end_of_line, :ed_move_to_end
 
-  private def generate_searcher
-    Fiber.new do |first_key|
-      prev_search_key = first_key
-      search_word = String.new(encoding: @encoding)
-      multibyte_buf = String.new(encoding: 'ASCII-8BIT')
-      last_hit = nil
-      case first_key
-      when "\C-r".ord
-        prompt_name = 'reverse-i-search'
-      when "\C-s".ord
-        prompt_name = 'i-search'
-      end
-      loop do
-        key = Fiber.yield(search_word)
-        search_again = false
-        case key
-        when -1 # determined
-          Reline.last_incremental_search = search_word
-          break
-        when "\C-h".ord, "\C-?".ord
-          grapheme_clusters = search_word.grapheme_clusters
-          if grapheme_clusters.size > 0
-            grapheme_clusters.pop
-            search_word = grapheme_clusters.join
-          end
-        when "\C-r".ord, "\C-s".ord
-          search_again = true if prev_search_key == key
-          prev_search_key = key
-        else
-          multibyte_buf << key
-          if multibyte_buf.dup.force_encoding(@encoding).valid_encoding?
-            search_word << multibyte_buf.dup.force_encoding(@encoding)
-            multibyte_buf.clear
-          end
+  private def generate_searcher(search_key)
+    search_word = String.new(encoding: @encoding)
+    multibyte_buf = String.new(encoding: 'ASCII-8BIT')
+    hit_pointer = nil
+    lambda do |key|
+      search_again = false
+      case key
+      when "\C-h".ord, "\C-?".ord
+        grapheme_clusters = search_word.grapheme_clusters
+        if grapheme_clusters.size > 0
+          grapheme_clusters.pop
+          search_word = grapheme_clusters.join
         end
-        hit = nil
-        if not search_word.empty? and @line_backup_in_history&.include?(search_word)
-          @history_pointer = nil
-          hit = @line_backup_in_history
-        else
-          if search_again
-            if search_word.empty? and Reline.last_incremental_search
-              search_word = Reline.last_incremental_search
-            end
-            if @history_pointer
-              case prev_search_key
-              when "\C-r".ord
-                history_pointer_base = 0
-                history = Reline::HISTORY[0..(@history_pointer - 1)]
-              when "\C-s".ord
-                history_pointer_base = @history_pointer + 1
-                history = Reline::HISTORY[(@history_pointer + 1)..-1]
-              end
-            else
-              history_pointer_base = 0
-              history = Reline::HISTORY
-            end
-          elsif @history_pointer
-            case prev_search_key
+      when "\C-r".ord, "\C-s".ord
+        search_again = true if search_key == key
+        search_key = key
+      else
+        multibyte_buf << key
+        if multibyte_buf.dup.force_encoding(@encoding).valid_encoding?
+          search_word << multibyte_buf.dup.force_encoding(@encoding)
+          multibyte_buf.clear
+        end
+      end
+      hit = nil
+      if not search_word.empty? and @line_backup_in_history&.include?(search_word)
+        hit_pointer = Reline::HISTORY.size
+        hit = @line_backup_in_history
+      else
+        if search_again
+          if search_word.empty? and Reline.last_incremental_search
+            search_word = Reline.last_incremental_search
+          end
+          if @history_pointer
+            case search_key
             when "\C-r".ord
               history_pointer_base = 0
-              history = Reline::HISTORY[0..@history_pointer]
+              history = Reline::HISTORY[0..(@history_pointer - 1)]
             when "\C-s".ord
-              history_pointer_base = @history_pointer
-              history = Reline::HISTORY[@history_pointer..-1]
+              history_pointer_base = @history_pointer + 1
+              history = Reline::HISTORY[(@history_pointer + 1)..-1]
             end
           else
             history_pointer_base = 0
             history = Reline::HISTORY
           end
-          case prev_search_key
+        elsif @history_pointer
+          case search_key
           when "\C-r".ord
-            hit_index = history.rindex { |item|
-              item.include?(search_word)
-            }
+            history_pointer_base = 0
+            history = Reline::HISTORY[0..@history_pointer]
           when "\C-s".ord
-            hit_index = history.index { |item|
-              item.include?(search_word)
-            }
+            history_pointer_base = @history_pointer
+            history = Reline::HISTORY[@history_pointer..-1]
           end
-          if hit_index
-            @history_pointer = history_pointer_base + hit_index
-            hit = Reline::HISTORY[@history_pointer]
-          end
-        end
-        case prev_search_key
-        when "\C-r".ord
-          prompt_name = 'reverse-i-search'
-        when "\C-s".ord
-          prompt_name = 'i-search'
-        end
-        if hit
-          if @is_multiline
-            @buffer_of_lines = hit.split("\n")
-            @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-            @line_index = @buffer_of_lines.size - 1
-            @byte_pointer = current_line.bytesize
-            @searching_prompt = "(%s)`%s'" % [prompt_name, search_word]
-          else
-            @buffer_of_lines = [hit]
-            @byte_pointer = hit.bytesize
-            @searching_prompt = "(%s)`%s': %s" % [prompt_name, search_word, hit]
-          end
-          last_hit = hit
         else
-          if @is_multiline
-            @searching_prompt = "(failed %s)`%s'" % [prompt_name, search_word]
-          else
-            @searching_prompt = "(failed %s)`%s': %s" % [prompt_name, search_word, last_hit]
-          end
+          history_pointer_base = 0
+          history = Reline::HISTORY
+        end
+        case search_key
+        when "\C-r".ord
+          hit_index = history.rindex { |item|
+            item.include?(search_word)
+          }
+        when "\C-s".ord
+          hit_index = history.index { |item|
+            item.include?(search_word)
+          }
+        end
+        if hit_index
+          hit_pointer = history_pointer_base + hit_index
+          hit = Reline::HISTORY[hit_pointer]
         end
       end
+      case search_key
+      when "\C-r".ord
+        prompt_name = 'reverse-i-search'
+      when "\C-s".ord
+        prompt_name = 'i-search'
+      end
+      prompt_name = "failed #{prompt_name}" unless hit
+      [search_word, prompt_name, hit_pointer]
     end
   end
 
   private def incremental_search_history(key)
     unless @history_pointer
-      if @is_multiline
-        @line_backup_in_history = whole_buffer
-      else
-        @line_backup_in_history = current_line
-      end
+      @line_backup_in_history = whole_buffer
     end
-    searcher = generate_searcher
-    searcher.resume(key)
+    searcher = generate_searcher(key)
     @searching_prompt = "(reverse-i-search)`': "
     termination_keys = ["\C-j".ord]
     termination_keys.concat(@config.isearch_terminators&.chars&.map(&:ord)) if @config.isearch_terminators
@@ -1679,53 +1641,41 @@ class Reline::LineEditor
         else
           buffer = @line_backup_in_history
         end
-        if @is_multiline
-          @buffer_of_lines = buffer.split("\n")
-          @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-          @line_index = @buffer_of_lines.size - 1
-        else
-          @buffer_of_lines = [buffer]
-        end
+        @buffer_of_lines = buffer.split("\n")
+        @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
+        @line_index = @buffer_of_lines.size - 1
         @searching_prompt = nil
         @waiting_proc = nil
         @byte_pointer = 0
-        searcher.resume(-1)
       when "\C-g".ord
-        if @is_multiline
-          @buffer_of_lines = @line_backup_in_history.split("\n")
-          @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-          @line_index = @buffer_of_lines.size - 1
-        else
-          @buffer_of_lines = [@line_backup_in_history]
-        end
-        @history_pointer = nil
+        @buffer_of_lines = @line_backup_in_history.split("\n")
+        @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
+        @line_index = @buffer_of_lines.size - 1
+        move_history(nil, line: :end, cursor: :end, save_buffer: false)
         @searching_prompt = nil
         @waiting_proc = nil
-        @line_backup_in_history = nil
         @byte_pointer = 0
       else
         chr = k.is_a?(String) ? k : k.chr(Encoding::ASCII_8BIT)
         if chr.match?(/[[:print:]]/) or k == "\C-h".ord or k == "\C-?".ord or k == "\C-r".ord or k == "\C-s".ord
-          searcher.resume(k)
+          search_word, prompt_name, hit_pointer = searcher.call(k)
+          Reline.last_incremental_search = search_word
+          @searching_prompt = "(%s)`%s'" % [prompt_name, search_word]
+          @searching_prompt += ': ' unless @is_multiline
+          move_history(hit_pointer, line: :end, cursor: :end, save_buffer: false) if hit_pointer
         else
           if @history_pointer
             line = Reline::HISTORY[@history_pointer]
           else
             line = @line_backup_in_history
           end
-          if @is_multiline
-            @line_backup_in_history = whole_buffer
-            @buffer_of_lines = line.split("\n")
-            @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-            @line_index = @buffer_of_lines.size - 1
-          else
-            @line_backup_in_history = current_line
-            @buffer_of_lines = [line]
-          end
+          @line_backup_in_history = whole_buffer
+          @buffer_of_lines = line.split("\n")
+          @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
+          @line_index = @buffer_of_lines.size - 1
           @searching_prompt = nil
           @waiting_proc = nil
           @byte_pointer = 0
-          searcher.resume(-1)
         end
       end
     }
@@ -1741,191 +1691,96 @@ class Reline::LineEditor
   end
   alias_method :forward_search_history, :vi_search_next
 
+  private def search_history(prefix, pointer_range)
+    pointer_range.each do |pointer|
+      lines = Reline::HISTORY[pointer].split("\n")
+      lines.each_with_index do |line, index|
+        return [pointer, index] if line.start_with?(prefix)
+      end
+    end
+    nil
+  end
+
   private def ed_search_prev_history(key, arg: 1)
-    history = nil
-    h_pointer = nil
-    line_no = nil
-    substr = current_line.slice(0, @byte_pointer)
-    if @history_pointer.nil?
-      return if not current_line.empty? and substr.empty?
-      history = Reline::HISTORY
-    elsif @history_pointer.zero?
-      history = nil
-      h_pointer = nil
-    else
-      history = Reline::HISTORY.slice(0, @history_pointer)
-    end
-    return if history.nil?
-    if @is_multiline
-      h_pointer = history.rindex { |h|
-        h.split("\n").each_with_index { |l, i|
-          if l.start_with?(substr)
-            line_no = i
-            break
-          end
-        }
-        not line_no.nil?
-      }
-    else
-      h_pointer = history.rindex { |l|
-        l.start_with?(substr)
-      }
-    end
-    return if h_pointer.nil?
-    @history_pointer = h_pointer
-    cursor = current_byte_pointer_cursor
-    if @is_multiline
-      @buffer_of_lines = Reline::HISTORY[@history_pointer].split("\n")
-      @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-      @line_index = line_no
-      calculate_nearest_cursor(cursor)
-    else
-      @buffer_of_lines = [Reline::HISTORY[@history_pointer]]
-      calculate_nearest_cursor(cursor)
-    end
+    substr = current_line.byteslice(0, @byte_pointer)
+    return if @history_pointer == 0
+    return if @history_pointer.nil? && substr.empty? && !current_line.empty?
+
+    history_range = 0...(@history_pointer || Reline::HISTORY.size)
+    h_pointer, line_index = search_history(substr, history_range.reverse_each)
+    return unless h_pointer
+    move_history(h_pointer, line: line_index || :start, cursor: @byte_pointer)
     arg -= 1
     ed_search_prev_history(key, arg: arg) if arg > 0
   end
   alias_method :history_search_backward, :ed_search_prev_history
 
   private def ed_search_next_history(key, arg: 1)
-    substr = current_line.slice(0, @byte_pointer)
-    if @history_pointer.nil?
-      return
-    elsif @history_pointer == (Reline::HISTORY.size - 1) and not substr.empty?
-      return
-    end
+    substr = current_line.byteslice(0, @byte_pointer)
+    return if @history_pointer.nil?
+
+    history_range = @history_pointer + 1...Reline::HISTORY.size
     history = Reline::HISTORY.slice((@history_pointer + 1)..-1)
-    h_pointer = nil
-    line_no = nil
-    if @is_multiline
-      h_pointer = history.index { |h|
-        h.split("\n").each_with_index { |l, i|
-          if l.start_with?(substr)
-            line_no = i
-            break
-          end
-        }
-        not line_no.nil?
-      }
-    else
-      h_pointer = history.index { |l|
-        l.start_with?(substr)
-      }
-    end
-    h_pointer += @history_pointer + 1 if h_pointer and @history_pointer
+    h_pointer, line_index = search_history(substr, history_range)
     return if h_pointer.nil? and not substr.empty?
-    @history_pointer = h_pointer
-    if @is_multiline
-      if @history_pointer.nil? and substr.empty?
-        @buffer_of_lines = []
-        @line_index = 0
-        @byte_pointer = 0
-      else
-        cursor = current_byte_pointer_cursor
-        @buffer_of_lines = Reline::HISTORY[@history_pointer].split("\n")
-        @line_index = line_no
-        calculate_nearest_cursor(cursor)
-      end
-      @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-    else
-      if @history_pointer.nil? and substr.empty?
-        set_current_line('', 0)
-      else
-        set_current_line(Reline::HISTORY[@history_pointer])
-      end
-    end
+
+    move_history(h_pointer, line: line_index || :start, cursor: @byte_pointer)
     arg -= 1
     ed_search_next_history(key, arg: arg) if arg > 0
   end
   alias_method :history_search_forward, :ed_search_next_history
 
+  private def move_history(history_pointer, line:, cursor:, save_buffer: true)
+    history_pointer ||= Reline::HISTORY.size
+    return if history_pointer < 0 || history_pointer > Reline::HISTORY.size
+    old_history_pointer = @history_pointer || Reline::HISTORY.size
+    if old_history_pointer == Reline::HISTORY.size
+      @line_backup_in_history = save_buffer ? whole_buffer : ''
+    else
+      Reline::HISTORY[old_history_pointer] = whole_buffer if save_buffer
+    end
+    if history_pointer == Reline::HISTORY.size
+      buf = @line_backup_in_history
+      @history_pointer = @line_backup_in_history = nil
+    else
+      buf = Reline::HISTORY[history_pointer]
+      @history_pointer = history_pointer
+    end
+    @buffer_of_lines = buf.split("\n")
+    @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
+    @line_index = line == :start ? 0 : line == :end ? @buffer_of_lines.size - 1 : line
+    @byte_pointer = cursor == :start ? 0 : cursor == :end ? current_line.bytesize : cursor
+  end
+
   private def ed_prev_history(key, arg: 1)
-    if @is_multiline and @line_index > 0
+    if @line_index > 0
       cursor = current_byte_pointer_cursor
       @line_index -= 1
       calculate_nearest_cursor(cursor)
       return
     end
-    if Reline::HISTORY.empty?
-      return
-    end
-    if @history_pointer.nil?
-      @history_pointer = Reline::HISTORY.size - 1
-      cursor = current_byte_pointer_cursor
-      if @is_multiline
-        @line_backup_in_history = whole_buffer
-        @buffer_of_lines = Reline::HISTORY[@history_pointer].split("\n")
-        @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-        @line_index = @buffer_of_lines.size - 1
-        calculate_nearest_cursor(cursor)
-      else
-        @line_backup_in_history = whole_buffer
-        @buffer_of_lines = [Reline::HISTORY[@history_pointer]]
-        calculate_nearest_cursor(cursor)
-      end
-    elsif @history_pointer.zero?
-      return
-    else
-      if @is_multiline
-        Reline::HISTORY[@history_pointer] = whole_buffer
-        @history_pointer -= 1
-        @buffer_of_lines = Reline::HISTORY[@history_pointer].split("\n")
-        @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-        @line_index = @buffer_of_lines.size - 1
-      else
-        Reline::HISTORY[@history_pointer] = whole_buffer
-        @history_pointer -= 1
-        @buffer_of_lines = [Reline::HISTORY[@history_pointer]]
-      end
-    end
-    if @config.editing_mode_is?(:emacs, :vi_insert)
-      @byte_pointer = current_line.bytesize
-    elsif @config.editing_mode_is?(:vi_command)
-      @byte_pointer = 0
-    end
+    move_history(
+      (@history_pointer || Reline::HISTORY.size) - 1,
+      line: :end,
+      cursor: @config.editing_mode_is?(:vi_command) ? :start : :end,
+    )
     arg -= 1
     ed_prev_history(key, arg: arg) if arg > 0
   end
   alias_method :previous_history, :ed_prev_history
 
   private def ed_next_history(key, arg: 1)
-    if @is_multiline and @line_index < (@buffer_of_lines.size - 1)
+    if @line_index < (@buffer_of_lines.size - 1)
       cursor = current_byte_pointer_cursor
       @line_index += 1
       calculate_nearest_cursor(cursor)
       return
     end
-    if @history_pointer.nil?
-      return
-    elsif @history_pointer == (Reline::HISTORY.size - 1)
-      if @is_multiline
-        @history_pointer = nil
-        @buffer_of_lines = @line_backup_in_history.split("\n")
-        @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-        @line_index = 0
-      else
-        @history_pointer = nil
-        @buffer_of_lines = [@line_backup_in_history]
-      end
-    else
-      if @is_multiline
-        Reline::HISTORY[@history_pointer] = whole_buffer
-        @history_pointer += 1
-        @buffer_of_lines = Reline::HISTORY[@history_pointer].split("\n")
-        @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-        @line_index = 0
-      else
-        Reline::HISTORY[@history_pointer] = whole_buffer
-        @history_pointer += 1
-        @buffer_of_lines = [Reline::HISTORY[@history_pointer]]
-      end
-    end
-    if @config.editing_mode_is?(:emacs, :vi_insert)
-      @byte_pointer = current_line.bytesize
-    elsif @config.editing_mode_is?(:vi_command)
-      @byte_pointer = 0
-    end
+    move_history(
+      (@history_pointer || Reline::HISTORY.size) + 1,
+      line: :start,
+      cursor: @config.editing_mode_is?(:vi_command) ? :start : :end,
+    )
     arg -= 1
     ed_next_history(key, arg: arg) if arg > 0
   end
@@ -1956,17 +1811,13 @@ class Reline::LineEditor
         end
       end
     else
-      if @history_pointer
-        Reline::HISTORY[@history_pointer] = whole_buffer
-        @history_pointer = nil
-      end
       finish
     end
   end
 
   private def em_delete_prev_char(key, arg: 1)
     arg.times do
-      if @is_multiline and @byte_pointer == 0 and @line_index > 0
+      if @byte_pointer == 0 and @line_index > 0
         @byte_pointer = @buffer_of_lines[@line_index - 1].bytesize
         @buffer_of_lines[@line_index - 1] += @buffer_of_lines.delete_at(@line_index)
         @line_index -= 1
@@ -1990,7 +1841,7 @@ class Reline::LineEditor
       line, deleted = byteslice!(current_line, @byte_pointer, current_line.bytesize - @byte_pointer)
       set_current_line(line, line.bytesize)
       @kill_ring.append(deleted)
-    elsif @is_multiline and @byte_pointer == current_line.bytesize and @buffer_of_lines.size > @line_index + 1
+    elsif @byte_pointer == current_line.bytesize and @buffer_of_lines.size > @line_index + 1
       set_current_line(current_line + @buffer_of_lines.delete_at(@line_index + 1), current_line.bytesize)
     end
   end
@@ -2030,7 +1881,7 @@ class Reline::LineEditor
   alias_method :kill_whole_line, :em_kill_line
 
   private def em_delete(key)
-    if current_line.empty? and (not @is_multiline or @buffer_of_lines.size == 1) and key == "\C-d".ord
+    if current_line.empty? and @buffer_of_lines.size == 1 and key == "\C-d".ord
       @eof = true
       finish
     elsif @byte_pointer < current_line.bytesize
@@ -2038,7 +1889,7 @@ class Reline::LineEditor
       mbchar = splitted_last.grapheme_clusters.first
       line, = byteslice!(current_line, @byte_pointer, mbchar.bytesize)
       set_current_line(line)
-    elsif @is_multiline and @byte_pointer == current_line.bytesize and @buffer_of_lines.size > @line_index + 1
+    elsif @byte_pointer == current_line.bytesize and @buffer_of_lines.size > @line_index + 1
       set_current_line(current_line + @buffer_of_lines.delete_at(@line_index + 1), current_line.bytesize)
     end
   end
@@ -2281,7 +2132,7 @@ class Reline::LineEditor
   end
 
   private def vi_delete_prev_char(key)
-    if @is_multiline and @byte_pointer == 0 and @line_index > 0
+    if @byte_pointer == 0 and @line_index > 0
       @byte_pointer = @buffer_of_lines[@line_index - 1].bytesize
       @buffer_of_lines[@line_index - 1] += @buffer_of_lines.delete_at(@line_index)
       @line_index -= 1
@@ -2378,7 +2229,7 @@ class Reline::LineEditor
   end
 
   private def vi_list_or_eof(key)
-    if (not @is_multiline and current_line.empty?) or (@is_multiline and current_line.empty? and @buffer_of_lines.size == 1)
+    if current_line.empty? and @buffer_of_lines.size == 1
       set_current_line('', 0)
       @eof = true
       finish
@@ -2409,36 +2260,18 @@ class Reline::LineEditor
     if Reline::HISTORY.empty?
       return
     end
-    if @history_pointer.nil?
-      @history_pointer = 0
-      @line_backup_in_history = current_line
-      set_current_line(Reline::HISTORY[@history_pointer], 0)
-    elsif @history_pointer.zero?
-      return
-    else
-      Reline::HISTORY[@history_pointer] = current_line
-      @history_pointer = 0
-      set_current_line(Reline::HISTORY[@history_pointer], 0)
-    end
+    move_history(0, line: :start, cursor: :start)
   end
 
   private def vi_histedit(key)
     path = Tempfile.open { |fp|
-      if @is_multiline
-        fp.write whole_lines.join("\n")
-      else
-        fp.write current_line
-      end
+      fp.write whole_lines.join("\n")
       fp.path
     }
     system("#{ENV['EDITOR']} #{path}")
-    if @is_multiline
-      @buffer_of_lines = File.read(path).split("\n")
-      @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
-      @line_index = 0
-    else
-      @buffer_of_lines = File.read(path).split("\n")
-    end
+    @buffer_of_lines = File.read(path).split("\n")
+    @buffer_of_lines = [String.new(encoding: @encoding)] if @buffer_of_lines.empty?
+    @line_index = 0
     finish
   end
 
@@ -2610,7 +2443,7 @@ class Reline::LineEditor
   end
 
   private def vi_join_lines(key, arg: 1)
-    if @is_multiline and @buffer_of_lines.size > @line_index + 1
+    if @buffer_of_lines.size > @line_index + 1
       next_line = @buffer_of_lines.delete_at(@line_index + 1).lstrip
       set_current_line(current_line + ' ' + next_line, current_line.bytesize)
     end
@@ -2630,4 +2463,12 @@ class Reline::LineEditor
     @mark_pointer = new_pointer
   end
   alias_method :exchange_point_and_mark, :em_exchange_mark
+
+  private def emacs_editing_mode(key)
+    @config.editing_mode = :emacs
+  end
+
+  private def vi_editing_mode(key)
+    @config.editing_mode = :vi_insert
+  end
 end

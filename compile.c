@@ -1999,6 +1999,19 @@ iseq_set_arguments_keywords(rb_iseq_t *iseq, LINK_ANCHOR *const optargs,
     return arg_size;
 }
 
+static void
+iseq_set_use_block(rb_iseq_t *iseq)
+{
+    struct rb_iseq_constant_body *const body = ISEQ_BODY(iseq);
+    if (!body->param.flags.use_block) {
+        body->param.flags.use_block = 1;
+
+        rb_vm_t *vm = GET_VM();
+        st_data_t key = (st_data_t)rb_intern_str(body->location.label); // String -> ID
+        st_insert(vm->unused_block_warning_table, key, 1);
+    }
+}
+
 static int
 iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *const optargs, const NODE *const node_args)
 {
@@ -2100,7 +2113,7 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *const optargs, const NODE *cons
         if (block_id) {
             body->param.block_start = arg_size++;
             body->param.flags.has_block = TRUE;
-            body->param.flags.use_block = 1;
+            iseq_set_use_block(iseq);
         }
 
         iseq_calc_param_size(iseq);
@@ -5921,7 +5934,7 @@ defined_expr0(rb_iseq_t *iseq, LINK_ANCHOR *const ret,
         ADD_INSN(ret, line_node, putnil);
         ADD_INSN3(ret, line_node, defined, INT2FIX(DEFINED_YIELD), 0,
                   PUSH_VAL(DEFINED_YIELD));
-        ISEQ_BODY(ISEQ_BODY(iseq)->local_iseq)->param.flags.use_block = 1;
+        iseq_set_use_block(ISEQ_BODY(iseq)->local_iseq);
         return;
 
       case NODE_BACK_REF:
@@ -8637,7 +8650,7 @@ compile_builtin_attr(rb_iseq_t *iseq, const NODE *node)
             ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_INLINE_BLOCK;
         }
         else if (strcmp(RSTRING_PTR(string), "use_block") == 0) {
-            ISEQ_BODY(iseq)->param.flags.use_block = 1;
+            iseq_set_use_block(iseq);
         }
         else {
             goto unknown_arg;
@@ -9486,7 +9499,7 @@ compile_super(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, i
     }
 
     if (use_block && parent_block == NULL) {
-        ISEQ_BODY(ISEQ_BODY(iseq)->local_iseq)->param.flags.use_block = 1;
+        iseq_set_use_block(ISEQ_BODY(iseq)->local_iseq);
     }
 
     flag |= VM_CALL_SUPER | VM_CALL_FCALL;
@@ -9532,7 +9545,7 @@ compile_yield(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, i
 
     ADD_SEQ(ret, args);
     ADD_INSN1(ret, node, invokeblock, new_callinfo(iseq, 0, FIX2INT(argc), flag, keywords, FALSE));
-    ISEQ_BODY(ISEQ_BODY(iseq)->local_iseq)->param.flags.use_block = 1;
+    iseq_set_use_block(ISEQ_BODY(iseq)->local_iseq);
 
     if (popped) {
         ADD_INSN(ret, node, pop);
@@ -10014,7 +10027,7 @@ compile_shareable_literal_constant(rb_iseq_t *iseq, LINK_ANCHOR *ret, enum rb_pa
 
       case NODE_ZLIST:{
         VALUE lit = rb_ary_new();
-        OBJ_FREEZE_RAW(lit);
+        OBJ_FREEZE(lit);
         ADD_INSN1(ret, node, putobject, lit);
         RB_OBJ_WRITTEN(iseq, Qundef, lit);
         *value_p = lit;
@@ -11764,6 +11777,10 @@ rb_iseq_build_from_ary(rb_iseq_t *iseq, VALUE misc, VALUE locals, VALUE params,
 
     if (Qtrue == rb_hash_aref(params, SYM(ambiguous_param0))) {
         ISEQ_BODY(iseq)->param.flags.ambiguous_param0 = TRUE;
+    }
+
+    if (Qtrue == rb_hash_aref(params, SYM(use_block))) {
+        ISEQ_BODY(iseq)->param.flags.use_block = TRUE;
     }
 
     if (int_param(&i, params, SYM(kwrest))) {

@@ -21,8 +21,6 @@
 
 #include <signal.h>
 
-#define sighandler_t ruby_sighandler_t
-
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/mman.h>
@@ -800,7 +798,7 @@ enum gc_mode {
 };
 
 typedef struct rb_global_space {
-    VALUE next_object_id;
+    unsigned long long next_object_id;
 
     rb_ractor_t *prev_id_assigner;
     rb_nativethread_lock_t next_object_id_lock;
@@ -1659,6 +1657,7 @@ total_freed_objects(rb_objspace_t *objspace)
 
 #define gc_mode(objspace)                gc_mode_verify((enum gc_mode)(objspace)->flags.mode)
 #define gc_mode_set(objspace, m)         ((objspace)->flags.mode = (unsigned int)gc_mode_verify(m))
+#define gc_needs_major_flags             objspace->rgengc.need_major_gc
 
 #define is_marking(objspace)             (gc_mode(objspace) == gc_mode_marking)
 #define is_sweeping(objspace)            (gc_mode(objspace) == gc_mode_sweeping)
@@ -3489,7 +3488,7 @@ heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap
              * sweeping and still don't have a free page, then
              * gc_sweep_finish_size_pool should allow us to create a new page. */
             if (heap->free_pages == NULL && !heap_increment(objspace, size_pool, heap)) {
-                if (objspace->rgengc.need_major_gc == GPR_FLAG_NONE) {
+                if (gc_needs_major_flags == GPR_FLAG_NONE) {
                     rb_bug("cannot create a new page after GC");
                 }
                 else { // Major GC is required, which will allow us to create new page
@@ -5233,7 +5232,7 @@ rb_global_space_t *
 rb_global_space_init(void)
 {
     rb_global_space_t *global_space = calloc1(sizeof(rb_global_space_t));
-    global_space->next_object_id = INT2FIX(OBJ_ID_INITIAL);
+    global_space->next_object_id = OBJ_ID_INITIAL;
     global_space->prev_id_assigner = NULL;
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
@@ -6492,7 +6491,7 @@ id2ref(VALUE objid)
 
     rb_global_space_t *global_space = &rb_global_space;
     rb_native_mutex_lock(&global_space->next_object_id_lock);
-    VALUE not_id_value = rb_int_ge(objid, global_space->next_object_id);
+    VALUE not_id_value = rb_int_ge(objid, ULL2NUM(global_space->next_object_id));
     rb_native_mutex_unlock(&global_space->next_object_id_lock);
 
     if (not_id_value) {
@@ -6540,8 +6539,8 @@ cached_object_id(VALUE obj)
 
 	    rb_global_space_t *global_space = &rb_global_space;
 	    rb_native_mutex_lock(&global_space->next_object_id_lock);
-	    id = global_space->next_object_id;
-	    global_space->next_object_id = rb_int_plus(id, INT2FIX(OBJ_ID_INCREMENT));
+	    id = ULL2NUM(global_space->next_object_id);
+	    global_space->next_object_id += OBJ_ID_INCREMENT;
 	    global_space->prev_id_assigner = rb_current_allocating_ractor();
 	    rb_native_mutex_unlock(&global_space->next_object_id_lock);
 
@@ -7415,10 +7414,7 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
     sweep_page->size_pool->total_freed_objects += ctx->freed_slots;
 
     if (heap_pages_deferred_final && !finalizing) {
-        rb_thread_t *th = GET_THREAD();
-        if (th) {
-            gc_finalize_deferred_register(objspace);
-        }
+        gc_finalize_deferred_register(objspace);
     }
 
 #if RGENGC_CHECK_MODE
@@ -7593,7 +7589,7 @@ gc_sweep_finish_size_pool(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
                 grow_heap = TRUE;
             }
             else if (is_growth_heap) { /* Only growth heaps are allowed to start a major GC. */
-                objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_NOFREE;
+                gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_NOFREE;
                 size_pool->force_major_gc_count++;
             }
         }
@@ -9750,11 +9746,6 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
     rb_global_space_t *global_space = &rb_global_space;
 
     MARK_CHECKPOINT("object_id");
-    rb_native_mutex_lock(&global_space->next_object_id_lock);
-    if (global_space->prev_id_assigner == objspace->ractor) {
-	rb_gc_mark(global_space->next_object_id);
-    }
-    rb_native_mutex_unlock(&global_space->next_object_id_lock);
     rb_native_mutex_lock(&objspace->obj_id_lock);
     mark_tbl_no_pin(objspace, objspace->obj_to_id_tbl); /* Only mark ids */
     rb_native_mutex_unlock(&objspace->obj_id_lock);
@@ -10671,7 +10662,7 @@ gc_marks_finish(rb_objspace_t *objspace)
                 }
                 else {
                     gc_report(1, objspace, "gc_marks_finish: next is full GC!!)\n");
-                    objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_NOFREE;
+                    gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_NOFREE;
                 }
             }
         }
@@ -10696,20 +10687,20 @@ gc_marks_finish(rb_objspace_t *objspace)
 	}
 
         if (objspace->rgengc.uncollectible_wb_unprotected_objects > objspace->rgengc.uncollectible_wb_unprotected_objects_limit) {
-            objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_SHADY;
+            gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_SHADY;
         }
         if (objspace->rgengc.old_objects > objspace->rgengc.old_objects_limit) {
-            objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_OLDGEN;
+            gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_OLDGEN;
         }
         if (RGENGC_FORCE_MAJOR_GC) {
-            objspace->rgengc.need_major_gc = GPR_FLAG_MAJOR_BY_FORCE;
+            gc_needs_major_flags = GPR_FLAG_MAJOR_BY_FORCE;
         }
 
 	const char *next_gc;
 	if (global_space->rglobalgc.need_global_gc) {
 	    next_gc = "global";
 	}
-	else if (objspace->rgengc.need_major_gc) {
+	else if (gc_needs_major_flags) {
 	    next_gc = "major";
 	}
 	else {
@@ -11747,7 +11738,7 @@ gc_reset_malloc_info(rb_objspace_t *objspace, bool full_mark)
 #if RGENGC_ESTIMATE_OLDMALLOC
     if (!full_mark) {
         if (objspace->rgengc.oldmalloc_increase > objspace->rgengc.oldmalloc_increase_limit) {
-            objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_OLDMALLOC;
+            gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_OLDMALLOC;
             objspace->rgengc.oldmalloc_increase_limit =
               (size_t)(objspace->rgengc.oldmalloc_increase_limit * gc_params.oldmalloc_limit_growth_factor);
 
@@ -11758,7 +11749,7 @@ gc_reset_malloc_info(rb_objspace_t *objspace, bool full_mark)
 
         if (0) fprintf(stderr, "%"PRIdSIZE"\t%d\t%"PRIuSIZE"\t%"PRIuSIZE"\t%"PRIdSIZE"\n",
                        rb_gc_count(),
-                       objspace->rgengc.need_major_gc,
+                       gc_needs_major_flags,
                        objspace->rgengc.oldmalloc_increase,
                        objspace->rgengc.oldmalloc_increase_limit,
                        gc_params.oldmalloc_limit_max);
@@ -11919,8 +11910,8 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
         objspace->flags.immediate_sweep = !(flag & (1<<gc_stress_no_immediate_sweep));
     }
 
-    if (objspace->rgengc.need_major_gc) {
-        reason |= objspace->rgengc.need_major_gc;
+    if (gc_needs_major_flags) {
+        reason |= gc_needs_major_flags;
         *do_full_mark = TRUE;
     }
     else if (RGENGC_FORCE_MAJOR_GC) {
@@ -11928,7 +11919,7 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
         *do_full_mark = TRUE;
     }
 
-    objspace->rgengc.need_major_gc = GPR_FLAG_NONE;
+    gc_needs_major_flags = GPR_FLAG_NONE;
 
     if (*do_full_mark && (reason & GPR_FLAG_MAJOR_MASK) == 0) {
         reason |= GPR_FLAG_MAJOR_BY_FORCE; /* GC by CAPI, METHOD, and so on. */
@@ -12074,10 +12065,8 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 static void
 gc_rest(rb_objspace_t *objspace)
 {
-    int marking = is_incremental_marking(objspace);
-    int sweeping = is_lazy_sweeping(objspace);
-
-    if (marking || sweeping) {
+    if (is_incremental_marking(objspace) || is_lazy_sweeping(objspace)) {
+        unsigned int lock_lev;
 	LOCAL_GC_BEGIN(objspace);
 	{
 	    gc_enter(objspace, gc_enter_event_rest);
@@ -12572,12 +12561,11 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 
     switch (BUILTIN_TYPE(obj)) {
       case T_NONE:
-      case T_NIL:
       case T_MOVED:
       case T_ZOMBIE:
         return FALSE;
       case T_SYMBOL:
-        if (DYNAMIC_SYM_P(obj) && (RSYMBOL(obj)->id & ~ID_SCOPE_MASK)) {
+        if (RSYMBOL(obj)->id & ~ID_SCOPE_MASK) {
             return FALSE;
         }
         /* fall through */
@@ -13884,7 +13872,7 @@ gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned 
     SET(major_by, major_by);
 
     if (orig_flags == 0) { /* set need_major_by only if flags not set explicitly */
-        unsigned int need_major_flags = objspace->rgengc.need_major_gc;
+        unsigned int need_major_flags = gc_needs_major_flags;
         need_major_by =
             (need_major_flags & GPR_FLAG_MAJOR_BY_NOFREE) ? sym_nofree :
             (need_major_flags & GPR_FLAG_MAJOR_BY_OLDGEN) ? sym_oldgen :

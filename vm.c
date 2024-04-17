@@ -1008,6 +1008,11 @@ vm_make_env_each(const rb_execution_context_t * const ec, rb_control_frame_t *co
     }
 #endif
 
+    // Invalidate JIT code that assumes cfp->ep == vm_base_ptr(cfp).
+    if (env->iseq) {
+        rb_yjit_invalidate_ep_is_bp(env->iseq);
+    }
+
     return (VALUE)env;
 }
 
@@ -4300,6 +4305,7 @@ Init_BareVM(void)
     vm->negative_cme_table = rb_id_table_create(16);
     vm->overloaded_cme_table = st_init_numtable();
     vm->constant_cache = rb_id_table_create(0);
+    vm->unused_block_warning_table = st_init_numtable();
 
     rb_native_mutex_initialize(&vm->subclass_list_lock);
     vm->subclass_list_lock_owner = NULL;
