@@ -1830,6 +1830,7 @@ static inline void gc_mark(rb_objspace_t *objspace, VALUE ptr);
 static inline void gc_pin(rb_objspace_t *objspace, VALUE ptr);
 static inline void gc_mark_and_pin(rb_objspace_t *objspace, VALUE ptr);
 NO_SANITIZE("memory", static void gc_mark_maybe(rb_objspace_t *objspace, VALUE ptr));
+NO_SANITIZE("memory", static void gc_stack_location_mark_maybe(rb_objspace_t *objspace, VALUE ptr));
 
 static int gc_mark_stacked_objects_incremental(rb_objspace_t *, size_t count);
 NO_SANITIZE("memory", static inline int is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr));
@@ -8198,7 +8199,7 @@ gc_mark_locations(rb_objspace_t *objspace, const VALUE *start, const VALUE *end,
 void
 rb_gc_mark_locations(const VALUE *start, const VALUE *end)
 {
-    gc_mark_locations(&rb_objspace, start, end, gc_mark_maybe);
+    gc_mark_locations(&rb_objspace, start, end, gc_stack_location_mark_maybe);
 }
 
 void
@@ -8458,7 +8459,7 @@ static void each_stack_location(rb_objspace_t *objspace, const rb_execution_cont
 static void
 gc_mark_machine_stack_location_maybe(rb_objspace_t *objspace, VALUE obj)
 {
-    gc_mark_maybe(objspace, obj);
+    gc_stack_location_mark_maybe(objspace, obj);
 
 #ifdef RUBY_ASAN_ENABLED
     const rb_execution_context_t *ec = objspace->marking_machine_context_ec;
@@ -8470,7 +8471,7 @@ gc_mark_machine_stack_location_maybe(rb_objspace_t *objspace, VALUE obj)
         &fake_frame_start, &fake_frame_end
     );
     if (is_fake_frame) {
-        each_stack_location(objspace, ec, fake_frame_start, fake_frame_end, gc_mark_maybe);
+        each_stack_location(objspace, ec, fake_frame_start, fake_frame_end, gc_stack_location_mark_maybe);
     }
 #endif
 }
@@ -8493,10 +8494,10 @@ static void
 mark_current_machine_context(rb_objspace_t *objspace, rb_execution_context_t *ec)
 {
     emscripten_scan_stack(rb_mark_locations);
-    each_stack_location(objspace, ec, rb_stack_range_tmp[0], rb_stack_range_tmp[1], gc_mark_maybe);
+    each_stack_location(objspace, ec, rb_stack_range_tmp[0], rb_stack_range_tmp[1], gc_stack_location_mark_maybe);
 
     emscripten_scan_registers(rb_mark_locations);
-    each_stack_location(objspace, ec, rb_stack_range_tmp[0], rb_stack_range_tmp[1], gc_mark_maybe);
+    each_stack_location(objspace, ec, rb_stack_range_tmp[0], rb_stack_range_tmp[1], gc_stack_location_mark_maybe);
 }
 # else // use Asyncify version
 
@@ -8506,10 +8507,10 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_execution_context_t *ec
     VALUE *stack_start, *stack_end;
     SET_STACK_END;
     GET_STACK_BOUNDS(stack_start, stack_end, 1);
-    each_stack_location(objspace, ec, stack_start, stack_end, gc_mark_maybe);
+    each_stack_location(objspace, ec, stack_start, stack_end, gc_stack_location_mark_maybe);
 
     rb_wasm_scan_locals(rb_mark_locations);
-    each_stack_location(objspace, ec, rb_stack_range_tmp[0], rb_stack_range_tmp[1], gc_mark_maybe);
+    each_stack_location(objspace, ec, rb_stack_range_tmp[0], rb_stack_range_tmp[1], gc_stack_location_mark_maybe);
 }
 
 # endif
@@ -8612,7 +8613,32 @@ gc_mark_maybe(rb_objspace_t *objspace, VALUE obj)
             break;
           default:
             gc_mark_and_pin(objspace, obj);
+        }
+
+        if (ptr) {
+            GC_ASSERT(BUILTIN_TYPE(obj) == T_NONE);
+            asan_poison_object(obj);
+        }
+    }
+}
+
+static void
+gc_stack_location_mark_maybe(rb_objspace_t *objspace, VALUE obj)
+{
+    (void)VALGRIND_MAKE_MEM_DEFINED(&obj, sizeof(obj));
+
+    if (is_pointer_to_heap(objspace, (void *)obj)) {
+        void *ptr = asan_unpoison_object_temporary(obj);
+
+        /* Garbage can live on the stack, so do not mark or pin */
+        switch (BUILTIN_TYPE(obj)) {
+          case T_ZOMBIE:
+          case T_NONE:
             break;
+          default:
+	    if (GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace)) {
+		gc_mark_and_pin(objspace, obj);
+	    }
         }
 
         if (ptr) {
@@ -8760,7 +8786,7 @@ static void reachable_objects_from_callback(VALUE obj);
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || objspace->flags.during_stack_location_marking || objspace->current_parent_objspace != objspace);
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
 
     //TODO: Improve condition efficiency
     if (using_local_limits(objspace)) {
