@@ -3630,12 +3630,6 @@ size_pool_slot_size(unsigned char pool_id)
     return slot_size;
 }
 
-size_t
-rb_size_pool_slot_size(unsigned char pool_id)
-{
-    return size_pool_slot_size(pool_id);
-}
-
 bool
 rb_gc_size_allocatable_p(size_t size)
 {
@@ -3649,7 +3643,7 @@ rb_gc_size_pool_sizes(void)
 {
     if (size_pool_sizes[0] == 0) {
         for (unsigned char i = 0; i < SIZE_POOL_COUNT; i++) {
-            size_pool_sizes[i] = rb_size_pool_slot_size(i);
+            size_pool_sizes[i] = size_pool_slot_size(i);
         }
     }
 
@@ -12287,7 +12281,7 @@ gc_enter(rb_objspace_t *objspace, enum gc_enter_event event)
 {
     gc_enter_count(event);
     if (UNLIKELY(during_gc != 0)) rb_bug("during_gc != 0");
-    if (RGENGC_CHECK_MODE >= 3) gc_verify_internal_consistency(objspace);
+    if (RGENGC_CHECK_MODE >= 3 && (dont_gc_val() == 0)) gc_verify_internal_consistency(objspace);
 
     during_gc = TRUE;
     RUBY_DEBUG_LOG("%s (%s)",gc_enter_event_cstr(event), gc_current_status(objspace));

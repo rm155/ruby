@@ -123,8 +123,6 @@ const struct rb_callcache *get_from_global_cc_cache_table(int index);
 void set_in_global_cc_cache_table(int index, const struct rb_callcache *cc);
 
 VALUE rb_gc_ractor_teardown_cleanup();
-size_t rb_size_pool_slot_size(unsigned char pool_id);
-
 struct rb_execution_context_struct; /* in vm_core.h */
 struct rb_objspace; /* in vm_core.h */
 typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
