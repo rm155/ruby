@@ -8760,7 +8760,7 @@ static void reachable_objects_from_callback(VALUE obj);
 static void
 gc_mark_ptr(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || objspace->flags.during_stack_location_marking || objspace->current_parent_objspace != objspace || GET_RACTOR_OF_VALUE(obj) == rb_current_allocating_ractor());
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace) || objspace->flags.during_stack_location_marking || objspace->current_parent_objspace != objspace);
 
     //TODO: Improve condition efficiency
     if (using_local_limits(objspace)) {
@@ -11831,6 +11831,10 @@ static int
 garbage_collect_local(rb_objspace_t *objspace, unsigned int reason, bool need_finalize_deferred)
 {
     int ret;
+
+    if (rb_redirecting_allocation()) {
+	return TRUE;
+    }
     
     LOCAL_GC_BEGIN(objspace);
     {
@@ -12282,6 +12286,8 @@ gc_enter(rb_objspace_t *objspace, enum gc_enter_event event)
     gc_enter_count(event);
     if (UNLIKELY(during_gc != 0)) rb_bug("during_gc != 0");
     if (RGENGC_CHECK_MODE >= 3 && (dont_gc_val() == 0)) gc_verify_internal_consistency(objspace);
+
+    VM_ASSERT(!rb_redirecting_allocation());
 
     during_gc = TRUE;
     RUBY_DEBUG_LOG("%s (%s)",gc_enter_event_cstr(event), gc_current_status(objspace));
