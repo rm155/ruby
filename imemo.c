@@ -216,7 +216,6 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data)
         for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
             VM_ASSERT((VALUE)data == ccs->entries[i].cc->klass);
 
-            rb_gc_mark_movable((VALUE)ccs->entries[i].ci);
             rb_gc_mark_movable((VALUE)ccs->entries[i].cc);
         }
         return ID_TABLE_CONTINUE;
