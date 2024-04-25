@@ -962,19 +962,25 @@ module IRB
       #
       # Irb#eval_input will simply return the input, and we need to pass it to the
       # debugger.
-      input = if IRB.conf[:SAVE_HISTORY] && context.io.support_history_saving?
-        # Previous IRB session's history has been saved when `Irb#run` is exited We need
-        # to make sure the saved history is not saved again by resetting the counter
-        context.io.reset_history_counter
+      input = nil
+      forced_exit = catch(:IRB_EXIT) do
+        if IRB.conf[:SAVE_HISTORY] && context.io.support_history_saving?
+          # Previous IRB session's history has been saved when `Irb#run` is exited We need
+          # to make sure the saved history is not saved again by resetting the counter
+          context.io.reset_history_counter
 
-        begin
-          eval_input
-        ensure
-          context.io.save_history
+          begin
+            input = eval_input
+          ensure
+            context.io.save_history
+          end
+        else
+          input = eval_input
         end
-      else
-        eval_input
+        false
       end
+
+      Kernel.exit if forced_exit
 
       if input&.include?("\n")
         @line_no += input.count("\n") - 1
@@ -1114,7 +1120,7 @@ module IRB
 
       code.force_encoding(@context.io.encoding)
       if (command, arg = parse_command(code))
-        command_class = ExtendCommandBundle.load_command(command)
+        command_class = Command.load_command(command)
         Statement::Command.new(code, command_class, arg)
       else
         is_assignment_expression = @scanner.assignment_expression?(code, local_variables: @context.local_variables)
@@ -1136,7 +1142,7 @@ module IRB
       # Check visibility
       public_method = !!Kernel.instance_method(:public_method).bind_call(@context.main, command) rescue false
       private_method = !public_method && !!Kernel.instance_method(:method).bind_call(@context.main, command) rescue false
-      if ExtendCommandBundle.execute_as_command?(command, public_method: public_method, private_method: private_method)
+      if Command.execute_as_command?(command, public_method: public_method, private_method: private_method)
         [command, arg]
       end
     end

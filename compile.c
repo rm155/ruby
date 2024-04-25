@@ -14219,6 +14219,8 @@ ibf_load_setup_bytes(struct ibf_load *load, VALUE loader_obj, const char *bytes,
 static void
 ibf_load_setup(struct ibf_load *load, VALUE loader_obj, VALUE str)
 {
+    StringValue(str);
+
     if (RSTRING_LENINT(str) < (int)sizeof(struct ibf_header)) {
         rb_raise(rb_eRuntimeError, "broken binary format");
     }

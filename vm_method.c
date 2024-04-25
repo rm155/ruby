@@ -428,7 +428,6 @@ rb_vm_ci_lookup(ID mid, unsigned int flag, unsigned int argc, const struct rb_ca
     RB_CI_TABLE_LEAVE();
 
     VM_ASSERT(ci);
-    VM_ASSERT(vm_ci_markable(ci));
 
     return ci;
 }
@@ -1020,7 +1019,6 @@ rb_method_entry_make(VALUE klass, ID mid, VALUE defined_class, rb_method_visibil
             old_def->type != VM_METHOD_TYPE_ALIAS) {
             const rb_iseq_t *iseq = 0;
 
-            rb_warning("method redefined; discarding old %"PRIsVALUE, rb_id2str(mid));
             switch (old_def->type) {
               case VM_METHOD_TYPE_ISEQ:
                 iseq = def_iseq_ptr(old_def);
@@ -1032,10 +1030,16 @@ rb_method_entry_make(VALUE klass, ID mid, VALUE defined_class, rb_method_visibil
                 break;
             }
             if (iseq) {
-                rb_compile_warning(RSTRING_PTR(rb_iseq_path(iseq)),
-                                   ISEQ_BODY(iseq)->location.first_lineno,
-                                   "previous definition of %"PRIsVALUE" was here",
-                                   rb_id2str(old_def->original_id));
+                rb_warning(
+                    "method redefined; discarding old %"PRIsVALUE"\n%s:%d: warning: previous definition of %"PRIsVALUE" was here",
+                    rb_id2str(mid),
+                    RSTRING_PTR(rb_iseq_path(iseq)),
+                    ISEQ_BODY(iseq)->location.first_lineno,
+                    rb_id2str(old_def->original_id)
+                );
+            }
+            else {
+                rb_warning("method redefined; discarding old %"PRIsVALUE, rb_id2str(mid));
             }
         }
     }
