@@ -9416,10 +9416,7 @@ wait_for_object_graph_safety(rb_objspace_t *objspace)
     rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
     rb_native_cond_broadcast(&objspace->external_writebarrier_allowed_cond);
 
-    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-    objspace->ractor->borrowing_sync.borrowing_allowed = true;
-    rb_native_cond_broadcast(&objspace->ractor->borrowing_sync.borrowing_allowed_cond);
-    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
+    rb_ractor_borrowing_barrier_end(objspace->ractor);
 
     rb_native_mutex_lock(&global_space->order_chain_lock);
     while (!object_graph_safety_p(global_space, objspace)) {
@@ -9427,10 +9424,7 @@ wait_for_object_graph_safety(rb_objspace_t *objspace)
     }
     rb_native_mutex_unlock(&global_space->order_chain_lock);
 
-    rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-    rb_ractor_wait_for_no_borrowers(objspace->ractor);
-    objspace->ractor->borrowing_sync.borrowing_allowed = false;
-    rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
+    rb_ractor_borrowing_barrier_begin(objspace->ractor);
 
     rb_native_mutex_lock(&objspace->external_writebarrier_allowed_lock);
     objspace->external_writebarrier_allowed = false;
@@ -12155,10 +12149,7 @@ begin_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
 {
     if (!objspace->running_global_gc && objspace->local_gc_level == 0) {
 	rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_RUNNING_LOCAL_GC);
-	rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-	rb_ractor_wait_for_no_borrowers(objspace->ractor);
-	objspace->ractor->borrowing_sync.borrowing_allowed = false;
-	rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
+	rb_ractor_borrowing_barrier_begin(objspace->ractor);
     }
 
     objspace->local_gc_level++;
@@ -12179,10 +12170,7 @@ end_local_gc_section(rb_vm_t *vm, rb_objspace_t *objspace, rb_ractor_t *cr)
     objspace->local_gc_level--;
 
     if (!objspace->running_global_gc && objspace->local_gc_level == 0) {
-	rb_native_mutex_lock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
-	objspace->ractor->borrowing_sync.borrowing_allowed = true;
-	rb_native_cond_broadcast(&objspace->ractor->borrowing_sync.borrowing_allowed_cond);
-	rb_native_mutex_unlock(&objspace->ractor->borrowing_sync.borrowing_allowed_lock);
+	rb_ractor_borrowing_barrier_end(objspace->ractor);
 	rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_RUNNING_LOCAL_GC);
     }
 }
