@@ -11396,12 +11396,14 @@ probably_broken_shareable_path_p(rb_objspace_t *objspace, VALUE a, VALUE oldv)
 void
 rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
 {
+    if (ruby_single_main_objspace) return;
     if (SPECIAL_CONST_P(a)) return;
+
     (void)VALGRIND_MAKE_MEM_DEFINED(&oldv, sizeof(oldv));
 
     WITH_OBJSPACE_OF_VALUE_ENTER(a, objspace);
     {
-	if (UNLIKELY(!ruby_single_main_objspace && probably_broken_shareable_path_p(objspace, a, oldv))) {
+	if (UNLIKELY(probably_broken_shareable_path_p(objspace, a, oldv))) {
 	    lock_former_references(objspace);
 	    record_former_reference(objspace, a, oldv);
 	    unlock_former_references(objspace);
