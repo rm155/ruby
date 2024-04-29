@@ -60,7 +60,7 @@ VALUE
 rb_imemo_new(enum imemo_type type, VALUE v0)
 {
     size_t size = RVALUE_SIZE;
-    VALUE flags = T_IMEMO | (type << FL_USHIFT);
+    VALUE flags = T_IMEMO | FL_WB_PROTECTED | (type << FL_USHIFT);
     NEWOBJ_OF(obj, void, v0, flags, size, 0);
     if (inherently_shareable_imemo_type(type)) {
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
