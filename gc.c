@@ -1394,8 +1394,21 @@ asan_unlock_freelist(struct heap_page *page)
 #define GET_PAGE_BODY(x)   ((struct heap_page_body *)((bits_t)(x) & ~(HEAP_PAGE_ALIGN_MASK)))
 #define GET_PAGE_HEADER(x) (&GET_PAGE_BODY(x)->header)
 #define GET_HEAP_PAGE(x)   (GET_PAGE_HEADER(x)->page)
-#define GET_RACTOR_OF_VALUE(x)   (GET_HEAP_PAGE(x)->ractor)
-#define GET_OBJSPACE_OF_VALUE(x)   (GET_HEAP_PAGE(x)->objspace)
+
+rb_ractor_t *
+atomic_load_ractor_of_value(VALUE obj)
+{
+    return (rb_ractor_t *)RUBY_ATOMIC_PTR_LOAD(GET_HEAP_PAGE(obj)->ractor);
+}
+
+rb_objspace_t *
+atomic_load_objspace_of_value(VALUE obj)
+{
+    return (rb_objspace_t *)RUBY_ATOMIC_PTR_LOAD(GET_HEAP_PAGE(obj)->objspace);
+}
+
+#define GET_RACTOR_OF_VALUE(x)   (atomic_load_ractor_of_value(x))
+#define GET_OBJSPACE_OF_VALUE(x) (atomic_load_objspace_of_value(x))
 
 rb_ractor_t *
 get_ractor_of_value(VALUE obj)
@@ -2100,12 +2113,20 @@ objspace_read_leave(rb_global_space_t *global_space)
 }
 
 #define WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace) { \
-    rb_global_space_t *_global_space = &rb_global_space; \
-    objspace_read_enter(_global_space); \
+    bool _using_objspace_read = false; \
+    rb_global_space_t *_global_space; \
     rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj); \
+    if (UNLIKELY(!ruby_single_main_objspace && objspace != GET_RACTOR()->local_objspace)) { \
+	_global_space = &rb_global_space; \
+	objspace_read_enter(_global_space); \
+	objspace = GET_OBJSPACE_OF_VALUE(obj); \
+	_using_objspace_read = true; \
+    }
 
 #define WITH_OBJSPACE_OF_VALUE_LEAVE(objspace) \
-    objspace_read_leave(_global_space); \
+    if (_using_objspace_read) { \
+	objspace_read_leave(_global_space); \
+    } \
 }
 
 static int
@@ -3079,9 +3100,10 @@ insert_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int s
     if (heap_pages_lomem == 0 || heap_pages_lomem > page->start) heap_pages_lomem = page->start;
     if (heap_pages_himem < end) heap_pages_himem = end;
 
-    //TODO: What if another Ractor tries to access these pointers at this exact moment?
-    page->ractor = objspace->ractor; 
-    page->objspace = objspace;
+    RUBY_ATOMIC_PTR_EXCHANGE(page->ractor, objspace->ractor);
+    RUBY_ATOMIC_PTR_EXCHANGE(page->objspace, objspace);
+
+    //TODO: What if another Ractor tries to access this pointer at this exact moment?
     page->size_pool = size_pool;
 }
 
