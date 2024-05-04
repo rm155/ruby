@@ -540,6 +540,7 @@ bool ruby_vm_keep_script_lines;
 
 #ifdef RB_THREAD_LOCAL_SPECIFIER
 RB_THREAD_LOCAL_SPECIFIER rb_execution_context_t *ruby_current_ec;
+RB_THREAD_LOCAL_SPECIFIER struct rb_objspace *ruby_current_objspace;
 
 #ifdef RUBY_NT_SERIAL
 RB_THREAD_LOCAL_SPECIFIER rb_atomic_t ruby_nt_serial;
@@ -552,10 +553,23 @@ rb_current_ec_noinline(void)
     return ruby_current_ec;
 }
 
+// no-inline decl on thread_pthread.h
+struct rb_objspace *
+rb_current_objspace_noinline(void)
+{
+    return ruby_current_objspace;
+}
+
 void
 rb_current_ec_set(rb_execution_context_t *ec)
 {
     ruby_current_ec = ec;
+}
+
+void
+rb_current_objspace_set(struct rb_objspace *objspace)
+{
+    ruby_current_objspace = objspace;
 }
 
 
@@ -566,9 +580,15 @@ rb_current_ec(void)
     return ruby_current_ec;
 }
 
+struct rb_objspace *
+rb_current_objspace(void)
+{
+    return ruby_current_objspace;
+}
 #endif
 #else
 native_tls_key_t ruby_current_ec_key;
+native_tls_key_t ruby_current_objspace_key;
 #endif
 
 rb_event_flag_t ruby_vm_event_flags;

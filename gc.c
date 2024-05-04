@@ -1151,7 +1151,19 @@ current_ractor_objspace(void)
     if (ruby_single_main_objspace) {
 	return ruby_single_main_objspace;
     }
-    rb_objspace_t *objspace = GET_RACTOR()->local_objspace;
+
+#ifdef RB_THREAD_LOCAL_SPECIFIER
+  #ifdef __APPLE__
+    rb_objspace_t *objspace = rb_current_objspace();
+  #else
+    rb_objspace_t *objspace = ruby_current_objspace;
+  #endif
+
+    VM_ASSERT(objspace == rb_current_objspace_noinline());
+#else
+    rb_objspace_t *objspace = native_tls_get(ruby_current_objspace_key);
+#endif
+
     if (objspace && objspace->global_gc_current_target) {
 	objspace = objspace->global_gc_current_target;
     }

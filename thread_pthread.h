@@ -128,15 +128,22 @@ struct rb_thread_sched {
     struct ccan_list_node grq_node;
 };
 
+struct rb_objspace;
+
 #ifdef RB_THREAD_LOCAL_SPECIFIER
   NOINLINE(void rb_current_ec_set(struct rb_execution_context_struct *));
   NOINLINE(struct rb_execution_context_struct *rb_current_ec_noinline(void));
 
+  NOINLINE(void rb_current_objspace_set(struct rb_objspace *));
+  NOINLINE(struct rb_objspace *rb_current_objspace_noinline(void));
+
   # ifdef __APPLE__
     // on Darwin, TLS can not be accessed across .so
     NOINLINE(struct rb_execution_context_struct *rb_current_ec(void));
+    NOINLINE(struct rb_objspace *rb_current_objspace(void));
   # else
     RUBY_EXTERN RB_THREAD_LOCAL_SPECIFIER struct rb_execution_context_struct *ruby_current_ec;
+    RUBY_EXTERN RB_THREAD_LOCAL_SPECIFIER struct rb_objspace *ruby_current_objspace;
 
     // for RUBY_DEBUG_LOG()
     RUBY_EXTERN RB_THREAD_LOCAL_SPECIFIER rb_atomic_t ruby_nt_serial;
@@ -161,6 +168,7 @@ native_tls_set(native_tls_key_t key, void *ptr)
 }
 
 RUBY_EXTERN native_tls_key_t ruby_current_ec_key;
+RUBY_EXTERN native_tls_key_t ruby_current_objspace_key;
 #endif
 
 #endif /* RUBY_THREAD_PTHREAD_H */

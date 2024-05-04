@@ -189,6 +189,9 @@ Init_native_thread(rb_thread_t *main_th)
     if ((ruby_native_thread_key = TlsAlloc()) == TLS_OUT_OF_INDEXES) {
         rb_bug("TlsAlloc() for ruby_native_thread_key fails");
     }
+    if ((ruby_current_objspace_key = TlsAlloc()) == TLS_OUT_OF_INDEXES) {
+        rb_bug("TlsAlloc() for ruby_current_objspace_key fails");
+    }
 
     // setup main thread
 

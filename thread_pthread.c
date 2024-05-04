@@ -1666,6 +1666,9 @@ Init_native_thread(rb_thread_t *main_th)
     if (pthread_key_create(&ruby_current_ec_key, 0) == EAGAIN) {
         rb_bug("pthread_key_create failed (ruby_current_ec_key)");
     }
+    if (pthread_key_create(&ruby_current_objspace_key, 0) == EAGAIN) {
+        rb_bug("pthread_key_create failed (ruby_current_objspace_key)");
+    }
 #endif
     ruby_posix_signal(SIGVTALRM, null_func);
 

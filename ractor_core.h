@@ -403,12 +403,29 @@ rb_ractor_set_current_ec_no_ractor(rb_execution_context_t *ec)
 #endif
 }
 
+static inline void
+rb_ractor_set_current_objspace(struct rb_objspace *objspace)
+{
+#ifdef RB_THREAD_LOCAL_SPECIFIER
+
+# ifdef __APPLE__
+    rb_current_objspace_set(objspace);
+# else
+    ruby_current_objspace = objspace;
+# endif
+
+#else
+    native_tls_set(ruby_current_objspace_key, objspace);
+#endif
+}
+
 #define rb_ractor_set_current_ec(cr, ec) rb_ractor_set_current_ec_(cr, ec, __FILE__, __LINE__)
 
 static inline void
 rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const char *file, int line)
 {
     rb_ractor_set_current_ec_no_ractor(ec);
+    rb_ractor_set_current_objspace(cr->local_objspace);
     RUBY_DEBUG_LOG2(file, line, "ec:%p->%p", (void *)cr->threads.running_ec, (void *)ec);
     VM_ASSERT(ec == NULL || cr->threads.running_ec != ec);
     cr->threads.running_ec = ec;
