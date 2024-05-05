@@ -514,7 +514,9 @@ rb_ary_set_shared(VALUE ary, VALUE shared_root)
     RUBY_ASSERT(ARY_SHARED_ROOT_P(shared_root) || OBJ_FROZEN(shared_root));
 
     
-    FL_SET_RAW(shared_root, RUBY_FL_SHAREABLE);
+    if (FL_TEST_RAW(ary, FL_SHAREABLE)) {
+	FL_SET_RAW(shared_root, RUBY_FL_SHAREABLE);
+    }
 
     rb_ary_increment_share(shared_root);
     FL_SET_SHARED(ary);
