@@ -11421,9 +11421,7 @@ gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
 static bool
 probably_broken_shareable_path_p(rb_objspace_t *objspace, VALUE a, VALUE oldv)
 {
-    return !!oldv &&
-	FL_TEST_RAW(a, FL_SHAREABLE) &&
-	is_pointer_to_heap(objspace, (void *)oldv) &&
+    return is_pointer_to_heap(objspace, (void *)oldv) &&
 	!RB_TYPE_P(oldv, T_NONE) &&
 	FL_TEST_RAW(oldv, FL_SHAREABLE);
 }
@@ -11431,14 +11429,15 @@ probably_broken_shareable_path_p(rb_objspace_t *objspace, VALUE a, VALUE oldv)
 void
 rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
 {
-    if (ruby_single_main_objspace) return;
-    if (SPECIAL_CONST_P(a)) return;
+    if (LIKELY(ruby_single_main_objspace || SPECIAL_CONST_P(a) || !FL_TEST_RAW(a, FL_SHAREABLE))) return;
 
     (void)VALGRIND_MAKE_MEM_DEFINED(&oldv, sizeof(oldv));
 
+    if (!oldv) return;
+
     WITH_OBJSPACE_OF_VALUE_ENTER(a, objspace);
     {
-	if (UNLIKELY(probably_broken_shareable_path_p(objspace, a, oldv))) {
+	if (probably_broken_shareable_path_p(objspace, a, oldv)) {
 	    lock_former_references(objspace);
 	    record_former_reference(objspace, a, oldv);
 	    unlock_former_references(objspace);
