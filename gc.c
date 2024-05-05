@@ -11429,7 +11429,11 @@ probably_broken_shareable_path_p(rb_objspace_t *objspace, VALUE a, VALUE oldv)
 void
 rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
 {
-    if (LIKELY(ruby_single_main_objspace || SPECIAL_CONST_P(a) || !FL_TEST_RAW(a, FL_SHAREABLE))) return;
+    if (RGENGC_CHECK_MODE) {
+	if (SPECIAL_CONST_P(a)) rb_bug("rb_gc_writebarrier_reference_dropped: a is special const: %"PRIxVALUE, a);
+    }
+
+    if (LIKELY(ruby_single_main_objspace || !FL_TEST_RAW(a, FL_SHAREABLE))) return;
 
     (void)VALGRIND_MAKE_MEM_DEFINED(&oldv, sizeof(oldv));
 
