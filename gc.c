@@ -11464,27 +11464,26 @@ rb_gc_writebarrier(VALUE a, VALUE b)
 	gc_writebarrier_safe_objspace(a, b, current_objspace);
     }
     else {
-	rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
 	WITH_OBJSPACE_OF_VALUE_ENTER(b, b_objspace);
 	{
 	    if (FL_TEST_RAW(b, FL_SHAREABLE)) {
-		WITH_OBJSPACE_OF_VALUE_ENTER(a, a_objspace);
-		{
-		    if (a_objspace != b_objspace) {
-			register_new_external_reference(a_objspace, b_objspace, b);
+		if (UNLIKELY(GET_OBJSPACE_OF_VALUE(a) != b_objspace)) {
+		    WITH_OBJSPACE_OF_VALUE_ENTER(a, a_objspace);
+		    {
+			if (LIKELY(a_objspace != b_objspace)) register_new_external_reference(a_objspace, b_objspace, b);
 		    }
-
-		    if (LIKELY(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace)) {
-			gc_writebarrier_safe_objspace(a, b, b_objspace);
-		    }
-		    else {
-			gc_writebarrier_parallel_objspace(a, b, b_objspace);
-		    }
+		    WITH_OBJSPACE_OF_VALUE_LEAVE(a_objspace);
 		}
-		WITH_OBJSPACE_OF_VALUE_LEAVE(a_objspace);
+
+		if (LIKELY(b_objspace == current_objspace || b_objspace == rb_current_allocating_ractor()->local_objspace)) {
+		    gc_writebarrier_safe_objspace(a, b, b_objspace);
+		}
+		else {
+		    gc_writebarrier_parallel_objspace(a, b, b_objspace);
+		}
 	    }
 	    else {
-		VM_ASSERT(b_objspace == current_objspace || b_objspace == allocating_ractor->local_objspace);
+		VM_ASSERT(b_objspace == current_objspace || b_objspace == rb_current_allocating_ractor()->local_objspace);
 		VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy);
 
 		gc_writebarrier_safe_objspace(a, b, b_objspace);
