@@ -5299,6 +5299,8 @@ rb_global_space_free(rb_global_space_t *global_space)
         all_pages_lomem_global = 0;
         all_pages_himem_global = 0;
     }
+
+    free(global_space);
 }
 
 typedef int each_obj_callback(void *, void *, size_t, void *);
