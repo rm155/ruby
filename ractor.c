@@ -310,6 +310,10 @@ ractor_free(void *ptr)
 	xfree(list);
     }
 
+    if (r->oc_node) {
+	rb_ractor_delete_from_order_chain(r);
+    }
+
     ruby_xfree(r);
 }
 
