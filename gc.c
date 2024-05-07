@@ -1048,6 +1048,7 @@ typedef struct rb_objspace {
 
     bool currently_absorbing;
     bool freeing_all;
+    bool objspace_closed;
 
     bool waiting_for_object_graph_safety;
 } rb_objspace_t;
@@ -2564,7 +2565,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 
     rb_darray_free(objspace->weak_references);
 
-    if (!objspace->ractor->objspace_absorbed) {
+    if (!objspace->objspace_closed) {
 	lock_ractor_set();
 	ccan_list_del(&objspace->objspace_node);
 	unlock_ractor_set();
@@ -3274,6 +3275,7 @@ close_objspace(rb_objspace_t *objspace)
     heap_pages_sorted = NULL;
 
     ccan_list_del(&objspace->objspace_node);
+    objspace->objspace_closed = true;
 
     unlock_ractor_set();
 }
