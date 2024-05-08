@@ -2532,6 +2532,13 @@ rb_objspace_free(rb_objspace_t *objspace)
         }
     }
 
+    if (!objspace->objspace_closed) {
+	lock_ractor_set();
+	st_foreach(objspace->former_reference_list_tbl, release_all_former_references_i, NULL);
+	ccan_list_del(&objspace->objspace_node);
+	unlock_ractor_set();
+    }
+
     st_free_table(objspace->id_to_obj_tbl);
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
@@ -2564,12 +2571,6 @@ rb_objspace_free(rb_objspace_t *objspace)
     mark_stack_free_cache(&objspace->mark_stack);
 
     rb_darray_free(objspace->weak_references);
-
-    if (!objspace->objspace_closed) {
-	lock_ractor_set();
-	ccan_list_del(&objspace->objspace_node);
-	unlock_ractor_set();
-    }
 
     if (objspace == GET_VM()->objspace) rb_global_space_free(GET_VM()->global_space);
 
