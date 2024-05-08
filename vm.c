@@ -3118,8 +3118,7 @@ ruby_vm_destruct(rb_vm_t *vm)
             }
         }
 
-        struct rb_objspace *objspace = ruby_single_main_objspace = vm->objspace;
-
+	rb_objspace_free_all_non_main(vm);
         rb_vm_living_threads_init(vm);
         ruby_vm_run_at_exit_hooks(vm);
         if (vm->loading_table) {
@@ -3145,13 +3144,7 @@ ruby_vm_destruct(rb_vm_t *vm)
 
 	rb_native_mutex_destroy(&vm->ractor.main_ractor->mark_object_ary_lock);
 
-	rb_ractor_t *r = NULL;
-	ccan_list_for_each(&vm->ractor.set, r, vmlr_node) {
-	    if (r->local_objspace && r != vm->ractor.main_ractor) {
-		rb_objspace_free(r->local_objspace);
-	    }
-	}
-	rb_objspace_free_all_non_main(vm);
+        struct rb_objspace *objspace = vm->objspace;
 
         if (objspace) {
             if (rb_free_at_exit) {
