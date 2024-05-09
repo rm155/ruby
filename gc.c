@@ -9386,7 +9386,9 @@ set_reference_status(st_table *tbl, VALUE obj, gc_reference_status_t *rs)
 static void
 delete_reference_status(st_table *tbl, VALUE obj)
 {
-    st_delete(tbl, (st_data_t *)&obj, NULL);
+    st_data_t rs;
+    st_delete(tbl, (st_data_t *)&obj, &rs);
+    free(rs);
 }
 
 static void
