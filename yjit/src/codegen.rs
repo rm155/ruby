@@ -250,6 +250,33 @@ impl JITState {
         }
     }
 
+    pub fn assume_expected_cfunc(
+        &mut self,
+        asm: &mut Assembler,
+        ocb: &mut OutlinedCb,
+        class: VALUE,
+        method: ID,
+        cfunc: *mut c_void,
+    ) -> bool {
+        let cme = unsafe { rb_callable_method_entry(class, method) };
+
+        if cme.is_null() {
+            return false;
+        }
+
+        let def_type = unsafe { get_cme_def_type(cme) };
+        if def_type != VM_METHOD_TYPE_CFUNC {
+            return false;
+        }
+        if unsafe { get_mct_func(get_cme_def_body_cfunc(cme)) } != cfunc {
+            return false;
+        }
+
+        self.assume_method_lookup_stable(asm, ocb, cme);
+
+        true
+    }
+
     pub fn assume_method_lookup_stable(&mut self, asm: &mut Assembler, ocb: &mut OutlinedCb, cme: CmePtr) -> Option<()> {
         jit_ensure_block_entry_exit(self, asm, ocb)?;
         self.method_lookup_assumptions.push(cme);
@@ -567,14 +594,36 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
         unsafe { CStr::from_ptr(rb_obj_info(val)).to_str().unwrap() }
     }
 
+    // Some types such as CString only assert the class field of the object
+    // when there has never been a singleton class created for objects of that class.
+    // Once there is a singleton class created they become their weaker
+    // `T*` variant, and we more objects should pass the verification.
+    fn relax_type_with_singleton_class_assumption(ty: Type) -> Type {
+        if let Type::CString | Type::CArray | Type::CHash = ty {
+            if has_singleton_class_of(ty.known_class().unwrap()) {
+                match ty {
+                    Type::CString => return Type::TString,
+                    Type::CArray => return Type::TArray,
+                    Type::CHash => return Type::THash,
+                    _ => (),
+                }
+            }
+        }
+
+        ty
+    }
+
     // Only able to check types when at current insn
     assert!(jit.at_current_insn());
 
     let self_val = jit.peek_at_self();
     let self_val_type = Type::from(self_val);
+    let learned_self_type = ctx.get_opnd_type(SelfOpnd);
+    let learned_self_type = relax_type_with_singleton_class_assumption(learned_self_type);
+
 
     // Verify self operand type
-    if self_val_type.diff(ctx.get_opnd_type(SelfOpnd)) == TypeDiff::Incompatible {
+    if self_val_type.diff(learned_self_type) == TypeDiff::Incompatible {
         panic!(
             "verify_ctx: ctx self type ({:?}) incompatible with actual value of self {}",
             ctx.get_opnd_type(SelfOpnd),
@@ -587,6 +636,7 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
     for i in 0..top_idx {
         let learned_mapping = ctx.get_opnd_mapping(StackOpnd(i));
         let learned_type = ctx.get_opnd_type(StackOpnd(i));
+        let learned_type = relax_type_with_singleton_class_assumption(learned_type);
 
         let stack_val = jit.peek_at_stack(ctx, i as isize);
         let val_type = Type::from(stack_val);
@@ -632,6 +682,7 @@ fn verify_ctx(jit: &JITState, ctx: &Context) {
     let top_idx: usize = cmp::min(local_table_size as usize, MAX_TEMP_TYPES);
     for i in 0..top_idx {
         let learned_type = ctx.get_local_type(i);
+        let learned_type = relax_type_with_singleton_class_assumption(learned_type);
         let local_val = jit.peek_at_local(i as i32);
         let local_type = Type::from(local_val);
 
@@ -6140,6 +6191,34 @@ fn jit_rb_class_superclass(
     true
 }
 
+fn jit_rb_case_equal(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    ocb: &mut OutlinedCb,
+    _ci: *const rb_callinfo,
+    _cme: *const rb_callable_method_entry_t,
+    _block: Option<BlockHandler>,
+    _argc: i32,
+    known_recv_class: Option<VALUE>,
+) -> bool {
+    if !jit.assume_expected_cfunc( asm, ocb, known_recv_class.unwrap(), ID!(eq), rb_obj_equal as _) {
+        return false;
+    }
+
+    asm_comment!(asm, "case_equal: {}#===", get_class_name(known_recv_class));
+
+    // Compare the arguments
+    let arg1 = asm.stack_pop(1);
+    let arg0 = asm.stack_pop(1);
+    asm.cmp(arg0, arg1);
+    let ret_opnd = asm.csel_e(Qtrue.into(), Qfalse.into());
+
+    let stack_ret = asm.stack_push(Type::UnknownImm);
+    asm.mov(stack_ret, ret_opnd);
+
+    true
+}
+
 fn jit_thread_s_current(
     _jit: &mut JITState,
     asm: &mut Assembler,
@@ -8230,6 +8309,13 @@ fn gen_struct_aref(
         }
     }
 
+    if c_method_tracing_currently_enabled(jit) {
+        // Struct accesses need fire c_call and c_return events, which we can't support
+        // See :attr-tracing:
+        gen_counter_incr(asm, Counter::send_cfunc_tracing);
+        return None;
+    }
+
     // This is a .send call and we need to adjust the stack
     if flags & VM_CALL_OPT_SEND != 0 {
         handle_opt_send_shift_stack(asm, argc);
@@ -8271,6 +8357,13 @@ fn gen_struct_aset(
     argc: i32,
 ) -> Option<CodegenStatus> {
     if unsafe { vm_ci_argc(ci) } != 1 {
+        return None;
+    }
+
+    if c_method_tracing_currently_enabled(jit) {
+        // Struct accesses need fire c_call and c_return events, which we can't support
+        // See :attr-tracing:
+        gen_counter_incr(asm, Counter::send_cfunc_tracing);
         return None;
     }
 
@@ -8540,10 +8633,8 @@ fn gen_send_general(
                     // Handling the C method tracing events for attr_accessor
                     // methods is easier than regular C methods as we know the
                     // "method" we are calling into never enables those tracing
-                    // events. Once global invalidation runs, the code for the
-                    // attr_accessor is invalidated and we exit at the closest
-                    // instruction boundary which is always outside of the body of
-                    // the attr_accessor code.
+                    // events. We are never inside the code that needs to be
+                    // invalidated when invalidation happens.
                     gen_counter_incr(asm, Counter::send_cfunc_tracing);
                     return None;
                 }
@@ -8803,11 +8894,16 @@ fn gen_send_general(
     }
 }
 
+/// Get class name from a class pointer.
+fn get_class_name(class: Option<VALUE>) -> String {
+    class.and_then(|class| unsafe {
+        cstr_to_rust_string(rb_class2name(class))
+    }).unwrap_or_else(|| "Unknown".to_string())
+}
+
 /// Assemble "{class_name}#{method_name}" from a class pointer and a method ID
 fn get_method_name(class: Option<VALUE>, mid: u64) -> String {
-    let class_name = class.and_then(|class| unsafe {
-        cstr_to_rust_string(rb_class2name(class))
-    }).unwrap_or_else(|| "Unknown".to_string());
+    let class_name = get_class_name(class);
     let method_name = if mid != 0 {
         unsafe { cstr_to_rust_string(rb_id2name(mid)) }
     } else {
@@ -10141,6 +10237,10 @@ pub fn yjit_reg_method_codegen_fns() {
         yjit_reg_method(rb_cString, "byteslice", jit_rb_str_byteslice);
         yjit_reg_method(rb_cString, "<<", jit_rb_str_concat);
         yjit_reg_method(rb_cString, "+@", jit_rb_str_uplus);
+
+        yjit_reg_method(rb_cNilClass, "===", jit_rb_case_equal);
+        yjit_reg_method(rb_cTrueClass, "===", jit_rb_case_equal);
+        yjit_reg_method(rb_cFalseClass, "===", jit_rb_case_equal);
 
         yjit_reg_method(rb_cArray, "empty?", jit_rb_ary_empty_p);
         yjit_reg_method(rb_cArray, "length", jit_rb_ary_length);

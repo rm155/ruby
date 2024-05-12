@@ -271,9 +271,9 @@ module Prism
         # ^^^^^^^^^^^^^^^
         def visit_call_operator_write_node(node)
           if op_asgn?(node)
-            s(node, op_asgn_type(node, :op_asgn), visit(node.receiver), visit_write_value(node.value), node.read_name, node.operator)
+            s(node, op_asgn_type(node, :op_asgn), visit(node.receiver), visit_write_value(node.value), node.read_name, node.binary_operator)
           else
-            s(node, op_asgn_type(node, :op_asgn2), visit(node.receiver), node.write_name, node.operator, visit_write_value(node.value))
+            s(node, op_asgn_type(node, :op_asgn2), visit(node.receiver), node.write_name, node.binary_operator, visit_write_value(node.value))
           end
         end
 
@@ -372,7 +372,7 @@ module Prism
         # @@foo += bar
         # ^^^^^^^^^^^^
         def visit_class_variable_operator_write_node(node)
-          s(node, class_variable_write_type, node.name, s(node, :call, s(node, :cvar, node.name), node.operator, visit_write_value(node.value)))
+          s(node, class_variable_write_type, node.name, s(node, :call, s(node, :cvar, node.name), node.binary_operator, visit_write_value(node.value)))
         end
 
         # @@foo &&= bar
@@ -417,7 +417,7 @@ module Prism
         # Foo += bar
         # ^^^^^^^^^^^
         def visit_constant_operator_write_node(node)
-          s(node, :cdecl, node.name, s(node, :call, s(node, :const, node.name), node.operator, visit_write_value(node.value)))
+          s(node, :cdecl, node.name, s(node, :call, s(node, :const, node.name), node.binary_operator, visit_write_value(node.value)))
         end
 
         # Foo &&= bar
@@ -442,9 +442,9 @@ module Prism
         # ^^^^^^^^
         def visit_constant_path_node(node)
           if node.parent.nil?
-            s(node, :colon3, node.child.name)
+            s(node, :colon3, node.name)
           else
-            s(node, :colon2, visit(node.parent), node.child.name)
+            s(node, :colon2, visit(node.parent), node.name)
           end
         end
 
@@ -460,7 +460,7 @@ module Prism
         # Foo::Bar += baz
         # ^^^^^^^^^^^^^^^
         def visit_constant_path_operator_write_node(node)
-          s(node, :op_asgn, visit(node.target), node.operator, visit_write_value(node.value))
+          s(node, :op_asgn, visit(node.target), node.binary_operator, visit_write_value(node.value))
         end
 
         # Foo::Bar &&= baz
@@ -627,7 +627,7 @@ module Prism
         # $foo += bar
         # ^^^^^^^^^^^
         def visit_global_variable_operator_write_node(node)
-          s(node, :gasgn, node.name, s(node, :call, s(node, :gvar, node.name), node.operator, visit(node.value)))
+          s(node, :gasgn, node.name, s(node, :call, s(node, :gvar, node.name), node.binary_operator, visit(node.value)))
         end
 
         # $foo &&= bar
@@ -719,7 +719,7 @@ module Prism
             arglist << visit(node.block) if !node.block.nil?
           end
 
-          s(node, :op_asgn1, visit(node.receiver), arglist, node.operator, visit_write_value(node.value))
+          s(node, :op_asgn1, visit(node.receiver), arglist, node.binary_operator, visit_write_value(node.value))
         end
 
         # foo[bar] &&= baz
@@ -775,7 +775,7 @@ module Prism
         # @foo += bar
         # ^^^^^^^^^^^
         def visit_instance_variable_operator_write_node(node)
-          s(node, :iasgn, node.name, s(node, :call, s(node, :ivar, node.name), node.operator, visit_write_value(node.value)))
+          s(node, :iasgn, node.name, s(node, :call, s(node, :ivar, node.name), node.binary_operator, visit_write_value(node.value)))
         end
 
         # @foo &&= bar
@@ -960,7 +960,7 @@ module Prism
         # foo += bar
         # ^^^^^^^^^^
         def visit_local_variable_operator_write_node(node)
-          s(node, :lasgn, node.name, s(node, :call, s(node, :lvar, node.name), node.operator, visit_write_value(node.value)))
+          s(node, :lasgn, node.name, s(node, :call, s(node, :lvar, node.name), node.binary_operator, visit_write_value(node.value)))
         end
 
         # foo &&= bar
@@ -1536,13 +1536,13 @@ module Prism
       # Parse the given source and translate it into the seattlerb/ruby_parser
       # gem's Sexp format.
       def parse(source, filepath = "(string)")
-        translate(Prism.parse(source, filepath: filepath), filepath)
+        translate(Prism.parse(source, filepath: filepath, scopes: [[]]), filepath)
       end
 
       # Parse the given file and translate it into the seattlerb/ruby_parser
       # gem's Sexp format.
       def parse_file(filepath)
-        translate(Prism.parse_file(filepath), filepath)
+        translate(Prism.parse_file(filepath, scopes: [[]]), filepath)
       end
 
       class << self

@@ -40,9 +40,25 @@ module Prism
       end
     end
 
+    # Returns all of the lines of the source code associated with this node.
+    def source_lines
+      location.source_lines
+    end
+
+    # An alias for source_lines, used to mimic the API from
+    # RubyVM::AbstractSyntaxTree to make it easier to migrate.
+    alias script_lines source_lines
+
     # Slice the location of the node from the source.
     def slice
       location.slice
+    end
+
+    # Slice the location of the node from the source, starting at the beginning
+    # of the line that the location starts on, ending at the end of the line
+    # that the location ends on.
+    def slice_lines
+      location.slice_lines
     end
 
     # Similar to inspect, but respects the current level of indentation given by
@@ -58,6 +74,43 @@ module Prism
     def to_dot
       # @type self: node
       DotVisitor.new.tap { |visitor| accept(visitor) }.to_dot
+    end
+
+    # Returns a list of nodes that are descendants of this node that contain the
+    # given line and column. This is useful for locating a node that is selected
+    # based on the line and column of the source code.
+    #
+    # Important to note is that the column given to this method should be in
+    # bytes, as opposed to characters or code units.
+    def tunnel(line, column)
+      queue = [self] #: Array[Prism::node]
+      result = []
+
+      while (node = queue.shift)
+        result << node
+
+        node.compact_child_nodes.each do |child_node|
+          child_location = child_node.location
+
+          start_line = child_location.start_line
+          end_line = child_location.end_line
+
+          if start_line == end_line
+            if line == start_line && column >= child_location.start_column && column < child_location.end_column
+              queue << child_node
+              break
+            end
+          elsif (line == start_line && column >= child_location.start_column) || (line == end_line && column < child_location.end_column)
+            queue << child_node
+            break
+          elsif line > start_line && line < end_line
+            queue << child_node
+            break
+          end
+        end
+      end
+
+      result
     end
 
     # Returns a list of the fields that exist for this node class. Fields

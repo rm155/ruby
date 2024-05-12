@@ -118,6 +118,7 @@ redblack_value(redblack_node_t * node)
     return (rb_shape_t *)((uintptr_t)node->value & (((uintptr_t)-1) - 1));
 }
 
+#ifdef HAVE_MMAP
 static redblack_id_t
 redblack_id_for(redblack_node_t * node)
 {
@@ -292,6 +293,7 @@ redblack_insert(redblack_node_t * tree, ID key, rb_shape_t * value)
         return root;
     }
 }
+#endif
 
 rb_shape_tree_t *rb_shape_tree_ptr = NULL;
 
@@ -1213,8 +1215,7 @@ rb_shape_find_by_id(VALUE mod, VALUE id)
 void
 Init_default_shapes(void)
 {
-    rb_shape_tree_t *st = ruby_mimcalloc(1, sizeof(rb_shape_tree_t));
-    rb_shape_tree_ptr = st;
+    rb_shape_tree_ptr = xcalloc(1, sizeof(rb_shape_tree_t));
 
 #ifdef HAVE_MMAP
     rb_shape_tree_ptr->shape_list = (rb_shape_t *)mmap(NULL, rb_size_mul_or_raise(SHAPE_BUFFER_SIZE, sizeof(rb_shape_t), rb_eRuntimeError),

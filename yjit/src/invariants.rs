@@ -177,18 +177,6 @@ pub fn iseq_escapes_ep(iseq: IseqPtr) -> bool {
         .map_or(false, |blocks| blocks.is_empty())
 }
 
-/// Update ISEQ references in invariants on GC compaction
-pub fn iseq_update_references_in_invariants(iseq: IseqPtr) {
-    if unsafe { INVARIANTS.is_none() } {
-        return;
-    }
-    let no_ep_escape_iseqs = &mut Invariants::get_instance().no_ep_escape_iseqs;
-    if let Some(blocks) = no_ep_escape_iseqs.remove(&iseq) {
-        let new_iseq = unsafe { rb_gc_location(iseq.into()) }.as_iseq();
-        no_ep_escape_iseqs.insert(new_iseq, blocks);
-    }
-}
-
 /// Forget an ISEQ remembered in invariants
 pub fn iseq_free_invariants(iseq: IseqPtr) {
     if unsafe { INVARIANTS.is_none() } {
@@ -360,7 +348,7 @@ pub extern "C" fn rb_yjit_constant_state_changed(id: ID) {
 /// Callback for marking GC objects inside [Invariants].
 /// See `struct yjijt_root_struct` in C.
 #[no_mangle]
-pub extern "C" fn rb_yjit_root_mark() {
+pub extern "C" fn rb_yjit_root_mark(_: *mut c_void) {
     // Call rb_gc_mark on exit location's raw_samples to
     // wrap frames in a GC allocated object. This needs to be called
     // at the same time as root mark.
@@ -386,6 +374,23 @@ pub extern "C" fn rb_yjit_root_mark() {
 
         unsafe { rb_gc_mark(cme) };
     }
+}
+
+#[no_mangle]
+pub extern "C" fn rb_yjit_root_update_references(_: *mut c_void) {
+    if unsafe { INVARIANTS.is_none() } {
+        return;
+    }
+    let no_ep_escape_iseqs = &mut Invariants::get_instance().no_ep_escape_iseqs;
+
+    // Make a copy of the table with updated ISEQ keys
+    let mut updated_copy = HashMap::with_capacity(no_ep_escape_iseqs.len());
+    for (iseq, blocks) in mem::take(no_ep_escape_iseqs) {
+        let new_iseq = unsafe { rb_gc_location(iseq.into()) }.as_iseq();
+        updated_copy.insert(new_iseq, blocks);
+    }
+
+    *no_ep_escape_iseqs = updated_copy;
 }
 
 /// Remove all invariant assumptions made by the block by removing the block as
@@ -544,21 +549,23 @@ pub extern "C" fn rb_yjit_invalidate_no_singleton_class(klass: VALUE) {
 
     // We apply this optimization only to Array, Hash, and String for now.
     if unsafe { [rb_cArray, rb_cHash, rb_cString].contains(&klass) } {
-        let no_singleton_classes = &mut Invariants::get_instance().no_singleton_classes;
-        match no_singleton_classes.get_mut(&klass) {
-            Some(blocks) => {
-                // Invalidate existing blocks and let has_singleton_class_of()
-                // return true when they are compiled again
-                for block in mem::take(blocks) {
-                    invalidate_block_version(&block);
-                    incr_counter!(invalidate_no_singleton_class);
+        with_vm_lock(src_loc!(), || {
+            let no_singleton_classes = &mut Invariants::get_instance().no_singleton_classes;
+            match no_singleton_classes.get_mut(&klass) {
+                Some(blocks) => {
+                    // Invalidate existing blocks and let has_singleton_class_of()
+                    // return true when they are compiled again
+                    for block in mem::take(blocks) {
+                        invalidate_block_version(&block);
+                        incr_counter!(invalidate_no_singleton_class);
+                    }
+                }
+                None => {
+                    // Let has_singleton_class_of() return true for this class
+                    no_singleton_classes.insert(klass, HashSet::new());
                 }
             }
-            None => {
-                // Let has_singleton_class_of() return true for this class
-                no_singleton_classes.insert(klass, HashSet::new());
-            }
-        }
+        });
     }
 }
 
@@ -571,23 +578,24 @@ pub extern "C" fn rb_yjit_invalidate_ep_is_bp(iseq: IseqPtr) {
         return;
     }
 
-    // If an EP escape for this ISEQ is detected for the first time, invalidate all blocks
-    // associated to the ISEQ.
-    let no_ep_escape_iseqs = &mut Invariants::get_instance().no_ep_escape_iseqs;
-    match no_ep_escape_iseqs.get_mut(&iseq) {
-        Some(blocks) => {
-            // Invalidate existing blocks and let jit.ep_is_bp()
-            // return true when they are compiled again
-            for block in mem::take(blocks) {
-                invalidate_block_version(&block);
-                incr_counter!(invalidate_no_singleton_class);
+    with_vm_lock(src_loc!(), || {
+        // If an EP escape for this ISEQ is detected for the first time, invalidate all blocks
+        // associated to the ISEQ.
+        let no_ep_escape_iseqs = &mut Invariants::get_instance().no_ep_escape_iseqs;
+        match no_ep_escape_iseqs.get_mut(&iseq) {
+            Some(blocks) => {
+                // Invalidate existing blocks and make jit.ep_is_bp() return false
+                for block in mem::take(blocks) {
+                    invalidate_block_version(&block);
+                    incr_counter!(invalidate_ep_escape);
+                }
+            }
+            None => {
+                // Let jit.ep_is_bp() return false for this ISEQ
+                no_ep_escape_iseqs.insert(iseq, HashSet::new());
             }
         }
-        None => {
-            // Let jit.ep_is_bp() return false for this ISEQ
-            no_ep_escape_iseqs.insert(iseq, HashSet::new());
-        }
-    }
+    });
 }
 
 // Invalidate all generated code and patch C method return code to contain

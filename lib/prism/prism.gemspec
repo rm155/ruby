@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name = "prism"
-  spec.version = "0.26.0"
+  spec.version = "0.29.0"
   spec.authors = ["Shopify"]
   spec.email = ["ruby@shopify.com"]
 
@@ -86,7 +86,8 @@ Gem::Specification.new do |spec|
     "lib/prism/parse_result/comments.rb",
     "lib/prism/parse_result/newlines.rb",
     "lib/prism/pattern.rb",
-    "lib/prism/polyfill/string.rb",
+    "lib/prism/polyfill/byteindex.rb",
+    "lib/prism/polyfill/unpack1.rb",
     "lib/prism/reflection.rb",
     "lib/prism/serialize.rb",
     "lib/prism/translation.rb",
@@ -104,20 +105,15 @@ Gem::Specification.new do |spec|
     "prism.gemspec",
     "rbi/prism.rbi",
     "rbi/prism/compiler.rbi",
-    "rbi/prism/desugar_compiler.rbi",
     "rbi/prism/inspect_visitor.rbi",
-    "rbi/prism/mutation_compiler.rbi",
     "rbi/prism/node_ext.rbi",
     "rbi/prism/node.rbi",
     "rbi/prism/parse_result.rbi",
     "rbi/prism/reflection.rbi",
     "rbi/prism/translation/parser.rbi",
-    "rbi/prism/translation/parser/compiler.rbi",
     "rbi/prism/translation/parser33.rbi",
     "rbi/prism/translation/parser34.rbi",
     "rbi/prism/translation/ripper.rbi",
-    "rbi/prism/translation/ripper/ripper_compiler.rbi",
-    "rbi/prism/translation/ruby_parser.rbi",
     "rbi/prism/visitor.rbi",
     "sig/prism.rbs",
     "sig/prism/compiler.rbs",
@@ -125,6 +121,7 @@ Gem::Specification.new do |spec|
     "sig/prism/dot_visitor.rbs",
     "sig/prism/dsl.rbs",
     "sig/prism/inspect_visitor.rbs",
+    "sig/prism/lex_compat.rbs",
     "sig/prism/mutation_compiler.rbs",
     "sig/prism/node_ext.rbs",
     "sig/prism/node.rbs",

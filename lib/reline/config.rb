@@ -8,31 +8,12 @@ class Reline::Config
   end
 
   VARIABLE_NAMES = %w{
-    bind-tty-special-chars
-    blink-matching-paren
-    byte-oriented
     completion-ignore-case
     convert-meta
     disable-completion
-    enable-keypad
-    expand-tilde
-    history-preserve-point
     history-size
-    horizontal-scroll-mode
-    input-meta
     keyseq-timeout
-    mark-directories
-    mark-modified-lines
-    mark-symlinked-directories
-    match-hidden-files
-    meta-flag
-    output-meta
-    page-completions
-    prefer-visible-bell
-    print-completions-horizontally
     show-all-if-ambiguous
-    show-all-if-unmodified
-    visible-stats
     show-mode-in-prompt
     vi-cmd-mode-string
     vi-ins-mode-string
@@ -69,17 +50,15 @@ class Reline::Config
     @test_mode = false
     @autocompletion = false
     @convert_meta = true if seven_bit_encoding?(Reline::IOGate.encoding)
+    @loaded = false
+    @enable_bracketed_paste = true
   end
 
   def reset
     if editing_mode_is?(:vi_command)
       @editing_mode_label = :vi_insert
     end
-    @additional_key_bindings.keys.each do |key|
-      @additional_key_bindings[key].clear
-    end
     @oneshot_key_bindings.clear
-    reset_default_key_bindings
   end
 
   def editing_mode
@@ -96,6 +75,10 @@ class Reline::Config
 
   def keymap
     @key_actors[@keymap_label]
+  end
+
+  def loaded?
+    @loaded
   end
 
   def inputrc_path
@@ -129,6 +112,7 @@ class Reline::Config
   end
 
   def read(file = nil)
+    @loaded = true
     file ||= default_inputrc_path
     begin
       if file.respond_to?(:readlines)
@@ -171,12 +155,6 @@ class Reline::Config
     @key_actors[@keymap_label].default_key_bindings[keystroke] = target
   end
 
-  def reset_default_key_bindings
-    @key_actors.values.each do |ka|
-      ka.reset_default_key_bindings
-    end
-  end
-
   def read_lines(lines, file = nil)
     if not lines.empty? and lines.first.encoding != Reline.encoding_system_needs
       begin
@@ -210,6 +188,7 @@ class Reline::Config
         next
       when /\s*("#{KEYSEQ_PATTERN}+")\s*:\s*(.*)\s*$/o
         key, func_name = $1, $2
+        func_name = func_name.split.first
         keystroke, func = bind_key(key, func_name)
         next unless keystroke
         @additional_key_bindings[@keymap_label][@keymap_prefix + keystroke] = func
@@ -226,7 +205,13 @@ class Reline::Config
     when 'if'
       condition = false
       case args
-      when 'mode'
+      when /^mode=(vi|emacs)$/i
+        mode = $1.downcase
+        # NOTE: mode=vi means vi-insert mode
+        mode = 'vi_insert' if mode == 'vi'
+        if @editing_mode_label == mode.to_sym
+          condition = true
+        end
       when 'term'
       when 'version'
       else # application name

@@ -75,7 +75,7 @@ class Reline::LineEditor
   def initialize(config, encoding)
     @config = config
     @completion_append_character = ''
-    @screen_size = Reline::IOGate.get_screen_size
+    @screen_size = [0, 0] # Should be initialized with actual winsize in LineEditor#reset
     reset_variables(encoding: encoding)
   end
 
@@ -235,7 +235,6 @@ class Reline::LineEditor
     @vi_waiting_operator_arg = nil
     @completion_journey_state = nil
     @completion_state = CompletionState::NORMAL
-    @completion_occurs = false
     @perfect_matched = nil
     @menu_info = nil
     @searching_prompt = nil
@@ -284,7 +283,7 @@ class Reline::LineEditor
           indent1 = @auto_indent_proc.(@buffer_of_lines.take(@line_index - 1).push(''), @line_index - 1, 0, true)
           indent2 = @auto_indent_proc.(@buffer_of_lines.take(@line_index), @line_index - 1, @buffer_of_lines[@line_index - 1].bytesize, false)
           indent = indent2 || indent1
-          @buffer_of_lines[@line_index - 1] = ' ' * indent + @buffer_of_lines[@line_index - 1].gsub(/\A */, '')
+          @buffer_of_lines[@line_index - 1] = ' ' * indent + @buffer_of_lines[@line_index - 1].gsub(/\A\s*/, '')
         )
         process_auto_indent @line_index, add_newline: true
       else
@@ -387,7 +386,7 @@ class Reline::LineEditor
           next cached
         end
         *wrapped_prompts, code_line_prompt = split_by_width(prompt, width).first.compact
-        wrapped_lines = split_by_width(line, width, offset: calculate_width(code_line_prompt)).first.compact
+        wrapped_lines = split_by_width(line, width, offset: calculate_width(code_line_prompt, true)).first.compact
         wrapped_prompts.map { |p| [p, ''] } + [[code_line_prompt, wrapped_lines.first]] + wrapped_lines.drop(1).map { |c| ['', c] }
       end
     end
@@ -414,8 +413,13 @@ class Reline::LineEditor
         @output.write "#{Reline::IOGate::RESET_COLOR}#{' ' * width}"
       else
         x, w, content = new_items[level]
-        content = Reline::Unicode.take_range(content, base_x - x, width) unless x == base_x && w == width
-        Reline::IOGate.move_cursor_column base_x
+        cover_begin = base_x != 0 && new_levels[base_x - 1] == level
+        cover_end = new_levels[base_x + width] == level
+        pos = 0
+        unless x == base_x && w == width
+          content, pos = Reline::Unicode.take_mbchar_range(content, base_x - x, width, cover_begin: cover_begin, cover_end: cover_end, padding: true)
+        end
+        Reline::IOGate.move_cursor_column x + pos
         @output.write "#{Reline::IOGate::RESET_COLOR}#{content}#{Reline::IOGate::RESET_COLOR}"
       end
       base_x += width
@@ -699,13 +703,6 @@ class Reline::LineEditor
 
   DIALOG_DEFAULT_HEIGHT = 20
 
-  private def padding_space_with_escape_sequences(str, width)
-    padding_width = width - calculate_width(str, true)
-    # padding_width should be only positive value. But macOS and Alacritty returns negative value.
-    padding_width = 0 if padding_width < 0
-    str + (' ' * padding_width)
-  end
-
   private def dialog_range(dialog, dialog_y)
     x_range = dialog.column...dialog.column + dialog.width
     y_range = dialog_y + dialog.vertical_offset...dialog_y + dialog.vertical_offset + dialog.contents.size
@@ -778,7 +775,7 @@ class Reline::LineEditor
     dialog.contents = contents.map.with_index do |item, i|
       line_sgr = i == pointer ? enhanced_sgr : default_sgr
       str_width = dialog.width - (scrollbar_pos.nil? ? 0 : @block_elem_width)
-      str = padding_space_with_escape_sequences(Reline::Unicode.take_range(item, 0, str_width), str_width)
+      str, = Reline::Unicode.take_mbchar_range(item, 0, str_width, padding: true)
       colored_content = "#{line_sgr}#{str}"
       if scrollbar_pos
         if scrollbar_pos <= (i * 2) and (i * 2 + 1) < (scrollbar_pos + bar_height)
@@ -858,7 +855,7 @@ class Reline::LineEditor
     [target, preposing, completed, postposing]
   end
 
-  private def complete(list, just_show_list)
+  private def perform_completion(list, just_show_list)
     case @completion_state
     when CompletionState::NORMAL
       @completion_state = CompletionState::COMPLETION
@@ -887,12 +884,12 @@ class Reline::LineEditor
           @completion_state = CompletionState::PERFECT_MATCH
         else
           @completion_state = CompletionState::MENU_WITH_PERFECT_MATCH
-          complete(list, true) if @config.show_all_if_ambiguous
+          perform_completion(list, true) if @config.show_all_if_ambiguous
         end
         @perfect_matched = completed
       else
         @completion_state = CompletionState::MENU
-        complete(list, true) if @config.show_all_if_ambiguous
+        perform_completion(list, true) if @config.show_all_if_ambiguous
       end
       if not just_show_list and target < completed
         @buffer_of_lines[@line_index] = (preposing + completed + completion_append_character.to_s + postposing).split("\n")[@line_index] || String.new(encoding: @encoding)
@@ -1067,10 +1064,6 @@ class Reline::LineEditor
   end
 
   private def normal_char(key)
-    if key.combined_char.is_a?(Symbol)
-      process_key(key.combined_char, key.combined_char)
-      return
-    end
     @multibyte_buffer << key.combined_char
     if @multibyte_buffer.size > 1
       if @multibyte_buffer.dup.force_encoding(@encoding).valid_encoding?
@@ -1120,6 +1113,7 @@ class Reline::LineEditor
       end
     end
     if key.char.nil?
+      process_insert(force: true)
       if @first_char
         @eof = true
       end
@@ -1129,29 +1123,8 @@ class Reline::LineEditor
     old_lines = @buffer_of_lines.dup
     @first_char = false
     @completion_occurs = false
-    if @config.editing_mode_is?(:emacs, :vi_insert) and key.char == "\C-i".ord
-      if !@config.disable_completion
-        process_insert(force: true)
-        if @config.autocompletion
-          @completion_state = CompletionState::NORMAL
-          @completion_occurs = move_completed_list(:down)
-        else
-          @completion_journey_state = nil
-          result = call_completion_proc
-          if result.is_a?(Array)
-            @completion_occurs = true
-            complete(result, false)
-          end
-        end
-      end
-    elsif @config.editing_mode_is?(:vi_insert) and ["\C-p".ord, "\C-n".ord].include?(key.char)
-      # In vi mode, move completed list even if autocompletion is off
-      if not @config.disable_completion
-        process_insert(force: true)
-        @completion_state = CompletionState::NORMAL
-        @completion_occurs = move_completed_list("\C-p".ord == key.char ? :up : :down)
-      end
-    elsif Symbol === key.char and respond_to?(key.char, true)
+
+    if key.char.is_a?(Symbol)
       process_key(key.char, key.char)
     else
       normal_char(key)
@@ -1332,6 +1305,16 @@ class Reline::LineEditor
     @confirm_multiline_termination_proc.(temp_buffer.join("\n") + "\n")
   end
 
+  def insert_pasted_text(text)
+    pre = @buffer_of_lines[@line_index].byteslice(0, @byte_pointer)
+    post = @buffer_of_lines[@line_index].byteslice(@byte_pointer..)
+    lines = (pre + text.gsub(/\r\n?/, "\n") + post).split("\n", -1)
+    lines << '' if lines.empty?
+    @buffer_of_lines[@line_index, 1] = lines
+    @line_index += lines.size - 1
+    @byte_pointer = @buffer_of_lines[@line_index].bytesize - post.bytesize
+  end
+
   def insert_text(text)
     if @buffer_of_lines[@line_index].bytesize == @byte_pointer
       @buffer_of_lines[@line_index] += text
@@ -1430,13 +1413,42 @@ class Reline::LineEditor
     end
   end
 
-  private def completion_journey_up(key)
-    if not @config.disable_completion and @config.autocompletion
+  private def complete(_key)
+    return if @config.disable_completion
+
+    process_insert(force: true)
+    if @config.autocompletion
       @completion_state = CompletionState::NORMAL
-      @completion_occurs = move_completed_list(:up)
+      @completion_occurs = move_completed_list(:down)
+    else
+      @completion_journey_state = nil
+      result = call_completion_proc
+      if result.is_a?(Array)
+        @completion_occurs = true
+        perform_completion(result, false)
+      end
     end
   end
-  alias_method :menu_complete_backward, :completion_journey_up
+
+  private def completion_journey_move(direction)
+    return if @config.disable_completion
+
+    process_insert(force: true)
+    @completion_state = CompletionState::NORMAL
+    @completion_occurs = move_completed_list(direction)
+  end
+
+  private def menu_complete(_key)
+    completion_journey_move(:down)
+  end
+
+  private def menu_complete_backward(_key)
+    completion_journey_move(:up)
+  end
+
+  private def completion_journey_up(_key)
+    completion_journey_move(:up) if @config.autocompletion
+  end
 
   # Editline:: +ed-unassigned+ This  editor command always results in an error.
   # GNU Readline:: There is no corresponding macro.
@@ -1905,7 +1917,7 @@ class Reline::LineEditor
     elsif !@config.autocompletion # show completed list
       result = call_completion_proc
       if result.is_a?(Array)
-        complete(result, true)
+        perform_completion(result, true)
       end
     end
   end
