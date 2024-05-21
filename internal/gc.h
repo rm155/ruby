@@ -137,6 +137,8 @@ void rb_remove_from_absorbed_threads_tbl(rb_thread_t *th);
 void rb_add_to_contained_ractor_tbl(rb_ractor_t *r);
 void rb_remove_from_contained_ractor_tbl(rb_ractor_t *r);
 
+void rb_disconnect_ractor_from_unabsorbed_objspace(r);
+
 void rb_register_new_external_wmap_reference(VALUE *ptr);
 void rb_remove_from_external_weak_tables(VALUE *ptr);
 
@@ -157,15 +159,6 @@ typedef enum {
     OGS_FLAG_COND_AND_BARRIER       = 0x100,
 };
 
-struct rb_order_chain_node {
-    rb_ractor_t *ractor;
-    rb_atomic_t object_graph_safety;
-    struct rb_order_chain_node *prev_node;
-    struct rb_order_chain_node *next_node;
-};
-
-void rb_ractor_insert_into_order_chain(rb_ractor_t *r);
-void rb_ractor_delete_from_order_chain(rb_ractor_t *r);
 void rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason);
 void rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason);
 

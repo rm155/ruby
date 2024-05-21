@@ -151,6 +151,7 @@ enum ractor_status {
     ractor_terminated,
 };
 
+struct rb_global_space;
 struct rb_objspace;
 
 struct borrowing_target_node_t {
@@ -250,7 +251,9 @@ struct rb_ractor_struct {
 
     struct global_object_list *global_object_list;
 
-    struct rb_order_chain_node *oc_node;
+    bool registered_in_ractor_chains;
+    struct rb_ractor_chain_node *ogs_chain_node;
+    struct rb_ractor_chain_node *gc_chain_node;
 
     VALUE result_value;
 
@@ -258,6 +261,27 @@ struct rb_ractor_struct {
 
     struct borrowing_target_node_t *borrowing_target_top;
 }; // rb_ractor_t is defined in vm_core.h
+
+struct rb_ractor_chain_node {
+    rb_ractor_t *ractor;
+    rb_atomic_t value;
+    struct rb_ractor_chain_node *prev_node;
+    struct rb_ractor_chain_node *next_node;
+};
+
+struct rb_ractor_chain {
+    struct rb_global_space *global_space;
+    struct rb_ractor_chain_node *head_node;
+    struct rb_ractor_chain_node *tail_node;
+
+    void (*node_added_callback)(struct rb_ractor_chain *, struct rb_ractor_chain_node *);
+    void (*node_removed_callback)(struct rb_ractor_chain *, struct rb_ractor_chain_node *);
+
+    rb_nativethread_lock_t lock;
+#if VM_CHECK_MODE > 0
+    rb_ractor_t *lock_owner;
+#endif
+};
 
 static inline VALUE
 rb_ractor_self(const rb_ractor_t *r)
@@ -290,6 +314,9 @@ void rb_ractor_blocking_threads_dec(rb_ractor_t *r, const char *file, int line);
 
 void lock_ractor_set(void);
 void unlock_ractor_set(void);
+
+void rb_ractor_chains_register(rb_ractor_t *r);
+void rb_ractor_chains_unregister(rb_ractor_t *r);
 
 void rb_borrowing_sync_lock(rb_ractor_t *r);
 void rb_borrowing_sync_unlock(rb_ractor_t *r);

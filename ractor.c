@@ -310,8 +310,12 @@ ractor_free(void *ptr)
 	xfree(list);
     }
 
-    if (r->oc_node) {
-	rb_ractor_delete_from_order_chain(r);
+    if (!r->objspace_absorbed) {
+	rb_disconnect_ractor_from_unabsorbed_objspace(r);
+    }
+
+    if (r->registered_in_ractor_chains) {
+	rb_ractor_chains_unregister(r);
     }
 
     ruby_xfree(r);
@@ -2048,7 +2052,7 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     ccan_list_add_tail(&vm->ractor.set, &r->vmlr_node);
     vm->ractor.cnt++;
     unlock_ractor_set();
-    rb_ractor_insert_into_order_chain(r);
+    rb_ractor_chains_register(r);
 }
 
 static VALUE
@@ -2139,7 +2143,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
     }
     RB_VM_UNLOCK();
 
-    rb_ractor_delete_from_order_chain(cr);
+    rb_ractor_chains_unregister(cr);
 }
 
 static VALUE

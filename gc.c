@@ -818,9 +818,16 @@ typedef struct rb_global_space {
 	rb_nativethread_lock_t shared_tracking_lock;
     } rglobalgc; //TODO: Call global GC upon hitting shared object limit
 
-    struct rb_order_chain_node *order_chain_head_node;
-    rb_nativethread_lock_t order_chain_lock;
-    rb_nativethread_cond_t order_chain_removal_cond;
+    struct {
+	struct rb_ractor_chain ractor_chain;
+	rb_nativethread_cond_t removal_cond;
+    } ogs_tracking;
+
+    struct {
+	struct rb_ractor_chain ractor_chain;
+	rb_atomic_t latest_point;
+	rb_atomic_t earliest_point;
+    } gc_history_tracking;
 
     struct {
 	rb_nativethread_lock_t mode_lock;
@@ -1057,6 +1064,9 @@ typedef struct rb_objspace {
     bool objspace_closed;
 
     bool waiting_for_object_graph_safety;
+
+    int gc_chain_latest;
+    int gc_chain_earliest;
 } rb_objspace_t;
 
 static void
@@ -1194,6 +1204,8 @@ struct former_reference_list {
     VALUE fmr_ref;
     struct former_reference_list *next;
     bool marked;
+    bool candidate_for_disposability;
+    int gc_target_point;
 };
 
 
@@ -3342,6 +3354,12 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     rb_ractor_object_graph_safety_withdraw(receiving_ractor, OGS_FLAG_ABSORBING_OBJSPACE);
 }
 
+void
+rb_disconnect_ractor_from_unabsorbed_objspace(rb_ractor_t *r)
+{
+    r->local_objspace->ractor = NULL;
+}
+
 static void
 heap_assign_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap)
 {
@@ -5126,116 +5144,178 @@ rb_global_tables_init(void)
 }
 
 static void
-order_chain_init(rb_global_space_t *global_space)
+ractor_chain_init(rb_global_space_t *global_space, struct rb_ractor_chain *ractor_chain)
 {
-    global_space->order_chain_head_node = NULL;
-    rb_nativethread_lock_initialize(&global_space->order_chain_lock);
-    rb_native_cond_initialize(&global_space->order_chain_removal_cond);
+    ractor_chain->head_node = NULL;
+    ractor_chain->tail_node = NULL;
+    rb_nativethread_lock_initialize(&ractor_chain->lock);
+    rb_native_cond_initialize(&global_space->ogs_tracking.removal_cond);
+
+    ractor_chain->node_added_callback = NULL;
+    ractor_chain->node_removed_callback = NULL;
+    ractor_chain->global_space = global_space;
 }
 
 static void
-order_chain_release(rb_global_space_t *global_space)
+ractor_chain_release(struct rb_ractor_chain *ractor_chain)
 {
-    rb_nativethread_lock_destroy(&global_space->order_chain_lock);
-    rb_native_cond_destroy(&global_space->order_chain_removal_cond);
+    rb_nativethread_lock_destroy(&ractor_chain->lock);
 }
 
 static void
-add_order_chain_node(rb_global_space_t *global_space, struct rb_order_chain_node *oc_node)
+add_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
 {
-    oc_node->prev_node = NULL;
-    oc_node->next_node = global_space->order_chain_head_node;
+    rc_node->prev_node = NULL;
+    rc_node->next_node = ractor_chain->head_node;
 
-    if (oc_node->next_node) {
-	VM_ASSERT(oc_node->next_node->prev_node == NULL);
-	oc_node->next_node->prev_node = oc_node;
+    if (rc_node->next_node) {
+	VM_ASSERT(rc_node->next_node->prev_node == NULL);
+	rc_node->next_node->prev_node = rc_node;
+    }
+    else {
+	ractor_chain->tail_node = rc_node;
     }
 
-    global_space->order_chain_head_node = oc_node;
+    ractor_chain->head_node = rc_node;
+    if (ractor_chain->node_added_callback) {
+	ractor_chain->node_added_callback(ractor_chain, rc_node);
+    }
+}
+
+static struct rb_ractor_chain_node *
+create_node_in_chain(struct rb_ractor_chain *ractor_chain, rb_ractor_t *r, rb_atomic_t initial_value)
+{
+    rb_native_mutex_lock(&ractor_chain->lock);
+
+    struct rb_ractor_chain_node *rc_node = malloc(sizeof(struct rb_ractor_chain_node));
+    rc_node->value = initial_value;
+    rc_node->ractor = r;
+    add_ractor_chain_node(ractor_chain, rc_node);
+
+    rb_native_mutex_unlock(&ractor_chain->lock);
+    return rc_node;
 }
 
 void
-rb_ractor_insert_into_order_chain(rb_ractor_t *r)
+rb_ractor_chains_register(rb_ractor_t *r)
 {
     rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->order_chain_lock);
-
-    struct rb_order_chain_node *oc_node = malloc(sizeof(struct rb_order_chain_node));
-    oc_node->object_graph_safety = OGS_FLAG_NONE;
-    oc_node->ractor = r;
-    r->oc_node = oc_node;
-    add_order_chain_node(global_space, oc_node);
-
-    rb_native_mutex_unlock(&global_space->order_chain_lock);
+    r->ogs_chain_node = create_node_in_chain(&global_space->ogs_tracking.ractor_chain, r, OGS_FLAG_NONE);
+    r->gc_chain_node = create_node_in_chain(&global_space->gc_history_tracking.ractor_chain, r, 0);
+    r->registered_in_ractor_chains = true;
 }
 
 static void
-remove_order_chain_node(rb_global_space_t *global_space, struct rb_order_chain_node *oc_node)
+remove_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
 {
-    struct rb_order_chain_node *prev_node = oc_node->prev_node;
-    struct rb_order_chain_node *next_node = oc_node->next_node;
+    struct rb_ractor_chain_node *prev_node = rc_node->prev_node;
+    struct rb_ractor_chain_node *next_node = rc_node->next_node;
 
     if (prev_node) {
-	VM_ASSERT(prev_node->next_node == oc_node);
-	VM_ASSERT(global_space->order_chain_head_node != oc_node);
+	VM_ASSERT(prev_node->next_node == rc_node);
+	VM_ASSERT(ractor_chain->head_node != rc_node);
 	prev_node->next_node = next_node;
     }
     else {
-	VM_ASSERT(global_space->order_chain_head_node == oc_node);
-	global_space->order_chain_head_node = next_node;
+	VM_ASSERT(ractor_chain->head_node == rc_node);
+	ractor_chain->head_node = next_node;
     }
 
     if (next_node) {
-	VM_ASSERT(next_node->prev_node == oc_node);
+	VM_ASSERT(next_node->prev_node == rc_node);
+	VM_ASSERT(ractor_chain->tail_node != rc_node);
 	next_node->prev_node = prev_node;
     }
-    rb_native_cond_broadcast(&global_space->order_chain_removal_cond);
-}
-
-void
-rb_ractor_delete_from_order_chain(rb_ractor_t *r)
-{
-    rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->order_chain_lock);
-
-    remove_order_chain_node(global_space, r->oc_node);
-    free(r->oc_node);
-    r->oc_node = NULL;
-
-    rb_native_mutex_unlock(&global_space->order_chain_lock);
+    else {
+	VM_ASSERT(ractor_chain->tail_node == rc_node);
+	ractor_chain->tail_node = prev_node;
+    }
+    if (ractor_chain->node_removed_callback) {
+	ractor_chain->node_removed_callback(ractor_chain, rc_node);
+    }
 }
 
 static void
-ractor_send_to_front_of_order_chain(rb_ractor_t *r)
+delete_node_in_ractor_chain(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_native_mutex_lock(&ractor_chain->lock);
+
+    remove_ractor_chain_node(ractor_chain, rc_node);
+    free(rc_node);
+
+    rb_native_mutex_unlock(&ractor_chain->lock);
+}
+
+void
+rb_ractor_chains_unregister(rb_ractor_t *r)
 {
     rb_global_space_t *global_space = &rb_global_space;
-    rb_native_mutex_lock(&global_space->order_chain_lock);
+    delete_node_in_ractor_chain(&global_space->ogs_tracking.ractor_chain, r->ogs_chain_node);
+    r->ogs_chain_node = NULL;
+    delete_node_in_ractor_chain(&global_space->gc_history_tracking.ractor_chain, r->gc_chain_node);
+    r->gc_chain_node = NULL;
+    r->registered_in_ractor_chains = false;
+}
 
-    remove_order_chain_node(global_space, r->oc_node);
-    add_order_chain_node(global_space, r->oc_node);
+static void
+ractor_chain_send_to_front(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_native_mutex_lock(&ractor_chain->lock);
 
-    rb_native_mutex_unlock(&global_space->order_chain_lock);
+    remove_ractor_chain_node(ractor_chain, rc_node);
+    add_ractor_chain_node(ractor_chain, rc_node);
+
+    rb_native_mutex_unlock(&ractor_chain->lock);
 }
 
 void
 rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason)
 {
-    if (!r->oc_node) return;
-    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->oc_node->object_graph_safety);
+    if (!r->ogs_chain_node) return;
+    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->ogs_chain_node->value);
     int newval = oldval | reason;
-    ATOMIC_SET(r->oc_node->object_graph_safety, newval);
+    ATOMIC_SET(r->ogs_chain_node->value, newval);
     if (oldval == 0 && newval != 0) {
-	ractor_send_to_front_of_order_chain(r);
+	rb_global_space_t *global_space = &rb_global_space;
+	ractor_chain_send_to_front(&global_space->ogs_tracking.ractor_chain, r->ogs_chain_node);
     }
 }
 
 void
 rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason)
 {
-    if (!r->oc_node) return;
-    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->oc_node->object_graph_safety);
+    if (!r->ogs_chain_node) return;
+    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->ogs_chain_node->value);
     int newval = oldval & (~reason);
-    ATOMIC_SET(r->oc_node->object_graph_safety, newval);
+    ATOMIC_SET(r->ogs_chain_node->value, newval);
+}
+
+static void
+confirm_ogs_chain_node_removed(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_global_space_t *global_space = ractor_chain->global_space;
+    rb_native_cond_broadcast(&global_space->ogs_tracking.removal_cond);
+}
+
+static void
+gc_history_update_earliest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_global_space_t *global_space = ractor_chain->global_space;
+    if (ractor_chain->tail_node && global_space->gc_history_tracking.earliest_point != ractor_chain->tail_node->value) {
+	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, ractor_chain->tail_node->value);
+    }
+}
+
+static void
+gc_history_update_latest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_global_space_t *global_space = ractor_chain->global_space;
+    VM_ASSERT(ractor_chain->head_node == rc_node);
+    ATOMIC_SET(rc_node->value, global_space->gc_history_tracking.latest_point + 1);
+    ATOMIC_SET(global_space->gc_history_tracking.latest_point, rc_node->value);
+    if (ractor_chain->tail_node == rc_node) {
+	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, rc_node->value);
+    }
 }
 
 rb_global_space_t *
@@ -5247,7 +5327,16 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->next_object_id_lock);
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->rglobalgc.shared_tracking_lock);
-    order_chain_init(global_space);
+    ractor_chain_init(global_space, &global_space->ogs_tracking.ractor_chain);
+    ractor_chain_init(global_space, &global_space->gc_history_tracking.ractor_chain);
+
+    global_space->gc_history_tracking.latest_point = 0;
+    global_space->gc_history_tracking.earliest_point = 0;
+
+    global_space->ogs_tracking.ractor_chain.node_removed_callback = confirm_ogs_chain_node_removed;
+
+    global_space->gc_history_tracking.ractor_chain.node_added_callback = gc_history_update_latest_point;
+    global_space->gc_history_tracking.ractor_chain.node_removed_callback = gc_history_update_earliest_point;
 
     rb_nativethread_lock_initialize(&global_space->absorption.mode_lock);
     rb_native_cond_initialize(&global_space->absorption.mode_change_cond);
@@ -5265,7 +5354,10 @@ rb_global_space_free(rb_global_space_t *global_space)
     st_free_table(global_space->absorbed_thread_tbl);
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_destroy(&global_space->rglobalgc.shared_tracking_lock);
-    order_chain_release(global_space);
+    ractor_chain_release(&global_space->ogs_tracking.ractor_chain);
+    ractor_chain_release(&global_space->gc_history_tracking.ractor_chain);
+
+    rb_native_cond_destroy(&global_space->ogs_tracking.removal_cond);
 
     rb_nativethread_lock_destroy(&global_space->absorption.mode_lock);
     rb_native_cond_destroy(&global_space->absorption.mode_change_cond);
@@ -9411,12 +9503,12 @@ shared_references_all_marked(rb_objspace_t *objspace)
 static bool
 object_graph_safety_p(rb_global_space_t *global_space, rb_objspace_t *objspace)
 {
-    struct rb_order_chain_node *current_node = objspace->ractor->oc_node->next_node;
-    while (current_node) {
-	if (!RUBY_ATOMIC_LOAD(current_node->object_graph_safety)) {
+    struct rb_ractor_chain_node *ogs_node = objspace->ractor->ogs_chain_node->next_node;
+    while (ogs_node) {
+	if (!RUBY_ATOMIC_LOAD(ogs_node->value)) {
 	    return false;
 	}
-	current_node = current_node->next_node;
+	ogs_node = ogs_node->next_node;
     }
     return true;
 }
@@ -9437,11 +9529,11 @@ wait_for_object_graph_safety(rb_objspace_t *objspace)
 
     rb_ractor_borrowing_barrier_end(objspace->ractor);
 
-    rb_native_mutex_lock(&global_space->order_chain_lock);
+    rb_native_mutex_lock(&global_space->ogs_tracking.ractor_chain.lock);
     while (!object_graph_safety_p(global_space, objspace)) {
-	rb_native_cond_wait(&global_space->order_chain_removal_cond, &global_space->order_chain_lock);
+	rb_native_cond_wait(&global_space->ogs_tracking.removal_cond, &global_space->ogs_tracking.ractor_chain.lock);
     }
-    rb_native_mutex_unlock(&global_space->order_chain_lock);
+    rb_native_mutex_unlock(&global_space->ogs_tracking.ractor_chain.lock);
 
     rb_ractor_borrowing_barrier_begin(objspace->ractor);
 
@@ -12064,6 +12156,8 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	}
     }
 
+    rb_global_space_t *global_space = &rb_global_space;
+
     unsigned int lock_lev;
     if (global_gc) {
 	VM_ASSERT(objspace->running_global_gc);
@@ -12073,11 +12167,17 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 #if RGENGC_CHECK_MODE >= 2
 	gc_verify_internal_consistency(objspace);
 #endif
+
+	global_space->gc_history_tracking.latest_point = 0;
+	global_space->gc_history_tracking.earliest_point = 0;
+
 	rb_objspace_t *os = NULL;
 	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
+	    if (os->ractor && os->ractor->gc_chain_node) {
+		os->ractor->gc_chain_node->value = 0;
+	    }
 	    gc_set_flags_finish(os, reason, &do_full_mark, &immediate_mark);
 	}
-	rb_global_space_t *global_space = &rb_global_space;
 	rb_native_mutex_lock(&global_space->rglobalgc.shared_tracking_lock);
 	global_space->rglobalgc.need_global_gc = false;
 	rb_native_mutex_unlock(&global_space->rglobalgc.shared_tracking_lock);
@@ -12090,6 +12190,12 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 #if RGENGC_CHECK_MODE >= 2
 	gc_verify_internal_consistency(objspace);
 #endif
+	if (rb_multi_ractor_p()) {
+	    ractor_chain_send_to_front(&global_space->gc_history_tracking.ractor_chain, objspace->ractor->gc_chain_node);
+	    objspace->gc_chain_latest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.earliest_point);
+	    objspace->gc_chain_earliest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point);
+	}
+
 	gc_set_flags_finish(objspace, reason, &do_full_mark, &immediate_mark);
 	gc_prof_timer_start(objspace);
 	{
@@ -17124,6 +17230,8 @@ former_reference_list_free(struct former_reference_list *fmr_ref_list)
 static void
 record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_reference)
 {
+    rb_global_space_t *global_space = &rb_global_space;
+
     VM_ASSERT(objspace == GET_OBJSPACE_OF_VALUE(parent));
     VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
 
@@ -17135,6 +17243,8 @@ record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_refe
     tmp->next = fmr_ref_list;
     tmp->fmr_ref = former_reference;
     tmp->marked = false;
+    tmp->gc_target_point = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point) + 1;
+    tmp->candidate_for_disposability = false;
     st_insert(objspace->former_reference_list_tbl, (st_data_t)parent, (st_data_t)tmp);
 }
 
@@ -17159,6 +17269,7 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
     bool *new_marks_added = (bool *)argp;
     VALUE obj = (VALUE)key;
     struct former_reference_list *fmr_ref_list = (struct former_reference_list *)value;
+    bool disposable_items_confirmed = false;
     if (RVALUE_MARKED(obj)) {
 	gc_mark_set_parent(objspace, obj);
 	struct former_reference_list *list;
@@ -17168,6 +17279,19 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
 		break;
 	    }
 	    else {
+		if(list->candidate_for_disposability) {
+		    if (objspace->gc_chain_latest >= list->gc_target_point) {
+			disposable_items_confirmed = true;
+			continue;
+		    }
+		}
+		else {
+		    if (objspace->gc_chain_latest >= list->gc_target_point) {
+			list->gc_target_point = objspace->gc_chain_earliest + 1;
+			list->candidate_for_disposability = true;
+		    }
+		}
+
 		if (!RVALUE_MARKED(list->fmr_ref)) {
 		    *new_marks_added = true;
 		}
@@ -17176,7 +17300,44 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
 	    }
 	}
     }
-    return ST_CONTINUE;
+    if (disposable_items_confirmed) {
+	return ST_REPLACE;
+    }
+    else {
+	return ST_CONTINUE;
+    }
+}
+
+static int
+address_disposable_former_references(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
+{
+    struct former_reference_list *fmr_ref_list = (struct former_reference_list *)*value;
+    struct former_reference_list *updated_head = NULL;
+
+    struct former_reference_list *prev = NULL;
+    struct former_reference_list *current = fmr_ref_list;
+    struct former_reference_list *upcoming = NULL;
+    while (current) {
+	upcoming = current->next;
+	if (current->marked) {
+	    if (!updated_head) {
+		updated_head = current;
+	    }
+	    prev = current;
+	}
+	else {
+	    if (prev) prev->next = upcoming;
+	    xfree(current);
+	}
+	current = upcoming;
+    }
+    if (updated_head) {
+	*value = updated_head;
+	return ST_CONTINUE;
+    }
+    else {
+	return ST_DELETE;
+    }
 }
 
 static bool
@@ -17184,7 +17345,7 @@ mark_all_former_references(rb_objspace_t *objspace)
 {
     VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
     bool new_marks_added = false;
-    st_foreach(objspace->former_reference_list_tbl, mark_all_former_references_i, (st_data_t)&new_marks_added);
+    st_foreach_with_replace(objspace->former_reference_list_tbl, mark_all_former_references_i, address_disposable_former_references, (st_data_t)&new_marks_added);
     return new_marks_added;
 }
 
