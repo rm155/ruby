@@ -2719,8 +2719,10 @@ syntax_error_with_path(VALUE exc, VALUE path, VALUE *mesg, rb_encoding *enc)
         rb_ivar_set(exc, id_i_path, path);
     }
     else {
-        if (rb_attr_get(exc, id_i_path) != path) {
-            rb_raise(rb_eArgError, "SyntaxError#path changed");
+        VALUE old_path = rb_attr_get(exc, id_i_path);
+        if (old_path != path) {
+            rb_raise(rb_eArgError, "SyntaxError#path changed: %+"PRIsVALUE"->%+"PRIsVALUE,
+                     old_path, path);
         }
         VALUE s = *mesg = rb_attr_get(exc, idMesg);
         if (RSTRING_LEN(s) > 0 && *(RSTRING_END(s)-1) != '\n')
@@ -3881,11 +3883,6 @@ void
 rb_error_frozen_object(VALUE frozen_obj)
 {
     rb_yjit_lazy_push_frame(GET_EC()->cfp->pc);
-
-    if (CHILLED_STRING_P(frozen_obj)) {
-        CHILLED_STRING_MUTATED(frozen_obj);
-        return;
-    }
 
     VALUE debug_info;
     const ID created_info = id_debug_created_info;

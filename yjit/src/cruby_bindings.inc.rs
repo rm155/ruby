@@ -342,7 +342,8 @@ pub const BOP_AND: ruby_basic_operators = 28;
 pub const BOP_OR: ruby_basic_operators = 29;
 pub const BOP_CMP: ruby_basic_operators = 30;
 pub const BOP_DEFAULT: ruby_basic_operators = 31;
-pub const BOP_LAST_: ruby_basic_operators = 32;
+pub const BOP_PACK: ruby_basic_operators = 32;
+pub const BOP_LAST_: ruby_basic_operators = 33;
 pub type ruby_basic_operators = u32;
 pub type rb_serial_t = ::std::os::raw::c_ulonglong;
 pub const imemo_env: imemo_type = 0;
@@ -696,6 +697,8 @@ pub struct rb_call_data {
     pub ci: *const rb_callinfo,
     pub cc: *const rb_callcache,
 }
+pub const RSTRING_CHILLED: ruby_rstring_private_flags = 32768;
+pub type ruby_rstring_private_flags = u32;
 pub const RHASH_PASS_AS_KEYWORDS: ruby_rhash_flags = 8192;
 pub const RHASH_PROC_DEFAULT: ruby_rhash_flags = 16384;
 pub const RHASH_ST_TABLE_FLAG: ruby_rhash_flags = 32768;

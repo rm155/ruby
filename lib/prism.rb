@@ -13,7 +13,6 @@ module Prism
 
   autoload :BasicVisitor, "prism/visitor"
   autoload :Compiler, "prism/compiler"
-  autoload :Debug, "prism/debug"
   autoload :DesugarCompiler, "prism/desugar_compiler"
   autoload :Dispatcher, "prism/dispatcher"
   autoload :DotVisitor, "prism/dot_visitor"
@@ -32,7 +31,6 @@ module Prism
   # Some of these constants are not meant to be exposed, so marking them as
   # private here.
 
-  private_constant :Debug
   private_constant :LexCompat
   private_constant :LexRipper
 
@@ -71,8 +69,6 @@ require_relative "prism/polyfill/byteindex"
 require_relative "prism/node"
 require_relative "prism/node_ext"
 require_relative "prism/parse_result"
-require_relative "prism/parse_result/comments"
-require_relative "prism/parse_result/newlines"
 
 # This is a Ruby implementation of the prism parser. If we're running on CRuby
 # and we haven't explicitly set the PRISM_FFI_BACKEND environment variable, then

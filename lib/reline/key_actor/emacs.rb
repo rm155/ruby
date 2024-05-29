@@ -63,7 +63,7 @@ class Reline::KeyActor::Emacs < Reline::KeyActor::Base
     #  30 ^^
     :ed_unassigned,
     #  31 ^_
-    :ed_unassigned,
+    :undo,
     #  32 SPACE
     :ed_insert,
     #  33 !
@@ -319,7 +319,7 @@ class Reline::KeyActor::Emacs < Reline::KeyActor::Base
     # 158 M-^^
     :ed_unassigned,
     # 159 M-^_
-    :ed_unassigned,
+    :redo,
     # 160 M-SPACE
     :em_set_mark,
     # 161 M-!
