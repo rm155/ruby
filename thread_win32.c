@@ -1018,4 +1018,10 @@ rb_thread_lock_native_thread(void)
     return false;
 }
 
+void *
+rb_thread_prevent_fork(void *(*func)(void *), void *data)
+{
+    return func(data);
+}
+
 #endif /* THREAD_SYSTEM_DEPENDENT_IMPLEMENTATION */
