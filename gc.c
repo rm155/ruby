@@ -1204,7 +1204,6 @@ struct former_reference_list {
     VALUE fmr_ref;
     struct former_reference_list *next;
     bool marked;
-    bool candidate_for_disposability;
     int gc_target_point;
 };
 
@@ -17244,7 +17243,6 @@ record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_refe
     tmp->fmr_ref = former_reference;
     tmp->marked = false;
     tmp->gc_target_point = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point) + 1;
-    tmp->candidate_for_disposability = false;
     st_insert(objspace->former_reference_list_tbl, (st_data_t)parent, (st_data_t)tmp);
 }
 
@@ -17279,17 +17277,9 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
 		break;
 	    }
 	    else {
-		if(list->candidate_for_disposability) {
-		    if (objspace->gc_chain_latest >= list->gc_target_point) {
-			disposable_items_confirmed = true;
-			continue;
-		    }
-		}
-		else {
-		    if (objspace->gc_chain_latest >= list->gc_target_point) {
-			list->gc_target_point = objspace->gc_chain_earliest + 1;
-			list->candidate_for_disposability = true;
-		    }
+		if (objspace->gc_chain_latest >= list->gc_target_point) {
+		    disposable_items_confirmed = true;
+		    continue;
 		}
 
 		if (!RVALUE_MARKED(list->fmr_ref)) {
