@@ -1162,6 +1162,16 @@ rb_gc_safe_lock_acquired(rb_gc_safe_lock_t *gs_lock)
     return gs_lock->lock_owner == GET_RACTOR();
 }
 
+#ifdef RB_THREAD_LOCAL_SPECIFIER
+  #ifdef __APPLE__
+#define GET_OBJSPACE() rb_current_objspace()
+  #else
+#define GET_OBJSPACE() ruby_current_objspace
+  #endif
+#else
+#define GET_OBJSPACE() native_tls_get(ruby_current_objspace_key)
+#endif
+
 static rb_objspace_t *
 current_ractor_objspace(void)
 {
@@ -1169,16 +1179,9 @@ current_ractor_objspace(void)
 	return ruby_single_main_objspace;
     }
 
+    rb_objspace_t *objspace = GET_OBJSPACE();
 #ifdef RB_THREAD_LOCAL_SPECIFIER
-  #ifdef __APPLE__
-    rb_objspace_t *objspace = rb_current_objspace();
-  #else
-    rb_objspace_t *objspace = ruby_current_objspace;
-  #endif
-
     VM_ASSERT(objspace == rb_current_objspace_noinline());
-#else
-    rb_objspace_t *objspace = native_tls_get(ruby_current_objspace_key);
 #endif
 
     if (objspace && objspace->global_gc_current_target) {
@@ -1200,11 +1203,16 @@ typedef struct gc_reference_status {
     int status;
 } gc_reference_status_t;
 
-struct former_reference_list {
+struct former_reference_list_node {
     VALUE fmr_ref;
-    struct former_reference_list *next;
+    struct former_reference_list_node *next;
     bool marked;
     int gc_target_point;
+};
+
+struct former_reference_list {
+    struct former_reference_list_node* head;
+    struct former_reference_list_node* tail;
 };
 
 
@@ -2114,7 +2122,7 @@ objspace_read_leave(rb_global_space_t *global_space)
     bool _using_objspace_read = false; \
     rb_global_space_t *_global_space; \
     rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj); \
-    if (UNLIKELY(!ruby_single_main_objspace && objspace != GET_RACTOR()->local_objspace)) { \
+    if (UNLIKELY(!ruby_single_main_objspace && objspace != GET_OBJSPACE())) { \
 	_global_space = &rb_global_space; \
 	objspace_read_enter(_global_space); \
 	objspace = GET_OBJSPACE_OF_VALUE(obj); \
@@ -17219,11 +17227,12 @@ get_former_reference_list(rb_objspace_t *objspace, VALUE obj)
 static void
 former_reference_list_free(struct former_reference_list *fmr_ref_list)
 {
-    struct former_reference_list *list, *next;
-    for (list = fmr_ref_list; list; list = next) {
-	next = list->next;
-	xfree(list);
+    struct former_reference_list_node *current, *next;
+    for (current = fmr_ref_list->head; current; current = next) {
+	next = current->next;
+	xfree(current);
     }
+    free(fmr_ref_list);
 }
 
 static void
@@ -17234,16 +17243,24 @@ record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_refe
     VM_ASSERT(objspace == GET_OBJSPACE_OF_VALUE(parent));
     VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
 
-    struct former_reference_list *tmp;
-    tmp = ALLOC(struct former_reference_list);
+    struct former_reference_list_node *tmp;
+    tmp = ALLOC(struct former_reference_list_node);
 
     struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, parent);
 
-    tmp->next = fmr_ref_list;
+    if (!fmr_ref_list) {
+	fmr_ref_list = ALLOC(struct former_reference_list);
+	st_insert(objspace->former_reference_list_tbl, (st_data_t)parent, (st_data_t)fmr_ref_list);
+	fmr_ref_list->head = NULL;
+	fmr_ref_list->tail = tmp;
+    }
+
+    tmp->next = fmr_ref_list->head;
+    fmr_ref_list->head = tmp;
+
     tmp->fmr_ref = former_reference;
     tmp->marked = false;
     tmp->gc_target_point = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point) + 1;
-    st_insert(objspace->former_reference_list_tbl, (st_data_t)parent, (st_data_t)tmp);
 }
 
 static void
@@ -17253,10 +17270,12 @@ mark_former_references(rb_objspace_t *objspace, VALUE obj)
 
     gc_mark_set_parent(objspace, obj);
 
-    struct former_reference_list *list;
     struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, obj);
-    for (list = fmr_ref_list; list; list = list->next) {
-	gc_mark_maybe(objspace, list->fmr_ref);
+    if (fmr_ref_list) {
+	struct former_reference_list_node *current;
+	for (current = fmr_ref_list->head; current; current = current->next) {
+	    gc_mark_maybe(objspace, current->fmr_ref);
+	}
     }
 }
 
@@ -17266,27 +17285,27 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
     rb_objspace_t *objspace = &rb_objspace;
     bool *new_marks_added = (bool *)argp;
     VALUE obj = (VALUE)key;
-    struct former_reference_list *fmr_ref_list = (struct former_reference_list *)value;
+    struct former_reference_list *fmr_ref_list = (struct former_reference_list_node *)value;
     bool disposable_items_confirmed = false;
     if (RVALUE_MARKED(obj)) {
 	gc_mark_set_parent(objspace, obj);
-	struct former_reference_list *list;
-	for (list = fmr_ref_list; list; list = list->next) {
-	    if (list->marked) {
+	struct former_reference_list_node *current;
+	for (current = fmr_ref_list->head; current; current = current->next) {
+	    if (current->marked) {
 		//All beyond this point should be marked already
 		break;
 	    }
 	    else {
-		if (objspace->gc_chain_latest >= list->gc_target_point) {
+		if (objspace->gc_chain_latest >= current->gc_target_point) {
 		    disposable_items_confirmed = true;
 		    continue;
 		}
 
-		if (!RVALUE_MARKED(list->fmr_ref)) {
+		if (!RVALUE_MARKED(current->fmr_ref)) {
 		    *new_marks_added = true;
 		}
-		gc_mark_and_pin(objspace, list->fmr_ref);
-		list->marked = true;
+		gc_mark_and_pin(objspace, current->fmr_ref);
+		current->marked = true;
 	    }
 	}
     }
@@ -17302,11 +17321,11 @@ static int
 address_disposable_former_references(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
 {
     struct former_reference_list *fmr_ref_list = (struct former_reference_list *)*value;
-    struct former_reference_list *updated_head = NULL;
+    struct former_reference_list_node *updated_head = NULL;
 
-    struct former_reference_list *prev = NULL;
-    struct former_reference_list *current = fmr_ref_list;
-    struct former_reference_list *upcoming = NULL;
+    struct former_reference_list_node *prev = NULL;
+    struct former_reference_list_node *current = fmr_ref_list->head;
+    struct former_reference_list_node *upcoming = NULL;
     while (current) {
 	upcoming = current->next;
 	if (current->marked) {
@@ -17321,11 +17340,13 @@ address_disposable_former_references(st_data_t *key, st_data_t *value, st_data_t
 	}
 	current = upcoming;
     }
+    fmr_ref_list->tail = prev;
     if (updated_head) {
-	*value = updated_head;
+	fmr_ref_list->head = updated_head;
 	return ST_CONTINUE;
     }
     else {
+	free(fmr_ref_list);
 	return ST_DELETE;
     }
 }
@@ -17342,9 +17363,9 @@ mark_all_former_references(rb_objspace_t *objspace)
 static void
 former_reference_list_clear_mark_notes(struct former_reference_list *fmr_ref_list)
 {
-    struct former_reference_list *list, *next;
-    for (list = fmr_ref_list; list; list = list->next) {
-	list->marked = false;
+    struct former_reference_list_node *current, *next;
+    for (current = fmr_ref_list->head; current; current = current->next) {
+	current->marked = false;
     }
 }
 
