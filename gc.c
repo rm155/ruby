@@ -4143,11 +4143,13 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
 
 		// Retry allocation after moving to new page
 		obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, true);
-
-		GC_ASSERT(obj != Qfalse);
 	    }
 	}
 	HEAP_LOCK_LEAVE(objspace);
+    }
+
+    if (UNLIKELY(obj == Qfalse)) {
+	    rb_memerror();
     }
 
     size_pool->newly_created_by_borrowing_count++;
@@ -4189,12 +4191,14 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t si
 
 		// Retry allocation after moving to new page
 		obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
-
-		GC_ASSERT(obj != Qfalse);
 	    }
 	}
 	HEAP_LOCK_LEAVE(objspace);
 
+    }
+
+    if (UNLIKELY(obj == Qfalse)) {
+	    rb_memerror();
     }
 
     size_pool->total_allocated_objects++;
