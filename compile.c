@@ -2973,16 +2973,18 @@ unref_destination(INSN *iobj, int pos)
     if (!lobj->refcnt) ELEM_REMOVE(&lobj->link);
 }
 
-static void
+static bool
 replace_destination(INSN *dobj, INSN *nobj)
 {
     VALUE n = OPERAND_AT(nobj, 0);
     LABEL *dl = (LABEL *)OPERAND_AT(dobj, 0);
     LABEL *nl = (LABEL *)n;
+    if (dl == nl) return false;
     --dl->refcnt;
     ++nl->refcnt;
     OPERAND_AT(dobj, 0) = n;
     if (!dl->refcnt) ELEM_REMOVE(&dl->link);
+    return true;
 }
 
 static LABEL*
@@ -3264,9 +3266,10 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
              *   => in this case, first jump instruction should jump to
              *      LABEL2 directly
              */
-            replace_destination(iobj, diobj);
-            remove_unreachable_chunk(iseq, iobj->link.next);
-            goto again;
+            if (replace_destination(iobj, diobj)) {
+                remove_unreachable_chunk(iseq, iobj->link.next);
+                goto again;
+            }
         }
         else if (IS_INSN_ID(diobj, leave)) {
             /*
@@ -3311,8 +3314,7 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
                  */
                 piobj->insn_id = (IS_INSN_ID(piobj, branchif))
                   ? BIN(branchunless) : BIN(branchif);
-                replace_destination(piobj, iobj);
-                if (refcnt <= 1) {
+                if (replace_destination(piobj, iobj) && refcnt <= 1) {
                     ELEM_REMOVE(&iobj->link);
                 }
                 else {
@@ -3441,7 +3443,7 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
 
             for (;;) {
                 if (IS_INSN(&nobj->link) && IS_INSN_ID(nobj, jump)) {
-                    replace_destination(iobj, nobj);
+                    if (!replace_destination(iobj, nobj)) break;
                 }
                 else if (prev_dup && IS_INSN_ID(nobj, dup) &&
                          !!(nobj = (INSN *)nobj->link.next) &&
@@ -3462,7 +3464,7 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
                      *   dup
                      *   if L2
                      */
-                    replace_destination(iobj, nobj);
+                    if (!replace_destination(iobj, nobj)) break;
                 }
                 else if (pobj) {
                     /*
@@ -9887,7 +9889,7 @@ compile_attrasgn(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
 static int
 compile_make_shareable_node(rb_iseq_t *iseq, LINK_ANCHOR *ret, LINK_ANCHOR *sub, const NODE *value, bool copy)
 {
-    ADD_INSN1(ret, value, putobject, rb_mRubyVMFrozenCore);
+    ADD_INSN1(ret, value, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
     ADD_SEQ(ret, sub);
 
     if (copy) {
@@ -9976,7 +9978,7 @@ compile_ensure_shareable_node(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE *dest, con
      *. RubyVM::FrozenCore.ensure_shareable(value, const_decl_path(dest))
      */
     VALUE path = const_decl_path(dest);
-    ADD_INSN1(ret, value, putobject, rb_mRubyVMFrozenCore);
+    ADD_INSN1(ret, value, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
     CHECK(COMPILE(ret, "compile_ensure_shareable_node", value));
     ADD_INSN1(ret, value, putobject, path);
     RB_OBJ_WRITTEN(iseq, Qundef, path);

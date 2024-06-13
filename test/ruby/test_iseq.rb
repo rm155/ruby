@@ -167,6 +167,14 @@ class TestISeq < Test::Unit::TestCase
     end
   end
 
+  def test_ractor_shareable_value_frozen_core
+    iseq = RubyVM::InstructionSequence.compile(<<~'RUBY')
+      # shareable_constant_value: literal
+      REGEX = /#{}/ # [Bug #20569]
+    RUBY
+    assert_includes iseq.to_binary, "REGEX".b
+  end
+
   def test_disasm_encoding
     src = +"\u{3042} = 1; \u{3042}; \u{3043}"
     asm = compile(src).disasm
@@ -861,6 +869,14 @@ class TestISeq < Test::Unit::TestCase
     assert_raise(TypeError) do
       var_0 = 0
       RubyVM::InstructionSequence.load_from_binary(var_0)
+    end
+  end
+
+  def test_while_in_until_condition
+    assert_in_out_err(["--dump=i", "-e", "until while 1; end; end"]) do |stdout, stderr, status|
+      assert_include(stdout.shift, "== disasm:")
+      assert_include(stdout.pop, "leave")
+      assert_predicate(status, :success?)
     end
   end
 end

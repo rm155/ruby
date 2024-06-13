@@ -112,7 +112,12 @@ void rb_leave_sym_lock(rb_symbols_t *symbols);
 #define GLOBAL_SYMBOLS_LEAVE(symbols) rb_leave_sym_lock(symbols); }
 #define ASSERT_global_symbols_locking(symbols) VM_ASSERT(!rb_multi_ractor_p() || rb_gc_safe_lock_acquired(&symbols->sym_lock));
 
-RUBY_FUNC_EXPORTED const uint_least32_t ruby_global_name_punct_bits[(0x7e - 0x20 + 31) / 32];
+#ifndef RIPPER
+RUBY_FUNC_EXPORTED
+#else
+RUBY_EXTERN
+#endif
+const uint_least32_t ruby_global_name_punct_bits[(0x7e - 0x20 + 31) / 32];
 
 static inline int
 is_global_name_punct(const int c)

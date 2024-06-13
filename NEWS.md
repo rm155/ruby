@@ -58,11 +58,11 @@ The following default gems are updated.
 * json 2.7.2
 * net-http 0.4.1
 * optparse 0.5.0
-* prism 0.29.0
+* prism 0.30.0
 * rdoc 6.7.0
-* reline 0.5.8
+* reline 0.5.9
 * resolv 0.4.0
-* stringio 3.1.1
+* stringio 3.1.2
 * strscan 3.1.1
 
 The following bundled gems are updated.
