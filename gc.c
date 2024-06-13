@@ -1218,6 +1218,21 @@ struct former_reference_list {
 
 static int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 
+static void ractor_chain_init(rb_global_space_t *global_space, struct rb_ractor_chain *ractor_chain);
+static void ractor_chain_release(struct rb_ractor_chain *ractor_chain);
+static void add_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+static struct rb_ractor_chain_node *create_node_in_chain(struct rb_ractor_chain *ractor_chain, rb_ractor_t *r, rb_atomic_t initial_value);
+void rb_ractor_chains_register(rb_ractor_t *r);
+static void remove_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+static void delete_node_in_ractor_chain(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+void rb_ractor_chains_unregister(rb_ractor_t *r);
+static void ractor_chain_send_to_front(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+void rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason);
+void rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason);
+static void confirm_ogs_chain_node_removed(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+static void gc_history_update_earliest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+static void gc_history_update_latest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+
 static void mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace);
 static bool external_references_none_marked(rb_objspace_t *objspace);
 static gc_reference_status_t *get_reference_status(st_table *tbl, VALUE obj);
@@ -1244,6 +1259,11 @@ static int former_reference_lists_remove_unmarked_i(st_data_t key, st_data_t val
 static void former_reference_lists_remove_unmarked(rb_objspace_t *objspace);
 static int release_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error);
 static void release_all_former_references(rb_vm_t *vm);
+
+static void objspace_absorb_enter(rb_global_space_t *global_space);
+static void objspace_absorb_leave(rb_global_space_t *global_space);
+static void objspace_read_enter(rb_global_space_t *global_space);
+static void objspace_read_leave(rb_global_space_t *global_space);
 
 static int
 insert_table_row(st_data_t key, st_data_t val, st_data_t arg)
@@ -2054,69 +2074,6 @@ tick(void)
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
 static void rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap);
-
-static void
-objspace_absorb_enter(rb_global_space_t *global_space)
-{
-    rb_native_mutex_lock(&global_space->absorption.mode_lock);
-
-    ASSERT_vm_locking();
-    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
-
-    COND_AND_BARRIER_WAIT(GET_VM(), global_space->absorption.mode_lock, global_space->absorption.mode_change_cond, global_space->absorption.objspace_readers == 0);
-
-    global_space->absorption.absorbers++;
-    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
-}
-
-static void
-objspace_absorb_leave(rb_global_space_t *global_space)
-{
-    rb_native_mutex_lock(&global_space->absorption.mode_lock);
-
-    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
-
-    global_space->absorption.absorbers--;
-    if (global_space->absorption.absorbers == 0) {
-	rb_native_cond_broadcast(&global_space->absorption.mode_change_cond);
-    }
-
-    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
-}
-
-static void
-objspace_read_enter(rb_global_space_t *global_space)
-{
-    rb_objspace_t *current_objspace = &rb_objspace;
-    if (current_objspace && current_objspace->currently_absorbing) return;
-    
-    rb_native_mutex_lock(&global_space->absorption.mode_lock);
-
-    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
-
-    while (global_space->absorption.absorbers > 0) {
-	rb_native_cond_wait(&global_space->absorption.mode_change_cond, &global_space->absorption.mode_lock);
-    }
-    global_space->absorption.objspace_readers++;
-    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
-}
-
-static void
-objspace_read_leave(rb_global_space_t *global_space)
-{
-    rb_objspace_t *current_objspace = &rb_objspace;
-    if (current_objspace && current_objspace->currently_absorbing) return;
-    
-    rb_native_mutex_lock(&global_space->absorption.mode_lock);
-
-    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
-
-    global_space->absorption.objspace_readers--;
-    if (global_space->absorption.objspace_readers == 0) {
-	rb_native_cond_broadcast(&global_space->absorption.mode_change_cond);
-    }
-    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
-}
 
 #define WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace) { \
     bool _using_objspace_read = false; \
@@ -5152,181 +5109,6 @@ rb_global_tables_init(void)
 {
     rb_global_space_t *global_space = &rb_global_space;
     global_space->absorbed_thread_tbl = st_init_numtable();
-}
-
-static void
-ractor_chain_init(rb_global_space_t *global_space, struct rb_ractor_chain *ractor_chain)
-{
-    ractor_chain->head_node = NULL;
-    ractor_chain->tail_node = NULL;
-    rb_nativethread_lock_initialize(&ractor_chain->lock);
-    rb_native_cond_initialize(&global_space->ogs_tracking.removal_cond);
-
-    ractor_chain->node_added_callback = NULL;
-    ractor_chain->node_removed_callback = NULL;
-    ractor_chain->global_space = global_space;
-}
-
-static void
-ractor_chain_release(struct rb_ractor_chain *ractor_chain)
-{
-    rb_nativethread_lock_destroy(&ractor_chain->lock);
-}
-
-static void
-add_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
-{
-    rc_node->prev_node = NULL;
-    rc_node->next_node = ractor_chain->head_node;
-
-    if (rc_node->next_node) {
-	VM_ASSERT(rc_node->next_node->prev_node == NULL);
-	rc_node->next_node->prev_node = rc_node;
-    }
-    else {
-	ractor_chain->tail_node = rc_node;
-    }
-
-    ractor_chain->head_node = rc_node;
-    if (ractor_chain->node_added_callback) {
-	ractor_chain->node_added_callback(ractor_chain, rc_node);
-    }
-}
-
-static struct rb_ractor_chain_node *
-create_node_in_chain(struct rb_ractor_chain *ractor_chain, rb_ractor_t *r, rb_atomic_t initial_value)
-{
-    rb_native_mutex_lock(&ractor_chain->lock);
-
-    struct rb_ractor_chain_node *rc_node = malloc(sizeof(struct rb_ractor_chain_node));
-    rc_node->value = initial_value;
-    rc_node->ractor = r;
-    add_ractor_chain_node(ractor_chain, rc_node);
-
-    rb_native_mutex_unlock(&ractor_chain->lock);
-    return rc_node;
-}
-
-void
-rb_ractor_chains_register(rb_ractor_t *r)
-{
-    rb_global_space_t *global_space = &rb_global_space;
-    r->ogs_chain_node = create_node_in_chain(&global_space->ogs_tracking.ractor_chain, r, OGS_FLAG_NONE);
-    r->gc_chain_node = create_node_in_chain(&global_space->gc_history_tracking.ractor_chain, r, 0);
-    r->registered_in_ractor_chains = true;
-}
-
-static void
-remove_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
-{
-    struct rb_ractor_chain_node *prev_node = rc_node->prev_node;
-    struct rb_ractor_chain_node *next_node = rc_node->next_node;
-
-    if (prev_node) {
-	VM_ASSERT(prev_node->next_node == rc_node);
-	VM_ASSERT(ractor_chain->head_node != rc_node);
-	prev_node->next_node = next_node;
-    }
-    else {
-	VM_ASSERT(ractor_chain->head_node == rc_node);
-	ractor_chain->head_node = next_node;
-    }
-
-    if (next_node) {
-	VM_ASSERT(next_node->prev_node == rc_node);
-	VM_ASSERT(ractor_chain->tail_node != rc_node);
-	next_node->prev_node = prev_node;
-    }
-    else {
-	VM_ASSERT(ractor_chain->tail_node == rc_node);
-	ractor_chain->tail_node = prev_node;
-    }
-    if (ractor_chain->node_removed_callback) {
-	ractor_chain->node_removed_callback(ractor_chain, rc_node);
-    }
-}
-
-static void
-delete_node_in_ractor_chain(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
-{
-    rb_native_mutex_lock(&ractor_chain->lock);
-
-    remove_ractor_chain_node(ractor_chain, rc_node);
-    free(rc_node);
-
-    rb_native_mutex_unlock(&ractor_chain->lock);
-}
-
-void
-rb_ractor_chains_unregister(rb_ractor_t *r)
-{
-    rb_global_space_t *global_space = &rb_global_space;
-    delete_node_in_ractor_chain(&global_space->ogs_tracking.ractor_chain, r->ogs_chain_node);
-    r->ogs_chain_node = NULL;
-    delete_node_in_ractor_chain(&global_space->gc_history_tracking.ractor_chain, r->gc_chain_node);
-    r->gc_chain_node = NULL;
-    r->registered_in_ractor_chains = false;
-}
-
-static void
-ractor_chain_send_to_front(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
-{
-    rb_native_mutex_lock(&ractor_chain->lock);
-
-    remove_ractor_chain_node(ractor_chain, rc_node);
-    add_ractor_chain_node(ractor_chain, rc_node);
-
-    rb_native_mutex_unlock(&ractor_chain->lock);
-}
-
-void
-rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason)
-{
-    if (!r->ogs_chain_node) return;
-    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->ogs_chain_node->value);
-    int newval = oldval | reason;
-    ATOMIC_SET(r->ogs_chain_node->value, newval);
-    if (oldval == 0 && newval != 0) {
-	rb_global_space_t *global_space = &rb_global_space;
-	ractor_chain_send_to_front(&global_space->ogs_tracking.ractor_chain, r->ogs_chain_node);
-    }
-}
-
-void
-rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason)
-{
-    if (!r->ogs_chain_node) return;
-    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->ogs_chain_node->value);
-    int newval = oldval & (~reason);
-    ATOMIC_SET(r->ogs_chain_node->value, newval);
-}
-
-static void
-confirm_ogs_chain_node_removed(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
-{
-    rb_global_space_t *global_space = ractor_chain->global_space;
-    rb_native_cond_broadcast(&global_space->ogs_tracking.removal_cond);
-}
-
-static void
-gc_history_update_earliest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
-{
-    rb_global_space_t *global_space = ractor_chain->global_space;
-    if (ractor_chain->tail_node && global_space->gc_history_tracking.earliest_point != ractor_chain->tail_node->value) {
-	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, ractor_chain->tail_node->value);
-    }
-}
-
-static void
-gc_history_update_latest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
-{
-    rb_global_space_t *global_space = ractor_chain->global_space;
-    VM_ASSERT(ractor_chain->head_node == rc_node);
-    ATOMIC_SET(rc_node->value, global_space->gc_history_tracking.latest_point + 1);
-    ATOMIC_SET(global_space->gc_history_tracking.latest_point, rc_node->value);
-    if (ractor_chain->tail_node == rc_node) {
-	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, rc_node->value);
-    }
 }
 
 rb_global_space_t *
@@ -17408,5 +17190,243 @@ release_all_former_references(rb_vm_t *vm)
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
 	st_foreach(os->former_reference_list_tbl, release_all_former_references_i, NULL);
+    }
+}
+
+static void
+objspace_absorb_enter(rb_global_space_t *global_space)
+{
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    ASSERT_vm_locking();
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    COND_AND_BARRIER_WAIT(GET_VM(), global_space->absorption.mode_lock, global_space->absorption.mode_change_cond, global_space->absorption.objspace_readers == 0);
+
+    global_space->absorption.absorbers++;
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+static void
+objspace_absorb_leave(rb_global_space_t *global_space)
+{
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    global_space->absorption.absorbers--;
+    if (global_space->absorption.absorbers == 0) {
+	rb_native_cond_broadcast(&global_space->absorption.mode_change_cond);
+    }
+
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+static void
+objspace_read_enter(rb_global_space_t *global_space)
+{
+    rb_objspace_t *current_objspace = &rb_objspace;
+    if (current_objspace && current_objspace->currently_absorbing) return;
+    
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    while (global_space->absorption.absorbers > 0) {
+	rb_native_cond_wait(&global_space->absorption.mode_change_cond, &global_space->absorption.mode_lock);
+    }
+    global_space->absorption.objspace_readers++;
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+static void
+objspace_read_leave(rb_global_space_t *global_space)
+{
+    rb_objspace_t *current_objspace = &rb_objspace;
+    if (current_objspace && current_objspace->currently_absorbing) return;
+    
+    rb_native_mutex_lock(&global_space->absorption.mode_lock);
+
+    VM_ASSERT(global_space->absorption.objspace_readers == 0 || global_space->absorption.absorbers == 0);
+
+    global_space->absorption.objspace_readers--;
+    if (global_space->absorption.objspace_readers == 0) {
+	rb_native_cond_broadcast(&global_space->absorption.mode_change_cond);
+    }
+    rb_native_mutex_unlock(&global_space->absorption.mode_lock);
+}
+
+static void
+ractor_chain_init(rb_global_space_t *global_space, struct rb_ractor_chain *ractor_chain)
+{
+    ractor_chain->head_node = NULL;
+    ractor_chain->tail_node = NULL;
+    rb_nativethread_lock_initialize(&ractor_chain->lock);
+    rb_native_cond_initialize(&global_space->ogs_tracking.removal_cond);
+
+    ractor_chain->node_added_callback = NULL;
+    ractor_chain->node_removed_callback = NULL;
+    ractor_chain->global_space = global_space;
+}
+
+static void
+ractor_chain_release(struct rb_ractor_chain *ractor_chain)
+{
+    rb_nativethread_lock_destroy(&ractor_chain->lock);
+}
+
+static void
+add_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rc_node->prev_node = NULL;
+    rc_node->next_node = ractor_chain->head_node;
+
+    if (rc_node->next_node) {
+	VM_ASSERT(rc_node->next_node->prev_node == NULL);
+	rc_node->next_node->prev_node = rc_node;
+    }
+    else {
+	ractor_chain->tail_node = rc_node;
+    }
+
+    ractor_chain->head_node = rc_node;
+    if (ractor_chain->node_added_callback) {
+	ractor_chain->node_added_callback(ractor_chain, rc_node);
+    }
+}
+
+static struct rb_ractor_chain_node *
+create_node_in_chain(struct rb_ractor_chain *ractor_chain, rb_ractor_t *r, rb_atomic_t initial_value)
+{
+    rb_native_mutex_lock(&ractor_chain->lock);
+
+    struct rb_ractor_chain_node *rc_node = malloc(sizeof(struct rb_ractor_chain_node));
+    rc_node->value = initial_value;
+    rc_node->ractor = r;
+    add_ractor_chain_node(ractor_chain, rc_node);
+
+    rb_native_mutex_unlock(&ractor_chain->lock);
+    return rc_node;
+}
+
+void
+rb_ractor_chains_register(rb_ractor_t *r)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    r->ogs_chain_node = create_node_in_chain(&global_space->ogs_tracking.ractor_chain, r, OGS_FLAG_NONE);
+    r->gc_chain_node = create_node_in_chain(&global_space->gc_history_tracking.ractor_chain, r, 0);
+    r->registered_in_ractor_chains = true;
+}
+
+static void
+remove_ractor_chain_node(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    struct rb_ractor_chain_node *prev_node = rc_node->prev_node;
+    struct rb_ractor_chain_node *next_node = rc_node->next_node;
+
+    if (prev_node) {
+	VM_ASSERT(prev_node->next_node == rc_node);
+	VM_ASSERT(ractor_chain->head_node != rc_node);
+	prev_node->next_node = next_node;
+    }
+    else {
+	VM_ASSERT(ractor_chain->head_node == rc_node);
+	ractor_chain->head_node = next_node;
+    }
+
+    if (next_node) {
+	VM_ASSERT(next_node->prev_node == rc_node);
+	VM_ASSERT(ractor_chain->tail_node != rc_node);
+	next_node->prev_node = prev_node;
+    }
+    else {
+	VM_ASSERT(ractor_chain->tail_node == rc_node);
+	ractor_chain->tail_node = prev_node;
+    }
+    if (ractor_chain->node_removed_callback) {
+	ractor_chain->node_removed_callback(ractor_chain, rc_node);
+    }
+}
+
+static void
+delete_node_in_ractor_chain(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_native_mutex_lock(&ractor_chain->lock);
+
+    remove_ractor_chain_node(ractor_chain, rc_node);
+    free(rc_node);
+
+    rb_native_mutex_unlock(&ractor_chain->lock);
+}
+
+void
+rb_ractor_chains_unregister(rb_ractor_t *r)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+    delete_node_in_ractor_chain(&global_space->ogs_tracking.ractor_chain, r->ogs_chain_node);
+    r->ogs_chain_node = NULL;
+    delete_node_in_ractor_chain(&global_space->gc_history_tracking.ractor_chain, r->gc_chain_node);
+    r->gc_chain_node = NULL;
+    r->registered_in_ractor_chains = false;
+}
+
+static void
+ractor_chain_send_to_front(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_native_mutex_lock(&ractor_chain->lock);
+
+    remove_ractor_chain_node(ractor_chain, rc_node);
+    add_ractor_chain_node(ractor_chain, rc_node);
+
+    rb_native_mutex_unlock(&ractor_chain->lock);
+}
+
+void
+rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason)
+{
+    if (!r->ogs_chain_node) return;
+    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->ogs_chain_node->value);
+    int newval = oldval | reason;
+    ATOMIC_SET(r->ogs_chain_node->value, newval);
+    if (oldval == 0 && newval != 0) {
+	rb_global_space_t *global_space = &rb_global_space;
+	ractor_chain_send_to_front(&global_space->ogs_tracking.ractor_chain, r->ogs_chain_node);
+    }
+}
+
+void
+rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason)
+{
+    if (!r->ogs_chain_node) return;
+    rb_atomic_t oldval = RUBY_ATOMIC_LOAD(r->ogs_chain_node->value);
+    int newval = oldval & (~reason);
+    ATOMIC_SET(r->ogs_chain_node->value, newval);
+}
+
+static void
+confirm_ogs_chain_node_removed(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_global_space_t *global_space = ractor_chain->global_space;
+    rb_native_cond_broadcast(&global_space->ogs_tracking.removal_cond);
+}
+
+static void
+gc_history_update_earliest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_global_space_t *global_space = ractor_chain->global_space;
+    if (ractor_chain->tail_node && global_space->gc_history_tracking.earliest_point != ractor_chain->tail_node->value) {
+	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, ractor_chain->tail_node->value);
+    }
+}
+
+static void
+gc_history_update_latest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+{
+    rb_global_space_t *global_space = ractor_chain->global_space;
+    VM_ASSERT(ractor_chain->head_node == rc_node);
+    ATOMIC_SET(rc_node->value, global_space->gc_history_tracking.latest_point + 1);
+    ATOMIC_SET(global_space->gc_history_tracking.latest_point, rc_node->value);
+    if (ractor_chain->tail_node == rc_node) {
+	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, rc_node->value);
     }
 }
