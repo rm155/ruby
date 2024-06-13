@@ -1065,8 +1065,8 @@ typedef struct rb_objspace {
 
     bool waiting_for_object_graph_safety;
 
-    int gc_chain_latest;
-    int gc_chain_earliest;
+    unsigned int gc_chain_earliest;
+    unsigned int gc_chain_latest;
 } rb_objspace_t;
 
 static void
@@ -11985,8 +11985,8 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 #endif
 	if (rb_multi_ractor_p()) {
 	    ractor_chain_send_to_front(&global_space->gc_history_tracking.ractor_chain, objspace->ractor->gc_chain_node);
-	    objspace->gc_chain_latest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.earliest_point);
-	    objspace->gc_chain_earliest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point);
+	    objspace->gc_chain_earliest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.earliest_point);
+	    objspace->gc_chain_latest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point);
 	}
 
 	gc_set_flags_finish(objspace, reason, &do_full_mark, &immediate_mark);
@@ -17082,7 +17082,7 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
 		break;
 	    }
 	    else {
-		if (objspace->gc_chain_latest >= current->gc_target_point) {
+		if (objspace->gc_chain_earliest >= current->gc_target_point) {
 		    disposable_items_confirmed = true;
 		    continue;
 		}
