@@ -611,6 +611,8 @@ RBIMPL_SYMBOL_EXPORT_END()
 #define RB_OBJ_WRITE(old, slot, young) \
     RBIMPL_CAST(rb_obj_write((VALUE)(old), (VALUE *)(slot), (VALUE)(young), __FILE__, __LINE__))
 
+#define RB_OBJ_SHAREABLE_OVERWRITE(old, slot, young, shareable_overwritten, objspace) \
+    RBIMPL_CAST(rb_obj_shareable_overwrite((VALUE)(old), (VALUE *)(slot), (VALUE)(young), (bool *)(shareable_overwritten), (struct rb_objspace *)(objspace), __FILE__, __LINE__))
 /**
  * Identical to #RB_OBJ_WRITE(), except it doesn't write any values, but only a
  * WB declaration.   `oldv` is  replaced value  with `b`  (not used  in current
@@ -674,7 +676,8 @@ RBIMPL_SYMBOL_EXPORT_BEGIN()
  */
 void rb_gc_writebarrier(VALUE old, VALUE young);
 
-void rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv);
+struct rb_objspace;
+bool rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv, struct rb_objspace *objspace);
 
 /**
  * This is the  implementation of #RB_OBJ_WB_UNPROTECT().  People  don't use it
@@ -795,7 +798,7 @@ rb_obj_written(
     RGENGC_LOGGING_OBJ_WRITTEN(a, oldv, b, filename, line);
 #endif
 
-    if (oldv != RUBY_Qundef) rb_gc_writebarrier_reference_dropped(a, oldv);
+    if (oldv != RUBY_Qundef) rb_gc_writebarrier_reference_dropped(a, oldv, NULL);
 
     if (!RB_SPECIAL_CONST_P(b)) {
         rb_gc_writebarrier(a, b);
@@ -829,7 +832,7 @@ rb_obj_write(
     RGENGC_LOGGING_WRITE(a, slot, b, filename, line);
 #endif
 
-    rb_gc_writebarrier_reference_dropped(a, *slot);
+    rb_gc_writebarrier_reference_dropped(a, *slot, NULL);
 
     *slot = b;
 
@@ -837,6 +840,25 @@ rb_obj_write(
     return a;
 }
 
+static inline VALUE
+rb_obj_shareable_overwrite(
+    VALUE a, VALUE *slot, VALUE b, bool *shareable_overwritten, struct rb_objspace *objspace,
+    RBIMPL_ATTR_MAYBE_UNUSED()
+    const char *filename,
+    RBIMPL_ATTR_MAYBE_UNUSED()
+    int line)
+{
+#ifdef RGENGC_LOGGING_WRITE
+    RGENGC_LOGGING_WRITE(a, slot, b, filename, line);
+#endif
+
+    *shareable_overwritten = rb_gc_writebarrier_reference_dropped(a, *slot, objspace);
+
+    *slot = b;
+
+    rb_obj_written(a, RUBY_Qundef /* ignore `oldv' now */, b, filename, line);
+    return a;
+}
 RBIMPL_ATTR_DEPRECATED(("Will be removed soon"))
 static inline void rb_gc_force_recycle(VALUE obj){}
 

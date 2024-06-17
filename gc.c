@@ -825,9 +825,9 @@ typedef struct rb_global_space {
 
     struct {
 	struct rb_ractor_chain ractor_chain;
-	rb_atomic_t latest_point;
-	rb_atomic_t earliest_point;
-    } gc_history_tracking;
+	rb_atomic_t top_time;
+	rb_atomic_t base_time;
+    } gc_timekeeper;
 
     struct {
 	rb_nativethread_lock_t mode_lock;
@@ -917,13 +917,16 @@ typedef struct rb_objspace {
     st_table *received_obj_tbl;
     rb_nativethread_lock_t received_obj_tbl_lock;
 
+    st_table *local_protected_tbl;
+    VALUE protected_cme_cache[100];
+
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
-    st_table *former_reference_list_tbl;
-    rb_nativethread_lock_t former_reference_list_tbl_lock;
-    rb_ractor_t *former_reference_list_tbl_lock_owner;
-    unsigned int former_reference_list_tbl_lock_lev;
+    st_table *reference_archive_tbl;
+    rb_nativethread_lock_t reference_archive_tbl_lock;
+    rb_ractor_t *reference_archive_tbl_lock_owner;
+    unsigned int reference_archive_tbl_lock_lev;
 
     st_table *contained_ractor_tbl;
     rb_nativethread_lock_t contained_ractor_tbl_lock;
@@ -1065,8 +1068,7 @@ typedef struct rb_objspace {
 
     bool waiting_for_object_graph_safety;
 
-    unsigned int gc_chain_earliest;
-    unsigned int gc_chain_latest;
+    unsigned int base_time_at_gc_start;
 } rb_objspace_t;
 
 static void
@@ -1096,8 +1098,8 @@ heap_locked(rb_objspace_t *objspace)
     return objspace->heap_lock_owner == GET_RACTOR();
 }
 
-#define HEAP_LOCK_ENTER(objspace) { heap_lock_enter(objspace, GET_RACTOR());
-#define HEAP_LOCK_LEAVE(objspace) heap_lock_leave(objspace, GET_RACTOR()); }
+#define HEAP_LOCK_ENTER(objspace) { rb_ractor_t *_cr = GET_RACTOR(); heap_lock_enter(objspace, _cr);
+#define HEAP_LOCK_LEAVE(objspace) heap_lock_leave(objspace, _cr); }
 
 #define SUSPEND_HEAP_LOCK_BEGIN(objspace) { \
     bool heap_lock_suspended = false; \
@@ -1203,16 +1205,16 @@ typedef struct gc_reference_status {
     int status;
 } gc_reference_status_t;
 
-struct former_reference_list_node {
-    VALUE fmr_ref;
-    struct former_reference_list_node *next;
+struct reference_archive_node {
+    VALUE archived_ref;
+    struct reference_archive_node *next;
     bool marked;
-    int gc_target_point;
+    int disposal_time;
 };
 
-struct former_reference_list {
-    struct former_reference_list_node* head;
-    struct former_reference_list_node* tail;
+struct reference_archive {
+    struct reference_archive_node* head;
+    struct reference_archive_node* tail;
 };
 
 
@@ -1230,8 +1232,8 @@ static void ractor_chain_send_to_front(struct rb_ractor_chain *ractor_chain, str
 void rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason);
 void rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason);
 static void confirm_ogs_chain_node_removed(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
-static void gc_history_update_earliest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
-static void gc_history_update_latest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+static void gc_timekeeper_update_base_time(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
+static void gc_timekeeper_update_top_time(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node);
 
 static void mark_and_pin_shared_reference_tbl(rb_objspace_t *objspace);
 static bool external_references_none_marked(rb_objspace_t *objspace);
@@ -1246,19 +1248,19 @@ static void add_external_reference_usage(rb_objspace_t *objspace, VALUE obj, gc_
 static void update_shared_object_references(rb_objspace_t *objspace);
 static void absorb_shared_object_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from);
 
-static void lock_former_references(rb_objspace_t *objspace);
-static void unlock_former_references(rb_objspace_t *objspace);
-static struct former_reference_list *get_former_reference_list(rb_objspace_t *objspace, VALUE obj);
-static void former_reference_list_free(struct former_reference_list *fmr_ref_list);
-static void record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_reference);
-static void mark_former_references(rb_objspace_t *objspace, VALUE obj);
-static int mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error);
-static bool mark_all_former_references(rb_objspace_t *objspace);
-static void former_reference_list_clear_mark_notes(struct former_reference_list *fmr_ref_list);
-static int former_reference_lists_remove_unmarked_i(st_data_t key, st_data_t value, st_data_t arg);
-static void former_reference_lists_remove_unmarked(rb_objspace_t *objspace);
-static int release_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error);
-static void release_all_former_references(rb_vm_t *vm);
+static void lock_reference_archives(rb_objspace_t *objspace);
+static void unlock_reference_archives(rb_objspace_t *objspace);
+static struct reference_archive *get_reference_archive(rb_objspace_t *objspace, VALUE obj);
+static void reference_archive_free(struct reference_archive *ref_archive);
+static void add_to_reference_archive(rb_objspace_t *objspace, VALUE parent, VALUE ref_to_archive);
+static void mark_reference_archive(rb_objspace_t *objspace, VALUE obj);
+static int mark_all_reference_archives_i(st_data_t key, st_data_t value, st_data_t argp, int error);
+static bool mark_all_reference_archives(rb_objspace_t *objspace);
+static void reference_archive_clear_mark_notes(struct reference_archive *ref_archive);
+static int reference_archives_remove_unmarked_i(st_data_t key, st_data_t value, st_data_t arg);
+static void reference_archives_remove_unmarked(rb_objspace_t *objspace);
+static int release_all_reference_archives_i(st_data_t key, st_data_t value, st_data_t argp, int error);
+static void release_all_reference_archives(rb_vm_t *vm);
 
 static void objspace_absorb_enter(rb_global_space_t *global_space);
 static void objspace_absorb_leave(rb_global_space_t *global_space);
@@ -1306,13 +1308,13 @@ absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     rb_native_mutex_unlock(&objspace_to_update->wmap_referenced_obj_tbl_lock);
 
     //Former reference list table
-    lock_former_references(objspace_to_copy_from);
-    lock_former_references(objspace_to_update);
+    lock_reference_archives(objspace_to_copy_from);
+    lock_reference_archives(objspace_to_update);
 
-    absorb_table_contents(objspace_to_update->former_reference_list_tbl, objspace_to_copy_from->former_reference_list_tbl);
+    absorb_table_contents(objspace_to_update->reference_archive_tbl, objspace_to_copy_from->reference_archive_tbl);
 
-    unlock_former_references(objspace_to_copy_from);
-    unlock_former_references(objspace_to_update);
+    unlock_reference_archives(objspace_to_copy_from);
+    unlock_reference_archives(objspace_to_update);
 
     //Object ID tables
     rb_native_mutex_lock(&objspace_to_copy_from->obj_id_lock);
@@ -1323,6 +1325,8 @@ absorb_objspace_tables(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 
     rb_native_mutex_unlock(&objspace_to_copy_from->obj_id_lock);
     rb_native_mutex_unlock(&objspace_to_update->obj_id_lock);
+
+    absorb_table_contents(objspace_to_update->local_protected_tbl, objspace_to_copy_from->local_protected_tbl);
 }
 
 #ifndef HEAP_PAGE_ALIGN_LOG
@@ -1417,6 +1421,7 @@ struct heap_page {
     struct ccan_list_node page_node;
 
     bits_t wb_unprotected_bits[HEAP_PAGE_BITMAP_LIMIT];
+    bits_t timer_guarded_bits[HEAP_PAGE_BITMAP_LIMIT];
     /* the following three bitmaps are cleared at the beginning of full GC */
     bits_t mark_bits[HEAP_PAGE_BITMAP_LIMIT];
     bits_t uncollectible_bits[HEAP_PAGE_BITMAP_LIMIT];
@@ -1429,6 +1434,7 @@ struct heap_page {
     bits_t age_bits[HEAP_PAGE_BITMAP_LIMIT * RVALUE_AGE_BIT_COUNT];
 
     bool unlinked;
+    rb_atomic_t timer_guard_release_point;
 };
 
 /*
@@ -1501,6 +1507,7 @@ rb_contained_in_objspace_p(rb_objspace_t *objspace, VALUE obj)
 #define GET_HEAP_PINNED_BITS(x)         (&GET_HEAP_PAGE(x)->pinned_bits[0])
 #define GET_HEAP_UNCOLLECTIBLE_BITS(x)  (&GET_HEAP_PAGE(x)->uncollectible_bits[0])
 #define GET_HEAP_WB_UNPROTECTED_BITS(x) (&GET_HEAP_PAGE(x)->wb_unprotected_bits[0])
+#define GET_HEAP_TIMER_GUARDED_BITS(x) (&GET_HEAP_PAGE(x)->timer_guarded_bits[0])
 #define GET_HEAP_MARKING_BITS(x)        (&GET_HEAP_PAGE(x)->marking_bits[0])
 
 #define GC_SWEEP_PAGES_FREEABLE_PER_STEP 3
@@ -2063,6 +2070,7 @@ static inline VALUE check_rvalue_consistency(const VALUE obj);
 
 #define RVALUE_MARKED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(obj), (obj))
 #define RVALUE_WB_UNPROTECTED_BITMAP(obj) MARKED_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), (obj))
+#define RVALUE_TIMER_GUARDED_BITMAP(obj) MARKED_IN_BITMAP(GET_HEAP_TIMER_GUARDED_BITS(obj), (obj))
 #define RVALUE_MARKING_BITMAP(obj)        MARKED_IN_BITMAP(GET_HEAP_MARKING_BITS(obj), (obj))
 #define RVALUE_UNCOLLECTIBLE_BITMAP(obj)  MARKED_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS(obj), (obj))
 #define RVALUE_PINNED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_PINNED_BITS(obj), (obj))
@@ -2089,6 +2097,13 @@ RVALUE_WB_UNPROTECTED(VALUE obj)
 }
 
 static inline int
+RVALUE_TIMER_GUARDED(VALUE obj)
+{
+    check_rvalue_consistency(obj);
+    return RVALUE_TIMER_GUARDED_BITMAP(obj) != 0;
+}
+
+static inline int
 RVALUE_MARKING(VALUE obj)
 {
     check_rvalue_consistency(obj);
@@ -2111,6 +2126,7 @@ RVALUE_UNCOLLECTIBLE(VALUE obj)
 
 #define RVALUE_PAGE_MARKED(page, obj)         MARKED_IN_BITMAP((page)->mark_bits, (obj))
 #define RVALUE_PAGE_WB_UNPROTECTED(page, obj) MARKED_IN_BITMAP((page)->wb_unprotected_bits, (obj))
+#define RVALUE_PAGE_TIMER_GUARDED(page, obj) MARKED_IN_BITMAP((page)->timer_guarded_bits, (obj))
 #define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)  MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
 #define RVALUE_PAGE_MARKING(page, obj)        MARKED_IN_BITMAP((page)->marking_bits, (obj))
 
@@ -2488,7 +2504,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 
     if (!objspace->objspace_closed) {
 	lock_ractor_set();
-	st_foreach(objspace->former_reference_list_tbl, release_all_former_references_i, NULL);
+	st_foreach(objspace->reference_archive_tbl, release_all_reference_archives_i, NULL);
 	ccan_list_del(&objspace->objspace_node);
 	unlock_ractor_set();
     }
@@ -2508,8 +2524,8 @@ rb_objspace_free(rb_objspace_t *objspace)
     st_free_table(objspace->wmap_referenced_obj_tbl);
     rb_nativethread_lock_destroy(&objspace->wmap_referenced_obj_tbl_lock);
 
-    st_free_table(objspace->former_reference_list_tbl);
-    rb_nativethread_lock_destroy(&objspace->former_reference_list_tbl_lock);
+    st_free_table(objspace->reference_archive_tbl);
+    rb_nativethread_lock_destroy(&objspace->reference_archive_tbl_lock);
 
     st_free_table(objspace->contained_ractor_tbl);
     rb_nativethread_lock_destroy(&objspace->contained_ractor_tbl_lock);
@@ -2520,6 +2536,8 @@ rb_objspace_free(rb_objspace_t *objspace)
 
     rb_nativethread_lock_destroy(&objspace->external_writebarrier_allowed_lock);
     rb_native_cond_destroy(&objspace->external_writebarrier_allowed_cond);
+
+    st_free_table(objspace->local_protected_tbl);
 
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
@@ -2988,6 +3006,8 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
         heap_page_add_freeobj(objspace, page, (VALUE)p);
     }
     page->free_slots = limit;
+
+    page->timer_guard_release_point = 0;
 
     asan_lock_freelist(page);
     return page;
@@ -3569,6 +3589,7 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
 	GC_ASSERT(RVALUE_MARKING(obj) == FALSE);
 	GC_ASSERT(RVALUE_OLD_P(obj) == FALSE);
 	GC_ASSERT(RVALUE_WB_UNPROTECTED(obj) == FALSE);
+	GC_ASSERT(RVALUE_TIMER_GUARDED(obj) == FALSE);
 
 	if (RVALUE_REMEMBERED((VALUE)obj)) rb_bug("newobj: %s is remembered.", obj_info(obj));
     }
@@ -4721,10 +4742,12 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (RVALUE_WB_UNPROTECTED(obj)) CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), obj);
+    if (RVALUE_TIMER_GUARDED(obj)) CLEAR_IN_BITMAP(GET_HEAP_TIMER_GUARDED_BITS(obj), obj);
 
 #if RGENGC_CHECK_MODE
 #define CHECK(x) if (x(obj) != FALSE) rb_bug("obj_free: " #x "(%s) != FALSE", obj_info(obj))
         CHECK(RVALUE_WB_UNPROTECTED);
+        CHECK(RVALUE_TIMER_GUARDED);
         CHECK(RVALUE_MARKED);
         CHECK(RVALUE_MARKING);
         CHECK(RVALUE_UNCOLLECTIBLE);
@@ -5041,10 +5064,10 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     objspace->wmap_referenced_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->wmap_referenced_obj_tbl_lock);
 
-    objspace->former_reference_list_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&objspace->former_reference_list_tbl_lock);
-    objspace->former_reference_list_tbl_lock_owner = NULL;
-    objspace->former_reference_list_tbl_lock_lev = 0;
+    objspace->reference_archive_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&objspace->reference_archive_tbl_lock);
+    objspace->reference_archive_tbl_lock_owner = NULL;
+    objspace->reference_archive_tbl_lock_lev = 0;
 
     objspace->contained_ractor_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->contained_ractor_tbl_lock);
@@ -5056,6 +5079,8 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     objspace->external_writebarrier_allowed = true;
     rb_nativethread_lock_initialize(&objspace->external_writebarrier_allowed_lock);
     rb_native_cond_initialize(&objspace->external_writebarrier_allowed_cond);
+
+    objspace->local_protected_tbl = st_init_numtable();
 
     objspace->alloc_target_ractor = NULL;
 
@@ -5117,15 +5142,15 @@ rb_global_space_init(void)
     rb_nativethread_lock_initialize(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_initialize(&global_space->rglobalgc.shared_tracking_lock);
     ractor_chain_init(global_space, &global_space->ogs_tracking.ractor_chain);
-    ractor_chain_init(global_space, &global_space->gc_history_tracking.ractor_chain);
+    ractor_chain_init(global_space, &global_space->gc_timekeeper.ractor_chain);
 
-    global_space->gc_history_tracking.latest_point = 0;
-    global_space->gc_history_tracking.earliest_point = 0;
+    global_space->gc_timekeeper.top_time = 0;
+    global_space->gc_timekeeper.base_time = 0;
 
     global_space->ogs_tracking.ractor_chain.node_removed_callback = confirm_ogs_chain_node_removed;
 
-    global_space->gc_history_tracking.ractor_chain.node_added_callback = gc_history_update_latest_point;
-    global_space->gc_history_tracking.ractor_chain.node_removed_callback = gc_history_update_earliest_point;
+    global_space->gc_timekeeper.ractor_chain.node_added_callback = gc_timekeeper_update_top_time;
+    global_space->gc_timekeeper.ractor_chain.node_removed_callback = gc_timekeeper_update_base_time;
 
     rb_nativethread_lock_initialize(&global_space->absorption.mode_lock);
     rb_native_cond_initialize(&global_space->absorption.mode_change_cond);
@@ -5144,7 +5169,7 @@ rb_global_space_free(rb_global_space_t *global_space)
     rb_nativethread_lock_destroy(&global_space->absorbed_thread_tbl_lock);
     rb_nativethread_lock_destroy(&global_space->rglobalgc.shared_tracking_lock);
     ractor_chain_release(&global_space->ogs_tracking.ractor_chain);
-    ractor_chain_release(&global_space->gc_history_tracking.ractor_chain);
+    ractor_chain_release(&global_space->gc_timekeeper.ractor_chain);
 
     rb_native_cond_destroy(&global_space->ogs_tracking.removal_cond);
 
@@ -6231,6 +6256,65 @@ confirm_externally_added_external_references(rb_objspace_t *objspace)
     rb_native_mutex_unlock(&objspace->external_reference_tbl_lock);
 }
 
+static void
+protect_from_local_gc(rb_objspace_t *objspace, VALUE obj)
+{
+    st_insert_no_gc(objspace->local_protected_tbl, (st_data_t)obj, INT2FIX(0));
+}
+
+void
+rb_protect_from_local_gc(VALUE obj)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    protect_from_local_gc(objspace, obj);
+}
+
+static int
+protected_cme_cache_key(rb_callable_method_entry_t *cme)
+{
+	return (cme->called_id + (int)cme->def->type) % 100;
+}
+
+void
+rb_protect_cme_from_local_gc(rb_objspace_t *objspace, rb_callable_method_entry_t *cme)
+{
+    unsigned int key = protected_cme_cache_key(cme);
+    if (objspace->protected_cme_cache[key] != cme) {
+	protect_from_local_gc(objspace, cme);
+	objspace->protected_cme_cache[key] = cme;
+    }
+}
+
+static bool
+local_protected_object_p(rb_objspace_t *objspace, VALUE obj)
+{
+    return !!st_lookup(objspace->local_protected_tbl, (st_data_t)obj, NULL);
+}
+
+void
+verify_local_protected_reference(VALUE obj, void *ptr)
+{
+    VM_ASSERT(local_protected_object_p((rb_objspace_t *)ptr, obj));
+}
+
+void
+verify_only_local_protected_references(VALUE obj)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    rb_objspace_reachable_objects_from(obj, verify_local_protected_reference, objspace);
+}
+
+bool
+rb_gc_add_timer_guard(VALUE obj)
+{
+    VM_ASSERT(!RB_SPECIAL_CONST_P(obj));
+#if VM_CHECK_MODE > 0
+    verify_only_local_protected_references(obj);
+#endif
+    MARK_IN_BITMAP(GET_HEAP_TIMER_GUARDED_BITS(obj), obj);
+}
+
+
 /* garbage objects will be collected soon. */
 static inline bool
 is_garbage_object(rb_objspace_t *objspace, VALUE ptr)
@@ -7275,8 +7359,10 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
     GC_ASSERT(bitmap_plane_count == HEAP_PAGE_BITMAP_LIMIT - 1 ||
                   bitmap_plane_count == HEAP_PAGE_BITMAP_LIMIT);
 
+    bool timer_guard_on = using_local_limits(objspace) && (objspace->base_time_at_gc_start < RUBY_ATOMIC_LOAD(sweep_page->timer_guard_release_point));
     // Skip out of range slots at the head of the page
     bitset = ~bits[0];
+    if (timer_guard_on) bitset &= ~sweep_page->timer_guarded_bits[0];
     bitset >>= NUM_IN_PAGE(p);
     if (bitset) {
         gc_sweep_plane(objspace, heap, p, bitset, ctx);
@@ -7285,6 +7371,7 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
 
     for (int i = 1; i < bitmap_plane_count; i++) {
         bitset = ~bits[i];
+	if (timer_guard_on) bitset &= ~sweep_page->timer_guarded_bits[i];
         if (bitset) {
             gc_sweep_plane(objspace, heap, p, bitset, ctx);
         }
@@ -7293,6 +7380,9 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
 
     if (!heap->compact_cursor) {
         gc_setup_mark_bits(sweep_page);
+    }
+    if (rb_during_global_gc()) {
+	sweep_page->timer_guard_release_point = 0;
     }
 
 #if GC_PROFILE_MORE_DETAIL
@@ -7412,9 +7502,9 @@ gc_sweep_start(rb_objspace_t *objspace)
 {
     gc_mode_transition(objspace, gc_mode_sweeping);
 
-    lock_former_references(objspace);
-    former_reference_lists_remove_unmarked(objspace);
-    unlock_former_references(objspace);
+    lock_reference_archives(objspace);
+    reference_archives_remove_unmarked(objspace);
+    unlock_reference_archives(objspace);
 
     objspace->rincgc.pooled_slots = 0;
 
@@ -9119,9 +9209,9 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (!during_gc && FL_TEST_RAW(obj, FL_SHAREABLE)) {
-	lock_former_references(objspace);
-	mark_former_references(objspace, obj);
-	unlock_former_references(objspace);
+	lock_reference_archives(objspace);
+	mark_reference_archive(objspace, obj);
+	unlock_reference_archives(objspace);
     }
 }
 
@@ -9344,11 +9434,11 @@ mark_externally_modifiable_tables(rb_objspace_t *objspace)
 
     wait_for_object_graph_safety(objspace);
 
-    lock_former_references(objspace);
+    lock_reference_archives(objspace);
 
     bool new_marks_added = false;
 
-    if (mark_all_former_references(objspace)) {
+    if (mark_all_reference_archives(objspace)) {
 	new_marks_added = true;
     }
     else {
@@ -9358,7 +9448,7 @@ mark_externally_modifiable_tables(rb_objspace_t *objspace)
 	}
     }
 
-    unlock_former_references(objspace);
+    unlock_reference_archives(objspace);
     return !new_marks_added;
 }
 
@@ -9673,6 +9763,7 @@ gc_mark_roots(rb_objspace_t *objspace, const char **categoryp)
 	MARK_CHECKPOINT("shared_reference_tbl");
 	mark_and_pin_shared_reference_tbl(objspace);
 	mark_received_received_obj_tbl(objspace);
+	mark_set(objspace, objspace->local_protected_tbl);
     }
 
     if (stress_to_class) rb_gc_mark(stress_to_class);
@@ -10498,6 +10589,32 @@ gc_update_external_weak_references(rb_objspace_t *objspace)
     rb_native_mutex_unlock(&objspace->wmap_referenced_obj_tbl_lock);
 }
 
+static int
+update_local_protected_tbl_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    VALUE obj = (VALUE)key;
+    if (RVALUE_MARKED(obj)) {
+	return ST_CONTINUE;
+    }
+    else {
+	    if (BUILTIN_TYPE(obj) == T_IMEMO && IMEMO_TYPE_P(obj, imemo_ment)) {
+		    rb_objspace_t *objspace = (rb_objspace_t *)argp;
+		    unsigned int key = protected_cme_cache_key(obj);
+		    if (objspace->protected_cme_cache[key] == obj) {
+			    objspace->protected_cme_cache[key] = NULL;
+		    }
+	    }
+	return ST_DELETE;
+    }
+}
+
+static void
+update_local_protected_tbl(rb_objspace_t *objspace)
+{
+    VM_ASSERT(during_gc && !using_local_limits(objspace));
+    st_foreach(objspace->local_protected_tbl, update_local_protected_tbl_i, (st_data_t)objspace);
+}
+
 static void
 gc_marks_finish(rb_objspace_t *objspace)
 {
@@ -10527,6 +10644,7 @@ gc_marks_finish(rb_objspace_t *objspace)
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace);
     if (is_full_marking(objspace)) update_shared_object_references(objspace);
+    if (!using_local_limits(objspace)) update_local_protected_tbl(objspace);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
@@ -10964,7 +11082,7 @@ gc_marks_global(rb_objspace_t *objspace, int full_mark)
 {
     rb_vm_t *vm = GET_VM();
 
-    release_all_former_references(vm);
+    release_all_reference_archives(vm);
 
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
@@ -11295,28 +11413,56 @@ probably_broken_shareable_path_p(rb_objspace_t *objspace, VALUE a, VALUE oldv)
 	FL_TEST_RAW(oldv, FL_SHAREABLE);
 }
 
-void
-rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv)
+static void
+page_update_timer_guard_release_point(struct heap_page *page)
+{
+    rb_global_space_t *global_space = &rb_global_space;
+
+    while (true) {
+	rb_atomic_t release_point = RUBY_ATOMIC_LOAD(global_space->gc_timekeeper.top_time) + 1;
+	rb_atomic_t prev_val = ATOMIC_EXCHANGE(page->timer_guard_release_point, release_point);
+	if (LIKELY(prev_val <= release_point)) {
+	    break;
+	}
+    }
+}
+
+bool
+rb_gc_writebarrier_reference_dropped(VALUE a, VALUE oldv, rb_objspace_t *objspace)
 {
     if (RGENGC_CHECK_MODE) {
 	if (SPECIAL_CONST_P(a)) rb_bug("rb_gc_writebarrier_reference_dropped: a is special const: %"PRIxVALUE, a);
     }
 
-    if (LIKELY(ruby_single_main_objspace || !FL_TEST_RAW(a, FL_SHAREABLE))) return;
+    if (LIKELY(ruby_single_main_objspace || !FL_TEST_RAW(a, FL_SHAREABLE))) return false;
 
     (void)VALGRIND_MAKE_MEM_DEFINED(&oldv, sizeof(oldv));
 
-    if (!oldv) return;
+    if (!oldv) return false;
 
-    WITH_OBJSPACE_OF_VALUE_ENTER(a, objspace);
-    {
-	if (probably_broken_shareable_path_p(objspace, a, oldv)) {
-	    lock_former_references(objspace);
-	    record_former_reference(objspace, a, oldv);
-	    unlock_former_references(objspace);
-	}
+    bool shareable_overwritten = false;
+
+    VM_ASSERT(objspace == NULL || objspace == &rb_objspace);
+    if (!objspace) {
+	objspace = &rb_objspace;
     }
-    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
+
+    if (probably_broken_shareable_path_p(objspace, a, oldv)) {
+	if (RVALUE_TIMER_GUARDED(oldv)) {
+	    page_update_timer_guard_release_point(GET_HEAP_PAGE(oldv));
+	}
+	else {
+	    WITH_OBJSPACE_OF_VALUE_ENTER(a, a_objspace);
+	    {
+		lock_reference_archives(a_objspace);
+		add_to_reference_archive(a_objspace, a, oldv);
+		unlock_reference_archives(a_objspace);
+	    }
+	    WITH_OBJSPACE_OF_VALUE_LEAVE(a_objspace);
+	}
+	shareable_overwritten = true;
+    }
+    return shareable_overwritten;
 }
 
 void
@@ -11961,8 +12107,8 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	gc_verify_internal_consistency(objspace);
 #endif
 
-	global_space->gc_history_tracking.latest_point = 0;
-	global_space->gc_history_tracking.earliest_point = 0;
+	global_space->gc_timekeeper.top_time = 0;
+	global_space->gc_timekeeper.base_time = 0;
 
 	rb_objspace_t *os = NULL;
 	ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
@@ -11984,9 +12130,8 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	gc_verify_internal_consistency(objspace);
 #endif
 	if (rb_multi_ractor_p()) {
-	    ractor_chain_send_to_front(&global_space->gc_history_tracking.ractor_chain, objspace->ractor->gc_chain_node);
-	    objspace->gc_chain_earliest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.earliest_point);
-	    objspace->gc_chain_latest = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point);
+	    ractor_chain_send_to_front(&global_space->gc_timekeeper.ractor_chain, objspace->ractor->gc_chain_node);
+	    objspace->base_time_at_gc_start = RUBY_ATOMIC_LOAD(global_space->gc_timekeeper.base_time);
 	}
 
 	gc_set_flags_finish(objspace, reason, &do_full_mark, &immediate_mark);
@@ -12492,7 +12637,7 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 {
     GC_ASSERT(!SPECIAL_CONST_P(obj));
 
-    if (using_local_limits(objspace) && FL_TEST_RAW(obj, FL_SHAREABLE)) {
+    if (using_local_limits(objspace) && (FL_TEST_RAW(obj, FL_SHAREABLE) || RVALUE_TIMER_GUARDED(obj))) {
 	return FALSE;
     }
 
@@ -12597,6 +12742,8 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
     uncollectible = RVALUE_UNCOLLECTIBLE((VALUE)src);
     bool remembered = RVALUE_REMEMBERED((VALUE)src);
     age = RVALUE_AGE_GET((VALUE)src);
+
+    VM_ASSERT(!RVALUE_TIMER_GUARDED(src));
 
     /* Clear bits for eventual T_MOVED */
     CLEAR_IN_BITMAP(GET_HEAP_MARK_BITS((VALUE)src), (VALUE)src);
@@ -16979,118 +17126,118 @@ rb_remove_from_external_weak_tables(VALUE *ptr)
 }
 
 static void
-lock_former_references(rb_objspace_t *objspace)
+lock_reference_archives(rb_objspace_t *objspace)
 {
     rb_ractor_t *cr = GET_RACTOR();
-    if (objspace->former_reference_list_tbl_lock_owner != cr) {
-	rb_native_mutex_lock(&objspace->former_reference_list_tbl_lock);
-	objspace->former_reference_list_tbl_lock_owner = cr;
+    if (objspace->reference_archive_tbl_lock_owner != cr) {
+	rb_native_mutex_lock(&objspace->reference_archive_tbl_lock);
+	objspace->reference_archive_tbl_lock_owner = cr;
     }
-    objspace->former_reference_list_tbl_lock_lev++;
+    objspace->reference_archive_tbl_lock_lev++;
 }
 
 static void
-unlock_former_references(rb_objspace_t *objspace)
+unlock_reference_archives(rb_objspace_t *objspace)
 {
-    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
-    objspace->former_reference_list_tbl_lock_lev--;
-    if (objspace->former_reference_list_tbl_lock_lev == 0) {
-	objspace->former_reference_list_tbl_lock_owner = NULL;
-	rb_native_mutex_unlock(&objspace->former_reference_list_tbl_lock);
+    VM_ASSERT(objspace->reference_archive_tbl_lock_owner == GET_RACTOR());
+    objspace->reference_archive_tbl_lock_lev--;
+    if (objspace->reference_archive_tbl_lock_lev == 0) {
+	objspace->reference_archive_tbl_lock_owner = NULL;
+	rb_native_mutex_unlock(&objspace->reference_archive_tbl_lock);
     }
 }
 
-static struct former_reference_list *
-get_former_reference_list(rb_objspace_t *objspace, VALUE obj)
+static struct reference_archive *
+get_reference_archive(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR() || (during_gc && !using_local_limits(objspace)));
+    VM_ASSERT(objspace->reference_archive_tbl_lock_owner == GET_RACTOR() || (during_gc && !using_local_limits(objspace)));
 
     st_data_t data;
-    int list_found = st_lookup(objspace->former_reference_list_tbl, (st_data_t)obj, &data);
-    return list_found ? (struct former_reference_list *)data : NULL;
+    int list_found = st_lookup(objspace->reference_archive_tbl, (st_data_t)obj, &data);
+    return list_found ? (struct reference_archive *)data : NULL;
 }
 
 static void
-former_reference_list_free(struct former_reference_list *fmr_ref_list)
+reference_archive_free(struct reference_archive *ref_archive)
 {
-    struct former_reference_list_node *current, *next;
-    for (current = fmr_ref_list->head; current; current = next) {
+    struct reference_archive_node *current, *next;
+    for (current = ref_archive->head; current; current = next) {
 	next = current->next;
 	xfree(current);
     }
-    free(fmr_ref_list);
+    free(ref_archive);
 }
 
 static void
-record_former_reference(rb_objspace_t *objspace, VALUE parent, VALUE former_reference)
+add_to_reference_archive(rb_objspace_t *objspace, VALUE parent, VALUE ref_to_archive)
 {
     rb_global_space_t *global_space = &rb_global_space;
 
     VM_ASSERT(objspace == GET_OBJSPACE_OF_VALUE(parent));
-    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+    VM_ASSERT(objspace->reference_archive_tbl_lock_owner == GET_RACTOR());
 
-    struct former_reference_list_node *tmp;
-    tmp = ALLOC(struct former_reference_list_node);
+    struct reference_archive_node *tmp;
+    tmp = ALLOC(struct reference_archive_node);
 
-    struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, parent);
+    struct reference_archive *ref_archive = get_reference_archive(objspace, parent);
 
-    if (!fmr_ref_list) {
-	fmr_ref_list = ALLOC(struct former_reference_list);
-	st_insert(objspace->former_reference_list_tbl, (st_data_t)parent, (st_data_t)fmr_ref_list);
-	fmr_ref_list->head = NULL;
-	fmr_ref_list->tail = tmp;
+    if (!ref_archive) {
+	ref_archive = ALLOC(struct reference_archive);
+	st_insert(objspace->reference_archive_tbl, (st_data_t)parent, (st_data_t)ref_archive);
+	ref_archive->head = NULL;
+	ref_archive->tail = tmp;
     }
 
-    tmp->next = fmr_ref_list->head;
-    fmr_ref_list->head = tmp;
+    tmp->next = ref_archive->head;
+    ref_archive->head = tmp;
 
-    tmp->fmr_ref = former_reference;
+    tmp->archived_ref = ref_to_archive;
     tmp->marked = false;
-    tmp->gc_target_point = RUBY_ATOMIC_LOAD(global_space->gc_history_tracking.latest_point) + 1;
+    tmp->disposal_time = RUBY_ATOMIC_LOAD(global_space->gc_timekeeper.top_time) + 1;
 }
 
 static void
-mark_former_references(rb_objspace_t *objspace, VALUE obj)
+mark_reference_archive(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(!using_local_limits(objspace) || objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+    VM_ASSERT(!using_local_limits(objspace) || objspace->reference_archive_tbl_lock_owner == GET_RACTOR());
 
     gc_mark_set_parent(objspace, obj);
 
-    struct former_reference_list *fmr_ref_list = get_former_reference_list(objspace, obj);
-    if (fmr_ref_list) {
-	struct former_reference_list_node *current;
-	for (current = fmr_ref_list->head; current; current = current->next) {
-	    gc_mark_maybe(objspace, current->fmr_ref);
+    struct reference_archive *ref_archive = get_reference_archive(objspace, obj);
+    if (ref_archive) {
+	struct reference_archive_node *current;
+	for (current = ref_archive->head; current; current = current->next) {
+	    gc_mark_maybe(objspace, current->archived_ref);
 	}
     }
 }
 
 static int
-mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+mark_all_reference_archives_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
     rb_objspace_t *objspace = &rb_objspace;
     bool *new_marks_added = (bool *)argp;
     VALUE obj = (VALUE)key;
-    struct former_reference_list *fmr_ref_list = (struct former_reference_list_node *)value;
+    struct reference_archive *ref_archive = (struct reference_archive_node *)value;
     bool disposable_items_confirmed = false;
     if (RVALUE_MARKED(obj)) {
 	gc_mark_set_parent(objspace, obj);
-	struct former_reference_list_node *current;
-	for (current = fmr_ref_list->head; current; current = current->next) {
+	struct reference_archive_node *current;
+	for (current = ref_archive->head; current; current = current->next) {
 	    if (current->marked) {
 		//All beyond this point should be marked already
 		break;
 	    }
 	    else {
-		if (objspace->gc_chain_earliest >= current->gc_target_point) {
+		if (objspace->base_time_at_gc_start >= current->disposal_time) {
 		    disposable_items_confirmed = true;
 		    continue;
 		}
 
-		if (!RVALUE_MARKED(current->fmr_ref)) {
+		if (!RVALUE_MARKED(current->archived_ref)) {
 		    *new_marks_added = true;
 		}
-		gc_mark_and_pin(objspace, current->fmr_ref);
+		gc_mark_and_pin(objspace, current->archived_ref);
 		current->marked = true;
 	    }
 	}
@@ -17104,14 +17251,14 @@ mark_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int
 }
 
 static int
-address_disposable_former_references(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
+address_disposable_archived_references(st_data_t *key, st_data_t *value, st_data_t argp, int existing)
 {
-    struct former_reference_list *fmr_ref_list = (struct former_reference_list *)*value;
-    struct former_reference_list_node *updated_head = NULL;
+    struct reference_archive *ref_archive = (struct reference_archive *)*value;
+    struct reference_archive_node *updated_head = NULL;
 
-    struct former_reference_list_node *prev = NULL;
-    struct former_reference_list_node *current = fmr_ref_list->head;
-    struct former_reference_list_node *upcoming = NULL;
+    struct reference_archive_node *prev = NULL;
+    struct reference_archive_node *current = ref_archive->head;
+    struct reference_archive_node *upcoming = NULL;
     while (current) {
 	upcoming = current->next;
 	if (current->marked) {
@@ -17126,70 +17273,70 @@ address_disposable_former_references(st_data_t *key, st_data_t *value, st_data_t
 	}
 	current = upcoming;
     }
-    fmr_ref_list->tail = prev;
+    ref_archive->tail = prev;
     if (updated_head) {
-	fmr_ref_list->head = updated_head;
+	ref_archive->head = updated_head;
 	return ST_CONTINUE;
     }
     else {
-	free(fmr_ref_list);
+	free(ref_archive);
 	return ST_DELETE;
     }
 }
 
 static bool
-mark_all_former_references(rb_objspace_t *objspace)
+mark_all_reference_archives(rb_objspace_t *objspace)
 {
-    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
+    VM_ASSERT(objspace->reference_archive_tbl_lock_owner == GET_RACTOR());
     bool new_marks_added = false;
-    st_foreach_with_replace(objspace->former_reference_list_tbl, mark_all_former_references_i, address_disposable_former_references, (st_data_t)&new_marks_added);
+    st_foreach_with_replace(objspace->reference_archive_tbl, mark_all_reference_archives_i, address_disposable_archived_references, (st_data_t)&new_marks_added);
     return new_marks_added;
 }
 
 static void
-former_reference_list_clear_mark_notes(struct former_reference_list *fmr_ref_list)
+reference_archive_clear_mark_notes(struct reference_archive *ref_archive)
 {
-    struct former_reference_list_node *current, *next;
-    for (current = fmr_ref_list->head; current; current = current->next) {
+    struct reference_archive_node *current, *next;
+    for (current = ref_archive->head; current; current = current->next) {
 	current->marked = false;
     }
 }
 
 static int
-former_reference_lists_remove_unmarked_i(st_data_t key, st_data_t value, st_data_t arg)
+reference_archives_remove_unmarked_i(st_data_t key, st_data_t value, st_data_t arg)
 {
     VALUE obj = (VALUE)key;
-    struct former_reference_list *fmr_ref_list = (struct former_reference_list *)value;
+    struct reference_archive *ref_archive = (struct reference_archive *)value;
     if (RVALUE_MARKED(obj)) {
-	former_reference_list_clear_mark_notes(fmr_ref_list);
+	reference_archive_clear_mark_notes(ref_archive);
 	return ST_CONTINUE;
     }
     else {
-	former_reference_list_free(fmr_ref_list);
+	reference_archive_free(ref_archive);
 	return ST_DELETE;
     }
 }
 
 static void
-former_reference_lists_remove_unmarked(rb_objspace_t *objspace)
+reference_archives_remove_unmarked(rb_objspace_t *objspace)
 {
-    VM_ASSERT(objspace->former_reference_list_tbl_lock_owner == GET_RACTOR());
-    st_foreach(objspace->former_reference_list_tbl, former_reference_lists_remove_unmarked_i, (st_data_t)objspace);
+    VM_ASSERT(objspace->reference_archive_tbl_lock_owner == GET_RACTOR());
+    st_foreach(objspace->reference_archive_tbl, reference_archives_remove_unmarked_i, (st_data_t)objspace);
 }
 
 static int
-release_all_former_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+release_all_reference_archives_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
-    former_reference_list_free(value);
+    reference_archive_free(value);
     return ST_DELETE;
 }
 
 static void
-release_all_former_references(rb_vm_t *vm)
+release_all_reference_archives(rb_vm_t *vm)
 {
     rb_objspace_t *os = NULL;
     ccan_list_for_each(&vm->objspace_set, os, objspace_node) {
-	st_foreach(os->former_reference_list_tbl, release_all_former_references_i, NULL);
+	st_foreach(os->reference_archive_tbl, release_all_reference_archives_i, NULL);
     }
 }
 
@@ -17314,7 +17461,7 @@ rb_ractor_chains_register(rb_ractor_t *r)
 {
     rb_global_space_t *global_space = &rb_global_space;
     r->ogs_chain_node = create_node_in_chain(&global_space->ogs_tracking.ractor_chain, r, OGS_FLAG_NONE);
-    r->gc_chain_node = create_node_in_chain(&global_space->gc_history_tracking.ractor_chain, r, 0);
+    r->gc_chain_node = create_node_in_chain(&global_space->gc_timekeeper.ractor_chain, r, 0);
     r->registered_in_ractor_chains = true;
 }
 
@@ -17365,7 +17512,7 @@ rb_ractor_chains_unregister(rb_ractor_t *r)
     rb_global_space_t *global_space = &rb_global_space;
     delete_node_in_ractor_chain(&global_space->ogs_tracking.ractor_chain, r->ogs_chain_node);
     r->ogs_chain_node = NULL;
-    delete_node_in_ractor_chain(&global_space->gc_history_tracking.ractor_chain, r->gc_chain_node);
+    delete_node_in_ractor_chain(&global_space->gc_timekeeper.ractor_chain, r->gc_chain_node);
     r->gc_chain_node = NULL;
     r->registered_in_ractor_chains = false;
 }
@@ -17411,22 +17558,22 @@ confirm_ogs_chain_node_removed(struct rb_ractor_chain *ractor_chain, struct rb_r
 }
 
 static void
-gc_history_update_earliest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+gc_timekeeper_update_base_time(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
 {
     rb_global_space_t *global_space = ractor_chain->global_space;
-    if (ractor_chain->tail_node && global_space->gc_history_tracking.earliest_point != ractor_chain->tail_node->value) {
-	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, ractor_chain->tail_node->value);
+    if (ractor_chain->tail_node && global_space->gc_timekeeper.base_time != ractor_chain->tail_node->value) {
+	ATOMIC_SET(global_space->gc_timekeeper.base_time, ractor_chain->tail_node->value);
     }
 }
 
 static void
-gc_history_update_latest_point(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
+gc_timekeeper_update_top_time(struct rb_ractor_chain *ractor_chain, struct rb_ractor_chain_node *rc_node)
 {
     rb_global_space_t *global_space = ractor_chain->global_space;
     VM_ASSERT(ractor_chain->head_node == rc_node);
-    ATOMIC_SET(rc_node->value, global_space->gc_history_tracking.latest_point + 1);
-    ATOMIC_SET(global_space->gc_history_tracking.latest_point, rc_node->value);
+    ATOMIC_SET(rc_node->value, global_space->gc_timekeeper.top_time + 1);
+    ATOMIC_SET(global_space->gc_timekeeper.top_time, rc_node->value);
     if (ractor_chain->tail_node == rc_node) {
-	ATOMIC_SET(global_space->gc_history_tracking.earliest_point, rc_node->value);
+	ATOMIC_SET(global_space->gc_timekeeper.base_time, rc_node->value);
     }
 }

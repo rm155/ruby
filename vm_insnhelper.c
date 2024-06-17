@@ -4359,7 +4359,15 @@ vm_call_refined(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_c
     if (ref_cme) {
         if (calling->cd->cc) {
             const struct rb_callcache *cc = calling->cc = vm_cc_new(vm_cc_cme(calling->cc)->defined_class, ref_cme, vm_call_general, cc_type_refinement);
-            RB_OBJ_WRITE(cfp->iseq, &calling->cd->cc, cc);
+	    struct rb_objspace *objspace = GET_RACTOR()->local_objspace;
+	    rb_protect_cme_from_local_gc(objspace, ref_cme);
+	    rb_gc_add_timer_guard(cc);
+	    VALUE old_cc = calling->cd->cc;
+	    bool cc_overwritten;
+            RB_OBJ_SHAREABLE_OVERWRITE(cfp->iseq, &calling->cd->cc, cc, &cc_overwritten, objspace);
+	    if (cc_overwritten) {
+		rb_gc_add_timer_guard(old_cc);
+	    }
             return vm_call_method(ec, cfp, calling);
         }
         else {

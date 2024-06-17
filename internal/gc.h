@@ -142,6 +142,10 @@ void rb_disconnect_ractor_from_unabsorbed_objspace(r);
 void rb_register_new_external_wmap_reference(VALUE *ptr);
 void rb_remove_from_external_weak_tables(VALUE *ptr);
 
+void rb_protect_from_local_gc(VALUE obj);
+void rb_protect_cme_from_local_gc(struct rb_objspace *objspace, rb_callable_method_entry_t *cme);
+bool rb_gc_add_timer_guard(VALUE obj);
+
 void rb_global_tables_init(void);
 
 void rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t *closing_ractor);
