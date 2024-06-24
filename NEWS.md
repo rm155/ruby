@@ -54,7 +54,7 @@ The following default gems are updated.
 * erb 4.0.4
 * fiddle 1.1.3
 * io-console 0.7.2
-* irb 1.13.1
+* irb 1.13.2
 * json 2.7.2
 * net-http 0.4.1
 * optparse 0.5.0
@@ -67,14 +67,14 @@ The following default gems are updated.
 
 The following bundled gems are updated.
 
-* minitest 5.23.1
+* minitest 5.24.0
 * rake 13.2.1
 * test-unit 3.6.2
-* rexml 3.2.8
-* net-ftp 0.3.5
-* net-imap 0.4.12
+* rexml 3.3.0
+* net-ftp 0.3.6
+* net-imap 0.4.14
 * net-smtp 0.5.0
-* rbs 3.4.4
+* rbs 3.5.1
 * typeprof 0.21.11
 * debug 1.9.2
 * racc 1.8.0

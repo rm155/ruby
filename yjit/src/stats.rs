@@ -266,13 +266,14 @@ macro_rules! make_counters {
 
 /// The list of counters that are available without --yjit-stats.
 /// They are incremented only by `incr_counter!` and don't use `gen_counter_incr`.
-pub const DEFAULT_COUNTERS: [Counter; 19] = [
+pub const DEFAULT_COUNTERS: &'static [Counter] = &[
     Counter::code_gc_count,
     Counter::compiled_iseq_entry,
     Counter::cold_iseq_entry,
     Counter::compiled_iseq_count,
     Counter::compiled_blockid_count,
     Counter::compiled_block_count,
+    Counter::deleted_defer_block_count,
     Counter::compiled_branch_count,
     Counter::compile_time_ns,
     Counter::max_inline_versions,
@@ -377,6 +378,7 @@ make_counters! {
     send_iseq_block_arg_type,
     send_iseq_clobbering_block_arg,
     send_iseq_complex_discard_extras,
+    send_iseq_forwarding,
     send_iseq_leaf_builtin_block_arg_block_param,
     send_iseq_kw_splat_non_nil,
     send_iseq_kwargs_mismatch,
@@ -384,6 +386,7 @@ make_counters! {
     send_iseq_has_no_kw,
     send_iseq_accepts_no_kwarg,
     send_iseq_materialized_block,
+    send_iseq_send_forwarding,
     send_iseq_splat_not_array,
     send_iseq_splat_with_kw,
     send_iseq_missing_optional_kw,
@@ -413,6 +416,7 @@ make_counters! {
     send_optimized_block_arg,
 
     invokesuper_defined_class_mismatch,
+    invokesuper_forwarding,
     invokesuper_kw_splat,
     invokesuper_kwarg,
     invokesuper_megamorphic,
@@ -554,6 +558,7 @@ make_counters! {
     block_next_count,
     defer_count,
     defer_empty_count,
+    deleted_defer_block_count,
     branch_insn_count,
     branch_known_count,
     max_inline_versions,
