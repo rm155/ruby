@@ -6301,26 +6301,10 @@ local_protected_object_p(rb_objspace_t *objspace, VALUE obj)
     return !!st_lookup(objspace->local_protected_tbl, (st_data_t)obj, NULL);
 }
 
-void
-verify_local_protected_reference(VALUE obj, void *ptr)
-{
-    VM_ASSERT(local_protected_object_p((rb_objspace_t *)ptr, obj));
-}
-
-void
-verify_only_local_protected_references(VALUE obj)
-{
-    rb_objspace_t *objspace = &rb_objspace;
-    rb_objspace_reachable_objects_from(obj, verify_local_protected_reference, objspace);
-}
-
 bool
 rb_gc_add_timer_guard(VALUE obj)
 {
     VM_ASSERT(!RB_SPECIAL_CONST_P(obj));
-#if VM_CHECK_MODE > 0
-    verify_only_local_protected_references(obj);
-#endif
     MARK_IN_BITMAP(GET_HEAP_TIMER_GUARDED_BITS(obj), obj);
 }
 
