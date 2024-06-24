@@ -15,12 +15,14 @@ use crate::utils::*;
 use crate::disasm::*;
 use core::ffi::c_void;
 use std::cell::*;
-use std::collections::HashSet;
 use std::fmt;
 use std::mem;
 use std::mem::transmute;
 use std::ops::Range;
 use std::rc::Rc;
+use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use mem::MaybeUninit;
 use std::ptr;
 use ptr::NonNull;
@@ -457,8 +459,13 @@ const CHAIN_DEPTH_MASK: u8   = 0b00111111; // 63
 /// Contains information we can use to specialize/optimize code
 /// There are a lot of context objects so we try to keep the size small.
 #[derive(Copy, Clone, Default, Eq, Hash, PartialEq, Debug)]
-#[repr(packed)]
 pub struct Context {
+    // FIXME: decoded_from breaks == on contexts
+    /*
+    // Offset at which this context was previously encoded (zero if not)
+    decoded_from: u32,
+    */
+
     // Number of values currently on the temporary stack
     stack_size: u8,
 
@@ -496,6 +503,599 @@ pub struct Context {
     /// to serial indexes. We're thinking of overhauling Context structure in Ruby 3.4 which
     /// could allow this to consume no bytes, so we're leaving this as is.
     inline_block: u64,
+}
+
+#[derive(Clone)]
+pub struct BitVector {
+    // Flat vector of bytes to write into
+    bytes: Vec<u8>,
+
+    // Number of bits taken out of bytes allocated
+    num_bits: usize,
+}
+
+impl BitVector {
+    pub fn new() -> Self {
+        Self {
+            bytes: Vec::with_capacity(4096),
+            num_bits: 0,
+        }
+    }
+
+    #[allow(unused)]
+    pub fn num_bits(&self) -> usize {
+        self.num_bits
+    }
+
+    // Total number of bytes taken
+    #[allow(unused)]
+    pub fn num_bytes(&self) -> usize {
+        (self.num_bits / 8) + if (self.num_bits % 8) != 0 { 1 } else { 0 }
+    }
+
+    // Write/append an unsigned integer value
+    fn push_uint(&mut self, mut val: u64, mut num_bits: usize) {
+        assert!(num_bits <= 64);
+
+        // Mask out bits above the number of bits requested
+        let mut val_bits = val;
+        if num_bits < 64 {
+            val_bits &= (1 << num_bits) - 1;
+            assert!(val == val_bits);
+        }
+
+        // Number of bits encoded in the last byte
+        let rem_bits = self.num_bits % 8;
+
+        // Encode as many bits as we can in this last byte
+        if rem_bits != 0 {
+            let num_enc = std::cmp::min(num_bits, 8 - rem_bits);
+            let bit_mask = (1 << num_enc) - 1;
+            let frac_bits = (val & bit_mask) << rem_bits;
+            let frac_bits: u8 = frac_bits.try_into().unwrap();
+            let last_byte_idx = self.bytes.len() - 1;
+            self.bytes[last_byte_idx] |= frac_bits;
+
+            self.num_bits += num_enc;
+            num_bits -= num_enc;
+            val >>= num_enc;
+        }
+
+        // While we have bits left to encode
+        while num_bits > 0 {
+            // Grow with a 1.2x growth factor instead of 2x
+            assert!(self.num_bits % 8 == 0);
+            let num_bytes = self.num_bits / 8;
+            if num_bytes == self.bytes.capacity() {
+                self.bytes.reserve_exact(self.bytes.len() / 5);
+            }
+
+            let bits = val & 0xFF;
+            let bits: u8 = bits.try_into().unwrap();
+            self.bytes.push(bits);
+
+            let bits_to_encode = std::cmp::min(num_bits, 8);
+            self.num_bits += bits_to_encode;
+            num_bits -= bits_to_encode;
+            val >>= bits_to_encode;
+        }
+    }
+
+    fn push_u8(&mut self, val: u8) {
+        self.push_uint(val as u64, 8);
+    }
+
+    fn push_u4(&mut self, val: u8) {
+        assert!(val < 16);
+        self.push_uint(val as u64, 4);
+    }
+
+    fn push_u3(&mut self, val: u8) {
+        assert!(val < 8);
+        self.push_uint(val as u64, 3);
+    }
+
+    fn push_u2(&mut self, val: u8) {
+        assert!(val < 4);
+        self.push_uint(val as u64, 2);
+    }
+
+    fn push_u1(&mut self, val: u8) {
+        assert!(val < 2);
+        self.push_uint(val as u64, 1);
+    }
+
+    // Push a context encoding opcode
+    fn push_op(&mut self, op: CtxOp) {
+        self.push_u4(op as u8);
+    }
+
+    // Read a uint value at a given bit index
+    // The bit index is incremented after the value is read
+    fn read_uint(&self, bit_idx: &mut usize, mut num_bits: usize) -> u64 {
+        let start_bit_idx = *bit_idx;
+        let mut cur_idx = *bit_idx;
+
+        // Read the bits in the first byte
+        let bit_mod = cur_idx % 8;
+        let bits_in_byte = self.bytes[cur_idx / 8] >> bit_mod;
+
+        let num_bits_in_byte = std::cmp::min(num_bits, 8 - bit_mod);
+        cur_idx += num_bits_in_byte;
+        num_bits -= num_bits_in_byte;
+
+        let mut out_bits = (bits_in_byte as u64) & ((1 << num_bits_in_byte) - 1);
+
+        // While we have bits left to read
+        while num_bits > 0 {
+            let num_bits_in_byte = std::cmp::min(num_bits, 8);
+            assert!(cur_idx % 8 == 0);
+            let byte = self.bytes[cur_idx / 8] as u64;
+
+            let bits_in_byte = byte & ((1 << num_bits) - 1);
+            out_bits |= bits_in_byte << (cur_idx - start_bit_idx);
+
+            // Move to the next byte/offset
+            cur_idx += num_bits_in_byte;
+            num_bits -= num_bits_in_byte;
+        }
+
+        // Update the read index
+        *bit_idx = cur_idx;
+
+        out_bits
+    }
+
+    fn read_u8(&self, bit_idx: &mut usize) -> u8 {
+        self.read_uint(bit_idx, 8) as u8
+    }
+
+    fn read_u4(&self, bit_idx: &mut usize) -> u8 {
+        self.read_uint(bit_idx, 4) as u8
+    }
+
+    fn read_u3(&self, bit_idx: &mut usize) -> u8 {
+        self.read_uint(bit_idx, 3) as u8
+    }
+
+    fn read_u2(&self, bit_idx: &mut usize) -> u8 {
+        self.read_uint(bit_idx, 2) as u8
+    }
+
+    fn read_u1(&self, bit_idx: &mut usize) -> u8 {
+        self.read_uint(bit_idx, 1) as u8
+    }
+
+    fn read_op(&self, bit_idx: &mut usize) -> CtxOp {
+        unsafe { std::mem::transmute(self.read_u4(bit_idx)) }
+    }
+}
+
+impl fmt::Debug for BitVector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // We print the higher bytes first
+        for (idx, byte) in self.bytes.iter().enumerate().rev() {
+            write!(f, "{:08b}", byte)?;
+
+            // Insert a separator between each byte
+            if idx > 0 {
+                write!(f, "|")?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bitvector_tests {
+    use super::*;
+
+    #[test]
+    fn write_3() {
+        let mut arr = BitVector::new();
+        arr.push_uint(3, 2);
+        assert!(arr.read_uint(&mut 0, 2) == 3);
+    }
+
+    #[test]
+    fn write_11() {
+        let mut arr = BitVector::new();
+        arr.push_uint(1, 1);
+        arr.push_uint(1, 1);
+        assert!(arr.read_uint(&mut 0, 2) == 3);
+    }
+
+    #[test]
+    fn write_11_overlap() {
+        let mut arr = BitVector::new();
+        arr.push_uint(0, 7);
+        arr.push_uint(3, 2);
+        arr.push_uint(1, 1);
+
+        //dbg!(arr.read_uint(7, 2));
+        assert!(arr.read_uint(&mut 7, 2) == 3);
+    }
+
+    #[test]
+    fn write_ff_0() {
+        let mut arr = BitVector::new();
+        arr.push_uint(0xFF, 8);
+        assert!(arr.read_uint(&mut 0, 8) == 0xFF);
+    }
+
+    #[test]
+    fn write_ff_3() {
+        // Write 0xFF at bit index 3
+        let mut arr = BitVector::new();
+        arr.push_uint(0, 3);
+        arr.push_uint(0xFF, 8);
+        assert!(arr.read_uint(&mut 3, 8) == 0xFF);
+    }
+
+    #[test]
+    fn write_ff_sandwich() {
+        // Write 0xFF sandwiched between zeros
+        let mut arr = BitVector::new();
+        arr.push_uint(0, 3);
+        arr.push_u8(0xFF);
+        arr.push_uint(0, 3);
+        assert!(arr.read_uint(&mut 3, 8) == 0xFF);
+    }
+
+    #[test]
+    fn write_read_u32_max() {
+        let mut arr = BitVector::new();
+        arr.push_uint(0xFF_FF_FF_FF, 32);
+        assert!(arr.read_uint(&mut 0, 32) == 0xFF_FF_FF_FF);
+    }
+
+    #[test]
+    fn write_read_u32_max_64b() {
+        let mut arr = BitVector::new();
+        arr.push_uint(0xFF_FF_FF_FF, 64);
+        assert!(arr.read_uint(&mut 0, 64) == 0xFF_FF_FF_FF);
+    }
+
+    #[test]
+    fn write_read_u64_max() {
+        let mut arr = BitVector::new();
+        arr.push_uint(u64::MAX, 64);
+        assert!(arr.read_uint(&mut 0, 64) == u64::MAX);
+    }
+
+    #[test]
+    fn encode_default() {
+        let mut bits = BitVector::new();
+        let ctx = Context::default();
+        let start_idx = ctx.encode_into(&mut bits);
+        assert!(start_idx == 0);
+        assert!(bits.num_bits() > 0);
+        assert!(bits.num_bytes() > 0);
+
+        // Make sure that the round trip matches the input
+        let ctx2 = Context::decode_from(&bits, 0);
+        assert!(ctx2 == ctx);
+    }
+
+    #[test]
+    fn encode_default_2x() {
+        let mut bits = BitVector::new();
+
+        let ctx0 = Context::default();
+        let idx0 = ctx0.encode_into(&mut bits);
+
+        let mut ctx1 = Context::default();
+        ctx1.reg_temps = RegTemps(1);
+        let idx1 = ctx1.encode_into(&mut bits);
+
+        // Make sure that we can encode two contexts successively
+        let ctx0_dec = Context::decode_from(&bits, idx0);
+        let ctx1_dec = Context::decode_from(&bits, idx1);
+        assert!(ctx0_dec == ctx0);
+        assert!(ctx1_dec == ctx1);
+    }
+
+    #[test]
+    fn regress_reg_temps() {
+        let mut bits = BitVector::new();
+        let mut ctx = Context::default();
+        ctx.reg_temps = RegTemps(1);
+        ctx.encode_into(&mut bits);
+
+        let b0 = bits.read_u1(&mut 0);
+        assert!(b0 == 1);
+
+        // Make sure that the round trip matches the input
+        let ctx2 = Context::decode_from(&bits, 0);
+        assert!(ctx2 == ctx);
+    }
+}
+
+// Context encoding opcodes (4 bits)
+#[derive(Debug, Copy, Clone)]
+#[repr(u8)]
+enum CtxOp {
+    // Self type (4 bits)
+    SetSelfType = 0,
+
+    // Local idx (3 bits), temp type (4 bits)
+    SetLocalType,
+
+    // Map stack temp to self with known type
+    // Temp idx (3 bits), known type (4 bits)
+    SetTempType,
+
+    // Map stack temp to a local variable
+    // Temp idx (3 bits), local idx (3 bits)
+    MapTempLocal,
+
+    // Map a stack temp to self
+    // Temp idx (3 bits)
+    MapTempSelf,
+
+    // Set inline block pointer	(8 bytes)
+    SetInlineBlock,
+
+    // End of encoding
+    EndOfCode,
+}
+
+// Number of entries in the context cache
+const CTX_CACHE_SIZE: usize = 512;
+
+// Cache of the last contexts encoded
+// Empirically this saves a few percent of memory
+// We can experiment with varying the size of this cache
+pub type CtxCacheTbl = [(Context, u32); CTX_CACHE_SIZE];
+static mut CTX_CACHE: Option<Box<CtxCacheTbl>> = None;
+
+// Size of the context cache in bytes
+pub const CTX_CACHE_BYTES: usize = std::mem::size_of::<CtxCacheTbl>();
+
+impl Context {
+    pub fn encode(&self) -> u32 {
+        incr_counter!(num_contexts_encoded);
+
+        if *self == Context::default() {
+            incr_counter!(context_cache_hits);
+            return 0;
+        }
+
+        if let Some(idx) = Self::cache_get(self) {
+            incr_counter!(context_cache_hits);
+            debug_assert!(Self::decode(idx) == *self);
+            return idx;
+        }
+
+        let context_data = CodegenGlobals::get_context_data();
+
+        // Make sure we don't use offset 0 because
+        // it's is reserved for the default context
+        if context_data.num_bits() == 0 {
+            context_data.push_u1(0);
+        }
+
+        let idx = self.encode_into(context_data);
+        let idx: u32 = idx.try_into().unwrap();
+
+        Self::cache_set(self, idx);
+
+        // In debug mode, check that the round-trip decoding always matches
+        debug_assert!(Self::decode(idx) == *self);
+
+        idx
+    }
+
+    pub fn decode(start_idx: u32) -> Context {
+        if start_idx == 0 {
+            return Context::default();
+        };
+
+        let context_data = CodegenGlobals::get_context_data();
+        let ctx = Self::decode_from(context_data, start_idx as usize);
+
+        Self::cache_set(&ctx, start_idx);
+
+        ctx
+    }
+
+    // Store an entry in a cache of recently encoded/decoded contexts
+    fn cache_set(ctx: &Context, idx: u32)
+    {
+        unsafe {
+            if CTX_CACHE == None {
+                let empty_tbl = [(Context::default(), 0); CTX_CACHE_SIZE];
+                CTX_CACHE = Some(Box::new(empty_tbl));
+            }
+
+            let mut hasher = DefaultHasher::new();
+            ctx.hash(&mut hasher);
+            let ctx_hash = hasher.finish() as usize;
+
+            let cache = CTX_CACHE.as_mut().unwrap();
+            cache[ctx_hash % CTX_CACHE_SIZE] = (*ctx, idx);
+        }
+    }
+
+    // Lookup the context in a cache of recently encoded/decoded contexts
+    fn cache_get(ctx: &Context) -> Option<u32>
+    {
+        unsafe {
+            if CTX_CACHE == None {
+                return None;
+            }
+
+            let cache = CTX_CACHE.as_mut().unwrap();
+
+            let mut hasher = DefaultHasher::new();
+            ctx.hash(&mut hasher);
+            let ctx_hash = hasher.finish() as usize;
+            let cache_entry = &cache[ctx_hash % CTX_CACHE_SIZE];
+
+            if cache_entry.0 == *ctx {
+                return Some(cache_entry.1);
+            }
+
+            return None;
+        }
+    }
+
+    // Encode into a compressed context representation in a bit vector
+    fn encode_into(&self, bits: &mut BitVector) -> usize {
+        let start_idx = bits.num_bits();
+
+        // Most of the time, the stack size is small and sp offset has the same value
+        if (self.stack_size as i64) == (self.sp_offset as i64) && self.stack_size < 4 {
+            // One single bit to signify a compact stack_size/sp_offset encoding
+            bits.push_u1(1);
+            bits.push_u2(self.stack_size);
+        } else {
+            // Full stack size encoding
+            bits.push_u1(0);
+
+            // Number of values currently on the temporary stack
+            bits.push_u8(self.stack_size);
+
+            // sp_offset: i8,
+            bits.push_u8(self.sp_offset as u8);
+        }
+
+        // Bitmap of which stack temps are in a register
+        let RegTemps(reg_temps) = self.reg_temps;
+        bits.push_u8(reg_temps);
+
+        // chain_depth_and_flags: u8,
+        bits.push_u8(self.chain_depth_and_flags);
+
+        // Encode the self type if known
+        if self.self_type != Type::Unknown {
+            bits.push_op(CtxOp::SetSelfType);
+            bits.push_u4(self.self_type as u8);
+        }
+
+        // Encode the local types if known
+        for local_idx in 0..MAX_LOCAL_TYPES {
+            let t = self.get_local_type(local_idx);
+            if t != Type::Unknown {
+                bits.push_op(CtxOp::SetLocalType);
+                bits.push_u3(local_idx as u8);
+                bits.push_u4(t as u8);
+            }
+        }
+
+        // Encode stack temps
+        for stack_idx in 0..MAX_TEMP_TYPES {
+            let mapping = self.get_temp_mapping(stack_idx);
+
+            match mapping.get_kind() {
+                MapToStack => {
+                    let t = mapping.get_type();
+                    if t != Type::Unknown {
+                        // Temp idx (3 bits), known type (4 bits)
+                        bits.push_op(CtxOp::SetTempType);
+                        bits.push_u3(stack_idx as u8);
+                        bits.push_u4(t as u8);
+                    }
+                }
+
+                MapToLocal => {
+                    // Temp idx (3 bits), local idx (3 bits)
+                    let local_idx = mapping.get_local_idx();
+                    bits.push_op(CtxOp::MapTempLocal);
+                    bits.push_u3(stack_idx as u8);
+                    bits.push_u3(local_idx as u8);
+                }
+
+                MapToSelf => {
+                    // Temp idx (3 bits)
+                    bits.push_op(CtxOp::MapTempSelf);
+                    bits.push_u3(stack_idx as u8);
+                }
+            }
+        }
+
+        // Inline block pointer
+        if self.inline_block != 0 {
+            bits.push_op(CtxOp::SetInlineBlock);
+            bits.push_uint(self.inline_block, 64);
+        }
+
+        // TODO: should we add an op for end-of-encoding,
+        // or store num ops at the beginning?
+        bits.push_op(CtxOp::EndOfCode);
+
+        start_idx
+    }
+
+    // Decode a compressed context representation from a bit vector
+    fn decode_from(bits: &BitVector, start_idx: usize) -> Context {
+        let mut ctx = Context::default();
+
+        let mut idx = start_idx;
+
+        // Small vs large stack size encoding
+        if bits.read_u1(&mut idx) == 1 {
+            ctx.stack_size = bits.read_u2(&mut idx);
+            ctx.sp_offset = ctx.stack_size as i8;
+        } else {
+            ctx.stack_size = bits.read_u8(&mut idx);
+            ctx.sp_offset = bits.read_u8(&mut idx) as i8;
+        }
+
+        // Bitmap of which stack temps are in a register
+        ctx.reg_temps = RegTemps(bits.read_u8(&mut idx));
+
+        // chain_depth_and_flags: u8
+        ctx.chain_depth_and_flags = bits.read_u8(&mut idx);
+
+        loop {
+            //println!("reading op");
+            let op = bits.read_op(&mut idx);
+            //println!("got op {:?}", op);
+
+            match op {
+                CtxOp::SetSelfType => {
+                    ctx.self_type = unsafe { transmute(bits.read_u4(&mut idx)) };
+                }
+
+                CtxOp::SetLocalType => {
+                    let local_idx = bits.read_u3(&mut idx) as usize;
+                    let t = unsafe { transmute(bits.read_u4(&mut idx)) };
+                    ctx.set_local_type(local_idx, t);
+                }
+
+                // Map temp to stack (known type)
+                CtxOp::SetTempType => {
+                    let temp_idx = bits.read_u3(&mut idx) as usize;
+                    let t = unsafe { transmute(bits.read_u4(&mut idx)) };
+                    ctx.set_temp_mapping(temp_idx, TempMapping::map_to_stack(t));
+                }
+
+                // Map temp to local
+                CtxOp::MapTempLocal => {
+                    let temp_idx = bits.read_u3(&mut idx) as usize;
+                    let local_idx = bits.read_u3(&mut idx);
+                    ctx.set_temp_mapping(temp_idx, TempMapping::map_to_local(local_idx));
+                }
+
+                // Map temp to self
+                CtxOp::MapTempSelf => {
+                    let temp_idx = bits.read_u3(&mut idx) as usize;
+                    ctx.set_temp_mapping(temp_idx, TempMapping::map_to_self());
+                }
+
+                // Inline block pointer
+                CtxOp::SetInlineBlock => {
+                    ctx.inline_block = bits.read_uint(&mut idx, 64);
+                }
+
+                CtxOp::EndOfCode => break,
+            }
+        }
+
+        ctx
+    }
 }
 
 /// Tuple of (iseq, idx) used to identify basic blocks
@@ -659,7 +1259,7 @@ impl BranchTarget {
         }
     }
 
-    fn get_ctx(&self) -> Context {
+    fn get_ctx(&self) -> u32 {
         match self {
             BranchTarget::Stub(stub) => stub.ctx,
             BranchTarget::Block(blockref) => unsafe { blockref.as_ref() }.ctx,
@@ -686,14 +1286,14 @@ struct BranchStub {
     address: Option<CodePtr>,
     iseq: Cell<IseqPtr>,
     iseq_idx: IseqIdx,
-    ctx: Context,
+    ctx: u32,
 }
 
 /// Store info about an outgoing branch in a code segment
 /// Note: care must be taken to minimize the size of branch objects
 pub struct Branch {
     // Block this is attached to
-    block: BlockRef,
+    block: Cell<BlockRef>,
 
     // Positions where the generated code starts and ends
     start_addr: CodePtr,
@@ -808,6 +1408,9 @@ impl PendingBranch {
             return Some(block.start_addr);
         }
 
+        // Compress/encode the context
+        let ctx = Context::encode(ctx);
+
         // The branch struct is uninitialized right now but as a stable address.
         // We make sure the stub runs after the branch is initialized.
         let branch_struct_addr = self.uninit_branch.as_ptr() as usize;
@@ -819,7 +1422,7 @@ impl PendingBranch {
                 address: Some(stub_addr),
                 iseq: Cell::new(target.iseq),
                 iseq_idx: target.idx,
-                ctx: *ctx,
+                ctx,
             })))));
         }
 
@@ -830,7 +1433,7 @@ impl PendingBranch {
     fn into_branch(mut self, uninit_block: BlockRef) -> BranchRef {
         // Make the branch
         let branch = Branch {
-            block: uninit_block,
+            block: Cell::new(uninit_block),
             start_addr: self.start_addr.get().unwrap(),
             end_addr: Cell::new(self.end_addr.get().unwrap()),
             targets: self.targets,
@@ -912,21 +1515,18 @@ pub struct Block {
 
     // Context at the start of the block
     // This should never be mutated
-    ctx: Context,
+    ctx: u32,
 
     // Positions where the generated code starts and ends
     start_addr: CodePtr,
     end_addr: Cell<CodePtr>,
 
     // List of incoming branches (from predecessors)
-    // These are reference counted (ownership shared between predecessor and successors)
     incoming: MutableBranchList,
 
-    // NOTE: we might actually be able to store the branches here without refcounting
-    // however, using a RefCell makes it easy to get a pointer to Branch objects
-    //
     // List of outgoing branches (to successors)
-    outgoing: Box<[BranchRef]>,
+    // Infrequently mutated for control flow graph edits for saving memory.
+    outgoing: MutableBranchList,
 
     // FIXME: should these be code pointers instead?
     // Offsets for GC managed objects in the mainline code block
@@ -992,6 +1592,26 @@ impl MutableBranchList {
         let mut current_list = self.0.take().into_vec();
         current_list.push(branch);
         self.0.set(current_list.into_boxed_slice());
+    }
+
+    /// Iterate through branches in the list by moving out of the cell
+    /// and then putting it back when done. Modifications to this cell
+    /// during iteration will be discarded.
+    ///
+    /// Assumes panic=abort since panic=unwind during iteration would
+    /// leave the cell empty.
+    fn for_each(&self, mut f: impl FnMut(BranchRef)) {
+        let list = self.0.take();
+        for branch in list.iter() {
+            f(*branch);
+        }
+        self.0.set(list);
+    }
+
+    /// Length of the list.
+    fn len(&self) -> usize {
+        // SAFETY: No cell mutation inside unsafe.
+        unsafe { self.0.ref_unchecked().len() }
     }
 }
 
@@ -1083,15 +1703,6 @@ pub fn for_each_iseq<F: FnMut(IseqPtr)>(mut callback: F) {
     }
     let mut data: &mut dyn FnMut(IseqPtr) = &mut callback;
     unsafe { rb_yjit_for_each_iseq(Some(callback_wrapper), (&mut data) as *mut _ as *mut c_void) };
-}
-
-/// Iterate over all ISEQ payloads
-pub fn for_each_iseq_payload<F: FnMut(&IseqPayload)>(mut callback: F) {
-    for_each_iseq(|iseq| {
-        if let Some(iseq_payload) = get_iseq_payload(iseq) {
-            callback(iseq_payload);
-        }
-    });
 }
 
 /// Iterate over all on-stack ISEQs
@@ -1227,7 +1838,7 @@ pub extern "C" fn rb_yjit_iseq_mark(payload: *mut c_void) {
         }
 
         // Mark outgoing branch entries
-        for branch in block.outgoing.iter() {
+        block.outgoing.for_each(|branch| {
             let branch = unsafe { branch.as_ref() };
             for target in branch.targets.iter() {
                 // SAFETY: no mutation inside unsafe
@@ -1247,7 +1858,7 @@ pub extern "C" fn rb_yjit_iseq_mark(payload: *mut c_void) {
                     unsafe { rb_gc_mark_movable(target_iseq.into()) };
                 }
             }
-        }
+        });
 
         // Mark references to objects in generated code.
         // Skip for dead blocks since they shouldn't run.
@@ -1328,7 +1939,7 @@ pub extern "C" fn rb_yjit_iseq_update_references(iseq: IseqPtr) {
         }
 
         // Update outgoing branch entries
-        for branch in block.outgoing.iter() {
+        block.outgoing.for_each(|branch| {
             let branch = unsafe { branch.as_ref() };
             for target in branch.targets.iter() {
                 // SAFETY: no mutation inside unsafe
@@ -1352,7 +1963,7 @@ pub extern "C" fn rb_yjit_iseq_update_references(iseq: IseqPtr) {
                     unsafe { target.ref_unchecked().as_ref().unwrap().set_iseq(updated_iseq) };
                 }
             }
-        }
+        });
 
         // Update references to objects in generated code.
         // Skip for dead blocks since they shouldn't run and
@@ -1425,13 +2036,17 @@ pub fn take_version_list(blockid: BlockId) -> VersionList {
 fn get_num_versions(blockid: BlockId, inlined: bool) -> usize {
     let insn_idx = blockid.idx.as_usize();
     match get_iseq_payload(blockid.iseq) {
+
+        // FIXME: this counting logic is going to be expensive.
+        // We should avoid it if possible
+
         Some(payload) => {
             payload
                 .version_map
                 .get(insn_idx)
                 .map(|versions| {
                     versions.iter().filter(|&&version|
-                        unsafe { version.as_ref() }.ctx.inline() == inlined
+                        Context::decode(unsafe { version.as_ref() }.ctx).inline() == inlined
                     ).count()
                 })
                 .unwrap_or(0)
@@ -1476,10 +2091,11 @@ fn find_block_version(blockid: BlockId, ctx: &Context) -> Option<BlockRef> {
     // For each version matching the blockid
     for blockref in versions.iter() {
         let block = unsafe { blockref.as_ref() };
+        let block_ctx = Context::decode(block.ctx);
 
         // Note that we always prefer the first matching
         // version found because of inline-cache chains
-        match ctx.diff(&block.ctx) {
+        match ctx.diff(&block_ctx) {
             TypeDiff::Compatible(diff) if diff < best_diff => {
                 best_version = Some(*blockref);
                 best_diff = diff;
@@ -1561,7 +2177,7 @@ unsafe fn add_block_version(blockref: BlockRef, cb: &CodeBlock) {
     let block = unsafe { blockref.as_ref() };
 
     // Function entry blocks must have stack size 0
-    assert!(!(block.iseq_range.start == 0 && block.ctx.stack_size > 0));
+    debug_assert!(!(block.iseq_range.start == 0 && Context::decode(block.ctx).stack_size > 0));
 
     let version_list = get_or_create_version_list(block.get_blockid());
 
@@ -1620,23 +2236,25 @@ impl JITState {
 
         incr_counter_by!(num_gc_obj_refs, gc_obj_offsets.len());
 
+        let ctx = Context::encode(&self.get_starting_ctx());
+
         // Make the new block
         let block = MaybeUninit::new(Block {
             start_addr,
             iseq: Cell::new(self.get_iseq()),
             iseq_range: self.get_starting_insn_idx()..end_insn_idx,
-            ctx: self.get_starting_ctx(),
+            ctx,
             end_addr: Cell::new(end_addr),
             incoming: MutableBranchList(Cell::default()),
             gc_obj_offsets: gc_obj_offsets.into_boxed_slice(),
             entry_exit: self.get_block_entry_exit(),
             cme_dependencies: self.method_lookup_assumptions.into_iter().map(Cell::new).collect(),
             // Pending branches => actual branches
-            outgoing: self.pending_outgoing.into_iter().map(|pending_out| {
+            outgoing: MutableBranchList(Cell::new(self.pending_outgoing.into_iter().map(|pending_out| {
                 let pending_out = Rc::try_unwrap(pending_out)
                     .ok().expect("all PendingBranchRefs should be unique when ready to construct a Block");
                 pending_out.into_branch(NonNull::new(blockref as *mut Block).expect("no null from Box"))
-            }).collect()
+            }).collect()))
         });
         // Initialize it on the heap
         // SAFETY: allocated with Box above
@@ -1681,10 +2299,10 @@ impl Block {
 
     pub fn get_ctx_count(&self) -> usize {
         let mut count = 1; // block.ctx
-        for branch in self.outgoing.iter() {
+        self.outgoing.for_each(|branch| {
             // SAFETY: &self implies it's initialized
             count += unsafe { branch.as_ref() }.get_stub_count();
-        }
+        });
         count
     }
 
@@ -2353,9 +2971,10 @@ fn gen_block_series_body(
     let mut last_blockref = first_block;
     loop {
         // Get the last outgoing branch from the previous block.
-        let last_branchref = {
-            let last_block = unsafe { last_blockref.as_ref() };
-            match last_block.outgoing.last() {
+        // SAFETY: No cell mutation inside unsafe. Copying out a BranchRef.
+        let last_branchref: BranchRef = unsafe {
+            let last_block = last_blockref.as_ref();
+            match last_block.outgoing.0.ref_unchecked().last() {
                 Some(branch) => *branch,
                 None => {
                     break;
@@ -2382,6 +3001,7 @@ fn gen_block_series_body(
         };
 
         // Generate new block using context from the last branch.
+        let requested_ctx = Context::decode(requested_ctx);
         let result = gen_single_block(requested_blockid, &requested_ctx, ec, cb, ocb);
 
         // If the block failed to compile
@@ -2645,7 +3265,7 @@ fn regenerate_branch(cb: &mut CodeBlock, branch: &Branch) {
     cb.remove_comments(branch.start_addr, branch.end_addr.get());
 
     // SAFETY: having a &Branch implies branch.block is initialized.
-    let block = unsafe { branch.block.as_ref() };
+    let block = unsafe { branch.block.get().as_ref() };
 
     let branch_terminates_block = branch.end_addr.get() == block.get_end_addr();
 
@@ -2745,9 +3365,11 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
 
     // SAFETY: We have the VM lock, and the branch is initialized by the time generated
     // code calls this function.
+    //
+    // Careful, don't make a `&Block` from `branch.block` here because we might
+    // delete it later in delete_empty_defer_block().
     let branch = unsafe { branch_ref.as_ref() };
     let branch_size_on_entry = branch.code_size();
-    let housing_block = unsafe { branch.block.as_ref() };
 
     let target_idx: usize = target_idx.as_usize();
     let target_branch_shape = match target_idx {
@@ -2769,7 +3391,8 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
             return target.get_address().unwrap().raw_ptr(cb);
         }
 
-        (target.get_blockid(), target.get_ctx())
+        let target_ctx = Context::decode(target.get_ctx());
+        (target.get_blockid(), target_ctx)
     };
 
     let (cfp, original_interp_sp) = unsafe {
@@ -2820,7 +3443,7 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
         // If the new block can be generated right after the branch (at cb->write_pos)
         if cb.get_write_ptr() == branch.end_addr.get() {
             // This branch should be terminating its block
-            assert!(branch.end_addr == housing_block.end_addr);
+            assert!(branch.end_addr == unsafe { branch.block.get().as_ref() }.end_addr);
 
             // Change the branch shape to indicate the target block will be placed next
             branch.gen_fn.set_shape(target_branch_shape);
@@ -2853,6 +3476,9 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
 
             // Branch shape should reflect layout
             assert!(!(branch.gen_fn.get_shape() == target_branch_shape && new_block.start_addr != branch.end_addr.get()));
+
+            // When block housing this branch is empty, try to free it
+            delete_empty_defer_block(branch, new_block, target_ctx, target_blockid);
 
             // Add this branch to the list of incoming branches for the target
             new_block.push_incoming(branch_ref);
@@ -2903,10 +3529,58 @@ fn branch_stub_hit_body(branch_ptr: *const c_void, target_idx: u32, ec: EcPtr) -
     dst_addr.raw_ptr(cb)
 }
 
+/// Part of branch_stub_hit().
+/// If we've hit a deferred branch, and the housing block consists solely of the branch, rewire
+/// incoming branches to the new block and delete the housing block.
+fn delete_empty_defer_block(branch: &Branch, new_block: &Block, target_ctx: Context, target_blockid: BlockId)
+{
+    // This &Block should be unique, relying on the VM lock
+    let housing_block: &Block = unsafe { branch.block.get().as_ref() };
+    if target_ctx.is_deferred() &&
+        target_blockid == housing_block.get_blockid() &&
+        housing_block.outgoing.len() == 1 &&
+        {
+            // The block is empty when iseq_range is one instruction long.
+            let range = &housing_block.iseq_range;
+            let iseq = housing_block.iseq.get();
+            let start_opcode = iseq_opcode_at_idx(iseq, range.start.into()) as usize;
+            let empty_end = range.start + insn_len(start_opcode) as IseqIdx;
+            range.end == empty_end
+        }
+    {
+        // Divert incoming branches of housing_block to the new block
+        housing_block.incoming.for_each(|incoming| {
+            let incoming = unsafe { incoming.as_ref() };
+            for target in 0..incoming.targets.len() {
+                // SAFETY: No cell mutation; copying out a BlockRef.
+                if Some(BlockRef::from(housing_block)) == unsafe {
+                            incoming.targets[target]
+                                .ref_unchecked()
+                                .as_ref()
+                                .and_then(|target| target.get_block())
+                        } {
+                    incoming.targets[target].set(Some(Box::new(BranchTarget::Block(new_block.into()))));
+                }
+            }
+            new_block.push_incoming(incoming.into());
+        });
+
+        // Transplant the branch we've just hit to the new block
+        mem::drop(housing_block.outgoing.0.take());
+        new_block.outgoing.push(branch.into());
+        let housing_block: BlockRef = branch.block.replace(new_block.into());
+        // Free the old housing block; there should now be no live &Block.
+        remove_block_version(&housing_block);
+        unsafe { free_block(housing_block, false) };
+
+        incr_counter!(deleted_defer_block_count);
+    }
+}
+
 /// Generate a "stub", a piece of code that calls the compiler back when run.
 /// A piece of code that redeems for more code; a thunk for code.
 fn gen_branch_stub(
-    ctx: &Context,
+    ctx: u32,
     ocb: &mut OutlinedCb,
     branch_struct_address: usize,
     target_idx: u32,
@@ -2914,8 +3588,8 @@ fn gen_branch_stub(
     let ocb = ocb.unwrap();
 
     let mut asm = Assembler::new();
-    asm.ctx = *ctx;
-    asm.set_reg_temps(ctx.reg_temps);
+    asm.ctx = Context::decode(ctx);
+    asm.set_reg_temps(asm.ctx.reg_temps);
     asm_comment!(asm, "branch stub hit");
 
     if asm.ctx.is_return_landing() {
@@ -3112,7 +3786,7 @@ pub fn gen_direct_jump(jit: &mut JITState, ctx: &Context, target0: BlockId, asm:
         // compile the target block right after this one (fallthrough).
         BranchTarget::Stub(Box::new(BranchStub {
             address: None,
-            ctx: *ctx,
+            ctx: Context::encode(ctx),
             iseq: Cell::new(target0.iseq),
             iseq_idx: target0.idx,
         }))
@@ -3142,7 +3816,7 @@ pub fn defer_compilation(
         idx: jit.get_insn_idx(),
     };
 
-    // Likely a stub due to the increased chain depth
+    // Likely a stub since the context is marked as deferred().
     let target0_address = branch.set_target(0, blockid, &next_ctx, ocb);
 
     // Pad the block if it has the potential to be invalidated. This must be
@@ -3197,7 +3871,7 @@ unsafe fn remove_from_graph(blockref: BlockRef) {
     }
 
     // For each outgoing branch
-    for out_branchref in block.outgoing.iter() {
+    block.outgoing.for_each(|out_branchref| {
         let out_branch = unsafe { out_branchref.as_ref() };
         // For each successor block
         for out_target in out_branch.targets.iter() {
@@ -3213,11 +3887,11 @@ unsafe fn remove_from_graph(blockref: BlockRef) {
                 // Temporarily move out of succ_block.incoming.
                 let succ_incoming = succ_block.incoming.0.take();
                 let mut succ_incoming = succ_incoming.into_vec();
-                succ_incoming.retain(|branch| branch != out_branchref);
+                succ_incoming.retain(|branch| *branch != out_branchref);
                 succ_block.incoming.0.set(succ_incoming.into_boxed_slice()); // allocs. Rely on oom=abort
             }
         }
-    }
+    });
 }
 
 /// Tear down a block and deallocate it.
@@ -3251,7 +3925,7 @@ pub unsafe fn free_block(blockref: BlockRef, graph_intact: bool) {
 /// Caller must ensure that we have unique ownership for the referent block
 unsafe fn dealloc_block(blockref: BlockRef) {
     unsafe {
-        for outgoing in blockref.as_ref().outgoing.iter() {
+        for outgoing in blockref.as_ref().outgoing.0.take().iter() {
             // this Box::from_raw matches the Box::into_raw from PendingBranch::into_branch
             mem::drop(Box::from_raw(outgoing.as_ptr()));
         }
@@ -3364,7 +4038,7 @@ pub fn invalidate_block_version(blockref: &BlockRef) {
         }
 
         // Create a stub for this branch target
-        let stub_addr = gen_branch_stub(&block.ctx, ocb, branchref.as_ptr() as usize, target_idx as u32);
+        let stub_addr = gen_branch_stub(block.ctx, ocb, branchref.as_ptr() as usize, target_idx as u32);
 
         // In case we were unable to generate a stub (e.g. OOM). Use the block's
         // exit instead of a stub for the block. It's important that we
@@ -3547,11 +4221,6 @@ mod tests {
     }
 
     #[test]
-    fn context_size() {
-        assert_eq!(mem::size_of::<Context>(), 23);
-    }
-
-    #[test]
     fn types() {
         // Valid src => dst
         assert_eq!(Type::Unknown.diff(Type::Unknown), TypeDiff::Compatible(0));
@@ -3688,14 +4357,14 @@ mod tests {
         // we're always working with &Branch (a shared reference to a Branch).
         let branch: &Branch = &Branch {
             gen_fn: BranchGenFn::JZToTarget0,
-            block,
+            block: Cell::new(block),
             start_addr: dumm_addr,
             end_addr: Cell::new(dumm_addr),
             targets: [Cell::new(None), Cell::new(Some(Box::new(BranchTarget::Stub(Box::new(BranchStub {
                 iseq: Cell::new(ptr::null()),
                 iseq_idx: 0,
                 address: None,
-                ctx: Context::default(),
+                ctx: 0,
             })))))]
         };
         // For easier soundness reasoning, make sure the reference returned does not out live the
@@ -3728,7 +4397,7 @@ mod tests {
             iseq: Cell::new(ptr::null()),
             iseq_idx: 0,
             address: None,
-            ctx: Context::default(),
+            ctx: 0,
         })))));
         // Invalid ISeq; we never dereference it.
         let secret_iseq = NonNull::<rb_iseq_t>::dangling().as_ptr();

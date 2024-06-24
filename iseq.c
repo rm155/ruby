@@ -347,7 +347,7 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
                 if (cc_is_active(cds[i].cc, reference_updating)) {
                     rb_gc_mark_and_move_ptr(&cds[i].cc);
                 }
-                else {
+                else if (cds[i].cc != rb_vm_empty_cc()) {
                     cds[i].cc = rb_vm_empty_cc();
                 }
             }
@@ -2453,6 +2453,7 @@ rb_insn_operand_intern(const rb_iseq_t *iseq,
                 CALL_FLAG(KWARG);
                 CALL_FLAG(KW_SPLAT);
                 CALL_FLAG(KW_SPLAT_MUT);
+                CALL_FLAG(FORWARDING);
                 CALL_FLAG(OPT_SEND); /* maybe not reachable */
                 rb_ary_push(ary, rb_ary_join(flags, rb_str_new2("|")));
             }
@@ -3499,6 +3500,17 @@ rb_iseq_parameters(const rb_iseq_t *iseq, int is_proc)
 
     CONST_ID(req, "req");
     CONST_ID(opt, "opt");
+
+    if (body->param.flags.forwardable) {
+        // [[:rest, :*], [:keyrest, :**], [:block, :&]]
+        CONST_ID(rest, "rest");
+        CONST_ID(keyrest, "keyrest");
+        CONST_ID(block, "block");
+        rb_ary_push(args, rb_ary_new_from_args(2, ID2SYM(rest), ID2SYM(idMULT)));
+        rb_ary_push(args, rb_ary_new_from_args(2, ID2SYM(keyrest), ID2SYM(idPow)));
+        rb_ary_push(args, rb_ary_new_from_args(2, ID2SYM(block), ID2SYM(idAnd)));
+    }
+
     if (is_proc) {
         for (i = 0; i < body->param.lead_num; i++) {
             PARAM_TYPE(opt);

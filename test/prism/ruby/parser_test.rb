@@ -42,44 +42,37 @@ Parser::AST::Node.prepend(
 
 module Prism
   class ParserTest < TestCase
-    # These files are either failing to parse or failing to translate, so we'll
-    # skip them for now.
-    skip_all = [
-      "dash_heredocs.txt",
-      "heredocs_with_ignored_newlines.txt",
-      "regex.txt",
-      "regex_char_width.txt",
+    # These files contain code that is being parsed incorrectly by the parser
+    # gem, and therefore we don't want to compare against our translation.
+    skip_incorrect = [
+      # https://github.com/whitequark/parser/issues/1017
       "spanning_heredoc.txt",
       "spanning_heredoc_newlines.txt",
-      "unescaping.txt",
-      "seattlerb/block_decomp_anon_splat_arg.txt",
-      "seattlerb/block_decomp_arg_splat_arg.txt",
-      "seattlerb/block_decomp_arg_splat.txt",
-      "seattlerb/block_decomp_splat.txt",
-      "seattlerb/block_paren_splat.txt",
-      "seattlerb/bug190.txt",
+
+      # https://github.com/whitequark/parser/issues/1021
       "seattlerb/heredoc_nested.txt",
-      "seattlerb/heredoc_with_carriage_return_escapes_windows.txt",
-      "seattlerb/heredoc_with_carriage_return_escapes.txt",
+
+      # https://github.com/whitequark/parser/issues/1016
+      "whitequark/unary_num_pow_precedence.txt"
+    ]
+
+    # These files are either failing to parse or failing to translate, so we'll
+    # skip them for now.
+    skip_all = skip_incorrect | [
+      "regex.txt",
+      "unescaping.txt",
+      "seattlerb/bug190.txt",
       "seattlerb/heredoc_with_extra_carriage_returns_windows.txt",
       "seattlerb/heredoc_with_only_carriage_returns_windows.txt",
       "seattlerb/heredoc_with_only_carriage_returns.txt",
-      "seattlerb/masgn_double_paren.txt",
       "seattlerb/parse_line_heredoc_hardnewline.txt",
       "seattlerb/pctW_lineno.txt",
       "seattlerb/regexp_esc_C_slash.txt",
-      "seattlerb/TestRubyParserShared.txt",
-      "unparser/corpus/literal/block.txt",
       "unparser/corpus/literal/literal.txt",
-      "unparser/corpus/literal/pattern.txt",
       "unparser/corpus/semantic/dstr.txt",
       "whitequark/dedenting_interpolating_heredoc_fake_line_continuation.txt",
-      "whitequark/masgn_nested.txt",
-      "whitequark/parser_bug_640.txt",
       "whitequark/parser_slash_slash_n_escaping_in_literals.txt",
-      "whitequark/ruby_bug_11989.txt",
-      "whitequark/slash_newline_in_heredocs.txt",
-      "whitequark/unary_num_pow_precedence.txt"
+      "whitequark/ruby_bug_11989.txt"
     ]
 
     # Not sure why these files are failing on JRuby, but skipping them for now.
@@ -91,9 +84,11 @@ module Prism
     # output expected by the parser gem, so we'll skip them for now.
     skip_tokens = [
       "comments.txt",
+      "dash_heredocs.txt",
       "dos_endings.txt",
       "embdoc_no_newline_at_end.txt",
       "heredoc_with_comment.txt",
+      "heredocs_with_ignored_newlines.txt",
       "indented_file_end.txt",
       "methods.txt",
       "strings.txt",
@@ -118,6 +113,8 @@ module Prism
       "seattlerb/heredoc_squiggly_visually_blank_lines.txt",
       "seattlerb/heredoc_squiggly.txt",
       "seattlerb/heredoc_unicode.txt",
+      "seattlerb/heredoc_with_carriage_return_escapes_windows.txt",
+      "seattlerb/heredoc_with_carriage_return_escapes.txt",
       "seattlerb/heredoc_with_interpolation_and_carriage_return_escapes_windows.txt",
       "seattlerb/heredoc_with_interpolation_and_carriage_return_escapes.txt",
       "seattlerb/interpolated_symbol_array_line_breaks.txt",
@@ -133,7 +130,6 @@ module Prism
       "seattlerb/parse_line_heredoc.txt",
       "seattlerb/parse_line_multiline_str_literal_n.txt",
       "seattlerb/parse_line_str_with_newline_escape.txt",
-      "seattlerb/pct_Q_backslash_nl.txt",
       "seattlerb/pct_w_heredoc_interp_nested.txt",
       "seattlerb/qsymbols_empty_space.txt",
       "seattlerb/qw_escape_term.txt",
@@ -147,8 +143,8 @@ module Prism
       "seattlerb/str_evstr_escape.txt",
       "seattlerb/str_newline_hash_line_number.txt",
       "seattlerb/str_single_newline.txt",
-      "seattlerb/symbol_empty.txt",
       "seattlerb/symbols_empty_space.txt",
+      "seattlerb/TestRubyParserShared.txt",
       "unparser/corpus/literal/assignment.txt",
       "unparser/corpus/literal/dstr.txt",
       "unparser/corpus/semantic/opasgn.txt",
@@ -164,10 +160,12 @@ module Prism
       "whitequark/lbrace_arg_after_command_args.txt",
       "whitequark/multiple_pattern_matches.txt",
       "whitequark/newline_in_hash_argument.txt",
+      "whitequark/parser_bug_640.txt",
       "whitequark/parser_drops_truncated_parts_of_squiggly_heredoc.txt",
       "whitequark/ruby_bug_11990.txt",
       "whitequark/ruby_bug_14690.txt",
       "whitequark/ruby_bug_9669.txt",
+      "whitequark/slash_newline_in_heredocs.txt",
       "whitequark/space_args_arg_block.txt",
       "whitequark/space_args_block.txt"
     ]
@@ -209,7 +207,15 @@ module Prism
         end
 
         assert_equal expected_ast, actual_ast, -> { assert_equal_asts_message(expected_ast, actual_ast) }
-        assert_equal_tokens(expected_tokens, actual_tokens) if compare_tokens
+
+        begin
+          assert_equal_tokens(expected_tokens, actual_tokens)
+        rescue Test::Unit::AssertionFailedError
+          raise if compare_tokens
+        else
+          puts "#{fixture.path} is now passing" if !compare_tokens
+        end
+
         assert_equal_comments(expected_comments, actual_comments) if compare_comments
       elsif compare_asts
         assert_equal expected_ast, actual_ast, -> { assert_equal_asts_message(expected_ast, actual_ast) }
@@ -247,7 +253,7 @@ module Prism
 
         while expected_index < expected_tokens.length
           expected_token = expected_tokens[expected_index]
-          actual_token = actual_tokens[actual_index]
+          actual_token = actual_tokens.fetch(actual_index, [])
 
           expected_index += 1
           actual_index += 1

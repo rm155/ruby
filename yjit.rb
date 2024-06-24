@@ -155,8 +155,8 @@ module RubyVM::YJIT
 
   # Return a hash for statistics generated for the `--yjit-stats` command line option.
   # Return `nil` when option is not passed or unavailable.
-  def self.runtime_stats(context: false)
-    stats = Primitive.rb_yjit_get_stats(context)
+  def self.runtime_stats()
+    stats = Primitive.rb_yjit_get_stats()
     return stats if stats.nil?
 
     stats[:object_shape_count] = Primitive.object_shape_count
@@ -313,7 +313,7 @@ module RubyVM::YJIT
 
     # Format and print out counters
     def _print_stats(out: $stderr) # :nodoc:
-      stats = runtime_stats(context: true)
+      stats = runtime_stats()
       return unless Primitive.rb_yjit_stats_enabled_p
 
       out.puts("***YJIT: Printing YJIT statistics on exit***")
@@ -366,6 +366,7 @@ module RubyVM::YJIT
       out.puts "compiled_iseq_count:   " + format_number(13, stats[:compiled_iseq_count])
       out.puts "compiled_blockid_count:" + format_number(13, stats[:compiled_blockid_count])
       out.puts "compiled_block_count:  " + format_number(13, stats[:compiled_block_count])
+      out.puts "deleted_defer_block_count:" + format_number_pct(10, stats[:deleted_defer_block_count], stats[:compiled_block_count])
       if stats[:compiled_blockid_count] != 0
         out.puts "versions_per_block:    " + format_number(13, "%4.3f" % (stats[:compiled_block_count].fdiv(stats[:compiled_blockid_count])))
       end
@@ -388,8 +389,14 @@ module RubyVM::YJIT
 
       out.puts "freed_code_size:       " + format_number(13, stats[:freed_code_size])
       out.puts "yjit_alloc_size:       " + format_number(13, stats[:yjit_alloc_size]) if stats.key?(:yjit_alloc_size)
-      out.puts "live_context_size:     " + format_number(13, stats[:live_context_size])
-      out.puts "live_context_count:    " + format_number(13, stats[:live_context_count])
+
+      bytes_per_context = stats[:context_data_bytes].fdiv(stats[:num_contexts_encoded])
+      out.puts "context_data_bytes:    " + format_number(13, stats[:context_data_bytes])
+      out.puts "context_cache_bytes:   " + format_number(13, stats[:context_cache_bytes])
+      out.puts "num_contexts_encoded:  " + format_number(13, stats[:num_contexts_encoded])
+      out.puts "bytes_per_context:     " + ("%13.2f" % bytes_per_context)
+      out.puts "context_cache_hit_rate:" + format_number_pct(13, stats[:context_cache_hits], stats[:num_contexts_encoded])
+
       out.puts "live_page_count:       " + format_number(13, stats[:live_page_count])
       out.puts "freed_page_count:      " + format_number(13, stats[:freed_page_count])
       out.puts "code_gc_count:         " + format_number(13, stats[:code_gc_count])
@@ -453,7 +460,7 @@ module RubyVM::YJIT
           out.puts("  #{padded_count}: #{name}")
         end
       else
-        out.puts "total_exits:           " + format_number(10, total_exits)
+        out.puts "total_exits:           " + format_number(13, total_exits)
       end
     end
 

@@ -30,7 +30,6 @@ pub use crate::virtualmem::CodePtr;
 /// Status returned by code generation functions
 #[derive(PartialEq, Debug)]
 enum CodegenStatus {
-    SkipNextInsn,
     KeepCompiling,
     EndBlock,
 }
@@ -195,6 +194,13 @@ impl JITState {
     // Get the index of the next instruction
     fn next_insn_idx(&self) -> u16 {
         self.insn_idx + insn_len(self.get_opcode()) as u16
+    }
+
+    /// Get the index of the next instruction of the next instruction
+    fn next_next_insn_idx(&self) -> u16 {
+        let next_pc = unsafe { rb_iseq_pc_at_idx(self.iseq, self.next_insn_idx().into()) };
+        let next_opcode: usize = unsafe { rb_iseq_opcode_at_pc(self.iseq, next_pc) }.try_into().unwrap();
+        self.next_insn_idx() + insn_len(next_opcode) as u16
     }
 
     // Check if we are compiling the instruction at the stub PC
@@ -1098,7 +1104,16 @@ fn jump_to_next_insn(
     jit: &mut JITState,
     asm: &mut Assembler,
     ocb: &mut OutlinedCb,
-) -> Option<()> {
+) -> Option<CodegenStatus> {
+    end_block_with_jump(jit, asm, ocb, jit.next_insn_idx())
+}
+
+fn end_block_with_jump(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    ocb: &mut OutlinedCb,
+    continuation_insn_idx: u16,
+) -> Option<CodegenStatus> {
     // Reset the depth since in current usages we only ever jump to
     // chain_depth > 0 from the same instruction.
     let mut reset_depth = asm.ctx;
@@ -1106,20 +1121,20 @@ fn jump_to_next_insn(
 
     let jump_block = BlockId {
         iseq: jit.iseq,
-        idx: jit.next_insn_idx(),
+        idx: continuation_insn_idx,
     };
 
     // We are at the end of the current instruction. Record the boundary.
     if jit.record_boundary_patch_point {
         jit.record_boundary_patch_point = false;
-        let exit_pc = unsafe { jit.pc.offset(insn_len(jit.opcode).try_into().unwrap()) };
+        let exit_pc = unsafe { rb_iseq_pc_at_idx(jit.iseq, continuation_insn_idx.into())};
         let exit_pos = gen_outlined_exit(exit_pc, &reset_depth, ocb);
         record_global_inval_patch(asm, exit_pos?);
     }
 
     // Generate the jump instruction
     gen_direct_jump(jit, &reset_depth, jump_block, asm);
-    Some(())
+    Some(EndBlock)
 }
 
 // Compile a sequence of bytecode instructions for a given basic block version.
@@ -1282,13 +1297,6 @@ pub fn gen_single_block(
 
         // Move to the next instruction to compile
         insn_idx += insn_len(opcode) as u16;
-
-        // Move past next instruction when instructed
-        if status == Some(SkipNextInsn) {
-            let next_pc = unsafe { rb_iseq_pc_at_idx(iseq, insn_idx.into()) };
-            let next_opcode: usize = unsafe { rb_iseq_opcode_at_pc(iseq, next_pc) }.try_into().unwrap();
-            insn_idx += insn_len(next_opcode) as u16;
-        }
 
         // If the instruction terminates this block
         if status == Some(EndBlock) {
@@ -1519,7 +1527,7 @@ fn fuse_putobject_opt_ltlt(
 
         asm.stack_pop(1);
         fixnum_left_shift_body(asm, lhs, shift_amt as u64);
-        return Some(SkipNextInsn);
+        return end_block_with_jump(jit, asm, ocb, jit.next_next_insn_idx());
     }
     return None;
 }
@@ -2962,7 +2970,7 @@ fn gen_set_ivar(
     // The current shape doesn't contain this iv, we need to transition to another shape.
     let new_shape = if !shape_too_complex && receiver_t_object && ivar_index.is_none() {
         let current_shape = comptime_receiver.shape_of();
-        let next_shape = unsafe { rb_shape_get_next(current_shape, comptime_receiver, ivar_name) };
+        let next_shape = unsafe { rb_shape_get_next_no_warnings(current_shape, comptime_receiver, ivar_name) };
         let next_shape_id = unsafe { rb_shape_id(next_shape) };
 
         // If the VM ran out of shapes, or this class generated too many leaf,
@@ -5781,7 +5789,7 @@ fn jit_rb_str_getbyte(
         RUBY_OFFSET_RSTRING_LEN as i32,
     );
 
-    // Exit if the indes is out of bounds
+    // Exit if the index is out of bounds
     asm.cmp(idx, str_len_opnd);
     asm.jge(Target::side_exit(Counter::getbyte_idx_out_of_bounds));
 
@@ -7110,6 +7118,8 @@ fn gen_send_iseq(
     let kw_splat = flags & VM_CALL_KW_SPLAT != 0;
     let splat_call = flags & VM_CALL_ARGS_SPLAT != 0;
 
+    let forwarding_call = unsafe { rb_get_iseq_flags_forwardable(iseq) };
+
     // For computing offsets to callee locals
     let num_params = unsafe { get_iseq_body_param_size(iseq) as i32 };
     let num_locals = unsafe { get_iseq_body_local_table_size(iseq) as i32 };
@@ -7152,9 +7162,15 @@ fn gen_send_iseq(
     exit_if_supplying_kw_and_has_no_kw(asm, supplying_kws, doing_kw_call)?;
     exit_if_supplying_kws_and_accept_no_kwargs(asm, supplying_kws, iseq)?;
     exit_if_doing_kw_and_splat(asm, doing_kw_call, flags)?;
-    exit_if_wrong_number_arguments(asm, arg_setup_block, opts_filled, flags, opt_num, iseq_has_rest)?;
+    if !forwarding_call {
+        exit_if_wrong_number_arguments(asm, arg_setup_block, opts_filled, flags, opt_num, iseq_has_rest)?;
+    }
     exit_if_doing_kw_and_opts_missing(asm, doing_kw_call, opts_missing)?;
     exit_if_has_rest_and_optional_and_block(asm, iseq_has_rest, opt_num, iseq, block_arg)?;
+    if forwarding_call && flags & VM_CALL_OPT_SEND != 0 {
+        gen_counter_incr(asm, Counter::send_iseq_send_forwarding);
+        return None;
+    }
     let block_arg_type = exit_if_unsupported_block_arg_type(jit, asm, block_arg)?;
 
     // Bail if we can't drop extra arguments for a yield by just popping them
@@ -7663,25 +7679,26 @@ fn gen_send_iseq(
         }
     }
 
-    // Nil-initialize missing optional parameters
-    nil_fill(
-        "nil-initialize missing optionals",
-        {
-            let begin = -argc + required_num + opts_filled;
-            let end   = -argc + required_num + opt_num;
+    if !forwarding_call {
+        // Nil-initialize missing optional parameters
+        nil_fill(
+            "nil-initialize missing optionals",
+            {
+                let begin = -argc + required_num + opts_filled;
+                let end   = -argc + required_num + opt_num;
 
-            begin..end
-        },
-        asm
-    );
-    // Nil-initialize the block parameter. It's the last parameter local
-    if iseq_has_block_param {
-        let block_param = asm.ctx.sp_opnd(-argc + num_params - 1);
-        asm.store(block_param, Qnil.into());
-    }
-    // Nil-initialize non-parameter locals
-    nil_fill(
-        "nil-initialize locals",
+                begin..end
+            },
+            asm
+        );
+        // Nil-initialize the block parameter. It's the last parameter local
+        if iseq_has_block_param {
+            let block_param = asm.ctx.sp_opnd(-argc + num_params - 1);
+            asm.store(block_param, Qnil.into());
+        }
+        // Nil-initialize non-parameter locals
+        nil_fill(
+            "nil-initialize locals",
         {
             let begin = -argc + num_params;
             let end   = -argc + num_locals;
@@ -7689,7 +7706,13 @@ fn gen_send_iseq(
             begin..end
         },
         asm
-    );
+        );
+    }
+
+    if forwarding_call {
+        assert_eq!(1, num_params);
+        asm.mov(asm.stack_opnd(-1), VALUE(ci as usize).into());
+    }
 
     // Points to the receiver operand on the stack unless a captured environment is used
     let recv = match captured_opnd {
@@ -7708,7 +7731,13 @@ fn gen_send_iseq(
     jit_save_pc(jit, asm);
 
     // Adjust the callee's stack pointer
-    let callee_sp = asm.lea(asm.ctx.sp_opnd(-argc + num_locals + VM_ENV_DATA_SIZE as i32));
+    let callee_sp = if forwarding_call {
+        let offs = num_locals + VM_ENV_DATA_SIZE as i32;
+        asm.lea(asm.ctx.sp_opnd(offs))
+    } else {
+        let offs = -argc + num_locals + VM_ENV_DATA_SIZE as i32;
+        asm.lea(asm.ctx.sp_opnd(offs))
+    };
 
     let specval = if let Some(prev_ep) = prev_ep {
         // We've already side-exited if the callee expects a block, so we
@@ -8511,6 +8540,14 @@ fn gen_send_general(
         return Some(EndBlock);
     }
 
+    let ci_flags = unsafe { vm_ci_flag(ci) };
+
+    // Dynamic stack layout. No good way to support without inlining.
+    if ci_flags & VM_CALL_FORWARDING != 0 {
+        gen_counter_incr(asm, Counter::send_iseq_forwarding);
+        return None;
+    }
+
     let recv_idx = argc + if flags & VM_CALL_ARGS_BLOCKARG != 0 { 1 } else { 0 };
     let comptime_recv = jit.peek_at_stack(&asm.ctx, recv_idx as isize);
     let comptime_recv_klass = comptime_recv.class_of();
@@ -9033,6 +9070,14 @@ fn gen_send(
     })
 }
 
+fn gen_sendforward(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    ocb: &mut OutlinedCb,
+) -> Option<CodegenStatus> {
+    return gen_send(jit, asm, ocb);
+}
+
 fn gen_invokeblock(
     jit: &mut JITState,
     asm: &mut Assembler,
@@ -9216,6 +9261,14 @@ fn gen_invokesuper(
     })
 }
 
+fn gen_invokesuperforward(
+    jit: &mut JITState,
+    asm: &mut Assembler,
+    ocb: &mut OutlinedCb,
+) -> Option<CodegenStatus> {
+    return gen_invokesuper(jit, asm, ocb);
+}
+
 fn gen_invokesuper_specialized(
     jit: &mut JITState,
     asm: &mut Assembler,
@@ -9276,6 +9329,10 @@ fn gen_invokesuper_specialized(
     }
     if ci_flags & VM_CALL_KW_SPLAT != 0 {
         gen_counter_incr(asm, Counter::invokesuper_kw_splat);
+        return None;
+    }
+    if ci_flags & VM_CALL_FORWARDING != 0 {
+        gen_counter_incr(asm, Counter::invokesuper_forwarding);
         return None;
     }
 
@@ -10191,8 +10248,10 @@ fn get_gen_fn(opcode: VALUE) -> Option<InsnGenFn> {
         YARVINSN_getblockparam => Some(gen_getblockparam),
         YARVINSN_opt_send_without_block => Some(gen_opt_send_without_block),
         YARVINSN_send => Some(gen_send),
+        YARVINSN_sendforward => Some(gen_sendforward),
         YARVINSN_invokeblock => Some(gen_invokeblock),
         YARVINSN_invokesuper => Some(gen_invokesuper),
+        YARVINSN_invokesuperforward => Some(gen_invokesuperforward),
         YARVINSN_leave => Some(gen_leave),
 
         YARVINSN_getglobal => Some(gen_getglobal),
@@ -10325,6 +10384,9 @@ fn yjit_reg_method(klass: VALUE, mid_str: &str, gen_fn: MethodGenFn) {
 
 /// Global state needed for code generation
 pub struct CodegenGlobals {
+    /// Flat vector of bits to store compressed context data
+    context_data: BitVector,
+
     /// Inline code block (fast path)
     inline_cb: CodeBlock,
 
@@ -10440,6 +10502,7 @@ impl CodegenGlobals {
         ocb.unwrap().mark_all_executable();
 
         let codegen_globals = CodegenGlobals {
+            context_data: BitVector::new(),
             inline_cb: cb,
             outlined_cb: ocb,
             leave_exit_code,
@@ -10466,6 +10529,11 @@ impl CodegenGlobals {
 
     pub fn has_instance() -> bool {
         unsafe { CODEGEN_GLOBALS.as_mut().is_some() }
+    }
+
+    /// Get a mutable reference to the context data
+    pub fn get_context_data() -> &'static mut BitVector {
+        &mut CodegenGlobals::get_instance().context_data
     }
 
     /// Get a mutable reference to the inline code block

@@ -56,14 +56,26 @@ class TestYJIT < Test::Unit::TestCase
   def test_yjit_enable
     args = []
     args << "--disable=yjit" if RubyVM::YJIT.enabled?
-    assert_separately(args, <<~RUBY)
-      assert_false RubyVM::YJIT.enabled?
-      assert_false RUBY_DESCRIPTION.include?("+YJIT")
+    assert_separately(args, <<~'RUBY')
+      refute_predicate RubyVM::YJIT, :enabled?
+      refute_includes RUBY_DESCRIPTION, "+YJIT"
 
       RubyVM::YJIT.enable
 
-      assert_true RubyVM::YJIT.enabled?
-      assert_true RUBY_DESCRIPTION.include?("+YJIT")
+      assert_predicate RubyVM::YJIT, :enabled?
+      assert_includes RUBY_DESCRIPTION, "+YJIT"
+    RUBY
+  end
+
+  def test_yjit_disable
+    assert_separately(["--yjit", "--yjit-disable"], <<~'RUBY')
+      refute_predicate RubyVM::YJIT, :enabled?
+      refute_includes RUBY_DESCRIPTION, "+YJIT"
+
+      RubyVM::YJIT.enable
+
+      assert_predicate RubyVM::YJIT, :enabled?
+      assert_includes RUBY_DESCRIPTION, "+YJIT"
     RUBY
   end
 
@@ -1574,21 +1586,19 @@ class TestYJIT < Test::Unit::TestCase
   end
 
   def test_kw_splat_nil
-    assert_compiles(<<~'RUBY', result: %i[ok ok ok], no_send_fallbacks: true)
+    assert_compiles(<<~'RUBY', result: %i[ok ok], no_send_fallbacks: true)
       def id(x) = x
       def kw_fw(arg, **) = id(arg, **)
-      def fw(...) = id(...)
-      def use = [fw(:ok), kw_fw(:ok), :ok.itself(**nil)]
+      def use = [kw_fw(:ok), :ok.itself(**nil)]
 
       use
     RUBY
   end
 
   def test_empty_splat
-    assert_compiles(<<~'RUBY', result: %i[ok ok], no_send_fallbacks: true)
+    assert_compiles(<<~'RUBY', result: :ok, no_send_fallbacks: true)
       def foo = :ok
-      def fw(...) = foo(...)
-      def use(empty) = [foo(*empty), fw]
+      def use(empty) = foo(*empty)
 
       use([])
     RUBY

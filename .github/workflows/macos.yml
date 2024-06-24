@@ -52,7 +52,7 @@ jobs:
       )}}
 
     steps:
-      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29 # v4.1.6
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           sparse-checkout-cone-mode: false
           sparse-checkout: /.github
@@ -102,11 +102,14 @@ jobs:
         continue-on-error: true
 
       - name: Set extra test options
-        run: echo "TESTS=$TESTS ${{ matrix.test_opts }}" >> $GITHUB_ENV
+        run: |
+          echo "TESTS=$TESTS ${{ matrix.test_opts }}" >> $GITHUB_ENV
+          echo "RUBY_TEST_TIMEOUT_SCALE=3" >> $GITHUB_ENV # With --repeat-count=2, flaky test by timeout occurs frequently for some reason
         if: matrix.test_opts
 
       - name: make ${{ matrix.test_task }}
         run: |
+          ulimit -c unlimited
           make -s ${{ matrix.test_task }} ${TESTS:+TESTS="$TESTS"}
         timeout-minutes: 60
         env:
@@ -116,7 +119,6 @@ jobs:
 
       - name: make skipped tests
         run: |
-          ulimit -c unlimited
           make -s test-all TESTS="${TESTS//-n!\//-n/}"
         env:
           GNUMAKEFLAGS: ''
@@ -146,20 +148,6 @@ jobs:
             const matrix = JSON.parse(process.env.matrix);
             const job_name = `${context.job}${matrix ? ` (${Object.values(matrix).join(", ")})` : ""}`;
             return workflow_run.jobs.find((job) => job.name === job_name).id;
-
-      - name: upload /cores
-        run: |
-          ls -l /cores
-          CORES_TAR_GZ="cores-${{ github.run_id }}-${{ steps.job_id.outputs.result }}.tar.gz"
-          echo "test: $CORES_TAR_GZ"
-          if [ -n "$(ls /cores)" ]; then
-            tar czf /cores "$CORES_TAR_GZ"
-            aws s3 cp "$CORES_TAR_GZ" "s3://ruby-core-files/$CORES_TAR_GZ"
-          fi
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.RUBY_CORE_FILES_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.RUBY_CORE_FILES_AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ap-northeast-1
 
   result:
     if: ${{ always() }}

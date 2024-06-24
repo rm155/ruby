@@ -117,6 +117,7 @@ void rb_warning_category_update(unsigned int mask, unsigned int bits);
 #define DEFINE_DEBUG_FEATURE(bit) feature_debug_##bit
 enum feature_flag_bits {
     EACH_FEATURES(DEFINE_FEATURE, COMMA),
+    DEFINE_FEATURE(frozen_string_literal_set),
     feature_debug_flag_first,
 #if defined(RJIT_FORCE_ENABLE) || !USE_YJIT
     DEFINE_FEATURE(jit) = feature_rjit,
@@ -189,6 +190,7 @@ enum {
     COMPILATION_FEATURES = (
         0
         | FEATURE_BIT(frozen_string_literal)
+        | FEATURE_BIT(frozen_string_literal_set)
         | FEATURE_BIT(debug_frozen_string_literal)
         ),
     DEFAULT_FEATURES = (
@@ -197,6 +199,7 @@ enum {
         & ~FEATURE_BIT(gems)
 #endif
         & ~FEATURE_BIT(frozen_string_literal)
+        & ~FEATURE_BIT(frozen_string_literal_set)
         & ~feature_jit_mask
         )
 };
@@ -1033,6 +1036,9 @@ feature_option(const char *str, int len, void *arg, const unsigned int enable)
 
   found:
     FEATURE_SET_TO(*argp, mask, (mask & enable));
+    if (NAME_MATCH_P("frozen_string_literal", str, len)) {
+        FEATURE_SET_TO(*argp, FEATURE_BIT(frozen_string_literal_set), FEATURE_BIT(frozen_string_literal_set));
+    }
     return;
 }
 
@@ -1436,6 +1442,16 @@ proc_long_options(ruby_cmdline_options_t *opt, const char *s, long argc, char **
         set_source_encoding_once(opt, s, 0);
     }
 #endif
+#if defined(USE_SHARED_GC) && USE_SHARED_GC
+    else if (is_option_with_arg("gc-library", Qfalse, Qfalse)) {
+        // no-op
+        // Handled by ruby_load_external_gc_from_argv
+
+        if (!dln_supported_p()) {
+            rb_warn("--gc-library is ignored because this executable file can't load extension libraries");
+        }
+    }
+#endif
     else if (strcmp("version", s) == 0) {
         if (envopt) goto noenvopt_long;
         opt->dump |= DUMP_BIT(version);
@@ -1779,7 +1795,7 @@ ruby_opt_init(ruby_cmdline_options_t *opt)
     }
 
     if (getenv("RUBY_FREE_AT_EXIT")) {
-        rb_warn("Free at exit is experimental and may be unstable");
+        rb_category_warn(RB_WARN_CATEGORY_EXPERIMENTAL, "Free at exit is experimental and may be unstable");
         rb_free_at_exit = true;
     }
 
@@ -2099,27 +2115,6 @@ process_script(ruby_cmdline_options_t *opt)
 }
 
 /**
- * Call ruby_opt_init to set up the global state based on the command line
- * options, and then warn if prism is enabled and the experimental warning
- * category is enabled.
- */
-static void
-prism_opt_init(ruby_cmdline_options_t *opt)
-{
-    ruby_opt_init(opt);
-
-    if (rb_warning_category_enabled_p(RB_WARN_CATEGORY_EXPERIMENTAL)) {
-        rb_category_warn(
-            RB_WARN_CATEGORY_EXPERIMENTAL,
-            "The compiler based on the Prism parser is currently experimental "
-            "and compatibility with the compiler based on parse.y is not yet "
-            "complete. Please report any issues you find on the `ruby/prism` "
-            "issue tracker."
-        );
-    }
-}
-
-/**
  * Process the command line options and parse the script into the given result.
  * Raise an error if the script cannot be parsed.
  */
@@ -2147,14 +2142,14 @@ prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
         pm_options_command_line_set(options, command_line);
         pm_options_filepath_set(options, "-");
 
-        prism_opt_init(opt);
+        ruby_opt_init(opt);
         error = pm_parse_stdin(result);
     }
     else if (opt->e_script) {
         command_line |= PM_OPTIONS_COMMAND_LINE_E;
         pm_options_command_line_set(options, command_line);
 
-        prism_opt_init(opt);
+        ruby_opt_init(opt);
         result->node.coverage_enabled = 0;
         error = pm_parse_string(result, opt->e_script, rb_str_new2("-e"));
     }
@@ -2166,7 +2161,7 @@ prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
         // line options. We do it in this order so that if the main script fails
         // to load, it doesn't require files required by -r.
         if (NIL_P(error)) {
-            prism_opt_init(opt);
+            ruby_opt_init(opt);
             error = pm_parse_file(result, opt->script_name);
         }
 
@@ -2302,7 +2297,8 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 #endif
 #if USE_YJIT
     if (FEATURE_SET_P(opt->features, yjit)) {
-        opt->yjit = true; // set opt->yjit for Init_ruby_description() and calling rb_yjit_init()
+        bool rb_yjit_option_disable(void);
+        opt->yjit = !rb_yjit_option_disable(); // set opt->yjit for Init_ruby_description() and calling rb_yjit_init()
     }
 #endif
 
@@ -2447,7 +2443,10 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
 #define SET_COMPILE_OPTION(h, o, name) \
         rb_hash_aset((h), ID2SYM(rb_intern_const(#name)), \
                      RBOOL(FEATURE_SET_P(o->features, name)))
-        SET_COMPILE_OPTION(option, opt, frozen_string_literal);
+
+        if (FEATURE_SET_P(opt->features, frozen_string_literal_set)) {
+            SET_COMPILE_OPTION(option, opt, frozen_string_literal);
+        }
         SET_COMPILE_OPTION(option, opt, debug_frozen_string_literal);
         rb_funcallv(rb_cISeq, rb_intern_const("compile_option="), 1, &option);
 #undef SET_COMPILE_OPTION

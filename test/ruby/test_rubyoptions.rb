@@ -302,11 +302,8 @@ class TestRubyOptions < Test::Unit::TestCase
   end
 
   def test_parser_flag
-    warning = /compiler based on the Prism parser is currently experimental/
-
-    assert_in_out_err(%w(--parser=prism -e) + ["puts :hi"], "", %w(hi), warning)
-    assert_in_out_err(%w(--parser=prism -W:no-experimental -e) + ["puts :hi"], "", %w(hi), [])
-    assert_in_out_err(%w(--parser=prism -W:no-experimental --dump=parsetree -e _=:hi), "", /"hi"/, [])
+    assert_in_out_err(%w(--parser=prism -e) + ["puts :hi"], "", %w(hi), [])
+    assert_in_out_err(%w(--parser=prism --dump=parsetree -e _=:hi), "", /"hi"/, [])
 
     assert_in_out_err(%w(--parser=parse.y -e) + ["puts :hi"], "", %w(hi), [])
     assert_norun_with_rflag('--parser=parse.y', '--version', "")
@@ -1234,6 +1231,17 @@ class TestRubyOptions < Test::Unit::TestCase
         assert_in_out_err(opt, code, [], expected, "#{opt} #{code}")
       end
     end
+  end
+
+  def test_frozen_string_literal_debug_chilled_strings
+    code = <<~RUBY
+      "foo" << "bar"
+    RUBY
+    warning = ["-:1: warning: literal string will be frozen in the future"]
+    assert_in_out_err(["-W:deprecated"], code, [], warning)
+    assert_in_out_err(["-W:deprecated", "--debug-frozen-string-literal"], code, [], warning)
+    assert_in_out_err(["-W:deprecated", "--disable-frozen-string-literal", "--debug-frozen-string-literal"], code, [], [])
+    assert_in_out_err(["-W:deprecated", "--enable-frozen-string-literal", "--debug-frozen-string-literal"], code, [], ["-:1:in '<main>': can't modify frozen String: \"foo\", created at -:1 (FrozenError)"])
   end
 
   def test___dir__encoding

@@ -10,8 +10,6 @@ use std::time::Instant;
 use std::collections::HashMap;
 
 use crate::codegen::CodegenGlobals;
-use crate::core::Context;
-use crate::core::for_each_iseq_payload;
 use crate::cruby::*;
 use crate::options::*;
 use crate::yjit::yjit_enabled_p;
@@ -268,16 +266,19 @@ macro_rules! make_counters {
 
 /// The list of counters that are available without --yjit-stats.
 /// They are incremented only by `incr_counter!` and don't use `gen_counter_incr`.
-pub const DEFAULT_COUNTERS: [Counter; 17] = [
+pub const DEFAULT_COUNTERS: &'static [Counter] = &[
     Counter::code_gc_count,
     Counter::compiled_iseq_entry,
     Counter::cold_iseq_entry,
     Counter::compiled_iseq_count,
     Counter::compiled_blockid_count,
     Counter::compiled_block_count,
+    Counter::deleted_defer_block_count,
     Counter::compiled_branch_count,
     Counter::compile_time_ns,
     Counter::max_inline_versions,
+    Counter::num_contexts_encoded,
+    Counter::context_cache_hits,
 
     Counter::invalidation_count,
     Counter::invalidate_method_lookup,
@@ -377,6 +378,7 @@ make_counters! {
     send_iseq_block_arg_type,
     send_iseq_clobbering_block_arg,
     send_iseq_complex_discard_extras,
+    send_iseq_forwarding,
     send_iseq_leaf_builtin_block_arg_block_param,
     send_iseq_kw_splat_non_nil,
     send_iseq_kwargs_mismatch,
@@ -384,6 +386,7 @@ make_counters! {
     send_iseq_has_no_kw,
     send_iseq_accepts_no_kwarg,
     send_iseq_materialized_block,
+    send_iseq_send_forwarding,
     send_iseq_splat_not_array,
     send_iseq_splat_with_kw,
     send_iseq_missing_optional_kw,
@@ -413,6 +416,7 @@ make_counters! {
     send_optimized_block_arg,
 
     invokesuper_defined_class_mismatch,
+    invokesuper_forwarding,
     invokesuper_kw_splat,
     invokesuper_kwarg,
     invokesuper_megamorphic,
@@ -554,9 +558,11 @@ make_counters! {
     block_next_count,
     defer_count,
     defer_empty_count,
+    deleted_defer_block_count,
     branch_insn_count,
     branch_known_count,
     max_inline_versions,
+    num_contexts_encoded,
 
     freed_iseq_count,
 
@@ -611,6 +617,8 @@ make_counters! {
     temp_reg_opnd,
     temp_mem_opnd,
     temp_spill,
+
+    context_cache_hits,
 }
 
 //===========================================================================
@@ -641,8 +649,8 @@ pub extern "C" fn rb_yjit_print_stats_p(_ec: EcPtr, _ruby_self: VALUE) -> VALUE 
 /// Primitive called in yjit.rb.
 /// Export all YJIT statistics as a Ruby hash.
 #[no_mangle]
-pub extern "C" fn rb_yjit_get_stats(_ec: EcPtr, _ruby_self: VALUE, context: VALUE) -> VALUE {
-    with_vm_lock(src_loc!(), || rb_yjit_gen_stats_dict(context == Qtrue))
+pub extern "C" fn rb_yjit_get_stats(_ec: EcPtr, _ruby_self: VALUE) -> VALUE {
+    with_vm_lock(src_loc!(), || rb_yjit_gen_stats_dict())
 }
 
 /// Primitive called in yjit.rb
@@ -701,7 +709,7 @@ pub extern "C" fn rb_yjit_incr_counter(counter_name: *const std::os::raw::c_char
 }
 
 /// Export all YJIT statistics as a Ruby hash.
-fn rb_yjit_gen_stats_dict(context: bool) -> VALUE {
+fn rb_yjit_gen_stats_dict() -> VALUE {
     // If YJIT is not enabled, return Qnil
     if !yjit_enabled_p() {
         return Qnil;
@@ -744,14 +752,10 @@ fn rb_yjit_gen_stats_dict(context: bool) -> VALUE {
         // Rust global allocations in bytes
         hash_aset_usize!(hash, "yjit_alloc_size", GLOBAL_ALLOCATOR.alloc_size.load(Ordering::SeqCst));
 
-        // `context` is true at RubyVM::YJIT._print_stats for --yjit-stats. It's false by default
-        // for RubyVM::YJIT.runtime_stats because counting all Contexts could be expensive.
-        if context {
-            let live_context_count = get_live_context_count();
-            let context_size = std::mem::size_of::<Context>();
-            hash_aset_usize!(hash, "live_context_count", live_context_count);
-            hash_aset_usize!(hash, "live_context_size", live_context_count * context_size);
-        }
+        // How many bytes we are using to store context data
+        let context_data = CodegenGlobals::get_context_data();
+        hash_aset_usize!(hash, "context_data_bytes", context_data.num_bytes());
+        hash_aset_usize!(hash, "context_cache_bytes", crate::core::CTX_CACHE_BYTES);
 
         // VM instructions count
         hash_aset_usize!(hash, "vm_insns_count", rb_vm_insns_count as usize);
@@ -844,21 +848,6 @@ fn rb_yjit_gen_stats_dict(context: bool) -> VALUE {
     }
 
     hash
-}
-
-fn get_live_context_count() -> usize {
-    let mut count = 0;
-    for_each_iseq_payload(|iseq_payload| {
-        for blocks in iseq_payload.version_map.iter() {
-            for block in blocks.iter() {
-                count += unsafe { block.as_ref() }.get_ctx_count();
-            }
-        }
-        for block in iseq_payload.dead_blocks.iter() {
-            count += unsafe { block.as_ref() }.get_ctx_count();
-        }
-    });
-    count
 }
 
 /// Record the backtrace when a YJIT exit occurs. This functionality requires

@@ -336,6 +336,7 @@ rb_imemo_mark_and_move(VALUE obj, bool reference_updating)
         else {
             if (vm_cc_super_p(cc) || vm_cc_refinement_p(cc)) {
                 rb_gc_mark_movable((VALUE)cc->cme_);
+                rb_gc_mark_movable((VALUE)cc->klass);
             }
         }
 
@@ -377,7 +378,9 @@ rb_imemo_mark_and_move(VALUE obj, bool reference_updating)
                 ((VALUE *)env->ep)[VM_ENV_DATA_INDEX_ENV] = rb_gc_location(env->ep[VM_ENV_DATA_INDEX_ENV]);
             }
             else {
-                VM_ENV_FLAGS_SET(env->ep, VM_ENV_FLAG_WB_REQUIRED);
+                if (!VM_ENV_FLAGS(env->ep, VM_ENV_FLAG_WB_REQUIRED)) {
+                    VM_ENV_FLAGS_SET(env->ep, VM_ENV_FLAG_WB_REQUIRED);
+                }
                 rb_gc_mark_movable( (VALUE)rb_vm_env_prev_env(env));
             }
         }
