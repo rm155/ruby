@@ -3354,8 +3354,6 @@ rb_const_remove(VALUE mod, ID id)
 
     val = ce->value;
 
-    rb_gc_writebarrier_reference_dropped(mod, val);
-
     if (UNDEF_P(val)) {
         autoload_delete(mod, id);
         val = Qnil;
