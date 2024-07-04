@@ -1365,6 +1365,8 @@ struct heap_page {
     struct ccan_list_node page_node;
 
     bits_t wb_unprotected_bits[HEAP_PAGE_BITMAP_LIMIT];
+    bits_t local_immune_bits[HEAP_PAGE_BITMAP_LIMIT];
+
     /* the following three bitmaps are cleared at the beginning of full GC */
     bits_t mark_bits[HEAP_PAGE_BITMAP_LIMIT];
     bits_t uncollectible_bits[HEAP_PAGE_BITMAP_LIMIT];
@@ -1449,6 +1451,7 @@ rb_contained_in_objspace_p(rb_objspace_t *objspace, VALUE obj)
 #define GET_HEAP_PINNED_BITS(x)         (&GET_HEAP_PAGE(x)->pinned_bits[0])
 #define GET_HEAP_UNCOLLECTIBLE_BITS(x)  (&GET_HEAP_PAGE(x)->uncollectible_bits[0])
 #define GET_HEAP_WB_UNPROTECTED_BITS(x) (&GET_HEAP_PAGE(x)->wb_unprotected_bits[0])
+#define GET_HEAP_LOCAL_IMMUNE_BITS(x)   (&GET_HEAP_PAGE(x)->local_immune_bits[0])
 #define GET_HEAP_MARKING_BITS(x)        (&GET_HEAP_PAGE(x)->marking_bits[0])
 
 #define GC_SWEEP_PAGES_FREEABLE_PER_STEP 3
@@ -2011,6 +2014,7 @@ static inline VALUE check_rvalue_consistency(const VALUE obj);
 
 #define RVALUE_MARKED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(obj), (obj))
 #define RVALUE_WB_UNPROTECTED_BITMAP(obj) MARKED_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), (obj))
+#define RVALUE_LOCAL_IMMUNE_BITMAP(obj)   MARKED_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(obj), (obj))
 #define RVALUE_MARKING_BITMAP(obj)        MARKED_IN_BITMAP(GET_HEAP_MARKING_BITS(obj), (obj))
 #define RVALUE_UNCOLLECTIBLE_BITMAP(obj)  MARKED_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS(obj), (obj))
 #define RVALUE_PINNED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_PINNED_BITS(obj), (obj))
@@ -2037,6 +2041,13 @@ RVALUE_WB_UNPROTECTED(VALUE obj)
 }
 
 static inline int
+RVALUE_LOCAL_IMMUNE(VALUE obj)
+{
+    check_rvalue_consistency(obj);
+    return RVALUE_LOCAL_IMMUNE_BITMAP(obj) != 0;
+}
+
+static inline int
 RVALUE_MARKING(VALUE obj)
 {
     check_rvalue_consistency(obj);
@@ -2057,10 +2068,11 @@ RVALUE_UNCOLLECTIBLE(VALUE obj)
     return RVALUE_UNCOLLECTIBLE_BITMAP(obj) != 0;
 }
 
-#define RVALUE_PAGE_MARKED(page, obj)         MARKED_IN_BITMAP((page)->mark_bits, (obj))
-#define RVALUE_PAGE_WB_UNPROTECTED(page, obj) MARKED_IN_BITMAP((page)->wb_unprotected_bits, (obj))
-#define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)  MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
-#define RVALUE_PAGE_MARKING(page, obj)        MARKED_IN_BITMAP((page)->marking_bits, (obj))
+#define RVALUE_PAGE_MARKED(page, obj)          MARKED_IN_BITMAP((page)->mark_bits, (obj))
+#define RVALUE_PAGE_WB_UNPROTECTED(page, obj)  MARKED_IN_BITMAP((page)->wb_unprotected_bits, (obj))
+#define RVALUE_PAGE_LOCAL_IMMUNE(page, obj) MARKED_IN_BITMAP((page)->local_immune_bits, (obj))
+#define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)   MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
+#define RVALUE_PAGE_MARKING(page, obj)         MARKED_IN_BITMAP((page)->marking_bits, (obj))
 
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
@@ -3523,6 +3535,7 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
 	GC_ASSERT(RVALUE_MARKING(obj) == FALSE);
 	GC_ASSERT(RVALUE_OLD_P(obj) == FALSE);
 	GC_ASSERT(RVALUE_WB_UNPROTECTED(obj) == FALSE);
+	GC_ASSERT(RVALUE_LOCAL_IMMUNE(obj) == FALSE);
 
 	if (RVALUE_REMEMBERED((VALUE)obj)) rb_bug("newobj: %s is remembered.", obj_info(obj));
     }
@@ -4675,10 +4688,15 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
     }
 
     if (RVALUE_WB_UNPROTECTED(obj)) CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), obj);
+    if (RVALUE_LOCAL_IMMUNE(obj)) {
+	VM_ASSERT(!using_local_limits(objspace));
+	CLEAR_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(obj), obj);
+    }
 
 #if RGENGC_CHECK_MODE
 #define CHECK(x) if (x(obj) != FALSE) rb_bug("obj_free: " #x "(%s) != FALSE", obj_info(obj))
         CHECK(RVALUE_WB_UNPROTECTED);
+        CHECK(RVALUE_LOCAL_IMMUNE);
         CHECK(RVALUE_MARKED);
         CHECK(RVALUE_MARKING);
         CHECK(RVALUE_UNCOLLECTIBLE);
@@ -7216,8 +7234,11 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
     GC_ASSERT(bitmap_plane_count == HEAP_PAGE_BITMAP_LIMIT - 1 ||
                   bitmap_plane_count == HEAP_PAGE_BITMAP_LIMIT);
 
+    bool local_immunity_active = using_local_limits(objspace);
+
     // Skip out of range slots at the head of the page
     bitset = ~bits[0];
+    if (local_immunity_active) bitset &= ~sweep_page->local_immune_bits[0];
     bitset >>= NUM_IN_PAGE(p);
     if (bitset) {
         gc_sweep_plane(objspace, heap, p, bitset, ctx);
@@ -7226,6 +7247,7 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
 
     for (int i = 1; i < bitmap_plane_count; i++) {
         bitset = ~bits[i];
+	if (local_immunity_active) bitset &= ~sweep_page->local_immune_bits[i];
         if (bitset) {
             gc_sweep_plane(objspace, heap, p, bitset, ctx);
         }
@@ -8511,6 +8533,8 @@ static inline int
 gc_mark_set(rb_objspace_t *objspace, VALUE obj)
 {
     ASSERT_ractor_safe_gc_state();
+    //TODO assertion needed?
+    //VM_ASSERT(during_gc || heap_locked(objspace));
     if (RVALUE_MARKED(obj)) return 0;
     MARK_IN_BITMAP(GET_HEAP_MARK_BITS(obj), obj);
     return 1;
@@ -9904,6 +9928,34 @@ check_color_i(const VALUE child, void *ptr)
     }
 }
 
+#define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && FL_TEST_RAW(obj, FL_SHAREABLE))
+#define NEEDS_LOCAL_IMMUNE_CHILDREN(obj) (MUTABLE_SHAREABLE(obj) || RVALUE_LOCAL_IMMUNE(obj))
+
+static void
+check_limmune_i(const VALUE child, void *ptr)
+{
+    struct verify_internal_consistency_struct *data = (struct verify_internal_consistency_struct *)ptr;
+    const VALUE parent = data->parent;
+
+    if (false && MUTABLE_SHAREABLE(parent)) {
+	if (!RVALUE_LOCAL_IMMUNE(child)) {
+        fprintf(stderr, "check_limmune_i: (mutable-shareable -> non-local-immune) - %s -> %s\n",
+                obj_info(parent), obj_info(child));
+	}
+        data->err_count++;
+    }
+    if (RVALUE_LOCAL_IMMUNE(parent)) {
+	if (BUILTIN_TYPE(parent) != T_CLASS) {
+	    if (!RVALUE_LOCAL_IMMUNE(child)) {
+		fprintf(stderr, "check_limmune_i: (local-immune -> non-local-immune) - %s -> %s\n",
+			obj_info(parent), obj_info(child));
+		data->err_count++;
+		rb_bug("sigh");
+	    }
+	}
+    }
+}
+
 static void
 check_children_i(const VALUE child, void *ptr)
 {
@@ -9940,7 +9992,14 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride,
             }
 
             /* check health of children */
-            if (RVALUE_OLD_P(obj)) data->old_object_count++;
+            if (RVALUE_OLD_P(obj)) {
+		if (RVALUE_MARKED(obj)) {
+		    data->old_object_count++;
+		}
+		else {
+		    VM_ASSERT(RVALUE_LOCAL_IMMUNE(obj));
+		}
+	    }
             if (RVALUE_WB_UNPROTECTED(obj) && RVALUE_UNCOLLECTIBLE(obj)) data->remembered_shady_count++;
 
             if (!is_marking(objspace) && RVALUE_OLD_P(obj)) {
@@ -9956,6 +10015,7 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride,
                     rb_objspace_reachable_objects_from(obj, check_color_i, (void *)data);
                 }
             }
+	    rb_objspace_reachable_objects_from(obj, check_limmune_i, (void *)data);
         }
         else {
             if (BUILTIN_TYPE(obj) == T_ZOMBIE) {
@@ -10377,7 +10437,7 @@ gc_update_weak_references(rb_objspace_t *objspace)
 
         if (RB_SPECIAL_CONST_P(obj)) continue;
 
-        if (!RVALUE_MARKED(obj)) {
+        if (!RVALUE_MARKED(obj) && !(using_local_limits(objspace) && RVALUE_LOCAL_IMMUNE(obj))) {
             **ptr_ptr = Qundef;
         }
         else {
@@ -11202,18 +11262,74 @@ gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_t *objspace)
 {
     rb_native_mutex_lock(&objspace->external_writebarrier_allowed_lock);
     while (!objspace->external_writebarrier_allowed) {
-	    rb_native_cond_wait(&objspace->external_writebarrier_allowed_cond, &objspace->external_writebarrier_allowed_lock);
+	rb_native_cond_wait(&objspace->external_writebarrier_allowed_cond, &objspace->external_writebarrier_allowed_lock);
     }
     gc_writebarrier_safe_objspace(a, b, objspace);
     rb_native_mutex_unlock(&objspace->external_writebarrier_allowed_lock);
 }
 
+#if VM_CHECK_MODE > 0
 static bool
-probably_broken_shareable_path_p(rb_objspace_t *objspace, VALUE a, VALUE oldv)
+check_local_immune_chldren_i(VALUE obj, void *ptr)
 {
-    return is_pointer_to_heap(objspace, (void *)oldv) &&
-	!RB_TYPE_P(oldv, T_NONE) &&
-	FL_TEST_RAW(oldv, FL_SHAREABLE);
+    if (!SPECIAL_CONST_P(obj) && !RVALUE_LOCAL_IMMUNE(obj)) {
+	rp(obj);
+	rb_bug("child object is not local-immune");
+    }
+}
+
+static void
+check_local_immune_children(VALUE obj)
+{
+    if (!SPECIAL_CONST_P(obj)) rb_objspace_reachable_objects_from(obj, check_local_immune_chldren_i, NULL);
+}
+#endif
+
+static void
+gc_give_local_immunity_no_check(VALUE obj)
+{
+    MARK_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(obj), obj);
+}
+
+void
+rb_gc_give_local_immunity(VALUE obj)
+{
+    gc_give_local_immunity_no_check(obj);
+#if VM_CHECK_MODE > 0
+    check_local_immune_children(obj);
+#endif
+}
+
+static void
+rb_gc_give_local_immunity_traversal_i(VALUE obj, void *ptr)
+{
+    if (!SPECIAL_CONST_P(obj) && !RVALUE_LOCAL_IMMUNE(obj)) {
+	gc_give_local_immunity_no_check(obj);
+
+	if (!MUTABLE_SHAREABLE(obj)) {
+	    rb_objspace_reachable_objects_from(obj, rb_gc_give_local_immunity_traversal_i, NULL);
+	}
+    }
+
+    rp(obj);
+#if VM_CHECK_MODE > 0
+    check_local_immune_children(obj);
+#endif
+
+}
+
+void
+rb_gc_give_local_immunity_traversal(VALUE obj)
+{
+    rb_gc_give_local_immunity_traversal_i(obj, NULL);
+}
+
+
+static VALUE
+limmune(VALUE os, VALUE obj)
+{
+    rb_gc_give_local_immunity_traversal(obj);
+    return Qnil;
 }
 
 void
@@ -11225,6 +11341,8 @@ rb_gc_writebarrier(VALUE a, VALUE b)
     }
     
     rb_objspace_t *current_objspace = &rb_objspace;
+
+    //VM_ASSERT(!NEEDS_LOCAL_IMMUNE_CHILDREN(a) || RVALUE_LOCAL_IMMUNE(b));
 
     if (ruby_single_main_objspace) {
 	gc_writebarrier_safe_objspace(a, b, current_objspace);
@@ -11325,6 +11443,9 @@ rb_gc_copy_attributes(VALUE dest, VALUE obj)
     if (RVALUE_WB_UNPROTECTED(obj)) {
         rb_gc_writebarrier_unprotect(dest);
     }
+    if (RVALUE_LOCAL_IMMUNE(obj)) {
+	MARK_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(obj), obj);
+    }
     rb_gc_copy_finalizer(dest, obj);
 }
 
@@ -11333,7 +11454,7 @@ rb_obj_gc_flags(VALUE obj, ID* flags, size_t max)
 {
     size_t n = 0;
     static ID ID_marked;
-    static ID ID_wb_protected, ID_old, ID_marking, ID_uncollectible, ID_pinned;
+    static ID ID_wb_protected, ID_old, ID_marking, ID_uncollectible, ID_pinned, ID_local_immune;
 
     if (!ID_marked) {
 #define I(s) ID_##s = rb_intern(#s);
@@ -11343,6 +11464,7 @@ rb_obj_gc_flags(VALUE obj, ID* flags, size_t max)
         I(marking);
         I(uncollectible);
         I(pinned);
+        I(local_immune);
 #undef I
     }
 
@@ -12381,7 +12503,7 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 {
     GC_ASSERT(!SPECIAL_CONST_P(obj));
 
-    if (using_local_limits(objspace) && FL_TEST_RAW(obj, FL_SHAREABLE)) {
+    if (using_local_limits(objspace) && (FL_TEST_RAW(obj, FL_SHAREABLE) || RVALUE_LOCAL_IMMUNE(obj))) {
 	return FALSE;
     }
 
@@ -12479,6 +12601,8 @@ gc_move(rb_objspace_t *objspace, VALUE scan, VALUE free, size_t src_slot_size, s
     GC_ASSERT(!MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(free), free));
 
     GC_ASSERT(!RVALUE_MARKING((VALUE)src));
+
+    VM_ASSERT(!RVALUE_LOCAL_IMMUNE((VALUE)src));
 
     /* Save off bits for current object. */
     marked = RVALUE_MARKED((VALUE)src);
@@ -14515,7 +14639,7 @@ rb_objspace_reachable_objects_from(VALUE obj, void (func)(VALUE, void *), void *
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    HEAP_LOCK_ENTER(objspace);
+    RB_VM_LOCK_ENTER();
     {
 	if (during_gc) rb_bug("rb_objspace_reachable_objects_from() is not supported while during_gc == true");
 
@@ -14535,7 +14659,7 @@ rb_objspace_reachable_objects_from(VALUE obj, void (func)(VALUE, void *), void *
 	    cr->mfd = prev_mfd;
 	}
     }
-    HEAP_LOCK_LEAVE(objspace);
+    RB_VM_LOCK_LEAVE();
 }
 
 struct root_objects_data {
@@ -16175,6 +16299,7 @@ rb_raw_obj_info_common(char *const buff, const size_t buff_size, const VALUE obj
                      C(RVALUE_PINNED_BITMAP(obj),         "P"),
                      C(RVALUE_MARKING_BITMAP(obj),        "R"),
                      C(RVALUE_WB_UNPROTECTED_BITMAP(obj), "U"),
+                     C(RVALUE_LOCAL_IMMUNE_BITMAP(obj),   "I"),
                      C(rb_objspace_garbage_object_p(obj), "G"),
                      obj_type_name(obj));
         }
@@ -16535,12 +16660,13 @@ rb_gcdebug_print_obj_condition(VALUE obj)
         return;
     }
 
-    fprintf(stderr, "marked?      : %s\n", RVALUE_MARKED(obj) ? "true" : "false");
-    fprintf(stderr, "pinned?      : %s\n", RVALUE_PINNED(obj) ? "true" : "false");
-    fprintf(stderr, "age?         : %d\n", RVALUE_AGE_GET(obj));
-    fprintf(stderr, "old?         : %s\n", RVALUE_OLD_P(obj) ? "true" : "false");
-    fprintf(stderr, "WB-protected?: %s\n", RVALUE_WB_UNPROTECTED(obj) ? "false" : "true");
-    fprintf(stderr, "remembered?  : %s\n", RVALUE_REMEMBERED(obj) ? "true" : "false");
+    fprintf(stderr, "marked?         : %s\n", RVALUE_MARKED(obj) ? "true" : "false");
+    fprintf(stderr, "pinned?         : %s\n", RVALUE_PINNED(obj) ? "true" : "false");
+    fprintf(stderr, "age?            : %d\n", RVALUE_AGE_GET(obj));
+    fprintf(stderr, "old?            : %s\n", RVALUE_OLD_P(obj) ? "true" : "false");
+    fprintf(stderr, "WB-protected?   : %s\n", RVALUE_WB_UNPROTECTED(obj) ? "false" : "true");
+    fprintf(stderr, "local-immune?   : %s\n", RVALUE_LOCAL_IMMUNE(obj) ? "false" : "true");
+    fprintf(stderr, "remembered?     : %s\n", RVALUE_REMEMBERED(obj) ? "true" : "false");
 
     if (is_lazy_sweeping(objspace)) {
         fprintf(stderr, "lazy sweeping?: true\n");
@@ -16705,6 +16831,9 @@ Init_GC(void)
 
     rb_define_module_function(rb_mObjSpace, "define_finalizer", define_final, -1);
     rb_define_module_function(rb_mObjSpace, "undefine_finalizer", undefine_final, 1);
+
+    //TODO remove
+    rb_define_module_function(rb_mObjSpace, "limmune", limmune, 1);
 
     rb_define_module_function(rb_mObjSpace, "_id2ref", os_id2ref, 1);
 

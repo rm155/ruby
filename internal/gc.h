@@ -167,7 +167,7 @@ void rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason)
             rb_wb_protected_newobj_of((ec ? ec : GET_EC()), (c), (f) & ~FL_WB_PROTECTED, s) : \
             rb_wb_unprotected_newobj_of((c), (f), s))
 
-#define RB_OBJ_GC_FLAGS_MAX 6   /* used in ext/objspace */
+#define RB_OBJ_GC_FLAGS_MAX 7   /* used in ext/objspace */
 
 #ifndef USE_UNALIGNED_MEMBER_ACCESS
 # define UNALIGNED_MEMBER_ACCESS(expr) (expr)

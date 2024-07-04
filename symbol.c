@@ -689,8 +689,8 @@ dsymbol_alloc(rb_symbols_t *symbols, const VALUE klass, const VALUE str, rb_enco
     long hashval;
 
     rb_enc_set_index((VALUE)obj, rb_enc_to_index(enc));
-    OBJ_FREEZE((VALUE)obj);
     RB_OBJ_WRITE((VALUE)obj, &obj->fstr, str);
+    OBJ_FREEZE((VALUE)obj);
     obj->id = type;
 
     /* we want hashval to be in Fixnum range [ruby-core:15713] r15672 */
