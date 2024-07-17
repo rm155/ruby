@@ -8,6 +8,7 @@
  *             file COPYING are met.  Consult the file for details.
  * @brief      Internal header for Class.
  */
+#include "glospace.h"
 #include "id.h"
 #include "id_table.h"           /* for struct rb_id_table */
 #include "internal/serial.h"    /* for rb_serial_t */

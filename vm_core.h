@@ -612,9 +612,7 @@ typedef struct rb_at_exit_list {
 struct rb_objspace;
 struct rb_objspace *rb_objspace_alloc(void);
 void rb_objspace_free(struct rb_objspace *);
-void rb_objspace_free_all_non_main(struct rb_vm_struct *vm);
 void rb_objspace_call_finalizer(struct rb_objspace *);
-void rb_objspace_call_finalizer_for_each_ractor(struct rb_vm_struct *);
 
 struct rb_global_space;
 struct rb_global_space * rb_global_space_init(void);
@@ -638,12 +636,6 @@ typedef struct rb_gc_safe_lock_struct {
     struct rb_ractor_struct *lock_owner;
     VALUE gc_previously_disabled;
 } rb_gc_safe_lock_t;
-
-void rb_gc_safe_lock_enter(rb_gc_safe_lock_t *gs_lock);
-void rb_gc_safe_lock_leave(rb_gc_safe_lock_t *gs_lock);
-void rb_gc_safe_lock_initialize(rb_gc_safe_lock_t *gs_lock);
-void rb_gc_safe_lock_destroy(rb_gc_safe_lock_t *gs_lock);
-bool rb_gc_safe_lock_acquired(rb_gc_safe_lock_t *gs_lock);
 
 VALUE rb_pin_array_list_new(VALUE next);
 VALUE rb_pin_array_list_append(VALUE obj, VALUE item);

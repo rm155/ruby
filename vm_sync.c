@@ -1,3 +1,4 @@
+#include "glospace.h"
 #include "internal/gc.h"
 #include "internal/thread.h"
 #include "vm_core.h"

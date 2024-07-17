@@ -8,6 +8,7 @@
 #include "eval_intern.h"
 #include "vm_sync.h"
 #include "ractor_core.h"
+#include "glospace.h"
 #include "internal/complex.h"
 #include "internal/error.h"
 #include "internal/gc.h"

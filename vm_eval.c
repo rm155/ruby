@@ -11,6 +11,7 @@
 
 **********************************************************************/
 
+#include "glospace.h"
 #include "internal/thread.h"
 struct local_var_list {
     VALUE tbl;

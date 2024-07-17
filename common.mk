@@ -130,6 +130,7 @@ COMMONOBJS    = array.$(OBJEXT) \
 		eval.$(OBJEXT) \
 		file.$(OBJEXT) \
 		gc.$(OBJEXT) \
+		glospace.$(OBJEXT) \
 		hash.$(OBJEXT) \
 		inits.$(OBJEXT) \
 		imemo.$(OBJEXT) \

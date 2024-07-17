@@ -1,6 +1,7 @@
 #ifndef RUBY_VM_SYNC_H
 #define RUBY_VM_SYNC_H
 
+#include "glospace.h"
 #include "vm_debug.h"
 #include "debug_counter.h"
 
