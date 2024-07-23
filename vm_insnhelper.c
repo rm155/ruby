@@ -423,7 +423,7 @@ vm_push_frame(rb_execution_context_t *ec,
     This is a no-op in all cases we've looked at (https://godbolt.org/z/3oxd1446K), but should guarantee it for all
     future/untested compilers/platforms. */
 
-    #ifdef HAVE_DECL_ATOMIC_SIGNAL_FENCE
+    #if defined HAVE_DECL_ATOMIC_SIGNAL_FENCE && HAVE_DECL_ATOMIC_SIGNAL_FENCE
     atomic_signal_fence(memory_order_seq_cst);
     #endif
 
@@ -440,7 +440,6 @@ rb_vm_pop_frame_no_int(rb_execution_context_t *ec)
 {
     rb_control_frame_t *cfp = ec->cfp;
 
-    if (VM_CHECK_MODE >= 4) rb_gc_verify_internal_consistency();
     if (VMDEBUG == 2)       SDR();
 
     ec->cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp);
@@ -452,7 +451,6 @@ vm_pop_frame(rb_execution_context_t *ec, rb_control_frame_t *cfp, const VALUE *e
 {
     VALUE flags = ep[VM_ENV_DATA_INDEX_FLAGS];
 
-    if (VM_CHECK_MODE >= 4) rb_gc_verify_internal_consistency();
     if (VMDEBUG == 2)       SDR();
 
     RUBY_VM_CHECK_INTS(ec);
@@ -1254,7 +1252,13 @@ vm_getivar(VALUE obj, ID id, const rb_iseq_t *iseq, IVC ic, const struct rb_call
                 // and modules. So we can skip locking.
                 // Second, other ractors need to check the shareability of the
                 // values returned from the class ivars.
-                goto general_path;
+
+                if (default_value == Qundef) { // defined?
+                    return rb_ivar_defined(obj, id) ? Qtrue : Qundef;
+                }
+                else {
+                    goto general_path;
+                }
             }
 
             ivar_list = RCLASS_IVPTR(obj);

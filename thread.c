@@ -3775,12 +3775,13 @@ static VALUE
 rb_thread_variable_get(VALUE thread, VALUE key)
 {
     VALUE locals;
+    VALUE symbol = rb_to_symbol(key);
 
     if (LIKELY(!THREAD_LOCAL_STORAGE_INITIALISED_P(thread))) {
         return Qnil;
     }
     locals = rb_thread_local_storage(thread);
-    return rb_hash_aref(locals, rb_to_symbol(key));
+    return rb_hash_aref(locals, symbol);
 }
 
 /*
@@ -3931,13 +3932,14 @@ static VALUE
 rb_thread_variable_p(VALUE thread, VALUE key)
 {
     VALUE locals;
+    VALUE symbol = rb_to_symbol(key);
 
     if (LIKELY(!THREAD_LOCAL_STORAGE_INITIALISED_P(thread))) {
         return Qfalse;
     }
     locals = rb_thread_local_storage(thread);
 
-    return RBOOL(rb_hash_lookup(locals, rb_to_symbol(key)) != Qnil);
+    return RBOOL(rb_hash_lookup(locals, symbol) != Qnil);
 }
 
 /*

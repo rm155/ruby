@@ -213,8 +213,8 @@ struct rb_ractor_struct {
     VALUE verbose;
     VALUE debug;
 
-    rb_ractor_newobj_cache_t newobj_cache;
-    rb_ractor_newobj_cache_t newobj_borrowing_cache;
+    void *newobj_cache;
+    void *newobj_borrowing_cache;
     struct {
 	rb_nativethread_lock_t lock;
 	rb_ractor_t *lock_owner;
@@ -235,6 +235,7 @@ struct rb_ractor_struct {
 
 	uintptr_t borrowing_id;
     } borrowing_sync;
+    rb_ractor_newobj_cache_t newobj_cache;
 
     // gc.c rb_objspace_reachable_objects_from
     struct gc_mark_func_data_struct {
@@ -336,12 +337,13 @@ bool rb_ractor_main_p_(void);
 void rb_ractor_mark_object_ary_init(rb_ractor_t *r);
 void rb_ractor_related_objects_mark(void *ptr);
 void rb_ractor_update_references(void *ptr);
-void rb_ractor_finish_marking(void);
 void rb_ractor_atfork(rb_vm_t *vm, rb_thread_t *th);
 
 VALUE rb_ractor_ensure_shareable(VALUE obj, VALUE name);
 
 RUBY_SYMBOL_EXPORT_BEGIN
+void rb_ractor_finish_marking(void);
+
 bool rb_ractor_shareable_p_continue(VALUE obj);
 
 // THIS FUNCTION SHOULD NOT CALL WHILE INCREMENTAL MARKING!!
@@ -479,13 +481,6 @@ static inline void
 rb_ractor_setup_belonging_to(VALUE obj, uint32_t rid)
 {
     RACTOR_BELONGING_ID(obj) = rid;
-}
-
-static inline void
-rb_ractor_setup_belonging(VALUE obj)
-{
-    rb_ractor_t *r = rb_current_allocating_ractor();
-    rb_ractor_setup_belonging_to(obj, rb_ractor_id(r));
 }
 
 static inline uint32_t
