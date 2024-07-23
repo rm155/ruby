@@ -113,6 +113,12 @@ struct objspace_local_data {
     rb_ractor_t *alloc_target_ractor;
 
     struct rb_objspace *global_gc_current_target;
+
+    bool belong_to_single_main_ractor;
+
+    struct rb_objspace *current_parent_objspace;
+
+    bool freeing_all;
 };
 
 typedef struct gc_reference_status {
@@ -1438,5 +1444,38 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, rb_objspace_t *current_objsp
     }
     WITH_OBJSPACE_OF_VALUE_LEAVE(b_objspace);
 }
+
+#define POSSIBLE_USAGE_OF_BORROWING_PAGE_BEGIN(objspace, page) { \
+    rb_ractor_t *_cr = GET_RACTOR(); \
+    int _size_pool_idx = get_size_pool_idx(objspace, page->size_pool); \
+    bool _using_borrowable_page = false; \
+    if (!objspace->local_data.freeing_all) { \
+	rb_borrowing_sync_lock(_cr); \
+	if (current_borrowable_page(_cr, _size_pool_idx) == page) { \
+	    lock_own_borrowable_page(_cr, _size_pool_idx); \
+	    _using_borrowable_page = true; \
+	} \
+	rb_borrowing_sync_unlock(_cr); \
+    }
+
+#define POSSIBLE_USAGE_OF_BORROWING_PAGE_END() \
+    if (_using_borrowable_page) { \
+	unlock_own_borrowable_page(_cr, _size_pool_idx); \
+    } \
+}
+
+typedef struct RVALUE RVALUE;
+typedef struct rb_size_pool_struct rb_size_pool_t;
+void total_allocated_objects_update(rb_objspace_t *objspace);
+void update_obj_id_mapping(rb_objspace_t *objspace, RVALUE *dest, RVALUE *src);
+bool in_marking_range(rb_objspace_t *objspace, VALUE obj);
+void check_not_tnone(VALUE obj);
+bool confirm_global_connections(rb_objspace_t *objspace, VALUE obj);
+void size_pool_local_stats_init(rb_objspace_t *objspace, int size_pool_idx);
+void objspace_local_stats_init(rb_objspace_t *objspace);
+void gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache);
+void gc_mark_reset_parent(rb_objspace_t *objspace);
+int get_size_pool_idx(rb_objspace_t *objspace, rb_size_pool_t *size_pool);
+void update_obj_id_refs(rb_objspace_t *objspace);
 
 #endif /* RUBY_GLOSPACE_H */
