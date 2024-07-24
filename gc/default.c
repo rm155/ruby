@@ -632,6 +632,7 @@ typedef struct rb_objspace {
     rb_postponed_job_handle_t finalize_deferred_pjob;
 
     unsigned long live_ractor_cache_count;
+    bool multi_ractor_p;
     struct objspace_local_data local_data;
 } rb_objspace_t;
 
@@ -2803,7 +2804,7 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t si
 	    rb_memerror();
     }
 
-    RUBY_ATOMIC_SIZE_ADD(size_pool->total_allocated_objects, 1);
+    size_pool->total_allocated_objects++;
 
     return obj;
 }
@@ -3602,10 +3603,6 @@ rb_gc_impl_shutdown_call_finalizer(void *objspace_ptr)
 #endif
     if (RUBY_ATOMIC_EXCHANGE(finalizing, 1)) return;
 
-    /* run finalizers */
-    finalize_deferred(objspace);
-    GC_ASSERT(heap_pages_deferred_final == 0);
-
     /* prohibit incremental GC */
     objspace->flags.dont_incremental = 1;
 
@@ -3626,6 +3623,10 @@ rb_gc_impl_shutdown_call_finalizer(void *objspace_ptr)
             xfree(curr);
         }
     }
+
+    /* run finalizers */
+    finalize_deferred(objspace);
+    GC_ASSERT(heap_pages_deferred_final == 0);
 
     /* Abort incremental marking and lazy sweeping to speed up shutdown. */
     gc_abort(objspace);
@@ -5880,7 +5881,8 @@ gc_verify_internal_consistency_(rb_objspace_t *objspace)
     /* check counters */
 
     if (!is_lazy_sweeping(objspace) &&
-            !finalizing) {
+            !finalizing &&
+            !objspace->multi_ractor_p) {
         if (objspace_live_slots(objspace) != data.live_object_count) {
             fprintf(stderr, "heap_pages_final_slots: %"PRIdSIZE", total_freed_objects: %"PRIdSIZE"\n",
                     heap_pages_final_slots, total_freed_objects(objspace));
@@ -6984,6 +6986,10 @@ rb_gc_impl_ractor_cache_alloc(void *objspace_ptr)
     rb_objspace_t *objspace = objspace_ptr;
 
     objspace->live_ractor_cache_count++;
+
+    if (objspace->live_ractor_cache_count > 1) {
+        objspace->multi_ractor_p = true;
+    }
 
     return calloc1(sizeof(rb_ractor_newobj_cache_t));
 }
