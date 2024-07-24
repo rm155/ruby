@@ -610,7 +610,7 @@ typedef struct rb_at_exit_list {
 
 void *rb_objspace_alloc(void);
 void rb_objspace_free(void *objspace);
-void rb_objspace_call_finalizer(void);
+void rb_objspace_call_finalizer(void *objspace);
 
 struct rb_global_space;
 struct rb_global_space * rb_global_space_init(void);

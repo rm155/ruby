@@ -16,8 +16,11 @@ size_t *rb_gc_impl_size_pool_sizes(void *objspace_ptr);
 // Shutdown
 void rb_gc_impl_shutdown_free_objects(void *objspace_ptr);
 // GC
-void rb_gc_impl_start(void *objspace_ptr, bool full_mark, bool immediate_mark, bool immediate_sweep, bool compact);
+void rb_gc_impl_start(void *objspace_ptr, bool full_mark, bool immediate_mark, bool immediate_sweep, bool global, bool compact);
 bool rb_gc_impl_during_gc_p(void *objspace_ptr);
+bool rb_gc_impl_during_local_gc_p(void *objspace_ptr);
+bool rb_gc_impl_during_global_gc_p(void *objspace_ptr);
+bool rb_gc_impl_using_local_limits(void *objspace_ptr);
 void rb_gc_impl_prepare_heap(void *objspace_ptr);
 void rb_gc_impl_gc_enable(void *objspace_ptr);
 void rb_gc_impl_gc_disable(void *objspace_ptr, bool finish_current_gc);
@@ -27,7 +30,7 @@ VALUE rb_gc_impl_stress_get(void *objspace_ptr);
 VALUE rb_gc_impl_config_get(void *objspace_ptr);
 VALUE rb_gc_impl_config_set(void *objspace_ptr, VALUE hash);
 // Object allocation
-VALUE rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, bool wb_protected, size_t alloc_size);
+VALUE rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, bool wb_protected, size_t alloc_size, bool borrowing);
 size_t rb_gc_impl_obj_slot_size(VALUE obj);
 size_t rb_gc_impl_size_pool_id_for_size(void *objspace_ptr, size_t size);
 bool rb_gc_impl_size_allocatable_p(size_t size);
@@ -42,6 +45,7 @@ void rb_gc_impl_mark(void *objspace_ptr, VALUE obj);
 void rb_gc_impl_mark_and_move(void *objspace_ptr, VALUE *ptr);
 void rb_gc_impl_mark_and_pin(void *objspace_ptr, VALUE obj);
 void rb_gc_impl_mark_maybe(void *objspace_ptr, VALUE obj);
+void rb_gc_impl_stack_location_mark_maybe(void *objspace_ptr, VALUE obj);
 void rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr);
 void rb_gc_impl_remove_weak(void *objspace_ptr, VALUE parent_obj, VALUE *ptr);
 void rb_gc_impl_objspace_mark(void *objspace_ptr);

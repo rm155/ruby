@@ -2068,6 +2068,7 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     }
     else {
         r->newobj_cache = rb_gc_ractor_cache_alloc();
+        r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc();
     }
 }
 
@@ -2147,6 +2148,7 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
         rb_gc_ractor_cache_free(cr->newobj_cache);
         rb_gc_ractor_cache_free(cr->newobj_borrowing_cache);
         cr->newobj_cache = NULL;
+        cr->newobj_borrowing_cache = NULL;
 
         ractor_status_set(cr, ractor_terminated);
 	
@@ -2187,6 +2189,7 @@ rb_ractor_main_alloc(void)
     r->name = Qnil;
     r->pub.self = Qnil;
     r->newobj_cache = rb_gc_ractor_cache_alloc();
+    r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc();
     ruby_single_main_ractor = r;
 
     return r;
@@ -2499,6 +2502,7 @@ unlock_ractor_set(void)
     rb_native_mutex_unlock(&vm->ractor.ractor_set_lock);
 }
 
+rb_ractor_t *last;
 void
 rb_borrowing_sync_lock(rb_ractor_t *r)
 {
@@ -2506,7 +2510,7 @@ rb_borrowing_sync_lock(rb_ractor_t *r)
     if (r->borrowing_sync.lock_owner != cr) {
 	VM_ASSERT(r->borrowing_sync.lock_owner != cr);
 	rb_native_mutex_lock(&r->borrowing_sync.lock);
-	r->borrowing_sync.lock_owner = cr;
+	last = r->borrowing_sync.lock_owner = cr;
     }
     r->borrowing_sync.lock_lev++;
 }
@@ -2514,6 +2518,10 @@ rb_borrowing_sync_lock(rb_ractor_t *r)
 void
 rb_borrowing_sync_unlock(rb_ractor_t *r)
 {
+    if (r->borrowing_sync.lock_owner != GET_RACTOR())
+    {
+	rb_bug("check %p, %p %p", r->borrowing_sync.lock_owner, GET_RACTOR(), last);
+    }
     VM_ASSERT(r->borrowing_sync.lock_owner == GET_RACTOR());
     r->borrowing_sync.lock_lev--;
     if (r->borrowing_sync.lock_lev == 0) {

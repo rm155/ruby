@@ -1125,10 +1125,12 @@ run_redirected_func(VALUE args)
 
 VALUE rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args);
 
+
 static struct heap_page *
 current_borrowable_page(rb_ractor_t *r, int size_pool_idx)
 {
-    return r->newobj_borrowing_cache.size_pool_caches[size_pool_idx].using_page;
+    struct heap_page *get_using_page(void *c, int size_pool_idx);
+    return get_using_page(&r->newobj_borrowing_cache, size_pool_idx);
 }
 
 static void
@@ -1473,9 +1475,10 @@ void check_not_tnone(VALUE obj);
 bool confirm_global_connections(rb_objspace_t *objspace, VALUE obj);
 void size_pool_local_stats_init(rb_objspace_t *objspace, int size_pool_idx);
 void objspace_local_stats_init(rb_objspace_t *objspace);
-void gc_ractor_newobj_size_pool_cache_clear(rb_ractor_newobj_size_pool_cache_t *cache);
+void gc_ractor_newobj_size_pool_cache_clear(void *c);
 void gc_mark_reset_parent(rb_objspace_t *objspace);
 int get_size_pool_idx(rb_objspace_t *objspace, rb_size_pool_t *size_pool);
 void update_obj_id_refs(rb_objspace_t *objspace);
+rb_ractor_t *objspace_get_ractor(rb_objspace_t *objspace);
 
 #endif /* RUBY_GLOSPACE_H */

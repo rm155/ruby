@@ -8,6 +8,12 @@
 #include "id_table.h"
 #include "vm_debug.h"
 
+//TODO Remove after merge errors fixed
+#ifndef SIZE_POOL_COUNT
+# define SIZE_POOL_COUNT 5
+#endif
+
+
 #ifndef RACTOR_CHECK_MODE
 #define RACTOR_CHECK_MODE (VM_CHECK_MODE || RUBY_DEBUG) && (SIZEOF_UINT64_T == SIZEOF_VALUE)
 #endif
@@ -235,7 +241,6 @@ struct rb_ractor_struct {
 
 	uintptr_t borrowing_id;
     } borrowing_sync;
-    rb_ractor_newobj_cache_t newobj_cache;
 
     // gc.c rb_objspace_reachable_objects_from
     struct gc_mark_func_data_struct {
