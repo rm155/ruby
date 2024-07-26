@@ -2793,16 +2793,16 @@ newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size
             cache->incremental_mark_step_allocated_slots = 0;
 
             // Retry allocation after resetting incremental_mark_step_allocated_slots
-            obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
+            obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
         }
 
         if (obj == Qfalse) {
             // Get next free page (possibly running GC)
-            struct heap_page *page = heap_next_free_page(objspace, size_pool, heap);
+            struct heap_page *page = heap_next_free_page(objspace, size_pool, heap, false);
             ractor_cache_set_page(objspace, cache, size_pool_idx, page);
 
             // Retry allocation after moving to new page
-            obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
+            obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
         }
     }
 
@@ -2819,7 +2819,7 @@ newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size
 static VALUE
 newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool vm_locked)
 {
-    VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx);
+    VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
 
     if (RB_UNLIKELY(obj == Qfalse)) {
         obj = newobj_cache_miss(objspace, cache, size_pool_idx, vm_locked);
@@ -2851,7 +2851,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_new
 	}
     }
 
-    obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx);
+    obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx, true);
 
     HEAP_LOCK_ENTER(objspace);
     {
@@ -2907,7 +2907,7 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
 
     if (!RB_UNLIKELY(during_gc || ruby_gc_stressful) &&
             wb_protected) {
-        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx);
+        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx, false);
         newobj_init(klass, flags, wb_protected, objspace, obj);
     }
     else {
@@ -6817,7 +6817,7 @@ NOINLINE(static void gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t
 static void
 gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t *objspace)
 {
-    gc_report(2, objspace, "gc_writebarrier_incremental: [LG] %p -> %s\n", (void *)a, obj_info(b));
+    gc_report(2, objspace, "gc_writebarrier_incremental: [LG] %p -> %s\n", (void *)a, rb_obj_info(b));
 
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(b) == objspace);
     VM_ASSERT(is_incremental_marking(objspace));
@@ -6826,7 +6826,7 @@ gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t *objspace)
 	if (RVALUE_BLACK_P(objspace, a)) {
 	    if (RVALUE_WHITE_P(objspace, b)) {
 		if (!RVALUE_WB_UNPROTECTED(objspace, a)) {
-		    gc_report(2, objspace, "gc_writebarrier_incremental: [IN] %p -> %s\n", (void *)a, obj_info(b));
+		    gc_report(2, objspace, "gc_writebarrier_incremental: [IN] %p -> %s\n", (void *)a, rb_obj_info(b));
 		    gc_mark_from(objspace, b, a);
 		}
 	    }
