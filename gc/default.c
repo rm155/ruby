@@ -2400,9 +2400,6 @@ heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t *heap
 	gc_continue(objspace, size_pool, heap);
     }
 
-    /* Continue incremental marking or lazy sweeping, if in any of those steps. */
-    gc_continue(objspace, size_pool, heap);
-
     /* If we still don't have a free page and not allowed to create a new page,
      * we should start a new GC cycle. */
     if (heap->free_pages == NULL &&
@@ -2886,7 +2883,7 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
 
     if (!RB_UNLIKELY(during_gc || ruby_gc_stressful) &&
             wb_protected) {
-        obj = newobj_alloc(objspace, cache, size_pool_idx);
+        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx);
         newobj_init(klass, flags, wb_protected, objspace, obj);
     }
     else {

@@ -2567,13 +2567,7 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 bool
 rb_is_pointer_to_heap(const void *ptr)
 {
-    bool ret;
-    WITH_OBJSPACE_OF_VALUE_ENTER((VALUE)ptr, objspace);
-    {
-	ret = rb_gc_impl_pointer_to_heap_p(objspace, ptr);
-    }
-    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
-    return ret;
+    return rb_gc_impl_pointer_to_heap_p(rb_gc_get_objspace(), ptr);
 }
 
 void

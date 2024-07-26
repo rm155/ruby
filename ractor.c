@@ -2062,14 +2062,6 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     vm->ractor.cnt++;
     unlock_ractor_set();
     rb_ractor_chains_register(r);
-
-    if (r->newobj_cache) {
-        VM_ASSERT(r == ruby_single_main_ractor);
-    }
-    else {
-        r->newobj_cache = rb_gc_ractor_cache_alloc();
-        r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc();
-    }
 }
 
 static VALUE
@@ -2319,11 +2311,20 @@ rb_ractor_main_setup(rb_vm_t *vm, rb_ractor_t *r, rb_thread_t *th)
     rb_ractor_living_threads_insert(r, th);
 }
 
+static void
+ractor_newobj_cache_init(rb_ractor_t *r)
+{
+    r->newobj_cache = rb_gc_ractor_cache_alloc();
+    r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc();
+}
+
 static VALUE
 ractor_create(rb_execution_context_t *ec, VALUE self, VALUE loc, VALUE name, VALUE args, VALUE block)
 {
     VALUE rv = ractor_alloc(self);
     rb_ractor_t *r = RACTOR_PTR(rv);
+
+    ractor_newobj_cache_init(r);
     rb_create_ractor_local_objspace(r);
     ractor_init(r, name, loc);
 
