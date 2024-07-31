@@ -61,12 +61,18 @@ vm_need_barrier(bool no_barrier, const rb_ractor_t *cr, const rb_vm_t *vm)
 #endif
 }
 
+static bool
+can_use_barrier(rb_ractor_t *cr)
+{
+    return !cr || cr->teardown_cleanup_done || cr->late_to_barrier || !cr->local_objspace || !rb_during_local_gc();
+}
+
 static void
 vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsigned int *lev APPEND_LOCATION_ARGS)
 {
     RUBY_DEBUG_LOG2(file, line, "start locked:%d", locked);
 
-    VM_ASSERT(no_barrier || !cr || cr->teardown_cleanup_done || cr->late_to_barrier || !cr->local_objspace || !rb_during_local_gc());
+    no_barrier = no_barrier || !can_use_barrier(cr);
     VM_ASSERT(!cr || !cr->local_objspace || !heap_locked(cr->local_objspace));
 
     if (locked) {
