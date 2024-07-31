@@ -1130,7 +1130,7 @@ static struct heap_page *
 current_borrowable_page(rb_ractor_t *r, int size_pool_idx)
 {
     struct heap_page *get_using_page(void *c, int size_pool_idx);
-    return get_using_page(&r->newobj_borrowing_cache, size_pool_idx);
+    return get_using_page(r->newobj_borrowing_cache, size_pool_idx);
 }
 
 static void

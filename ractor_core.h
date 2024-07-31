@@ -173,6 +173,8 @@ struct global_object_list {
     struct global_object_list *next;
 };
 
+#define RACTOR_CACHE_COUNT 2
+
 struct rb_ractor_struct {
     struct rb_ractor_pub pub;
 
@@ -181,6 +183,7 @@ struct rb_ractor_struct {
     bool during_teardown_cleanup;
 #if VM_CHECK_MODE > 0
     bool teardown_cleanup_done;
+    bool reached_insertion;
 #endif
     rb_ractor_t *receiver_before_exit;
 

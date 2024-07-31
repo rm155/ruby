@@ -321,10 +321,12 @@ ractor_free(void *ptr)
 
 
     if (r->newobj_cache) {
-        RUBY_ASSERT(r == ruby_single_main_ractor);
+        RUBY_ASSERT(r == ruby_single_main_ractor || !r->reached_insertion);
 
         rb_gc_ractor_cache_free(r->newobj_cache);
+        rb_gc_ractor_cache_free(r->newobj_borrowing_cache);
         r->newobj_cache = NULL;
+        r->newobj_borrowing_cache = NULL;
     }
 
     ruby_xfree(r);
@@ -2062,6 +2064,10 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     vm->ractor.cnt++;
     unlock_ractor_set();
     rb_ractor_chains_register(r);
+
+#if VM_CHECK_MODE > 0
+    r->reached_insertion = true;
+#endif
 }
 
 static VALUE
@@ -2296,6 +2302,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->during_teardown_cleanup = false;
 #if VM_CHECK_MODE > 0
     r->teardown_cleanup_done = false;
+    r->reached_insertion = false;
 #endif
 
     FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
