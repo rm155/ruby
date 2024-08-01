@@ -763,11 +763,13 @@ static struct {
     HANDLE lock;
 } timer_thread;
 #define TIMER_THREAD_CREATED_P() (timer_thread.id != 0)
-
 static unsigned long __stdcall
-timer_thread_func(void *dummy)
+timer_thread_func(void *ptr)
 {
     rb_vm_t *vm = GET_VM();
+    rb_execution_context_t *ec = (rb_execution_context_t *)ptr;
+    rb_ractor_set_current_ec_no_ractor(ec);
+    rb_ractor_set_current_objspace(GET_RACTOR()->local_objspace);
     RUBY_DEBUG_LOG("start");
     rb_w32_set_thread_description(GetCurrentThread(), L"ruby-timer-thread");
     while (WaitForSingleObject(timer_thread.lock,
@@ -793,7 +795,7 @@ rb_thread_create_timer_thread(void)
             timer_thread.lock = CreateEvent(0, TRUE, FALSE, 0);
         }
         timer_thread.id = w32_create_thread(1024 + (USE_RUBY_DEBUG_LOG ? BUFSIZ : 0),
-                                            timer_thread_func, 0);
+                                            timer_thread_func, GET_EC());
         w32_resume_thread(timer_thread.id);
     }
 }

@@ -3051,6 +3051,7 @@ timer_thread_func(void *ptr)
     struct timer_thread_func_args *args = (struct timer_thread_func_args *)ptr;
     rb_vm_t *vm = args->vm;
     rb_ractor_set_current_ec_no_ractor(args->ec);
+    rb_ractor_set_current_objspace(GET_RACTOR()->local_objspace);
     free(args);
 #if defined(RUBY_NT_SERIAL)
     ruby_nt_serial = (rb_atomic_t)-1;
