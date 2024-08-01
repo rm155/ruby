@@ -848,8 +848,8 @@ rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALU
 
 void
 rb_objspace_free_all_non_main(rb_vm_t *vm) {
-    struct objspace_local_data *local_data = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, local_data, objspace_node) {
+    struct objspace_local_data *local_data = NULL, *next = NULL;
+    ccan_list_for_each_safe(&GET_VM()->objspace_set, local_data, next, objspace_node) {
 	if (local_data->objspace != vm->objspace) {
 	    rb_objspace_free(local_data->objspace);
 	}
