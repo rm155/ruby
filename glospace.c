@@ -498,13 +498,13 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     RB_VM_LOCK();
     {
 
-    VM_COND_AND_BARRIER_WAIT(GET_VM(), closing_data->ractor->sync.close_cond, closing_data->ractor->sync.ready_to_close);
+    VM_COND_AND_BARRIER_WAIT(GET_VM(), closing_ractor->sync.close_cond, closing_ractor->sync.ready_to_close);
 
     objspace_absorb_enter(global_space);
 
     receiving_data->currently_absorbing = true;
 
-    rb_borrowing_sync_lock(receiving_data->ractor);
+    rb_borrowing_sync_lock(receiving_ractor);
     HEAP_LOCK_ENTER(receiving_data->objspace);
     {
 	HEAP_LOCK_ENTER(closing_data->objspace);
@@ -517,16 +517,16 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
 
     close_objspace(closing_data);
 
-    if (rb_ractor_status_p(closing_data->ractor, ractor_terminated)) {
-	rb_remove_from_contained_ractor_tbl(closing_data->ractor);
+    if (rb_ractor_status_p(closing_ractor, ractor_terminated)) {
+	rb_remove_from_contained_ractor_tbl(closing_ractor);
 	rb_objspace_free(closing_data->objspace);
-	closing_data->ractor->local_objspace = NULL;
+	closing_ractor->local_objspace = NULL;
     }
-    rb_borrowing_sync_unlock(receiving_data->ractor);
+    rb_borrowing_sync_unlock(receiving_ractor);
 
     receiving_data->currently_absorbing = false;
 
-    closing_data->ractor->objspace_absorbed = true;
+    closing_ractor->objspace_absorbed = true;
     objspace_absorb_leave(global_space);
     }
     RB_VM_UNLOCK();
@@ -534,8 +534,8 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     absorption_finished(receiving_data->objspace);
 
     rb_native_mutex_lock(&global_space->next_object_id_lock);
-    if (global_space->prev_id_assigner == closing_data->ractor) {
-	global_space->prev_id_assigner = receiving_data->ractor;
+    if (global_space->prev_id_assigner == closing_ractor) {
+	global_space->prev_id_assigner = receiving_ractor;
     }
     rb_native_mutex_unlock(&global_space->next_object_id_lock);
 
