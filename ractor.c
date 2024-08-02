@@ -321,7 +321,7 @@ ractor_free(void *ptr)
 
 
     if (r->newobj_cache) {
-        RUBY_ASSERT(r == ruby_single_main_ractor || !r->reached_insertion);
+        RUBY_ASSERT(r == ruby_single_main_ractor || !r->reached_insertion || !r->objspace_absorbed);
 
         rb_gc_ractor_cache_free(r->newobj_cache);
         rb_gc_ractor_cache_free(r->newobj_borrowing_cache);
@@ -2142,11 +2142,6 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
             rb_native_cond_signal(&vm->ractor.sync.terminate_cond);
         }
         vm->ractor.cnt--;
-
-        rb_gc_ractor_cache_free(cr->newobj_cache);
-        rb_gc_ractor_cache_free(cr->newobj_borrowing_cache);
-        cr->newobj_cache = NULL;
-        cr->newobj_borrowing_cache = NULL;
 
         ractor_status_set(cr, ractor_terminated);
 	

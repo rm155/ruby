@@ -451,8 +451,10 @@ rb_objspace_absorb_heaps(struct objspace_local_data *receiving_data, struct objs
     allocatable_pages_update_for_transfer(receiving_data->objspace, closing_data->objspace, false);
     transfer_all_size_pools(receiving_data->objspace, closing_data->objspace, true);
     transfer_all_size_pools(receiving_data->objspace, closing_data->objspace, false);
-    //rb_gc_ractor_newobj_cache_clear(closing_data->ractor->newobj_cache);
-    //rb_gc_ractor_newobj_cache_clear(closing_data->ractor->newobj_borrowing_cache);
+    rb_gc_ractor_newobj_cache_clear(closing_data->ractor->newobj_cache, NULL);
+    rb_gc_ractor_newobj_cache_clear(closing_data->ractor->newobj_borrowing_cache, NULL);
+    closing_data->ractor->newobj_cache = NULL;
+    closing_data->ractor->newobj_borrowing_cache = NULL;
     update_objspace_counts(receiving_data, closing_data);
 }
 void
