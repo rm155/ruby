@@ -2462,11 +2462,7 @@ rb_int_round(VALUE num, int ndigits, enum ruby_num_rounding_mode mode)
 static VALUE
 rb_int_floor(VALUE num, int ndigits)
 {
-    VALUE f;
-
-    if (int_round_zero_p(num, ndigits))
-        return INT2FIX(0);
-    f = int_pow(10, -ndigits);
+    VALUE f = int_pow(10, -ndigits);
     if (FIXNUM_P(num) && FIXNUM_P(f)) {
         SIGNED_VALUE x = FIX2LONG(num), y = FIX2LONG(f);
         int neg = x < 0;
@@ -2475,21 +2471,19 @@ rb_int_floor(VALUE num, int ndigits)
         if (neg) x = -x;
         return LONG2NUM(x);
     }
-    if (RB_FLOAT_TYPE_P(f)) {
-        /* then int_pow overflow */
-        return INT2FIX(0);
+    else {
+        bool neg = int_neg_p(num);
+        if (neg) num = rb_int_minus(rb_int_plus(rb_int_uminus(num), f), INT2FIX(1));
+        num = rb_int_mul(rb_int_div(num, f), f);
+        if (neg) num = rb_int_uminus(num);
+        return num;
     }
-    return rb_int_minus(num, rb_int_modulo(num, f));
 }
 
 static VALUE
 rb_int_ceil(VALUE num, int ndigits)
 {
-    VALUE f;
-
-    if (int_round_zero_p(num, ndigits))
-        return INT2FIX(0);
-    f = int_pow(10, -ndigits);
+    VALUE f = int_pow(10, -ndigits);
     if (FIXNUM_P(num) && FIXNUM_P(f)) {
         SIGNED_VALUE x = FIX2LONG(num), y = FIX2LONG(f);
         int neg = x < 0;
@@ -2499,11 +2493,16 @@ rb_int_ceil(VALUE num, int ndigits)
         if (neg) x = -x;
         return LONG2NUM(x);
     }
-    if (RB_FLOAT_TYPE_P(f)) {
-        /* then int_pow overflow */
-        return INT2FIX(0);
+    else {
+        bool neg = int_neg_p(num);
+        if (neg)
+            num = rb_int_uminus(num);
+        else
+            num = rb_int_plus(num, rb_int_minus(f, INT2FIX(1)));
+        num = rb_int_mul(rb_int_div(num, f), f);
+        if (neg) num = rb_int_uminus(num);
+        return num;
     }
-    return rb_int_plus(num, rb_int_minus(f, rb_int_modulo(num, f)));
 }
 
 VALUE
@@ -5713,6 +5712,50 @@ int_downto_size(VALUE from, VALUE args, VALUE eobj)
     return ruby_num_interval_step_size(from, RARRAY_AREF(args, 0), INT2FIX(-1), FALSE);
 }
 
+/*
+ *  call-seq:
+ *    downto(limit) {|i| ... } -> self
+ *    downto(limit)            ->  enumerator
+ *
+ *  Calls the given block with each integer value from +self+ down to +limit+;
+ *  returns +self+:
+ *
+ *    a = []
+ *    10.downto(5) {|i| a << i }              # => 10
+ *    a                                       # => [10, 9, 8, 7, 6, 5]
+ *    a = []
+ *    0.downto(-5) {|i| a << i }              # => 0
+ *    a                                       # => [0, -1, -2, -3, -4, -5]
+ *    4.downto(5) {|i| fail 'Cannot happen' } # => 4
+ *
+ *  With no block given, returns an Enumerator.
+ *
+ */
+
+static VALUE
+int_downto(VALUE from, VALUE to)
+{
+    RETURN_SIZED_ENUMERATOR(from, 1, &to, int_downto_size);
+    if (FIXNUM_P(from) && FIXNUM_P(to)) {
+        long i, end;
+
+        end = FIX2LONG(to);
+        for (i=FIX2LONG(from); i >= end; i--) {
+            rb_yield(LONG2FIX(i));
+        }
+    }
+    else {
+        VALUE i = from, c;
+
+        while (!(c = rb_funcall(i, '<', 1, to))) {
+            rb_yield(i);
+            i = rb_funcall(i, '-', 1, INT2FIX(1));
+        }
+        if (NIL_P(c)) rb_cmperr(i, to);
+    }
+    return from;
+}
+
 static VALUE
 int_dotimes_size(VALUE num, VALUE args, VALUE eobj)
 {
@@ -6320,6 +6363,7 @@ Init_Numeric(void)
     rb_define_method(rb_cInteger, "anybits?", int_anybits_p, 1);
     rb_define_method(rb_cInteger, "nobits?", int_nobits_p, 1);
     rb_define_method(rb_cInteger, "upto", int_upto, 1);
+    rb_define_method(rb_cInteger, "downto", int_downto, 1);
     rb_define_method(rb_cInteger, "succ", int_succ, 0);
     rb_define_method(rb_cInteger, "next", int_succ, 0);
     rb_define_method(rb_cInteger, "pred", int_pred, 0);

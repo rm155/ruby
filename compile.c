@@ -1986,7 +1986,7 @@ iseq_set_arguments_keywords(rb_iseq_t *iseq, LINK_ANCHOR *const optargs,
     keyword->required_num = rkw;
     keyword->table = &body->local_table[keyword->bits_start - keyword->num];
 
-    {
+    if (RARRAY_LEN(default_values)) {
         VALUE *dvs = ALLOC_N(VALUE, RARRAY_LEN(default_values));
 
         for (i = 0; i < RARRAY_LEN(default_values); i++) {
@@ -3055,7 +3055,6 @@ remove_unreachable_chunk(rb_iseq_t *iseq, LINK_ELEMENT *i)
                 break;
             }
             else if ((lab = find_destination((INSN *)i)) != 0) {
-                if (lab->unremovable) break;
                 unref_counts[lab->label_no]++;
             }
         }
@@ -3072,8 +3071,7 @@ remove_unreachable_chunk(rb_iseq_t *iseq, LINK_ELEMENT *i)
             /* do nothing */
         }
         else if (IS_ADJUST(i)) {
-            LABEL *dest = ((ADJUST *)i)->label;
-            if (dest && dest->unremovable) return 0;
+            return 0;
         }
         end = i;
     } while ((i = i->next) != 0);
@@ -3997,27 +3995,35 @@ iseq_specialized_instruction(rb_iseq_t *iseq, INSN *iobj)
     if (IS_INSN_ID(iobj, newarray) && iobj->link.next &&
         IS_INSN(iobj->link.next)) {
         /*
-         *   [a, b, ...].max/min -> a, b, c, opt_newarray_max/min
+         *   [a, b, ...].max/min -> a, b, c, opt_newarray_send max/min
          */
         INSN *niobj = (INSN *)iobj->link.next;
         if (IS_INSN_ID(niobj, send)) {
             const struct rb_callinfo *ci = (struct rb_callinfo *)OPERAND_AT(niobj, 0);
             if (vm_ci_simple(ci) && vm_ci_argc(ci) == 0) {
+                VALUE method = INT2FIX(0);
                 switch (vm_ci_mid(ci)) {
                   case idMax:
+                      method = INT2FIX(VM_OPT_NEWARRAY_SEND_MAX);
+                      break;
                   case idMin:
+                      method = INT2FIX(VM_OPT_NEWARRAY_SEND_MIN);
+                      break;
                   case idHash:
-                    {
-                        VALUE num = iobj->operands[0];
-                        int operand_len = insn_len(BIN(opt_newarray_send)) - 1;
-                        iobj->insn_id = BIN(opt_newarray_send);
-                        iobj->operands = compile_data_calloc2(iseq, operand_len, sizeof(VALUE));
-                        iobj->operands[0] = num;
-                        iobj->operands[1] = rb_id2sym(vm_ci_mid(ci));
-                        iobj->operand_size = operand_len;
-                        ELEM_REMOVE(&niobj->link);
-                        return COMPILE_OK;
-                    }
+                      method = INT2FIX(VM_OPT_NEWARRAY_SEND_HASH);
+                      break;
+                }
+
+                if (method != INT2FIX(0)) {
+                    VALUE num = iobj->operands[0];
+                    int operand_len = insn_len(BIN(opt_newarray_send)) - 1;
+                    iobj->insn_id = BIN(opt_newarray_send);
+                    iobj->operands = compile_data_calloc2(iseq, operand_len, sizeof(VALUE));
+                    iobj->operands[0] = num;
+                    iobj->operands[1] = method;
+                    iobj->operand_size = operand_len;
+                    ELEM_REMOVE(&niobj->link);
+                    return COMPILE_OK;
                 }
             }
         }
@@ -4031,11 +4037,37 @@ iseq_specialized_instruction(rb_iseq_t *iseq, INSN *iobj)
                 iobj->insn_id = BIN(opt_newarray_send);
                 iobj->operands = compile_data_calloc2(iseq, operand_len, sizeof(VALUE));
                 iobj->operands[0] = FIXNUM_INC(num, 1);
-                iobj->operands[1] = rb_id2sym(vm_ci_mid(ci));
+                iobj->operands[1] = INT2FIX(VM_OPT_NEWARRAY_SEND_PACK);
                 iobj->operand_size = operand_len;
                 ELEM_REMOVE(&iobj->link);
                 ELEM_REMOVE(niobj->link.next);
                 ELEM_INSERT_NEXT(&niobj->link, &iobj->link);
+                return COMPILE_OK;
+            }
+        }
+        // newarray n, putchilledstring "E", getlocal b, send :pack with {buffer: b}
+        // -> putchilledstring "E", getlocal b, opt_newarray_send n+2, :pack, :buffer
+        else if ((IS_INSN_ID(niobj, putstring) || IS_INSN_ID(niobj, putchilledstring) ||
+                  (IS_INSN_ID(niobj, putobject) && RB_TYPE_P(OPERAND_AT(niobj, 0), T_STRING))) &&
+                 IS_NEXT_INSN_ID(&niobj->link, getlocal) &&
+                 (niobj->link.next && IS_NEXT_INSN_ID(niobj->link.next, send))) {
+            const struct rb_callinfo *ci = (struct rb_callinfo *)OPERAND_AT((INSN *)(niobj->link.next)->next, 0);
+            const struct rb_callinfo_kwarg *kwarg = vm_ci_kwarg(ci);
+            if (vm_ci_mid(ci) == idPack && vm_ci_argc(ci) == 2 &&
+                    (kwarg && kwarg->keyword_len == 1 && kwarg->keywords[0] == rb_id2sym(idBuffer))) {
+                VALUE num = iobj->operands[0];
+                int operand_len = insn_len(BIN(opt_newarray_send)) - 1;
+                iobj->insn_id = BIN(opt_newarray_send);
+                iobj->operands = compile_data_calloc2(iseq, operand_len, sizeof(VALUE));
+                iobj->operands[0] = FIXNUM_INC(num, 2);
+                iobj->operands[1] = INT2FIX(VM_OPT_NEWARRAY_SEND_PACK_BUFFER);
+                iobj->operand_size = operand_len;
+                // Remove the "send" insn.
+                ELEM_REMOVE((niobj->link.next)->next);
+                // Remove the modified insn from its original "newarray" position...
+                ELEM_REMOVE(&iobj->link);
+                // and insert it after the buffer insn.
+                ELEM_INSERT_NEXT(niobj->link.next, &iobj->link);
                 return COMPILE_OK;
             }
         }
@@ -8177,7 +8209,6 @@ compile_next(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, in
         add_ensure_iseq(ret, iseq, 0);
         ADD_INSNL(ret, line_node, jump, ISEQ_COMPILE_DATA(iseq)->end_label);
         ADD_ADJUST_RESTORE(ret, splabel);
-        splabel->unremovable = FALSE;
 
         if (!popped) {
             ADD_INSN(ret, line_node, putnil);
@@ -12741,7 +12772,7 @@ ibf_load_param_keyword(const struct ibf_load *load, ibf_offset_t param_keyword_o
         struct rb_iseq_param_keyword *kw = IBF_R(param_keyword_offset, struct rb_iseq_param_keyword, 1);
         ID *ids = IBF_R(kw->table, ID, kw->num);
         int dv_num = kw->num - kw->required_num;
-        VALUE *dvs = IBF_R(kw->default_values, VALUE, dv_num);
+        VALUE *dvs = dv_num ? IBF_R(kw->default_values, VALUE, dv_num) : NULL;
         int i;
 
         for (i=0; i<kw->num; i++) {

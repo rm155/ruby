@@ -543,6 +543,8 @@ struct parser_params {
     rb_ast_t *ast;
     int node_id;
 
+    st_table *warn_duplicate_keys_table;
+
     int max_numparam;
     ID it_id;
 
@@ -7201,10 +7203,11 @@ token_info_pop(struct parser_params *p, const char *token, const rb_code_locatio
     token_info *ptinfo_beg = p->token_info;
 
     if (!ptinfo_beg) return;
-    p->token_info = ptinfo_beg->next;
 
     /* indentation check of matched keywords (begin..end, if..end, etc.) */
     token_info_warn(p, token, ptinfo_beg, 1, loc);
+
+    p->token_info = ptinfo_beg->next;
     ruby_sized_xfree(ptinfo_beg, sizeof(*ptinfo_beg));
 }
 
@@ -10325,7 +10328,7 @@ parse_gvar(struct parser_params *p, const enum lex_state_e last_state)
             return '$';
         }
       gvar:
-        set_yylval_name(TOK_INTERN());
+        tokenize_ident(p);
         return tGVAR;
 
       case '&': 	/* $&: last match */
@@ -10492,7 +10495,7 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
         if (IS_LABEL_SUFFIX(0)) {
             SET_LEX_STATE(EXPR_ARG|EXPR_LABELED);
             nextc(p);
-            set_yylval_name(TOK_INTERN());
+            tokenize_ident(p);
             return tLABEL;
         }
     }
@@ -14701,7 +14704,7 @@ static void
 warn_duplicate_keys(struct parser_params *p, NODE *hash)
 {
     /* See https://bugs.ruby-lang.org/issues/20331 for discussion about what is warned. */
-    st_table *literal_keys = st_init_table_with_size(&literal_type, RNODE_LIST(hash)->as.nd_alen / 2);
+    p->warn_duplicate_keys_table = st_init_table_with_size(&literal_type, RNODE_LIST(hash)->as.nd_alen / 2);
     while (hash && RNODE_LIST(hash)->nd_next) {
         NODE *head = RNODE_LIST(hash)->nd_head;
         NODE *value = RNODE_LIST(hash)->nd_next;
@@ -14717,16 +14720,17 @@ warn_duplicate_keys(struct parser_params *p, NODE *hash)
         if (nd_type_st_key_enable_p(head)) {
             key = (st_data_t)head;
 
-            if (st_delete(literal_keys, &key, &data)) {
+            if (st_delete(p->warn_duplicate_keys_table, &key, &data)) {
                 rb_warn2L(nd_line((NODE *)data),
                           "key %+"PRIsWARN" is duplicated and overwritten on line %d",
                           nd_value(p, head), WARN_I(nd_line(head)));
             }
-            st_insert(literal_keys, (st_data_t)key, (st_data_t)hash);
+            st_insert(p->warn_duplicate_keys_table, (st_data_t)key, (st_data_t)hash);
         }
         hash = next;
     }
-    st_free_table(literal_keys);
+    st_free_table(p->warn_duplicate_keys_table);
+    p->warn_duplicate_keys_table = NULL;
 }
 
 static NODE *
@@ -15607,6 +15611,14 @@ rb_ruby_parser_free(void *ptr)
 {
     struct parser_params *p = (struct parser_params*)ptr;
     struct local_vars *local, *prev;
+
+    if (p->ast) {
+        rb_ast_free(p->ast);
+    }
+
+    if (p->warn_duplicate_keys_table) {
+        st_free_table(p->warn_duplicate_keys_table);
+    }
 
 #ifndef RIPPER
     if (p->tokens) {
