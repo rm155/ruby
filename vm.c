@@ -540,7 +540,7 @@ bool ruby_vm_keep_script_lines;
 
 #ifdef RB_THREAD_LOCAL_SPECIFIER
 RB_THREAD_LOCAL_SPECIFIER rb_execution_context_t *ruby_current_ec;
-RB_THREAD_LOCAL_SPECIFIER struct rb_objspace *ruby_current_objspace;
+RB_THREAD_LOCAL_SPECIFIER rb_objspace_gate_t *ruby_current_os_gate;
 
 #ifdef RUBY_NT_SERIAL
 RB_THREAD_LOCAL_SPECIFIER rb_atomic_t ruby_nt_serial;
@@ -554,10 +554,10 @@ rb_current_ec_noinline(void)
 }
 
 // no-inline decl on thread_pthread.h
-struct rb_objspace *
-rb_current_objspace_noinline(void)
+struct rb_objspace_gate *
+rb_current_os_gate_noinline(void)
 {
-    return ruby_current_objspace;
+    return ruby_current_os_gate;
 }
 
 void
@@ -567,9 +567,9 @@ rb_current_ec_set(rb_execution_context_t *ec)
 }
 
 void
-rb_current_objspace_set(struct rb_objspace *objspace)
+rb_current_os_gate_set(struct rb_objspace_gate *os_gate)
 {
-    ruby_current_objspace = objspace;
+    ruby_current_os_gate = os_gate;
 }
 
 
@@ -581,14 +581,14 @@ rb_current_ec(void)
 }
 
 struct rb_objspace *
-rb_current_objspace(void)
+rb_current_os_gate(void)
 {
-    return ruby_current_objspace;
+    return ruby_current_os_gate;
 }
 #endif
 #else
 native_tls_key_t ruby_current_ec_key;
-native_tls_key_t ruby_current_objspace_key;
+native_tls_key_t ruby_current_os_gate_key;
 #endif
 
 rb_event_flag_t ruby_vm_event_flags;
@@ -4313,11 +4313,8 @@ Init_BareVM(void)
     rb_vm_postponed_job_queue_init(vm);
     ruby_current_vm_ptr = vm;
 
-    vm->global_space = rb_global_space_init();
-    rb_objspace_alloc();
+    rb_main_objspace_alloc();
 
-    vm->global_gc_underway = false;
-    rb_native_cond_initialize(&vm->global_gc_finished);
     vm->negative_cme_table = rb_id_table_create(16);
     vm->overloaded_cme_table = st_init_numtable();
     vm->constant_cache = rb_id_table_create(0);
@@ -4337,7 +4334,6 @@ Init_BareVM(void)
     th->nt = ZALLOC(struct rb_native_thread);
     th->vm = vm;
     th->ractor = vm->ractor.main_ractor;
-    rb_assign_main_ractor_objspace(th->ractor);
     Init_native_thread(th);
     rb_jit_cont_init();
     th_init(th, 0, vm);
@@ -4346,7 +4342,6 @@ Init_BareVM(void)
     /* n.b. native_main_thread_stack_top is set by the INIT_STACK macro */
     ruby_thread_init_stack(th, native_main_thread_stack_top);
 
-    rb_global_tables_init();
 
     // setup ractor system
     rb_native_mutex_initialize(&vm->ractor.ractor_set_lock);

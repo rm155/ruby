@@ -1,9 +1,9 @@
 #ifndef RUBY_VM_SYNC_H
 #define RUBY_VM_SYNC_H
 
-#include "glospace.h"
 #include "vm_debug.h"
 #include "debug_counter.h"
+#include "objspace_coordinator.h"
 
 #if USE_RUBY_DEBUG_LOG
 #define LOCATION_ARGS const char *file, int line

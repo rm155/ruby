@@ -13,6 +13,7 @@
 
 #include "internal/gc.h"
 #include "internal/sanitizers.h"
+#include "objspace_coordinator.h"
 #include "rjit.h"
 
 #ifdef HAVE_SYS_RESOURCE_H
@@ -578,7 +579,7 @@ thread_sched_setup_running_threads(struct rb_thread_sched *sched, rb_ractor_t *c
     {
         // update running_threads
         if (del_th) {
-	    rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_NOT_RUNNING);
+	    rb_objspace_coordinator_object_graph_safety_advance(cr, OGS_FLAG_NOT_RUNNING);
             VM_ASSERT(ractor_sched_running_threads_contain_p(vm, del_th));
             VM_ASSERT(del_timeslice_th != NULL ||
                       !ractor_sched_timeslice_threads_contain_p(vm, del_th));
@@ -593,7 +594,7 @@ thread_sched_setup_running_threads(struct rb_thread_sched *sched, rb_ractor_t *c
         }
 
         if (add_th) {
-	    rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_NOT_RUNNING);
+	    rb_objspace_coordinator_object_graph_safety_withdraw(cr, OGS_FLAG_NOT_RUNNING);
             while (UNLIKELY(vm->ractor.sched.barrier_waiting)) {
                 RUBY_DEBUG_LOG("barrier-wait");
 
@@ -1412,7 +1413,7 @@ rb_ractor_sched_barrier_start(rb_vm_t *vm, rb_ractor_t *cr)
     {
         vm->ractor.sched.barrier_waiting = true;
 
-	rb_ractor_sched_signal_possible_waiters(vm);
+	rb_ractor_sched_signal_possible_waiters(rb_get_objspace_coordinator());
 
         // release VM lock
         lock_rec = vm->ractor.sync.lock_rec;
@@ -1467,7 +1468,7 @@ ractor_sched_barrier_join_signal_locked(rb_vm_t *vm)
 static void
 ractor_sched_barrier_join_wait_locked(rb_vm_t *vm, rb_thread_t *th)
 {
-    rb_ractor_object_graph_safety_advance(th->ractor, OGS_FLAG_BARRIER_WAITING);
+    rb_objspace_coordinator_object_graph_safety_advance(th->ractor, OGS_FLAG_BARRIER_WAITING);
     VM_ASSERT(vm->ractor.sched.barrier_waiting);
 
     unsigned int barrier_serial = vm->ractor.sched.barrier_serial;
@@ -1483,7 +1484,7 @@ ractor_sched_barrier_join_wait_locked(rb_vm_t *vm, rb_thread_t *th)
 
         RUBY_DEBUG_LOG("wakeup serial:%u", barrier_serial);
     }
-    rb_ractor_object_graph_safety_withdraw(th->ractor, OGS_FLAG_BARRIER_WAITING);
+    rb_objspace_coordinator_object_graph_safety_withdraw(th->ractor, OGS_FLAG_BARRIER_WAITING);
 }
 
 void
@@ -1667,8 +1668,8 @@ Init_native_thread(rb_thread_t *main_th)
     if (pthread_key_create(&ruby_current_ec_key, 0) == EAGAIN) {
         rb_bug("pthread_key_create failed (ruby_current_ec_key)");
     }
-    if (pthread_key_create(&ruby_current_objspace_key, 0) == EAGAIN) {
-        rb_bug("pthread_key_create failed (ruby_current_objspace_key)");
+    if (pthread_key_create(&ruby_current_os_gate_key, 0) == EAGAIN) {
+        rb_bug("pthread_key_create failed (ruby_current_os_gate_key)");
     }
 #endif
     ruby_posix_signal(SIGVTALRM, null_func);
@@ -3051,7 +3052,7 @@ timer_thread_func(void *ptr)
     struct timer_thread_func_args *args = (struct timer_thread_func_args *)ptr;
     rb_vm_t *vm = args->vm;
     rb_ractor_set_current_ec_no_ractor(args->ec);
-    rb_ractor_set_current_objspace(GET_RACTOR()->local_objspace);
+    rb_ractor_set_current_os_gate(GET_RACTOR()->local_gate);
     free(args);
 #if defined(RUBY_NT_SERIAL)
     ruby_nt_serial = (rb_atomic_t)-1;

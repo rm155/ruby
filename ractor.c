@@ -7,8 +7,8 @@
 #include "vm_core.h"
 #include "eval_intern.h"
 #include "vm_sync.h"
+#include "objspace_coordinator.h"
 #include "ractor_core.h"
-#include "glospace.h"
 #include "internal/complex.h"
 #include "internal/error.h"
 #include "internal/gc.h"
@@ -290,9 +290,6 @@ ractor_free(void *ptr)
     rb_native_cond_destroy(&r->sync.cond);
 #endif
     rb_native_mutex_destroy(&r->borrowing_sync.lock);
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	rb_native_mutex_destroy(&r->borrowing_sync.page_lock[i]);
-    }
     rb_native_cond_destroy(&r->borrowing_sync.no_borrowers);
 
     rb_native_cond_destroy(&r->borrowing_sync.borrowing_allowed_cond);
@@ -311,12 +308,8 @@ ractor_free(void *ptr)
 	xfree(list);
     }
 
-    if (!r->objspace_absorbed) {
-	rb_disconnect_ractor_from_unabsorbed_objspace(r);
-    }
-
     if (r->registered_in_ractor_chains) {
-	rb_ractor_chains_unregister(r);
+	rb_ractor_chain_unregister_ractor(r);
     }
 
 
@@ -1043,7 +1036,7 @@ ractor_basket_prepare_contents(VALUE args)
         v = obj;
 	rb_ractor_t * rb_current_allocating_ractor(void);
 	rb_ractor_t *tr = rb_current_allocating_ractor();
-	if (!rb_special_const_p(obj)) rb_register_new_external_reference(tr->local_objspace, obj);
+	if (!rb_special_const_p(obj)) rb_register_new_external_reference(tr->local_gate, obj);
     }
     else if (!RTEST(p->move)) {
         v = ractor_copy(obj);
@@ -2063,7 +2056,7 @@ vm_insert_ractor0(rb_vm_t *vm, rb_ractor_t *r, bool single_ractor_mode)
     ccan_list_add_tail(&vm->ractor.set, &r->vmlr_node);
     vm->ractor.cnt++;
     unlock_ractor_set();
-    rb_ractor_chains_register(r);
+    rb_ractor_chain_register_ractor(r);
 
 #if VM_CHECK_MODE > 0
     r->reached_insertion = true;
@@ -2150,11 +2143,12 @@ vm_remove_ractor(rb_vm_t *vm, rb_ractor_t *cr)
 	    rb_remove_from_contained_ractor_tbl(cr);
 	    rb_objspace_free(cr->local_objspace);
 	    cr->local_objspace = NULL;
+	    cr->local_gate = NULL;
 	}
     }
     RB_VM_UNLOCK();
 
-    rb_ractor_chains_unregister(cr);
+    rb_ractor_chain_unregister_ractor(cr);
 }
 
 static VALUE
@@ -2250,12 +2244,6 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     rb_native_mutex_initialize(&r->borrowing_sync.lock);
     r->borrowing_sync.lock_owner = NULL;
     r->borrowing_sync.lock_lev = 0;
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	rb_native_mutex_initialize(&r->borrowing_sync.page_lock[i]);
-	r->borrowing_sync.page_lock_owner[i] = NULL;
-	r->borrowing_sync.page_lock_lev[i] = 0;
-	r->borrowing_sync.page_recently_locked[i] = false;
-    }
     r->borrowing_sync.borrower_count = 0;
     rb_native_cond_initialize(&r->borrowing_sync.no_borrowers);
     r->borrowing_sync.borrowing_allowed = true;
@@ -2327,7 +2315,7 @@ ractor_create(rb_execution_context_t *ec, VALUE self, VALUE loc, VALUE name, VAL
     rb_ractor_t *r = RACTOR_PTR(rv);
 
     ractor_newobj_cache_init(r);
-    rb_create_ractor_local_objspace(r);
+    rb_objspace_alloc(r);
     ractor_init(r, name, loc);
 
     // can block here
@@ -2582,7 +2570,7 @@ rb_ractor_living_threads_insert(rb_ractor_t *r, rb_thread_t *th)
 static void
 vm_ractor_blocking_cnt_inc(rb_vm_t *vm, rb_ractor_t *r, const char *file, int line)
 {
-    rb_ractor_object_graph_safety_advance(r, OGS_FLAG_BLOCKING);
+    rb_objspace_coordinator_object_graph_safety_advance(r, OGS_FLAG_BLOCKING);
     ractor_status_set(r, ractor_blocking);
 
     RUBY_DEBUG_LOG2(file, line, "vm->ractor.blocking_cnt:%d++", vm->ractor.blocking_cnt);
@@ -2609,7 +2597,7 @@ rb_vm_ractor_blocking_cnt_dec(rb_vm_t *vm, rb_ractor_t *cr, const char *file, in
     vm->ractor.blocking_cnt--;
 
     ractor_status_set(cr, ractor_running);
-    rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_BLOCKING);
+    rb_objspace_coordinator_object_graph_safety_withdraw(cr, OGS_FLAG_BLOCKING);
 }
 
 static void
@@ -2765,7 +2753,7 @@ rb_ractor_terminate_all(void)
 {
     rb_vm_t *vm = GET_VM();
     rb_ractor_t *cr = vm->ractor.main_ractor;
-    rb_gc_deactivate(vm);
+    rb_gc_deactivate(rb_get_objspace_coordinator());
 
     RUBY_DEBUG_LOG("ractor.cnt:%d", (int)vm->ractor.cnt);
 
@@ -3882,7 +3870,7 @@ move_leave(VALUE obj, struct obj_traverse_replace_data *data)
 static VALUE
 ractor_move(VALUE obj)
 {
-    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
+    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_gate, obj);
     VALUE val = rb_obj_traverse_replace(obj, move_enter, move_leave, true);
     if (!UNDEF_P(val)) {
         return val;
@@ -3919,7 +3907,7 @@ ractor_copy(VALUE obj)
     cr->during_ractor_copy = true;
 #endif
 
-    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_objspace, obj);
+    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_gate, obj);
     VALUE val = rb_obj_traverse_replace(obj, copy_enter, copy_leave, false);
 
 #if VM_CHECK_MODE > 0

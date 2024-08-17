@@ -110,7 +110,7 @@ static void
 mark_end_proc_if_in_objspace(struct end_proc_data *end_proc, void *arg)
 {
     struct rb_objspace *objspace = arg;
-    if (rb_contained_in_objspace_p(objspace, end_proc->data)) rb_gc_mark(end_proc->data);
+    if (rb_gc_objspace_of_value(end_proc->data) == objspace) rb_gc_mark(end_proc->data);
 }
 
 void

@@ -1,8 +1,8 @@
-#include "glospace.h"
 #include "internal/gc.h"
 #include "internal/thread.h"
 #include "vm_core.h"
 #include "vm_sync.h"
+#include "objspace_coordinator.h"
 #include "ractor_core.h"
 #include "vm_debug.h"
 
@@ -73,13 +73,13 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
     RUBY_DEBUG_LOG2(file, line, "start locked:%d", locked);
 
     no_barrier = no_barrier || !can_use_barrier(cr);
-    VM_ASSERT(!cr || !cr->local_objspace || !heap_locked(cr->local_objspace));
+    VM_ASSERT(!cr || !cr->local_objspace || !objspace_locked(cr->local_gate));
 
     if (locked) {
         ASSERT_vm_locking();
     }
     else {
-	if (!no_barrier) rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_ENTERING_VM_LOCK);
+	if (!no_barrier) rb_objspace_coordinator_object_graph_safety_advance(cr, OGS_FLAG_ENTERING_VM_LOCK);
 
 #if RACTOR_CHECK_MODE
         // locking ractor and acquire VM lock will cause deadlock
@@ -110,7 +110,7 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
         VM_ASSERT(vm->ractor.sync.lock_owner == NULL);
         vm->ractor.sync.lock_owner = cr;
 
-	if (!no_barrier) rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_ENTERING_VM_LOCK);
+	if (!no_barrier) rb_objspace_coordinator_object_graph_safety_withdraw(cr, OGS_FLAG_ENTERING_VM_LOCK);
     }
 
     vm->ractor.sync.lock_rec++;
@@ -243,9 +243,9 @@ rb_vm_barrier(void)
         VM_ASSERT(cr == GET_RACTOR());
         VM_ASSERT(rb_ractor_status_p(cr, ractor_running));
 
-	rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_BARRIER_CREATING);
+	rb_objspace_coordinator_object_graph_safety_advance(cr, OGS_FLAG_BARRIER_CREATING);
         rb_ractor_sched_barrier_start(vm, cr);
-	rb_ractor_object_graph_safety_withdraw(cr, OGS_FLAG_BARRIER_CREATING);
+	rb_objspace_coordinator_object_graph_safety_withdraw(cr, OGS_FLAG_BARRIER_CREATING);
     }
 }
 

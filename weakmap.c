@@ -1,9 +1,9 @@
-#include "glospace.h"
 #include "internal.h"
 #include "internal/gc.h"
 #include "internal/hash.h"
 #include "internal/proc.h"
 #include "internal/sanitizers.h"
+#include "objspace_coordinator.h"
 #include "ruby/st.h"
 
 /* ===== WeakMap =====
@@ -432,8 +432,8 @@ wmap_aset_replace(st_data_t *key, st_data_t *val, st_data_t new_key_ptr, int exi
 
     *(VALUE *)*key = new_key;
     *(VALUE *)*val = new_val;
-    rb_ractor_t *key_ractor = get_ractor_of_value(new_key);
-    rb_ractor_t *val_ractor = get_ractor_of_value(new_val);
+    rb_ractor_t *key_ractor = rb_gc_ractor_of_value_safe(new_key);
+    rb_ractor_t *val_ractor = rb_gc_ractor_of_value_safe(new_val);
     rb_ractor_t *current_ractor = GET_RACTOR();
     if (current_ractor != key_ractor) {
 	rb_register_new_external_wmap_reference((VALUE *)*key);
@@ -813,7 +813,7 @@ wkmap_aset_replace(st_data_t *key, st_data_t *val, st_data_t data_args, int exis
     *(VALUE *)*key = args->new_key;
     *val = (st_data_t)args->new_val;
 
-    rb_ractor_t *key_ractor = get_ractor_of_value(args->new_key);
+    rb_ractor_t *key_ractor = rb_gc_ractor_of_value_safe(args->new_key);
     rb_ractor_t *current_ractor = GET_RACTOR();
     if (key_ractor && current_ractor != key_ractor) {
 	rb_register_new_external_wmap_reference((VALUE *)*key);

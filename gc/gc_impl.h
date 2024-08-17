@@ -26,8 +26,10 @@
 
 // Bootup
 GC_IMPL_FN void *rb_gc_impl_objspace_alloc(void);
-GC_IMPL_FN void rb_gc_impl_objspace_init(void *objspace_ptr);
+GC_IMPL_FN void rb_gc_impl_objspace_init(void *objspace_ptr, void *ractor);
 GC_IMPL_FN void rb_gc_impl_objspace_free(void *objspace_ptr);
+GC_IMPL_FN void rb_gc_impl_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_ptr);
+GC_IMPL_FN void rb_gc_impl_attach_local_gate(void *objspace_ptr, void *local_gate_ptr);
 GC_IMPL_FN void *rb_gc_impl_ractor_cache_alloc(void *objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_ractor_cache_free(void *objspace_ptr, void *cache);
 GC_IMPL_FN void rb_gc_impl_set_params(void *objspace_ptr);
@@ -46,6 +48,7 @@ GC_IMPL_FN void rb_gc_impl_prepare_heap(void *objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_gc_enable(void *objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_gc_disable(void *objspace_ptr, bool finish_current_gc);
 GC_IMPL_FN bool rb_gc_impl_gc_enabled_p(void *objspace_ptr);
+GC_IMPL_FN void rb_gc_impl_gc_deactivate_prepare(void *objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_stress_set(void *objspace_ptr, VALUE flag);
 GC_IMPL_FN VALUE rb_gc_impl_stress_get(void *objspace_ptr);
 GC_IMPL_FN VALUE rb_gc_impl_config_get(void *objspace_ptr);
@@ -70,6 +73,7 @@ GC_IMPL_FN void rb_gc_impl_stack_location_mark_maybe(void *objspace_ptr, VALUE o
 GC_IMPL_FN void rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr);
 GC_IMPL_FN void rb_gc_impl_remove_weak(void *objspace_ptr, VALUE parent_obj, VALUE *ptr);
 GC_IMPL_FN void rb_gc_impl_objspace_mark(void *objspace_ptr);
+GC_IMPL_FN bool rb_gc_impl_object_marked_p(void *objspace_ptr, VALUE obj);
 // Compaction
 GC_IMPL_FN bool rb_gc_impl_object_moved_p(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN VALUE rb_gc_impl_location(void *objspace_ptr, VALUE value);
@@ -88,6 +92,7 @@ GC_IMPL_FN void rb_gc_impl_copy_finalizer(void *objspace_ptr, VALUE dest, VALUE 
 GC_IMPL_FN void rb_gc_impl_shutdown_call_finalizer(void *objspace_ptr);
 // Object ID
 GC_IMPL_FN VALUE rb_gc_impl_object_id(void *objspace_ptr, VALUE obj);
+GC_IMPL_FN VALUE rb_gc_impl_object_id_local_search(void *objspace_ptr, VALUE objid);
 GC_IMPL_FN VALUE rb_gc_impl_object_id_to_ref(void *objspace_ptr, VALUE object_id);
 // Statistics
 GC_IMPL_FN VALUE rb_gc_impl_set_measure_total_time(void *objspace_ptr, VALUE flag);
@@ -98,11 +103,16 @@ GC_IMPL_FN VALUE rb_gc_impl_latest_gc_info(void *objspace_ptr, VALUE key);
 GC_IMPL_FN size_t rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym);
 GC_IMPL_FN size_t rb_gc_impl_stat_heap(void *objspace_ptr, VALUE heap_name, VALUE hash_or_sym);
 // Miscellaneous
+GC_IMPL_FN void *rb_gc_impl_ractor_of_objspace(void *objspace_ptr);
+GC_IMPL_FN void *rb_gc_impl_local_gate_of_objspace(void *objspace_ptr);
+GC_IMPL_FN void *rb_gc_impl_objspace_of_value(VALUE obj);
+GC_IMPL_FN void *rb_gc_impl_ractor_of_value(VALUE obj);
 GC_IMPL_FN size_t rb_gc_impl_obj_flags(void *objspace_ptr, VALUE obj, ID* flags, size_t max);
 GC_IMPL_FN bool rb_gc_impl_pointer_to_heap_p(void *objspace_ptr, const void *ptr);
 GC_IMPL_FN bool rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN void rb_gc_impl_set_event_hook(void *objspace_ptr, const rb_event_flag_t event);
 GC_IMPL_FN void rb_gc_impl_copy_attributes(void *objspace_ptr, VALUE dest, VALUE obj);
+GC_IMPL_FN bool rb_gc_impl_object_local_immune_p(void *objspace_ptr, VALUE obj);
 
 #undef GC_IMPL_FN
 

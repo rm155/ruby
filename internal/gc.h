@@ -122,74 +122,14 @@ const char *rb_raw_obj_info(char *const buff, const size_t buff_size, VALUE obj)
 VALUE rb_gc_ractor_teardown_cleanup();
 struct rb_execution_context_struct; /* in vm_core.h */
 struct rb_objspace; /* in vm_core.h */
+struct rb_global_space;
 typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
 typedef struct rb_thread_struct rb_thread_t; /* in vm_core.h */
+typedef struct rb_objspace_gate rb_objspace_gate_t;
 
-void rb_disconnect_ractor_from_unabsorbed_objspace(r);
-
-unsigned long long rb_get_obj_id_initial(void);
-
-rb_ractor_t *atomic_load_ractor_of_value(VALUE obj);
-struct rb_objspace *atomic_load_objspace_of_value(VALUE obj);
-
-#ifdef RB_THREAD_LOCAL_SPECIFIER
-  #ifdef __APPLE__
-#define GET_OBJSPACE() rb_current_objspace()
-  #else
-#define GET_OBJSPACE() ruby_current_objspace
-  #endif
-#else
-#define GET_OBJSPACE() native_tls_get(ruby_current_objspace_key)
-#endif
-
-#define GET_RACTOR_OF_VALUE(x)   (atomic_load_ractor_of_value(x))
-#define GET_OBJSPACE_OF_VALUE(x) (atomic_load_objspace_of_value(x))
-
-#define WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace) { \
-    bool _using_objspace_read = false; \
-    rb_global_space_t *_global_space; \
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj); \
-    if (UNLIKELY(!ruby_single_main_objspace && objspace != GET_OBJSPACE())) { \
-	_global_space = &rb_global_space; \
-	objspace_read_enter(_global_space); \
-	objspace = GET_OBJSPACE_OF_VALUE(obj); \
-	_using_objspace_read = true; \
-    }
-
-#define WITH_OBJSPACE_OF_VALUE_LEAVE(objspace) \
-    if (_using_objspace_read) { \
-	objspace_read_leave(_global_space); \
-    } \
-}
-
-#define WITH_OBJSPACE_LOCAL_DATA_ENTER(obj, data) { \
-    struct objspace_local_data *data; \
-    rb_objspace_t *_objspace_of_value; \
-    WITH_OBJSPACE_OF_VALUE_ENTER(obj, _objspace_of_value); \
-    { \
-	data = objspace_get_local_data(_objspace_of_value);
-
-#define WITH_OBJSPACE_LOCAL_DATA_LEAVE(data) \
-    } \
-    WITH_OBJSPACE_OF_VALUE_LEAVE(_objspace_of_value); \
-}
+#define OBJ_ID_INCREMENT (RUBY_IMMEDIATE_MASK + 1)
+#define OBJ_ID_INITIAL (OBJ_ID_INCREMENT)
  
-
-typedef enum {
-    OGS_FLAG_NONE                   = 0x000,
-    OGS_FLAG_NOT_RUNNING            = 0x001,
-    OGS_FLAG_BLOCKING               = 0x002,
-    OGS_FLAG_BARRIER_WAITING        = 0x004,
-    OGS_FLAG_BARRIER_CREATING       = 0x008,
-    OGS_FLAG_ENTERING_VM_LOCK       = 0x010,
-    OGS_FLAG_RUNNING_LOCAL_GC       = 0x020,
-    OGS_FLAG_RUNNING_GLOBAL_GC      = 0x040,
-    OGS_FLAG_ABSORBING_OBJSPACE     = 0x080,
-    OGS_FLAG_COND_AND_BARRIER       = 0x100,
-};
-
-void rb_ractor_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason);
-void rb_ractor_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason);
 
 #define NEWOBJ_OF(var, T, c, f, s, ec) \
     T *(var) = (T *)(((f) & FL_WB_PROTECTED) ? \
@@ -252,6 +192,7 @@ void rb_gc_prepare_heap(void);
 void rb_objspace_set_event_hook(const rb_event_flag_t event);
 VALUE rb_objspace_gc_enable(void *objspace);
 VALUE rb_objspace_gc_disable(void *objspace);
+void rb_gc_deactivate_prepare(void *objspace_ptr);
 struct rb_objspace *get_objspace_of_value(VALUE v);
 void ruby_gc_set_params(void);
 void rb_gc_copy_attributes(VALUE dest, VALUE obj);
@@ -270,6 +211,8 @@ static inline void ruby_sized_xfree_inlined(void *ptr, size_t size);
 void *rb_gc_ractor_cache_alloc(void);
 void rb_gc_ractor_cache_free(void *cache);
 
+void rb_gc_register_in_mark_object_ary(VALUE obj);
+
 bool rb_gc_size_allocatable_p(size_t size);
 size_t *rb_gc_size_pool_sizes(void);
 size_t rb_gc_size_pool_id_for_size(size_t size);
@@ -286,6 +229,8 @@ void rb_gc_ref_update_table_values_only(st_table *tbl);
 
 void rb_gc_initial_stress_set(VALUE flag);
 
+void rb_objspace_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_ptr);
+
 #define rb_gc_mark_and_move_ptr(ptr) do { \
     VALUE _obj = (VALUE)*(ptr); \
     rb_gc_mark_and_move(&_obj); \
@@ -299,8 +244,19 @@ void rb_objspace_reachable_objects_from_root(void (func)(const char *category, V
 int rb_objspace_internal_object_p(VALUE obj);
 int rb_objspace_garbage_object_p(VALUE obj);
 
-rb_ractor_t *get_ractor_of_value(VALUE obj);
-bool rb_contained_in_objspace_p(struct rb_objspace *objspace, VALUE obj);
+bool rb_gc_object_marked(VALUE obj);
+bool rb_gc_object_local_immune(VALUE obj);
+
+rb_ractor_t *rb_gc_ractor_of_objspace(void *objspace_ptr);
+rb_objspace_gate_t *rb_gc_local_gate_of_objspace(void *objspace_ptr);
+void *rb_gc_objspace_of_value(VALUE obj);
+void *rb_gc_objspace_of_value_safe(VALUE obj);
+rb_ractor_t *rb_gc_ractor_of_value(VALUE obj);
+rb_ractor_t *rb_gc_ractor_of_value_safe(VALUE obj);
+
+void rb_gc_attach_local_gate(void *objspace_ptr, rb_objspace_gate_t *local_gate);
+
+VALUE rb_objspace_object_id_local_search(void *objspace, VALUE objid);
 
 void rb_objspace_each_objects(
     int (*callback)(void *start, void *end, size_t stride, void *data),
@@ -331,6 +287,7 @@ RUBY_SYMBOL_EXPORT_END
 
 int rb_ec_stack_check(struct rb_execution_context_struct *ec);
 void rb_gc_writebarrier_remember(VALUE obj);
+void rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b);
 const char *rb_obj_info(VALUE obj);
 
 #if defined(HAVE_MALLOC_USABLE_SIZE) || defined(HAVE_MALLOC_SIZE) || defined(_WIN32)
@@ -396,3 +353,4 @@ ruby_sized_realloc_n(void *ptr, size_t new_count, size_t element_size, size_t ol
 #define ruby_sized_xrealloc2 ruby_sized_xrealloc2_inlined
 #define ruby_sized_xfree ruby_sized_xfree_inlined
 #endif /* INTERNAL_GC_H */
+

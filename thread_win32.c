@@ -189,8 +189,8 @@ Init_native_thread(rb_thread_t *main_th)
     if ((ruby_native_thread_key = TlsAlloc()) == TLS_OUT_OF_INDEXES) {
         rb_bug("TlsAlloc() for ruby_native_thread_key fails");
     }
-    if ((ruby_current_objspace_key = TlsAlloc()) == TLS_OUT_OF_INDEXES) {
-        rb_bug("TlsAlloc() for ruby_current_objspace_key fails");
+    if ((ruby_current_os_gate_key = TlsAlloc()) == TLS_OUT_OF_INDEXES) {
+        rb_bug("TlsAlloc() for ruby_current_os_gate_key fails");
     }
 
     // setup main thread
@@ -769,7 +769,7 @@ timer_thread_func(void *ptr)
     rb_vm_t *vm = GET_VM();
     rb_execution_context_t *ec = (rb_execution_context_t *)ptr;
     rb_ractor_set_current_ec_no_ractor(ec);
-    rb_ractor_set_current_objspace(GET_RACTOR()->local_objspace);
+    rb_ractor_set_current_os_gate(GET_RACTOR()->local_gate);
     RUBY_DEBUG_LOG("start");
     rb_w32_set_thread_description(GetCurrentThread(), L"ruby-timer-thread");
     while (WaitForSingleObject(timer_thread.lock,

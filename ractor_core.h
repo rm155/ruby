@@ -2,16 +2,12 @@
 #define RUBY_RACTOR_CORE_H
 
 #include "internal/gc.h"
+#include "objspace_coordinator.h"
 #include "ruby/ruby.h"
 #include "ruby/ractor.h"
 #include "vm_core.h"
 #include "id_table.h"
 #include "vm_debug.h"
-
-//TODO Remove after merge errors fixed
-#ifndef SIZE_POOL_COUNT
-# define SIZE_POOL_COUNT 5
-#endif
 
 
 #ifndef RACTOR_CHECK_MODE
@@ -181,8 +177,8 @@ struct rb_ractor_struct {
     struct rb_ractor_sync sync;
     VALUE receiving_mutex;
     bool during_teardown_cleanup;
-#if VM_CHECK_MODE > 0
     bool teardown_cleanup_done;
+#if VM_CHECK_MODE > 0
     bool reached_insertion;
 #endif
     rb_ractor_t *receiver_before_exit;
@@ -229,11 +225,6 @@ struct rb_ractor_struct {
 	rb_ractor_t *lock_owner;
 	int lock_lev;
 
-	rb_nativethread_lock_t page_lock[SIZE_POOL_COUNT];
-	rb_ractor_t *page_lock_owner[SIZE_POOL_COUNT];
-	int page_lock_lev[SIZE_POOL_COUNT];
-	bool page_recently_locked[SIZE_POOL_COUNT];
-
 	rb_atomic_t borrower_count;
 	rb_nativethread_cond_t no_borrowers;
 
@@ -252,9 +243,10 @@ struct rb_ractor_struct {
     } *mfd;
 
     struct rb_objspace *local_objspace;
+    rb_objspace_gate_t *local_gate;
 
-#if VM_CHECK_MODE > 0
     bool late_to_barrier;
+#if VM_CHECK_MODE > 0
     bool during_ractor_copy;
 #endif
 
@@ -274,27 +266,6 @@ struct rb_ractor_struct {
     struct borrowing_target_node_t *borrowing_target_top;
 }; // rb_ractor_t is defined in vm_core.h
 
-struct rb_ractor_chain_node {
-    rb_ractor_t *ractor;
-    rb_atomic_t value;
-    struct rb_ractor_chain_node *prev_node;
-    struct rb_ractor_chain_node *next_node;
-};
-
-struct rb_ractor_chain {
-    struct rb_global_space *global_space;
-    struct rb_ractor_chain_node *head_node;
-    struct rb_ractor_chain_node *tail_node;
-
-    void (*node_added_callback)(struct rb_ractor_chain *, struct rb_ractor_chain_node *);
-    void (*node_removed_callback)(struct rb_ractor_chain *, struct rb_ractor_chain_node *);
-
-    rb_nativethread_lock_t lock;
-#if VM_CHECK_MODE > 0
-    rb_ractor_t *lock_owner;
-#endif
-};
-
 static inline VALUE
 rb_ractor_self(const rb_ractor_t *r)
 {
@@ -308,9 +279,6 @@ void rb_ractor_atexit_exception(rb_execution_context_t *ec);
 void rb_ractor_teardown(rb_execution_context_t *ec);
 void rb_ractor_receive_parameters(rb_execution_context_t *ec, rb_ractor_t *g, int len, VALUE *ptr);
 void rb_ractor_send_parameters(rb_execution_context_t *ec, rb_ractor_t *g, VALUE args);
-
-void rb_assign_main_ractor_objspace(rb_ractor_t *ractor);
-void rb_create_ractor_local_objspace(rb_ractor_t *ractor);
 
 void rb_thread_create_ractor(rb_ractor_t *g, VALUE args, VALUE proc); // defined in thread.c
 
@@ -444,18 +412,18 @@ rb_ractor_set_current_ec_no_ractor(rb_execution_context_t *ec)
 }
 
 static inline void
-rb_ractor_set_current_objspace(struct rb_objspace *objspace)
+rb_ractor_set_current_os_gate(rb_objspace_gate_t *os_gate)
 {
 #ifdef RB_THREAD_LOCAL_SPECIFIER
 
 # ifdef __APPLE__
-    rb_current_objspace_set(objspace);
+    rb_current_os_gate_set(os_gate);
 # else
-    ruby_current_objspace = objspace;
+    ruby_current_os_gate = os_gate;
 # endif
 
 #else
-    native_tls_set(ruby_current_objspace_key, objspace);
+    native_tls_set(ruby_current_os_gate_key, os_gate);
 #endif
 }
 
@@ -465,7 +433,7 @@ static inline void
 rb_ractor_set_current_ec_(rb_ractor_t *cr, rb_execution_context_t *ec, const char *file, int line)
 {
     rb_ractor_set_current_ec_no_ractor(ec);
-    rb_ractor_set_current_objspace(cr->local_objspace);
+    rb_ractor_set_current_os_gate(cr->local_gate);
     RUBY_DEBUG_LOG2(file, line, "ec:%p->%p", (void *)cr->threads.running_ec, (void *)ec);
     VM_ASSERT(ec == NULL || cr->threads.running_ec != ec);
     cr->threads.running_ec = ec;

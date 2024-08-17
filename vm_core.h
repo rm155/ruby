@@ -608,13 +608,15 @@ typedef struct rb_at_exit_list {
     struct rb_at_exit_list *next;
 } rb_at_exit_list;
 
-void *rb_objspace_alloc(void);
+typedef struct rb_ractor_struct rb_ractor_t;
+
+void *rb_objspace_alloc(rb_ractor_t *ractor);
+void *rb_main_objspace_alloc(void);
 void rb_objspace_free(void *objspace);
 void rb_objspace_call_finalizer(void *objspace);
 
-struct rb_global_space;
-struct rb_global_space * rb_global_space_init(void);
-void rb_global_space_free(struct rb_global_space *);
+typedef struct rb_objspace_coordinator rb_objspace_coordinator_t;
+rb_objspace_coordinator_t *rb_gc_get_objspace_coordinator(void);
 
 typedef struct rb_hook_list_struct {
     struct rb_event_hook_struct *hooks;
@@ -637,6 +639,8 @@ typedef struct rb_gc_safe_lock_struct {
 
 VALUE rb_pin_array_list_new(VALUE next);
 VALUE rb_pin_array_list_append(VALUE obj, VALUE item);
+
+struct rb_objspace_gate;
 
 typedef struct rb_vm_struct {
     VALUE self;
@@ -757,11 +761,10 @@ typedef struct rb_vm_struct {
     int coverage_mode;
 
     struct rb_objspace *objspace;
+    struct rb_objspace_gate *main_os_gate;
     struct ccan_list_head objspace_set; //TODO: Remove once Ractors handle their own objspace upon ending
+    struct rb_objspace_coordinator *objspace_coordinator;
     struct rb_global_space *global_space;
-
-    bool global_gc_underway;
-    rb_nativethread_cond_t global_gc_finished;
 
 
     rb_at_exit_list *at_exit;
@@ -785,8 +788,8 @@ typedef struct rb_vm_struct {
     // invalidated or ISEQs are being freed.
     struct rb_id_table *constant_cache;
 
-#ifndef VM_GLOBAL_CC_CACHE_TABLE_SIZE
-#define VM_GLOBAL_CC_CACHE_TABLE_SIZE 1023
+#ifndef VM_OBJSPACE_CC_CACHE_TABLE_SIZE
+#define VM_OBJSPACE_CC_CACHE_TABLE_SIZE 1023
 #endif
 
 #if defined(USE_VM_CLOCK) && USE_VM_CLOCK
@@ -805,8 +808,6 @@ typedef struct rb_vm_struct {
     struct rb_ractor_struct *subclass_list_lock_owner;
 
     rb_nativethread_lock_t classpath_lock;
-
-    unsigned int gc_deactivated: 1;
 } rb_vm_t;
 
 /* default values */
@@ -1097,8 +1098,6 @@ void rb_ec_clear_vm_stack(rb_execution_context_t *ec);
 struct rb_ext_config {
     bool ractor_safe;
 };
-
-typedef struct rb_ractor_struct rb_ractor_t;
 
 struct rb_native_thread;
 

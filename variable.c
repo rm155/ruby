@@ -1892,8 +1892,8 @@ static void
 ivar_set(VALUE obj, ID id, VALUE val)
 {
     if (rb_multi_ractor_p()) {
-	rb_ractor_t *obj_ractor = get_ractor_of_value(obj);
-	rb_ractor_t *val_ractor = get_ractor_of_value(val);
+	rb_ractor_t *obj_ractor = rb_gc_ractor_of_value_safe(obj);
+	rb_ractor_t *val_ractor = rb_gc_ractor_of_value_safe(val);
 	if (UNLIKELY(obj_ractor && val_ractor && obj_ractor != val_ractor && !rb_ractor_shareable_p(val))) {
 	    rb_raise(rb_eRuntimeError, "an unshareable object can only be set to an instance variable of an object belonging to the same Ractor");
 	}
