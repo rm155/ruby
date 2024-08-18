@@ -7479,7 +7479,7 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
     /* if major gc has been disabled, never do a full mark */
     if (!gc_config_full_mark_val) {
 	if (!(reason & GPR_FLAG_GLOBAL)) {
-	    do_full_mark = FALSE;
+	    *do_full_mark = FALSE;
 	}
     }
     gc_needs_major_flags = GPR_FLAG_NONE;
