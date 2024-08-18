@@ -1830,6 +1830,7 @@ rb_gc_impl_object_id(void *objspace_ptr, VALUE obj)
     VALUE id;
 
     WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    rb_native_mutex_lock(&objspace->obj_id_lock);
     st_data_t val;
     if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &val)) {
         GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
@@ -3577,9 +3578,7 @@ get_object_id_in_finalizer(rb_objspace_t *objspace, VALUE obj)
         return rb_gc_impl_object_id(objspace, obj);
     }
     else {
-        VALUE id = ULL2NUM(objspace->next_object_id);
-        objspace->next_object_id += OBJ_ID_INCREMENT;
-        return id;
+	return retrieve_next_obj_id(OBJ_ID_INCREMENT);
     }
 }
 
