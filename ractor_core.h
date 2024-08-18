@@ -2,7 +2,6 @@
 #define RUBY_RACTOR_CORE_H
 
 #include "internal/gc.h"
-#include "objspace_coordinator.h"
 #include "ruby/ruby.h"
 #include "ruby/ractor.h"
 #include "vm_core.h"
@@ -158,6 +157,7 @@ enum ractor_status {
 
 struct rb_global_space;
 struct rb_objspace;
+typedef struct rb_objspace_gate rb_objspace_gate_t;
 
 struct borrowing_target_node_t {
     rb_ractor_t *target_ractor;

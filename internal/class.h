@@ -13,7 +13,6 @@
 #include "internal/serial.h"    /* for rb_serial_t */
 #include "internal/static_assert.h"
 #include "internal/variable.h"  /* for rb_class_ivar_set */
-#include "objspace_coordinator.h"
 #include "ruby/internal/stdbool.h"     /* for bool */
 #include "ruby/intern.h"        /* for rb_alloc_func_t */
 #include "ruby/ruby.h"          /* for struct RBasic */
@@ -263,6 +262,7 @@ RCLASS_SET_SUPER(VALUE klass, VALUE super)
 }
 
 VALUE rb_ractor_make_shareable_copy(VALUE obj);
+void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, VALUE obj);
 
 static inline void
 RCLASS_SET_CLASSPATH(VALUE klass, VALUE classpath, bool permanent)

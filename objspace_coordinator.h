@@ -1,6 +1,8 @@
 #ifndef RUBY_OBJSPACE_COORDINATOR_H
 #define RUBY_OBJSPACE_COORDINATOR_H
 
+#include "internal/gc.h"
+
 typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
 struct rb_objspace_coordinator;
 
@@ -388,4 +390,3 @@ void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *cur
 void rb_gc_give_local_immunity_traversal(VALUE obj);
 
 #endif
-

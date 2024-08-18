@@ -1,4 +1,4 @@
-#include "ractor_core.h"// #include "objspace_coordinator.h"
+#include "objspace_coordinator.h"
 #include "internal/numeric.h"
 #include "ractor_core.h"
 #include "vm_core.h"
