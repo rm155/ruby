@@ -440,7 +440,7 @@ rb_objspace_gate_free(rb_objspace_gate_t *local_gate)
     free(local_gate);
 }
 
-static int
+int
 st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value)
 {
     VALUE already_disabled = rb_gc_disable_no_rest();

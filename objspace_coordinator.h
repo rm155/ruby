@@ -252,6 +252,7 @@ typedef struct rb_objspace_gate {
 
 rb_objspace_gate_t *rb_objspace_gate_init(struct rb_objspace *objspace);
 void rb_objspace_gate_free(rb_objspace_gate_t *local_gate);
+int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, VALUE obj);
 void confirm_externally_added_external_references(rb_objspace_gate_t *local_gate);
 void mark_in_external_reference_tbl(rb_objspace_gate_t *os_gate, VALUE obj);

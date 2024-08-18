@@ -1840,8 +1840,8 @@ rb_gc_impl_object_id(void *objspace_ptr, VALUE obj)
 	GC_ASSERT(!FL_TEST(obj, FL_SEEN_OBJ_ID));
 	id = retrieve_next_obj_id(OBJ_ID_INCREMENT);
 
-	st_insert(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
-	st_insert(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
+	st_insert_no_gc(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
+	st_insert_no_gc(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
 	FL_SET(obj, FL_SEEN_OBJ_ID);
     }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
