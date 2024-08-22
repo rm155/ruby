@@ -1901,7 +1901,7 @@ rb_gc_give_local_immunity_traversal_i(VALUE obj, void *ptr)
 	gc_give_local_immunity_no_check(obj);
 
 	if (!MUTABLE_SHAREABLE(obj)) {
-	    rb_objspace_reachable_objects_from(obj, rb_gc_give_local_immunity_traversal_i, NULL);
+	    rb_objspace_reachable_objects_from_global(obj, rb_gc_give_local_immunity_traversal_i, NULL);
 	}
     }
 
