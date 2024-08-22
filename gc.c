@@ -3135,7 +3135,7 @@ gc_ref_update_object(void *objspace, VALUE v)
     VALUE *ptr = ROBJECT_IVPTR(v);
 
     if (rb_shape_obj_too_complex(v)) {
-        gc_ref_update_table_values_only(objspace, ROBJECT_IV_HASH(v));
+        gc_ref_update_table_values_only(ROBJECT_IV_HASH(v));
         return;
     }
 
@@ -3157,14 +3157,14 @@ gc_ref_update_object(void *objspace, VALUE v)
 void
 rb_gc_ref_update_table_values_only(st_table *tbl)
 {
-    gc_ref_update_table_values_only(rb_gc_get_objspace(), tbl);
+    gc_ref_update_table_values_only(tbl);
 }
 
 /* Update MOVED references in a VALUE=>VALUE st_table */
 void
 rb_gc_update_tbl_refs(st_table *ptr)
 {
-    gc_update_table_refs(rb_gc_get_objspace(), ptr);
+    gc_update_table_refs(ptr);
 }
 
 static void
@@ -3366,7 +3366,7 @@ rb_gc_update_vm_references(void *objspace)
     {
 	global_symbols->ids = rb_gc_location(global_symbols->ids);
 	global_symbols->dsymbol_fstr_hash = rb_gc_location(global_symbols->dsymbol_fstr_hash);
-	gc_update_table_refs(objspace, global_symbols->str_sym);
+	gc_update_table_refs(global_symbols->str_sym);
     }
     GLOBAL_SYMBOLS_LEAVE(global_symbols);
 
@@ -3402,7 +3402,7 @@ rb_gc_update_object_references(void *objspace, VALUE obj)
         update_superclasses(objspace, obj);
 
         if (rb_shape_obj_too_complex(obj)) {
-            gc_ref_update_table_values_only(objspace, RCLASS_IV_HASH(obj));
+            gc_ref_update_table_values_only(RCLASS_IV_HASH(obj));
         }
         else {
             for (attr_index_t i = 0; i < RCLASS_IV_COUNT(obj); i++) {
