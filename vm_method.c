@@ -681,7 +681,8 @@ rb_method_definition_set(const rb_method_entry_t *me, rb_method_definition_t *de
 
                 if (cfp && (line = rb_vm_get_sourceline(cfp))) {
                     VALUE location = rb_ary_new3(2, rb_iseq_path(cfp->iseq), INT2FIX(line));
-                    RB_OBJ_WRITE(me, &def->body.attr.location, rb_ary_freeze(location));
+		    FL_SET_RAW(rb_ary_freeze(location), RUBY_FL_SHAREABLE);
+                    RB_OBJ_WRITE(me, &def->body.attr.location, location);
                 }
                 else {
                     VM_ASSERT(def->body.attr.location == 0);
