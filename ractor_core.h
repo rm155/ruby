@@ -240,7 +240,6 @@ struct rb_ractor_struct {
     struct gc_mark_func_data_struct {
         void *data;
         void (*mark_func)(VALUE v, void *data);
-	bool global;
     } *mfd;
 
     struct rb_objspace *local_objspace;
