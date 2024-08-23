@@ -1831,13 +1831,17 @@ rb_gc_impl_object_id(void *objspace_ptr, VALUE obj)
 
     WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
     rb_native_mutex_lock(&objspace->obj_id_lock);
-    st_data_t val;
-    if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &val)) {
-        GC_ASSERT(FL_TEST(obj, FL_SEEN_OBJ_ID));
-        id = (VALUE)val;
+    if (FL_TEST(obj, FL_SEEN_OBJ_ID)) {
+        st_data_t val;
+        if (st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, &val)) {
+            id = (VALUE)val;
+        }
+        else {
+            rb_bug("rb_gc_impl_object_id: FL_SEEN_OBJ_ID flag set but not found in table");
+        }
     }
     else {
-	GC_ASSERT(!FL_TEST(obj, FL_SEEN_OBJ_ID));
+        GC_ASSERT(!st_lookup(objspace->obj_to_id_tbl, (st_data_t)obj, NULL));
 	id = retrieve_next_obj_id(OBJ_ID_INCREMENT);
 
 	st_insert_no_gc(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
