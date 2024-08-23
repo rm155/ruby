@@ -1389,7 +1389,6 @@ check_rvalue_consistency_force(rb_objspace_t *objspace, const VALUE obj, int ter
 {
     int err = 0;
 
-    VM_ASSERT(objspace == GET_OBJSPACE_OF_VALUE(obj));
     if (objspace != GET_OBJSPACE_OF_VALUE(obj)) {
 	WITH_OBJSPACE_OF_VALUE_ENTER(obj, obj_objspace);
 	{
@@ -5286,7 +5285,7 @@ gc_mark(rb_objspace_t *objspace, VALUE obj)
     }
     else {
 	VM_ASSERT(dont_gc_val() == TRUE);
-	if (GET_OBJSPACE_OF_VALUE(obj) == objspace) {
+	if (GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE)) { //TODO: Remove condition when shareability rules are fully applied
 	    rb_gc_reachable_objects_from_callback(obj);
 	}
     }
@@ -5874,7 +5873,7 @@ check_generation_i(const VALUE child, void *ptr)
     if (RGENGC_CHECK_MODE) GC_ASSERT(RVALUE_OLD_P(data->objspace, parent));
 
     bool absorption_correction_needed = data->objspace->rgengc.need_major_gc & GPR_FLAG_MAJOR_BY_ABSORB;
-    if (absorption_correction_needed) return;
+    if (GET_OBJSPACE_OF_VALUE(child) != data->objspace || absorption_correction_needed) return;
     if (!RVALUE_OLD_P(data->objspace, child)) {
         if (!RVALUE_REMEMBERED(data->objspace, parent) &&
             !RVALUE_REMEMBERED(data->objspace, child) &&
