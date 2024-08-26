@@ -2579,6 +2579,7 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 {
     rb_execution_context_t *ec = GET_EC();
     rb_vm_t *vm = rb_ec_vm_ptr(ec);
+    rb_objspace_gate_t *local_gate = rb_gc_local_gate_of_objspace(objspace);
 
     gc_mark_reset_parent(objspace);
 
@@ -2591,15 +2592,15 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 	rb_vm_mark(vm);
 	if (vm->self) rb_gc_impl_mark(objspace, vm->self);
     }
-    mark_zombie_threads(rb_gc_local_gate_of_objspace(objspace));
-    mark_absorbed_threads_tbl(rb_gc_local_gate_of_objspace(objspace));
+    mark_zombie_threads(local_gate);
+    mark_absorbed_threads_tbl(local_gate);
 
     MARK_CHECKPOINT("cache_table");
-    mark_objspace_cc_cache_table(rb_gc_local_gate_of_objspace(objspace));
+    mark_objspace_cc_cache_table(local_gate);
 
     MARK_CHECKPOINT("ractor");
     rb_ractor_related_objects_mark(rb_gc_ractor_of_objspace(objspace));
-    mark_contained_ractor_tbl(rb_gc_local_gate_of_objspace(objspace));
+    mark_contained_ractor_tbl(local_gate);
 
     MARK_CHECKPOINT("machine_context");
     mark_current_machine_context(objspace, ec);
@@ -2614,10 +2615,10 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 
     if (rb_using_local_limits(objspace) || !rb_during_gc()) {
 	MARK_CHECKPOINT("shared_reference_tbl");
-	mark_shared_reference_tbl(rb_gc_local_gate_of_objspace(objspace));
-	rb_mark_received_received_obj_tbl(rb_gc_local_gate_of_objspace(objspace));
+	mark_shared_reference_tbl(local_gate);
+	rb_mark_received_received_obj_tbl(local_gate);
 	MARK_CHECKPOINT("local_immune_tbl");
-	mark_local_immune_tbl(rb_gc_local_gate_of_objspace(objspace));
+	mark_local_immune_tbl(local_gate);
     }
 
 #if USE_YJIT
