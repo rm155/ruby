@@ -10686,6 +10686,7 @@ update_size_pool_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspa
     size_t force_incremental_marking_finish_count = size_pool_to_copy_from->force_incremental_marking_finish_count;
     size_t total_allocated_objects = size_pool_to_copy_from->total_allocated_objects + size_pool_to_copy_from->newly_created_by_borrowing_count;
     size_t total_freed_objects = size_pool_to_copy_from->total_freed_objects;
+    size_t final_slots_count = size_pool_to_copy_from->final_slots_count;
 
     objspace = objspace_to_update;
     rb_size_pool_t *size_pool_to_update = &size_pools[size_pool_idx];
@@ -10696,6 +10697,7 @@ update_size_pool_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspa
     size_pool_to_update->force_incremental_marking_finish_count += force_incremental_marking_finish_count;
     size_pool_to_update->total_allocated_objects += total_allocated_objects;
     size_pool_to_update->total_freed_objects += total_freed_objects;
+    size_pool_to_update->final_slots_count += final_slots_count;
 }
 
 static void
@@ -10704,7 +10706,6 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     rb_objspace_t *objspace = objspace_to_copy_from;
     size_t allocatable_pages = objspace->heap_pages.allocatable_pages;
     int freeable_pages = heap_pages_freeable_pages;
-    int final_slots = heap_pages_final_slots;
     size_t uncollectible_wb_unprotected_objects = objspace->rgengc.uncollectible_wb_unprotected_objects;
     size_t uncollectible_wb_unprotected_objects_limit = objspace->rgengc.uncollectible_wb_unprotected_objects_limit;
     size_t old_objects = objspace->rgengc.old_objects;
@@ -10712,7 +10713,6 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
 
     objspace = objspace_to_update;
     objspace->heap_pages.allocatable_pages += allocatable_pages;
-    heap_pages_final_slots += final_slots;
     heap_pages_freeable_pages += freeable_pages;
     objspace->rgengc.uncollectible_wb_unprotected_objects += uncollectible_wb_unprotected_objects;
     objspace->rgengc.uncollectible_wb_unprotected_objects_limit += uncollectible_wb_unprotected_objects_limit;
