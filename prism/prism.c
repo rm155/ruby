@@ -1304,9 +1304,10 @@ pm_void_statement_check(pm_parser_t *parser, const pm_node_t *node) {
  * a "void" statement.
  */
 static void
-pm_void_statements_check(pm_parser_t *parser, const pm_statements_node_t *node) {
+pm_void_statements_check(pm_parser_t *parser, const pm_statements_node_t *node, bool last_value) {
     assert(node->body.size > 0);
-    for (size_t index = 0; index < node->body.size - 1; index++) {
+    const size_t size = node->body.size - (last_value ? 1 : 0);
+    for (size_t index = 0; index < size; index++) {
         pm_void_statement_check(parser, node->body.nodes[index]);
     }
 }
@@ -5238,7 +5239,7 @@ pm_interpolated_string_node_append(pm_interpolated_string_node_t *node, pm_node_
 
     switch (PM_NODE_TYPE(part)) {
         case PM_STRING_NODE:
-            pm_node_flag_set(part, PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN);
+            part->flags = (pm_node_flags_t) ((part->flags | PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN) & ~PM_STRING_FLAGS_MUTABLE);
             break;
         case PM_INTERPOLATED_STRING_NODE:
             if (PM_NODE_FLAG_P(part, PM_NODE_FLAG_STATIC_LITERAL)) {
@@ -5262,7 +5263,7 @@ pm_interpolated_string_node_append(pm_interpolated_string_node_t *node, pm_node_
                 // If the embedded statement is a string, then we can make that
                 // string as frozen and static literal, and not touch the static
                 // literal status of this string.
-                pm_node_flag_set(embedded, PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN);
+                embedded->flags = (pm_node_flags_t) ((embedded->flags | PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN) & ~PM_STRING_FLAGS_MUTABLE);
 
                 if (PM_NODE_FLAG_P(node, PM_NODE_FLAG_STATIC_LITERAL)) {
                     MUTABLE_FLAGS(node);
@@ -9718,11 +9719,27 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
             const uint8_t *start = parser->current.end - 1;
             parser->current.end++;
 
-            if (peek(parser) == '{') {
+            if (parser->current.end == parser->end) {
+                const uint8_t *start = parser->current.end - 2;
+                PM_PARSER_ERR_FORMAT(parser, start, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_SHORT, 2, start);
+            } else if (peek(parser) == '{') {
                 const uint8_t *unicode_codepoints_start = parser->current.end - 2;
-
                 parser->current.end++;
-                parser->current.end += pm_strspn_whitespace(parser->current.end, parser->end - parser->current.end);
+
+                size_t whitespace;
+                while (true) {
+                    if ((whitespace = pm_strspn_whitespace(parser->current.end, parser->end - parser->current.end)) > 0) {
+                        parser->current.end += whitespace;
+                    } else if (peek(parser) == '\\' && peek_offset(parser, 1) == 'n') {
+                        // This is super hacky, but it gets us nicer error
+                        // messages because we can still pass it off to the
+                        // regular expression engine even if we hit an
+                        // unterminated regular expression.
+                        parser->current.end += 2;
+                    } else {
+                        break;
+                    }
+                }
 
                 const uint8_t *extra_codepoints_start = NULL;
                 int codepoints_count = 0;
@@ -9736,8 +9753,17 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                         pm_parser_err(parser, unicode_start, unicode_start + hexadecimal_length, PM_ERR_ESCAPE_INVALID_UNICODE_LONG);
                     } else if (hexadecimal_length == 0) {
                         // there are not hexadecimal characters
-                        pm_parser_err(parser, parser->current.end, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE);
-                        pm_parser_err(parser, parser->current.end, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_TERM);
+
+                        if (flags & PM_ESCAPE_FLAG_REGEXP) {
+                            // If this is a regular expression, we are going to
+                            // let the regular expression engine handle this
+                            // error instead of us.
+                            pm_buffer_append_bytes(regular_expression_buffer, start, (size_t) (parser->current.end - start));
+                        } else {
+                            pm_parser_err(parser, parser->current.end, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE);
+                            pm_parser_err(parser, parser->current.end, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_TERM);
+                        }
+
                         return;
                     }
 
@@ -9759,10 +9785,19 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                     pm_parser_err(parser, extra_codepoints_start, parser->current.end - 1, PM_ERR_ESCAPE_INVALID_UNICODE_LITERAL);
                 }
 
-                if (peek(parser) == '}') {
+                if (parser->current.end == parser->end) {
+                    PM_PARSER_ERR_FORMAT(parser, start, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_LIST, (int) (parser->current.end - start), start);
+                } else if (peek(parser) == '}') {
                     parser->current.end++;
                 } else {
-                    pm_parser_err(parser, unicode_codepoints_start, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_TERM);
+                    if (flags & PM_ESCAPE_FLAG_REGEXP) {
+                        // If this is a regular expression, we are going to let
+                        // the regular expression engine handle this error
+                        // instead of us.
+                        pm_buffer_append_bytes(regular_expression_buffer, start, (size_t) (parser->current.end - start));
+                    } else {
+                        pm_parser_err(parser, unicode_codepoints_start, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_TERM);
+                    }
                 }
 
                 if (flags & PM_ESCAPE_FLAG_REGEXP) {
@@ -9772,8 +9807,12 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                 size_t length = pm_strspn_hexadecimal_digit(parser->current.end, MIN(parser->end - parser->current.end, 4));
 
                 if (length == 0) {
-                    const uint8_t *start = parser->current.end - 2;
-                    PM_PARSER_ERR_FORMAT(parser, start, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_SHORT, 2, start);
+                    if (flags & PM_ESCAPE_FLAG_REGEXP) {
+                        pm_buffer_append_bytes(regular_expression_buffer, start, (size_t) (parser->current.end - start));
+                    } else {
+                        const uint8_t *start = parser->current.end - 2;
+                        PM_PARSER_ERR_FORMAT(parser, start, parser->current.end, PM_ERR_ESCAPE_INVALID_UNICODE_SHORT, 2, start);
+                    }
                 } else if (length == 4) {
                     uint32_t value = escape_unicode(parser, parser->current.end, 4);
 
@@ -9785,7 +9824,15 @@ escape_read(pm_parser_t *parser, pm_buffer_t *buffer, pm_buffer_t *regular_expre
                     parser->current.end += 4;
                 } else {
                     parser->current.end += length;
-                    pm_parser_err_current(parser, PM_ERR_ESCAPE_INVALID_UNICODE);
+
+                    if (flags & PM_ESCAPE_FLAG_REGEXP) {
+                        // If this is a regular expression, we are going to let
+                        // the regular expression engine handle this error
+                        // instead of us.
+                        pm_buffer_append_bytes(regular_expression_buffer, start, (size_t) (parser->current.end - start));
+                    } else {
+                        pm_parser_err_current(parser, PM_ERR_ESCAPE_INVALID_UNICODE);
+                    }
                 }
             }
 
@@ -13812,7 +13859,16 @@ parse_statements(pm_parser_t *parser, pm_context_t context) {
     }
 
     context_pop(parser);
-    pm_void_statements_check(parser, statements);
+    bool last_value = true;
+    switch (context) {
+        case PM_CONTEXT_BEGIN_ENSURE:
+        case PM_CONTEXT_DEF_ENSURE:
+            last_value = false;
+            break;
+        default:
+            break;
+    }
+    pm_void_statements_check(parser, statements, last_value);
 
     return statements;
 }
@@ -18006,7 +18062,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pop_block_exits(parser, previous_block_exits);
             pm_node_list_free(&current_block_exits);
 
-            pm_void_statements_check(parser, statements);
+            pm_void_statements_check(parser, statements, true);
             return (pm_node_t *) pm_parentheses_node_create(parser, &opening, (pm_node_t *) statements, &parser->previous);
         }
         case PM_TOKEN_BRACE_LEFT: {
