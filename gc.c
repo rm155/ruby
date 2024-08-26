@@ -2908,7 +2908,7 @@ rb_gc_writebarrier(VALUE a, VALUE b)
         if (SPECIAL_CONST_P(b)) rb_bug("rb_gc_writebarrier: b is special const: %"PRIxVALUE, b);
     }
 
-    if (MUTABLE_SHAREABLE(a) && FL_TEST_RAW(b, FL_SHAREABLE)) {
+    if (MUTABLE_SHAREABLE(a) && rb_ractor_shareable_p(b)) {
 	add_local_immune_object(b);
     }
 
