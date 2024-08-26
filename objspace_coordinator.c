@@ -375,6 +375,9 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
     local_gate->external_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->external_reference_tbl_lock);
     
+    local_gate->local_immune_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&local_gate->local_immune_tbl_lock);
+    
     local_gate->received_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->received_obj_tbl_lock);
 
@@ -413,6 +416,8 @@ rb_objspace_gate_free(rb_objspace_gate_t *local_gate)
     rb_nativethread_lock_destroy(&local_gate->shared_reference_tbl_lock);
     st_free_table(local_gate->external_reference_tbl);
     rb_nativethread_lock_destroy(&local_gate->external_reference_tbl_lock);
+    st_free_table(local_gate->local_immune_tbl);
+    rb_nativethread_lock_destroy(&local_gate->local_immune_tbl_lock);
 
     st_free_table(local_gate->received_obj_tbl);
     rb_nativethread_lock_destroy(&local_gate->received_obj_tbl_lock);
@@ -656,6 +661,41 @@ mark_shared_reference_tbl(rb_objspace_gate_t *os_gate)
     rb_native_mutex_lock(&os_gate->shared_reference_tbl_lock);
     rb_mark_set(os_gate->shared_reference_tbl);
     rb_native_mutex_unlock(&os_gate->shared_reference_tbl_lock);
+}
+
+void
+add_local_immune_object(VALUE obj)
+{
+    VM_ASSERT(FL_TEST_RAW(obj, FL_SHAREABLE));
+    WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
+    {
+	if (rb_ractor_shareable_p(obj)) {
+	    rb_native_mutex_lock(&source_gate->local_immune_tbl_lock);
+	    st_insert_no_gc(source_gate->local_immune_tbl, (st_data_t)obj, INT2FIX(0));
+	    rb_native_mutex_unlock(&source_gate->local_immune_tbl_lock);
+	}
+    }
+    WITH_OBJSPACE_GATE_LEAVE(source_gate);
+}
+
+void
+remove_local_immune_object(VALUE obj)
+{
+    WITH_OBJSPACE_GATE_ENTER(obj, os_gate);
+    {
+	rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
+	st_delete(os_gate->local_immune_tbl, (st_data_t *) &obj, NULL);
+	rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
+    }
+    WITH_OBJSPACE_GATE_LEAVE(os_gate);
+}
+
+void
+mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
+{
+    rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
+    rb_mark_set(os_gate->local_immune_tbl);
+    rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
 }
 
 static int
@@ -1138,6 +1178,14 @@ absorb_shared_object_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate
 
     rb_native_mutex_unlock(&gate_to_copy_from->shared_reference_tbl_lock);
     rb_native_mutex_unlock(&gate_to_update->shared_reference_tbl_lock);
+
+    rb_native_mutex_lock(&gate_to_copy_from->local_immune_tbl_lock);
+    rb_native_mutex_lock(&gate_to_update->local_immune_tbl_lock);
+
+    absorb_table_contents(gate_to_update->local_immune_tbl, gate_to_copy_from->local_immune_tbl);
+
+    rb_native_mutex_unlock(&gate_to_copy_from->local_immune_tbl_lock);
+    rb_native_mutex_unlock(&gate_to_update->local_immune_tbl_lock);
 }
 
 static void
@@ -1793,15 +1841,13 @@ mark_externally_modifiable_tables(rb_objspace_gate_t *os_gate)
 
     wait_for_object_graph_safety(os_gate);
 
-    bool new_marks_added = false;
-
     rb_objspace_gate_t *local_gate = os_gate;
     if (!shared_references_all_marked(os_gate)) {
 	mark_shared_reference_tbl(os_gate);
-	new_marks_added = true;
+	return false;
     }
 
-    return !new_marks_added;
+    return true;
 }
 
 void
@@ -1874,56 +1920,3 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_
     }
     WITH_OBJSPACE_GATE_LEAVE(b_gate);
 }
-
-#if VM_CHECK_MODE > 0
-static bool
-check_local_immune_chldren_i(VALUE obj, void *ptr)
-{
-    if (!SPECIAL_CONST_P(obj) && !rb_gc_object_local_immune(obj)) {
-	rp(obj);
-	rb_bug("child object is not local-immune");
-    }
-}
-
-static void
-check_local_immune_children(VALUE obj)
-{
-    if (!SPECIAL_CONST_P(obj)) rb_objspace_reachable_objects_from(obj, check_local_immune_chldren_i, NULL);
-}
-#endif
-
-void gc_give_local_immunity_no_check(VALUE obj);
-
-static void
-rb_gc_give_local_immunity_traversal_i(VALUE obj, void *ptr)
-{
-    if (!SPECIAL_CONST_P(obj) && !rb_gc_object_local_immune(obj)) {
-	gc_give_local_immunity_no_check(obj);
-
-	if (!MUTABLE_SHAREABLE(obj)) {
-	    rb_objspace_reachable_objects_from(obj, rb_gc_give_local_immunity_traversal_i, NULL);
-	}
-    }
-
-    rp(obj);
-#if VM_CHECK_MODE > 0
-    check_local_immune_children(obj);
-#endif
-
-}
-
-void
-rb_gc_give_local_immunity_traversal(VALUE obj)
-{
-    rb_gc_give_local_immunity_traversal_i(obj, NULL);
-}
-
-static void
-rb_gc_give_local_immunity(VALUE obj)
-{
-    gc_give_local_immunity_no_check(obj);
-#if VM_CHECK_MODE > 0
-    check_local_immune_children(obj);
-#endif
-}
-

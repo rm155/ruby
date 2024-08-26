@@ -662,7 +662,6 @@ typedef struct gc_function_map {
     bool (*garbage_object_p)(void *objspace_ptr, VALUE obj);
     void (*set_event_hook)(void *objspace_ptr, const rb_event_flag_t event);
     void (*copy_attributes)(void *objspace_ptr, VALUE dest, VALUE obj);
-    bool (*object_local_immune_p)(void *objspace_ptr, VALUE obj);
 } rb_gc_function_map_t;
 
 static rb_gc_function_map_t rb_gc_functions;
@@ -806,7 +805,6 @@ ruby_external_gc_init(void)
     load_external_gc_func(garbage_object_p);
     load_external_gc_func(set_event_hook);
     load_external_gc_func(copy_attributes);
-    load_external_gc_func(object_local_immune_p);
 
 # undef load_external_gc_func
 }
@@ -898,7 +896,6 @@ ruby_external_gc_init(void)
 # define rb_gc_impl_garbage_object_p rb_gc_functions.garbage_object_p
 # define rb_gc_impl_set_event_hook rb_gc_functions.set_event_hook
 # define rb_gc_impl_copy_attributes rb_gc_functions.copy_attributes
-# define rb_gc_impl_object_local_immune_p rb_gc_functions.object_local_immune_p
 #endif
 
 void *
@@ -1195,6 +1192,10 @@ rb_gc_obj_free(void *objspace, VALUE obj)
     if (FL_TEST(obj, FL_EXIVAR)) {
         rb_free_generic_ivar((VALUE)obj);
         FL_UNSET(obj, FL_EXIVAR);
+    }
+
+    if (FL_TEST_RAW(obj, FL_SHAREABLE)) {
+	remove_local_immune_object(obj);
     }
 
     switch (BUILTIN_TYPE(obj)) {
@@ -1697,12 +1698,6 @@ bool
 rb_gc_object_marked(VALUE obj)
 {
     return rb_gc_impl_object_marked_p(rb_gc_get_objspace(), obj);
-}
-
-bool
-rb_gc_object_local_immune(VALUE obj)
-{
-    return rb_gc_impl_object_local_immune_p(rb_gc_get_objspace(), obj);
 }
 
 void *
@@ -2621,6 +2616,8 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 	MARK_CHECKPOINT("shared_reference_tbl");
 	mark_shared_reference_tbl(rb_gc_local_gate_of_objspace(objspace));
 	rb_mark_received_received_obj_tbl(rb_gc_local_gate_of_objspace(objspace));
+	MARK_CHECKPOINT("local_immune_tbl");
+	mark_local_immune_tbl(rb_gc_local_gate_of_objspace(objspace));
     }
 
 #if USE_YJIT
@@ -2910,7 +2907,9 @@ rb_gc_writebarrier(VALUE a, VALUE b)
         if (SPECIAL_CONST_P(b)) rb_bug("rb_gc_writebarrier: b is special const: %"PRIxVALUE, b);
     }
 
-    //VM_ASSERT(!NEEDS_LOCAL_IMMUNE_CHILDREN(a) || RVALUE_LOCAL_IMMUNE(b));
+    if (MUTABLE_SHAREABLE(a) && FL_TEST_RAW(b, FL_SHAREABLE)) {
+	add_local_immune_object(b);
+    }
 
     if (ruby_single_main_objspace) {
 	rb_gc_writebarrier_gc_blocked(current_objspace, a, b);
@@ -4001,7 +4000,6 @@ rb_raw_obj_info_common(char *const buff, const size_t buff_size, const VALUE obj
             //          C(RVALUE_PIN_BITMAP(obj),            "P"),
             //          C(RVALUE_MARKING_BITMAP(obj),        "R"),
             //          C(RVALUE_WB_UNPROTECTED_BITMAP(obj), "U"),
-            //          C(RVALUE_LOCAL_IMMUNE_BITMAP(obj),   "I"),
             //          C(rb_objspace_garbage_object_p(obj), "G"),
             //          obj_type_name(obj));
         }
@@ -4619,13 +4617,6 @@ rb_obj_info_dump_loc(VALUE obj, const char *file, int line, const char *func)
     fprintf(stderr, "<OBJ_INFO:%s@%s:%d> %s\n", func, file, line, rb_raw_obj_info(buff, 0x100, obj));
 }
 
-static VALUE
-limmune(VALUE os, VALUE obj)
-{
-    rb_gc_give_local_immunity_traversal(obj);
-    return Qnil;
-}
-
 /*
  * Document-module: ObjectSpace
  *
@@ -4687,9 +4678,6 @@ Init_GC(void)
 
     rb_define_module_function(rb_mObjSpace, "define_finalizer", define_final, -1);
     rb_define_module_function(rb_mObjSpace, "undefine_finalizer", undefine_final, 1);
-
-    //TODO remove
-    rb_define_module_function(rb_mObjSpace, "limmune", limmune, 1);
 
     rb_define_module_function(rb_mObjSpace, "_id2ref", os_id2ref, 1);
 

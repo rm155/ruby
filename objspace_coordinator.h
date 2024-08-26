@@ -169,6 +169,9 @@ typedef struct rb_objspace_gate {
     st_table *external_reference_tbl;
     rb_nativethread_lock_t external_reference_tbl_lock;
 
+    st_table *local_immune_tbl;
+    rb_nativethread_lock_t local_immune_tbl_lock;
+
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
@@ -263,6 +266,10 @@ void update_shared_object_references(rb_objspace_gate_t *os_gate);
 bool shared_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 #endif
+
+void add_local_immune_object(VALUE obj);
+void remove_local_immune_object(VALUE obj);
+void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
 
 void rb_add_zombie_thread(rb_thread_t *th);
 void mark_zombie_threads(rb_objspace_gate_t *os_gate);
@@ -386,8 +393,5 @@ void rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm);
 void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_objspace);
 
 #define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && FL_TEST_RAW(obj, FL_SHAREABLE))
-#define NEEDS_LOCAL_IMMUNE_CHILDREN(obj) (MUTABLE_SHAREABLE(obj) || RVALUE_LOCAL_IMMUNE(obj))
-
-void rb_gc_give_local_immunity_traversal(VALUE obj);
 
 #endif

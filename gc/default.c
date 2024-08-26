@@ -783,7 +783,6 @@ struct heap_page {
     struct ccan_list_node page_node;
 
     bits_t wb_unprotected_bits[HEAP_PAGE_BITMAP_LIMIT];
-    bits_t local_immune_bits[HEAP_PAGE_BITMAP_LIMIT];
     /* the following three bitmaps are cleared at the beginning of full GC */
     bits_t mark_bits[HEAP_PAGE_BITMAP_LIMIT];
     bits_t uncollectible_bits[HEAP_PAGE_BITMAP_LIMIT];
@@ -837,7 +836,6 @@ asan_unlock_freelist(struct heap_page *page)
 #define GET_HEAP_PINNED_BITS(x)         (&GET_HEAP_PAGE(x)->pinned_bits[0])
 #define GET_HEAP_UNCOLLECTIBLE_BITS(x)  (&GET_HEAP_PAGE(x)->uncollectible_bits[0])
 #define GET_HEAP_WB_UNPROTECTED_BITS(x) (&GET_HEAP_PAGE(x)->wb_unprotected_bits[0])
-#define GET_HEAP_LOCAL_IMMUNE_BITS(x)   (&GET_HEAP_PAGE(x)->local_immune_bits[0])
 #define GET_HEAP_MARKING_BITS(x)        (&GET_HEAP_PAGE(x)->marking_bits[0])
 
 #define GC_SWEEP_PAGES_FREEABLE_PER_STEP 3
@@ -1282,7 +1280,6 @@ static inline VALUE check_rvalue_consistency(rb_objspace_t *objspace, const VALU
 
 #define RVALUE_MARKED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(obj), (obj))
 #define RVALUE_WB_UNPROTECTED_BITMAP(obj) MARKED_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), (obj))
-#define RVALUE_LOCAL_IMMUNE_BITMAP(obj)   MARKED_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(obj), (obj))
 #define RVALUE_MARKING_BITMAP(obj)        MARKED_IN_BITMAP(GET_HEAP_MARKING_BITS(obj), (obj))
 #define RVALUE_UNCOLLECTIBLE_BITMAP(obj)  MARKED_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS(obj), (obj))
 #define RVALUE_PINNED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_PINNED_BITS(obj), (obj))
@@ -1306,13 +1303,6 @@ RVALUE_WB_UNPROTECTED(rb_objspace_t *objspace, VALUE obj)
 {
     check_rvalue_consistency(objspace, obj);
     return RVALUE_WB_UNPROTECTED_BITMAP(obj) != 0;
-}
-
-static inline int
-RVALUE_LOCAL_IMMUNE(rb_objspace_t *objspace, VALUE obj)
-{
-    check_rvalue_consistency(objspace, obj);
-    return RVALUE_LOCAL_IMMUNE_BITMAP(obj) != 0;
 }
 
 
@@ -1341,12 +1331,6 @@ bool
 rb_gc_impl_object_marked_p(void *objspace_ptr, VALUE obj)
 {
     return RVALUE_MARKED(rb_gc_get_objspace(), obj);
-}
-
-bool
-rb_gc_impl_object_local_immune_p(void *objspace_ptr, VALUE obj)
-{
-    return RVALUE_LOCAL_IMMUNE(rb_gc_get_objspace(), obj);
 }
 
 void *
@@ -1378,7 +1362,6 @@ rb_gc_impl_local_gate_of_objspace(void *objspace_ptr)
 #define RVALUE_PAGE_WB_UNPROTECTED(page, obj) MARKED_IN_BITMAP((page)->wb_unprotected_bits, (obj))
 #define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)  MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
 #define RVALUE_PAGE_MARKING(page, obj)        MARKED_IN_BITMAP((page)->marking_bits, (obj))
-#define RVALUE_PAGE_LOCAL_IMMUNE(page, obj)   MARKED_IN_BITMAP((page)->local_immune_bits, (obj))
 
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
@@ -2633,7 +2616,6 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
         GC_ASSERT(RVALUE_MARKING(objspace, obj) == FALSE);
         GC_ASSERT(RVALUE_OLD_P(objspace, obj) == FALSE);
         GC_ASSERT(RVALUE_WB_UNPROTECTED(objspace, obj) == FALSE);
-	GC_ASSERT(RVALUE_LOCAL_IMMUNE(obj) == FALSE);
 
         if (RVALUE_REMEMBERED(objspace, obj)) rb_bug("newobj: %s is remembered.", rb_obj_info(obj));
     }
@@ -4266,15 +4248,10 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 #endif
 
                 if (RVALUE_WB_UNPROTECTED(objspace, vp)) CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(vp), vp);
-		if (RVALUE_LOCAL_IMMUNE(objspace, vp)) {
-		    VM_ASSERT(!using_local_limits(objspace));
-		    CLEAR_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(vp), vp);
-		}
 
 #if RGENGC_CHECK_MODE
 #define CHECK(x) if (x(objspace, vp) != FALSE) rb_bug("obj_free: " #x "(%s) != FALSE", rb_obj_info(vp))
                 CHECK(RVALUE_WB_UNPROTECTED);
-		CHECK(RVALUE_LOCAL_IMMUNE);
                 CHECK(RVALUE_MARKED);
                 CHECK(RVALUE_MARKING);
                 CHECK(RVALUE_UNCOLLECTIBLE);
@@ -4363,7 +4340,6 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
 
     // Skip out of range slots at the head of the page
     bitset = ~bits[0];
-    if (local_immunity_active) bitset &= ~sweep_page->local_immune_bits[0];
     bitset >>= NUM_IN_PAGE(p);
     if (bitset) {
         gc_sweep_plane(objspace, heap, p, bitset, ctx);
@@ -4372,7 +4348,6 @@ gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context 
 
     for (int i = 1; i < bitmap_plane_count; i++) {
         bitset = ~bits[i];
-	if (local_immunity_active) bitset &= ~sweep_page->local_immune_bits[i];
         if (bitset) {
             gc_sweep_plane(objspace, heap, p, bitset, ctx);
         }
@@ -5898,30 +5873,6 @@ check_color_i(const VALUE child, void *ptr)
 }
 
 static void
-check_limmune_i(const VALUE child, void *ptr)
-{
-    struct verify_internal_consistency_struct *data = (struct verify_internal_consistency_struct *)ptr;
-    const VALUE parent = data->parent;
-
-    if (false && MUTABLE_SHAREABLE(parent)) {
-	if (!RVALUE_LOCAL_IMMUNE(data->objspace, child)) {
-        fprintf(stderr, "check_limmune_i: (mutable-shareable -> non-local-immune) - %s -> %s\n",
-                rb_obj_info(parent), rb_obj_info(child));
-	}
-        data->err_count++;
-    }
-    if (RVALUE_LOCAL_IMMUNE(data->objspace, parent)) {
-	if (BUILTIN_TYPE(parent) != T_CLASS) {
-	    if (!RVALUE_LOCAL_IMMUNE(data->objspace, child)) {
-		fprintf(stderr, "check_limmune_i: (local-immune -> non-local-immune) - %s -> %s\n",
-			rb_obj_info(parent), rb_obj_info(child));
-		data->err_count++;
-	    }
-	}
-    }
-}
-
-static void
 check_children_i(const VALUE child, void *ptr)
 {
     struct verify_internal_consistency_struct *data = (struct verify_internal_consistency_struct *)ptr;
@@ -5956,14 +5907,7 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride,
             }
 
             /* check health of children */
-            if (RVALUE_OLD_P(objspace, obj)) {
-		if (RVALUE_MARKED(objspace, obj)) {
-		    data->old_object_count++;
-		}
-		else {
-		    VM_ASSERT(RVALUE_LOCAL_IMMUNE(objspace, obj));
-		}
-	    }
+            if (RVALUE_OLD_P(objspace, obj)) data->old_object_count++;
             if (RVALUE_WB_UNPROTECTED(objspace, obj) && RVALUE_UNCOLLECTIBLE(objspace, obj)) data->remembered_shady_count++;
 
             if (!is_marking(objspace) && RVALUE_OLD_P(objspace, obj)) {
@@ -5979,7 +5923,6 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride,
                     rb_objspace_reachable_objects_from(obj, check_color_i, (void *)data);
                 }
             }
-	    rb_objspace_reachable_objects_from(obj, check_limmune_i, (void *)data);
         }
         else {
             if (BUILTIN_TYPE(obj) == T_ZOMBIE) {
@@ -6315,7 +6258,7 @@ gc_update_weak_references(rb_objspace_t *objspace)
 
         if (RB_SPECIAL_CONST_P(obj)) continue;
 
-        if (!RVALUE_MARKED(objspace, obj) && !(using_local_limits(objspace) && RVALUE_LOCAL_IMMUNE(objspace, obj))) {
+        if (!RVALUE_MARKED(objspace, obj)) {
             **ptr_ptr = Qundef;
         }
         else {
@@ -7173,9 +7116,6 @@ rb_gc_impl_copy_attributes(void *objspace_ptr, VALUE dest, VALUE obj)
     if (RVALUE_WB_UNPROTECTED(objspace, obj)) {
         rb_gc_writebarrier_unprotect(dest);
     }
-    if (RVALUE_LOCAL_IMMUNE(objspace, obj)) {
-	MARK_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(obj), obj);
-    }
     rb_gc_copy_finalizer(dest, obj);
 }
 
@@ -7205,7 +7145,7 @@ rb_gc_impl_obj_flags(void *objspace_ptr, VALUE obj, ID* flags, size_t max)
     rb_objspace_t *objspace = objspace_ptr;
     size_t n = 0;
     static ID ID_marked;
-    static ID ID_wb_protected, ID_old, ID_marking, ID_uncollectible, ID_pinned, ID_local_immune;
+    static ID ID_wb_protected, ID_old, ID_marking, ID_uncollectible, ID_pinned;
 
     if (!ID_marked) {
 #define I(s) ID_##s = rb_intern(#s);
@@ -7215,7 +7155,6 @@ rb_gc_impl_obj_flags(void *objspace_ptr, VALUE obj, ID* flags, size_t max)
         I(marking);
         I(uncollectible);
         I(pinned);
-        I(local_immune);
 #undef I
     }
 
@@ -7225,7 +7164,6 @@ rb_gc_impl_obj_flags(void *objspace_ptr, VALUE obj, ID* flags, size_t max)
     if (RVALUE_MARKING(objspace, obj) && n < max) flags[n++] = ID_marking;
     if (RVALUE_MARKED(objspace, obj) && n < max)    flags[n++] = ID_marked;
     if (RVALUE_PINNED(objspace, obj) && n < max)  flags[n++] = ID_pinned;
-    if (RVALUE_LOCAL_IMMUNE(objspace, obj) && n < max)  flags[n++] = ID_local_immune;
     return n;
 }
 
@@ -8069,7 +8007,7 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 {
     GC_ASSERT(!SPECIAL_CONST_P(obj));
 
-    if (using_local_limits(objspace) && (FL_TEST_RAW(obj, FL_SHAREABLE) || RVALUE_LOCAL_IMMUNE(objspace, obj))) {
+    if (using_local_limits(objspace) && FL_TEST_RAW(obj, FL_SHAREABLE)) {
 	return FALSE;
     }
 
@@ -8169,8 +8107,6 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     GC_ASSERT(!MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(dest), dest));
 
     GC_ASSERT(!RVALUE_MARKING(objspace, src));
-
-    VM_ASSERT(!RVALUE_LOCAL_IMMUNE(objspace, src));
 
     /* Save off bits for current object. */
     marked = RVALUE_MARKED(objspace, src);
@@ -10818,12 +10754,6 @@ rb_gc_impl_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_
 
     closing_objspace->pages_absorbed = true;
     receiving_objspace->rgengc.need_major_gc |= GPR_FLAG_MAJOR_BY_ABSORB;
-}
-
-void
-gc_give_local_immunity_no_check(VALUE obj)
-{
-    MARK_IN_BITMAP(GET_HEAP_LOCAL_IMMUNE_BITS(obj), obj);
 }
 
 void rb_gc_impl_mark(void *objspace_ptr, VALUE obj);
