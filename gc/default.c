@@ -10941,6 +10941,27 @@ rb_gc_impl_objspace_init(void *objspace_ptr, void *ractor)
     objspace_setup(objspace, ractor);
 }
 
+static VALUE
+gc_external_reference_p(VALUE _, VALUE v)
+{
+    rb_objspace_t *objspace = rb_gc_get_objspace();
+    return RBOOL(rb_external_reference_tbl_contains(objspace->local_gate, v));
+}
+
+static VALUE
+gc_shared_reference_p(VALUE _, VALUE v)
+{
+    rb_objspace_t *objspace = rb_gc_get_objspace();
+    return RBOOL(rb_shared_reference_tbl_contains(objspace->local_gate, v));
+}
+
+static VALUE
+gc_local_immune_p(VALUE _, VALUE v)
+{
+    rb_objspace_t *objspace = rb_gc_get_objspace();
+    return RBOOL(rb_local_immune_tbl_contains(objspace->local_gate, v));
+}
+
 void
 rb_gc_impl_init(void)
 {
@@ -10960,6 +10981,10 @@ rb_gc_impl_init(void)
     OBJ_FREEZE(gc_constants);
     /* Internal constants in the garbage collector. */
     rb_define_const(rb_mGC, "INTERNAL_CONSTANTS", gc_constants);
+
+    rb_define_singleton_method(rb_mGC, "external_reference?", gc_external_reference_p, 1);
+    rb_define_singleton_method(rb_mGC, "shared_reference?", gc_shared_reference_p, 1);
+    rb_define_singleton_method(rb_mGC, "local_immune?", gc_local_immune_p, 1);
 
     if (GC_COMPACTION_SUPPORTED) {
         rb_define_singleton_method(rb_mGC, "compact", gc_compact, 0);

@@ -633,6 +633,12 @@ mark_in_external_reference_tbl(rb_objspace_gate_t *os_gate, VALUE obj)
     rb_native_mutex_unlock(&os_gate->external_reference_tbl_lock);
 }
 
+bool
+rb_external_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
+{
+    return !!st_lookup(os_gate->external_reference_tbl, obj, NULL);
+}
+
 static int
 shared_references_all_marked_i(st_data_t key, st_data_t value, st_data_t arg)
 {
@@ -661,6 +667,12 @@ mark_shared_reference_tbl(rb_objspace_gate_t *os_gate)
     rb_native_mutex_lock(&os_gate->shared_reference_tbl_lock);
     rb_mark_set(os_gate->shared_reference_tbl);
     rb_native_mutex_unlock(&os_gate->shared_reference_tbl_lock);
+}
+
+bool
+rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
+{
+    return !!st_lookup(os_gate->shared_reference_tbl, obj, NULL);
 }
 
 void
@@ -696,6 +708,12 @@ mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
     rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
     rb_mark_set(os_gate->local_immune_tbl);
     rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
+}
+
+bool
+rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
+{
+    return !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
 }
 
 static int

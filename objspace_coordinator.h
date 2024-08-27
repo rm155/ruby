@@ -259,8 +259,10 @@ int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, VALUE obj);
 void confirm_externally_added_external_references(rb_objspace_gate_t *local_gate);
 void mark_in_external_reference_tbl(rb_objspace_gate_t *os_gate, VALUE obj);
+bool rb_external_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
 void mark_shared_reference_tbl(rb_objspace_gate_t *os_gate);
 void update_shared_object_references(rb_objspace_gate_t *os_gate);
+bool rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
 
 #if VM_CHECK_MODE > 0
 bool shared_reference_tbl_empty(rb_objspace_gate_t *os_gate);
@@ -270,6 +272,7 @@ bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 void add_local_immune_object(VALUE obj);
 void remove_local_immune_object(VALUE obj);
 void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
+bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
 
 void rb_add_zombie_thread(rb_thread_t *th);
 void mark_zombie_threads(rb_objspace_gate_t *os_gate);
