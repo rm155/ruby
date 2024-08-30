@@ -2256,11 +2256,6 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->during_ractor_copy = false;
 #endif
 
-    if (r != GET_VM()->ractor.main_ractor) {
-	rb_ractor_mark_object_ary_init(r);
-	rb_native_mutex_initialize(&r->mark_object_ary_lock);
-    }
-
     r->result_value = Qnil;
 
     r->borrowing_target_top = NULL;
@@ -2315,8 +2310,13 @@ ractor_create(rb_execution_context_t *ec, VALUE self, VALUE loc, VALUE name, VAL
     rb_ractor_t *r = RACTOR_PTR(rv);
 
     ractor_newobj_cache_init(r);
-    rb_objspace_alloc(r);
     ractor_init(r, name, loc);
+    rb_objspace_alloc(r);
+
+    if (r != GET_VM()->ractor.main_ractor) {
+	rb_ractor_mark_object_ary_init(r);
+	rb_native_mutex_initialize(&r->mark_object_ary_lock);
+    }
 
     // can block here
     r->pub.id = ractor_next_id();

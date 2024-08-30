@@ -346,6 +346,91 @@ count_objspaces(rb_vm_t *vm) //TODO: Replace with count-tracker
   ------------------------ Objspace Gate Data ------------------------
 */
 
+static void
+objspace_gate_mark(void *data)
+{
+    rb_objspace_gate_t *os_gate = data;
+
+    mark_objspace_cc_cache_table(os_gate);
+    mark_contained_ractor_tbl(os_gate);
+    mark_zombie_threads(os_gate);
+    mark_absorbed_threads_tbl(os_gate);
+
+    if (rb_using_local_limits(rb_gc_get_objspace()) || !rb_during_gc()) {
+	mark_shared_reference_tbl(os_gate);
+	rb_mark_received_received_obj_tbl(os_gate);
+	mark_local_immune_tbl(os_gate);
+    }
+}
+
+static void
+objspace_gate_free(rb_objspace_gate_t *local_gate)
+{
+    if (!local_gate->objspace_closed) {
+	lock_ractor_set();
+	ccan_list_del(&local_gate->gate_node);
+	unlock_ractor_set();
+    }
+
+    st_free_table(local_gate->shared_reference_tbl);
+    rb_nativethread_lock_destroy(&local_gate->shared_reference_tbl_lock);
+    st_free_table(local_gate->external_reference_tbl);
+    rb_nativethread_lock_destroy(&local_gate->external_reference_tbl_lock);
+    st_free_table(local_gate->local_immune_tbl);
+    rb_nativethread_lock_destroy(&local_gate->local_immune_tbl_lock);
+
+    st_free_table(local_gate->received_obj_tbl);
+    rb_nativethread_lock_destroy(&local_gate->received_obj_tbl_lock);
+
+    st_free_table(local_gate->wmap_referenced_obj_tbl);
+    rb_nativethread_lock_destroy(&local_gate->wmap_referenced_obj_tbl_lock);
+
+    st_free_table(local_gate->contained_ractor_tbl);
+    rb_nativethread_lock_destroy(&local_gate->contained_ractor_tbl_lock);
+
+    rb_nativethread_lock_destroy(&local_gate->zombie_threads_lock);
+
+    rb_nativethread_lock_destroy(&local_gate->objspace_lock);
+
+    rb_nativethread_lock_destroy(&local_gate->external_writebarrier_allowed_lock);
+    rb_native_cond_destroy(&local_gate->external_writebarrier_allowed_cond);
+
+    if (local_gate->ractor && local_gate->ractor->local_gate == local_gate) {
+	local_gate->ractor = NULL;
+    }
+    if (GET_OBJSPACE_GATE() == local_gate) {
+	rb_ractor_set_current_os_gate(NULL);
+    }
+    
+    free(local_gate);
+}
+
+static size_t
+rb_objspace_gate_memsize(const void *data)
+{
+    //TODO memsize
+    return 0;
+}
+
+static const rb_data_type_t objspace_gate_data_type = {
+    "objspace_gate",
+    {
+        objspace_gate_mark,
+        objspace_gate_free,
+        rb_objspace_gate_memsize,
+        NULL,
+    },
+    0,0, RUBY_TYPED_FREE_IMMEDIATELY,
+};
+
+static VALUE
+objspace_gate_object_create(VALUE arg)
+{
+    rb_objspace_gate_t *os_gate = (rb_objspace_gate_t *)arg;
+    os_gate->self = TypedData_Wrap_Struct(0, &objspace_gate_data_type, os_gate);
+    return Qnil;
+}
+
 rb_objspace_gate_t *
 rb_objspace_gate_init(struct rb_objspace *objspace)
 {
@@ -398,51 +483,21 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
     local_gate->alloc_target_ractor = NULL;
 
     lock_ractor_set();
-    ccan_list_add_tail(&GET_VM()->objspace_set, &local_gate->gate_node);
+    ccan_list_add_tail(&vm->objspace_set, &local_gate->gate_node);
     unlock_ractor_set();
+    if (local_gate->objspace == ruby_single_main_objspace) {
+	objspace_gate_object_create(local_gate);
+    }
+    else {
+	rb_run_with_redirected_allocation(local_gate->ractor, objspace_gate_object_create, local_gate);
+    }
     return local_gate;
 }
 
-void
-rb_objspace_gate_free(rb_objspace_gate_t *local_gate)
+bool
+rb_obj_is_main_os_gate(VALUE obj)
 {
-    if (!local_gate->objspace_closed) {
-	lock_ractor_set();
-	ccan_list_del(&local_gate->gate_node);
-	unlock_ractor_set();
-    }
-
-    st_free_table(local_gate->shared_reference_tbl);
-    rb_nativethread_lock_destroy(&local_gate->shared_reference_tbl_lock);
-    st_free_table(local_gate->external_reference_tbl);
-    rb_nativethread_lock_destroy(&local_gate->external_reference_tbl_lock);
-    st_free_table(local_gate->local_immune_tbl);
-    rb_nativethread_lock_destroy(&local_gate->local_immune_tbl_lock);
-
-    st_free_table(local_gate->received_obj_tbl);
-    rb_nativethread_lock_destroy(&local_gate->received_obj_tbl_lock);
-
-    st_free_table(local_gate->wmap_referenced_obj_tbl);
-    rb_nativethread_lock_destroy(&local_gate->wmap_referenced_obj_tbl_lock);
-
-    st_free_table(local_gate->contained_ractor_tbl);
-    rb_nativethread_lock_destroy(&local_gate->contained_ractor_tbl_lock);
-
-    rb_nativethread_lock_destroy(&local_gate->zombie_threads_lock);
-
-    rb_nativethread_lock_destroy(&local_gate->objspace_lock);
-
-    rb_nativethread_lock_destroy(&local_gate->external_writebarrier_allowed_lock);
-    rb_native_cond_destroy(&local_gate->external_writebarrier_allowed_cond);
-
-    if (local_gate->ractor && local_gate->ractor->local_gate == local_gate) {
-	local_gate->ractor = NULL;
-    }
-    if (GET_OBJSPACE_GATE() == local_gate) {
-	rb_ractor_set_current_os_gate(NULL);
-    }
-    
-    free(local_gate);
+    return GET_VM()->main_os_gate->self == obj;
 }
 
 int

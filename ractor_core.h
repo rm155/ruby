@@ -250,7 +250,7 @@ struct rb_ractor_struct {
     bool during_ractor_copy;
 #endif
 
-    VALUE mark_object_ary;
+    VALUE mark_object_ary; //TODO: Move into objspace_gate
     rb_nativethread_lock_t mark_object_ary_lock;
 
     struct global_object_list *global_object_list;

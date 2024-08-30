@@ -157,6 +157,8 @@ typedef struct gc_reference_status {
 } gc_reference_status_t;
 
 typedef struct rb_objspace_gate {
+    VALUE self;
+
     //Main connections
     rb_ractor_t *ractor;
     struct rb_objspace *objspace;
@@ -254,7 +256,7 @@ typedef struct rb_objspace_gate {
 }
 
 rb_objspace_gate_t *rb_objspace_gate_init(struct rb_objspace *objspace);
-void rb_objspace_gate_free(rb_objspace_gate_t *local_gate);
+bool rb_obj_is_main_os_gate(VALUE obj);
 int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, VALUE obj);
 void confirm_externally_added_external_references(rb_objspace_gate_t *local_gate);
