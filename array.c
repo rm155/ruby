@@ -1044,6 +1044,8 @@ rb_to_array(VALUE ary)
  *  if not, raises TypeError.
  *
  *  Otherwise returns +nil+.
+ *
+ *  Related: see {Methods for Creating an Array}[rdoc-ref:Array@Methods+for+Creating+an+Array].
  */
 
 static VALUE
@@ -1123,6 +1125,8 @@ rb_ary_s_new(int argc, VALUE *argv, VALUE klass)
  *  Raises TypeError if the first argument is not either an array
  *  or an {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects]).
  *  Raises ArgumentError if the first argument is a negative integer.
+ *
+ *  Related: see {Methods for Creating an Array}[rdoc-ref:Array@Methods+for+Creating+an+Array].
  */
 
 static VALUE
@@ -1186,6 +1190,7 @@ rb_ary_initialize(int argc, VALUE *argv, VALUE ary)
  *   Array[]                # => []
  *   Array.[](1, 'a', /^A/) # => [1, "a", /^A/]
  *
+ * Related: see {Methods for Creating an Array}[rdoc-ref:Array@Methods+for+Creating+an+Array].
  */
 
 static VALUE
@@ -1374,6 +1379,7 @@ ary_take_first_or_last(int argc, const VALUE *argv, VALUE ary, enum ary_take_pos
  *
  *    [:foo, 'bar', 2] << [3, 4] # => [:foo, "bar", 2, [3, 4]]
  *
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 VALUE
@@ -2485,6 +2491,7 @@ ary_aset_by_rb_ary_splice(VALUE ary, long beg, long len, VALUE val)
  *    a[1..5] = 'foo' # => "foo"
  *    a # => [:foo, "foo"]
  *
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 static VALUE
@@ -4033,6 +4040,8 @@ ary_resize_smaller(VALUE ary, long len)
  *    a.delete(2) {|element| "Element #{element} not found." }
  *    # => "Element 2 not found."
  *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
+ *
  */
 
 VALUE
@@ -4380,20 +4389,17 @@ rb_ary_reject(VALUE ary)
 
 /*
  *  call-seq:
- *    array.delete_if {|element| ... } -> self
- *    array.delete_if -> Enumerator
+ *    delete_if {|element| ... } -> self
+ *    delete_if -> new_numerator
  *
- *  Removes each element in +self+ for which the block returns a truthy value;
+ *  With a block given, calls the block with each element of +self+;
+ *  removes the element if the block returns a truthy value;
  *  returns +self+:
  *
  *    a = [:foo, 'bar', 2, 'bat']
  *    a.delete_if {|element| element.to_s.start_with?('b') } # => [:foo, 2]
  *
- *  Returns a new Enumerator if no block given:
- *
- *    a = [:foo, 'bar', 2]
- *    a.delete_if # => #<Enumerator: [:foo, "bar", 2]:delete_if>
- *
+ *  With no block given, returns a new Enumerator.
  */
 
 static VALUE
@@ -4663,11 +4669,9 @@ rb_ary_clear(VALUE ary)
 {
     rb_ary_modify_check(ary);
     if (ARY_SHARED_P(ary)) {
-        if (!ARY_EMBED_P(ary)) {
-            rb_ary_unshare(ary);
-            FL_SET_EMBED(ary);
-            ARY_SET_EMBED_LEN(ary, 0);
-        }
+        rb_ary_unshare(ary);
+        FL_SET_EMBED(ary);
+        ARY_SET_EMBED_LEN(ary, 0);
     }
     else {
         ARY_SET_LEN(ary, 0);
@@ -4949,7 +4953,7 @@ rb_ary_fill(int argc, VALUE *argv, VALUE ary)
  *    a = [0, 1] + [2, 3]
  *    a # => [0, 1, 2, 3]
  *
- *  Related: Array#concat, Array#*.
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 VALUE
@@ -5197,6 +5201,8 @@ recursive_equal(VALUE ary1, VALUE ary2, int recur)
  *
  *  This method is different from method Array#eql?,
  *  which compares elements using <tt>Object#eql?</tt>.
+ *
+ *  Related: see {Methods for Comparing}[rdoc-ref:Array@Methods+for+Comparing].
  */
 
 static VALUE
@@ -5386,6 +5392,7 @@ recursive_cmp(VALUE ary1, VALUE ary2, int recur)
  *    [0, 1, 2] <=> [0, 1, 2, 0]  # => -1
  *    [0, 1, 2] <=> [0, 1, 2, 3]  # => -1
  *
+ *  Related: see {Methods for Comparing}[rdoc-ref:Array@Methods+for+Comparing].
  */
 
 VALUE
@@ -5468,7 +5475,7 @@ ary_make_hash_by(VALUE ary)
  *  Element are compared using method <tt>#eql?</tt>
  *  (as defined in each element of +self+).
  *
- *  Related: Array#difference.
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 VALUE
@@ -5574,12 +5581,7 @@ rb_ary_difference_multi(int argc, VALUE *argv, VALUE ary)
  *  Identifies common elements using method <tt>#eql?</tt>
  *  (as defined in each element of +self+).
  *
- *  Related:
- *
- *  - Array#intersection: intersection of +self+ and multiple other arrays.
- *  - Array#|: union of +self+ and one other array.
- *  - Array#union: union of +self+ and multiple other arrays.
- *
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 
@@ -6241,7 +6243,7 @@ rb_ary_uniq_bang(VALUE ary)
     }
     rb_ary_modify_check(ary);
     ARY_SET_LEN(ary, 0);
-    if (ARY_SHARED_P(ary) && !ARY_EMBED_P(ary)) {
+    if (ARY_SHARED_P(ary)) {
         rb_ary_unshare(ary);
         FL_SET_EMBED(ary);
     }
@@ -6792,13 +6794,16 @@ rb_ary_cycle_size(VALUE self, VALUE args, VALUE eobj)
 
 /*
  *  call-seq:
- *    array.cycle {|element| ... } -> nil
- *    array.cycle(count) {|element| ... } -> nil
- *    array.cycle -> new_enumerator
- *    array.cycle(count) -> new_enumerator
+ *    cycle(count = nil) {|element| ... } -> nil
+ *    cycle(count = nil) -> new_enumerator
  *
- *  When called with positive Integer argument +count+ and a block,
- *  calls the block with each element, then does so again,
+ *  With a block given, may call the block, depending on the value of argument +count+;
+ *  +count+ must be an
+ *  {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects],
+ *  or +nil+.
+ *
+ *  If +count+ is positive,
+ *  calls the block with each element, then does so repeatedly,
  *  until it has done so +count+ times; returns +nil+:
  *
  *    output = []
@@ -6807,21 +6812,16 @@ rb_ary_cycle_size(VALUE self, VALUE args, VALUE eobj)
  *
  *  If +count+ is zero or negative, does not call the block:
  *
- *    [0, 1].cycle(0) {|element| fail 'Cannot happen' } # => nil
+ *    [0, 1].cycle(0) {|element| fail 'Cannot happen' }  # => nil
  *    [0, 1].cycle(-1) {|element| fail 'Cannot happen' } # => nil
  *
- *  When a block is given, and argument is omitted or +nil+, cycles forever:
+ *  If +count+ is +nil+, cycles forever:
  *
  *    # Prints 0 and 1 forever.
  *    [0, 1].cycle {|element| puts element }
  *    [0, 1].cycle(nil) {|element| puts element }
  *
- *  When no block is given, returns a new Enumerator:
- *
- *    [0, 1].cycle(2) # => #<Enumerator: [0, 1]:cycle(2)>
- *    [0, 1].cycle # => # => #<Enumerator: [0, 1]:cycle>
- *    [0, 1].cycle.first(5) # => [0, 1, 0, 1, 0]
- *
+ *  With no block given, returns a new Enumerator.
  */
 static VALUE
 rb_ary_cycle(int argc, VALUE *argv, VALUE ary)
@@ -7777,7 +7777,7 @@ rb_ary_drop_while(VALUE ary)
  *  <b>Special case</b>: returns +false+ if +self+ is empty
  *  (regardless of any given argument or block).
  *
- *  Related: Array#all?, Array#none?, Array#one?.
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -7844,7 +7844,7 @@ rb_ary_any_p(int argc, VALUE *argv, VALUE ary)
  *  <b>Special case</b>: returns +true+ if +self+ is empty
  *  (regardless of any given argument or block).
  *
- *  Related: Array#any?, Array#none?, Array#one?.
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -8553,6 +8553,8 @@ rb_ary_deconstruct(VALUE ary)
  *  - ::new: Returns a new array.
  *  - ::try_convert: Returns a new array created from a given object.
  *
+ *  See also {Creating Arrays}[rdoc-ref:Array@Creating+Arrays].
+ *
  *  === Methods for Querying
  *
  *  - #length, #size: Returns the count of elements.
@@ -8569,7 +8571,7 @@ rb_ary_deconstruct(VALUE ary)
  *
  *  === Methods for Comparing
  *
- *  - #<=>: Returns -1, 0, or 1 * as +self+ is less than, equal to, or
+ *  - #<=>: Returns -1, 0, or 1, as +self+ is less than, equal to, or
  *    greater than a given object.
  *  - #==: Returns whether each element in +self+ is <tt>==</tt> to the corresponding element
  *    in a given object.
@@ -8621,7 +8623,8 @@ rb_ary_deconstruct(VALUE ary)
  *  These methods add, replace, or reorder elements in +self+.
  *
  *  - #[]=: Assigns specified elements with a given object.
- *  - #push, #append, #<<: Appends trailing elements.
+ *  - #<<: Appends an element.
+ *  - #push (and its alias #append): Appends elements.
  *  - #unshift, #prepend: Prepends leading elements.
  *  - #insert: Inserts given objects at a given offset; does not replace elements.
  *  - #concat: Appends all elements from given arrays.
@@ -8705,7 +8708,6 @@ rb_ary_deconstruct(VALUE ary)
  *    - With string argument +field_separator+, a new string that is equivalent to
  *      <tt>join(field_separator)</tt>.
  *
- *  - #abbrev: Returns a hash of unambiguous abbreviations for elements.
  *  - #pack: Packs the elements into a binary sequence.
  *  - #sum: Returns a sum of elements according to either <tt>+</tt> or a given block.
  */

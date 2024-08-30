@@ -505,7 +505,7 @@ parse_regexp_flags(const pm_node_t *node)
 static rb_encoding *
 parse_regexp_encoding(const pm_scope_node_t *scope_node, const pm_node_t *node)
 {
-    if (PM_NODE_FLAG_P(node, PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT)) {
+    if (PM_NODE_FLAG_P(node, PM_REGULAR_EXPRESSION_FLAGS_FORCED_BINARY_ENCODING) || PM_NODE_FLAG_P(node, PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT)) {
         return rb_ascii8bit_encoding();
     }
     else if (PM_NODE_FLAG_P(node, PM_REGULAR_EXPRESSION_FLAGS_UTF_8)) {
@@ -1021,7 +1021,7 @@ again:
  * Compile an if or unless node.
  */
 static void
-pm_compile_conditional(rb_iseq_t *iseq, const pm_node_location_t *node_location, pm_node_type_t type, const pm_node_t *node, const pm_statements_node_t *statements, const pm_node_t *consequent, const pm_node_t *predicate, LINK_ANCHOR *const ret, bool popped, pm_scope_node_t *scope_node)
+pm_compile_conditional(rb_iseq_t *iseq, const pm_node_location_t *node_location, pm_node_type_t type, const pm_node_t *node, const pm_statements_node_t *statements, const pm_node_t *subsequent, const pm_node_t *predicate, LINK_ANCHOR *const ret, bool popped, pm_scope_node_t *scope_node)
 {
     const pm_node_location_t location = *node_location;
     LABEL *then_label = NEW_LABEL(location.line);
@@ -1088,8 +1088,8 @@ pm_compile_conditional(rb_iseq_t *iseq, const pm_node_location_t *node_location,
         DECL_ANCHOR(else_seq);
         INIT_ANCHOR(else_seq);
 
-        if (consequent != NULL) {
-            pm_compile_node(iseq, consequent, else_seq, popped, scope_node);
+        if (subsequent != NULL) {
+            pm_compile_node(iseq, subsequent, else_seq, popped, scope_node);
         }
         else if (!popped) {
             PUSH_SYNTHETIC_PUTNIL(else_seq, iseq);
@@ -1099,13 +1099,13 @@ pm_compile_conditional(rb_iseq_t *iseq, const pm_node_location_t *node_location,
         if (then_label->refcnt && PM_BRANCH_COVERAGE_P(iseq)) {
             rb_code_location_t branch_location;
 
-            if (consequent == NULL) {
+            if (subsequent == NULL) {
                 branch_location = conditional_location;
-            } else if (PM_NODE_TYPE_P(consequent, PM_ELSE_NODE)) {
-                const pm_else_node_t *else_node = (const pm_else_node_t *) consequent;
+            } else if (PM_NODE_TYPE_P(subsequent, PM_ELSE_NODE)) {
+                const pm_else_node_t *else_node = (const pm_else_node_t *) subsequent;
                 branch_location = pm_code_location(scope_node, else_node->statements != NULL ? ((const pm_node_t *) else_node->statements) : (const pm_node_t *) else_node);
             } else {
-                branch_location = pm_code_location(scope_node, (const pm_node_t *) consequent);
+                branch_location = pm_code_location(scope_node, (const pm_node_t *) subsequent);
             }
 
             add_trace_branch_coverage(iseq, ret, &branch_location, branch_location.beg_pos.column, 1, type == PM_IF_NODE ? "else" : "then", branches);
@@ -1395,15 +1395,19 @@ pm_compile_hash_elements(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
     for (size_t index = 0; index < elements->size; index++) {
         const pm_node_t *element = elements->nodes[index];
 
+
         switch (PM_NODE_TYPE(element)) {
           case PM_ASSOC_NODE: {
             // Pre-allocation check (this branch can be omitted).
-            if (PM_NODE_FLAG_P(element, PM_NODE_FLAG_STATIC_LITERAL) && !static_literal && ((index + min_tmp_hash_length) < elements->size)) {
+            if (PM_NODE_FLAG_P(element, PM_NODE_FLAG_STATIC_LITERAL) && (
+                (!static_literal && ((index + min_tmp_hash_length) < elements->size)) ||
+                (first_chunk && stack_length == 0)
+              )) {
                 // Count the elements that are statically-known.
                 size_t count = 1;
                 while (index + count < elements->size && PM_NODE_FLAG_P(elements->nodes[index + count], PM_NODE_FLAG_STATIC_LITERAL)) count++;
 
-                if (count >= min_tmp_hash_length) {
+                if ((first_chunk && stack_length == 0) || count >= min_tmp_hash_length) {
                     // The subsequence of elements in this hash is long enough
                     // to merit its own hash.
                     VALUE ary = rb_ary_hidden_new(count);
@@ -1419,6 +1423,7 @@ pm_compile_hash_elements(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
 
                         rb_ary_cat(ary, elem, 2);
                     }
+                    index --;
 
                     VALUE hash = rb_hash_new_with_size(RARRAY_LEN(ary) / 2);
                     rb_hash_bulk_insert(RARRAY_LEN(ary), RARRAY_CONST_PTR(ary), hash);
@@ -1530,7 +1535,7 @@ pm_compile_hash_elements(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
 
 // This is details. Users should call pm_setup_args() instead.
 static int
-pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *block, int *flags, const bool has_regular_blockarg, struct rb_callinfo_kwarg **kw_arg, rb_iseq_t *iseq, LINK_ANCHOR *const ret, pm_scope_node_t *scope_node, const pm_node_location_t *node_location)
+pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *block, int *flags, const bool has_regular_blockarg, struct rb_callinfo_kwarg **kw_arg, VALUE *dup_rest, rb_iseq_t *iseq, LINK_ANCHOR *const ret, pm_scope_node_t *scope_node, const pm_node_location_t *node_location)
 {
     const pm_node_location_t location = *node_location;
 
@@ -1563,7 +1568,7 @@ pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *b
                     *flags |= VM_CALL_KW_SPLAT;
                     has_keyword_splat = true;
 
-                    if (elements->size > 1) {
+                    if (elements->size > 1 || !(elements->size == 1 && PM_NODE_TYPE_P(elements->nodes[0], PM_ASSOC_SPLAT_NODE))) {
                         // A new hash will be created for the keyword arguments
                         // in this case, so mark the method as passing mutable
                         // keyword splat.
@@ -1676,8 +1681,8 @@ pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *b
                     // foo(a, *b, c)
                     //        ^^
                     if (index + 1 < arguments->size || has_regular_blockarg) {
-                        PUSH_INSN1(ret, location, splatarray, Qtrue);
-                        *flags |= VM_CALL_ARGS_SPLAT_MUT;
+                        PUSH_INSN1(ret, location, splatarray, *dup_rest);
+                        if (*dup_rest == Qtrue) *dup_rest = Qfalse;
                     }
                     // If this is the first spalt array seen and it's the last
                     // parameter, we don't want splatarray to dup it.
@@ -1796,15 +1801,99 @@ pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *b
     return orig_argc;
 }
 
-// Compile the argument parts of a call
+/**
+ * True if the given kind of node could potentially mutate the array that is
+ * being splatted in a set of call arguments.
+ */
+static inline bool
+pm_setup_args_dup_rest_p(const pm_node_t *node)
+{
+    switch (PM_NODE_TYPE(node)) {
+      case PM_BACK_REFERENCE_READ_NODE:
+      case PM_CLASS_VARIABLE_READ_NODE:
+      case PM_CONSTANT_PATH_NODE:
+      case PM_CONSTANT_READ_NODE:
+      case PM_FALSE_NODE:
+      case PM_FLOAT_NODE:
+      case PM_GLOBAL_VARIABLE_READ_NODE:
+      case PM_IMAGINARY_NODE:
+      case PM_INSTANCE_VARIABLE_READ_NODE:
+      case PM_INTEGER_NODE:
+      case PM_LAMBDA_NODE:
+      case PM_LOCAL_VARIABLE_READ_NODE:
+      case PM_NIL_NODE:
+      case PM_NUMBERED_REFERENCE_READ_NODE:
+      case PM_RATIONAL_NODE:
+      case PM_REGULAR_EXPRESSION_NODE:
+      case PM_SELF_NODE:
+      case PM_STRING_NODE:
+      case PM_SYMBOL_NODE:
+      case PM_TRUE_NODE:
+        return false;
+      case PM_IMPLICIT_NODE:
+        return pm_setup_args_dup_rest_p(((const pm_implicit_node_t *) node)->value);
+      default:
+        return true;
+    }
+}
+
+/**
+ * Compile the argument parts of a call.
+ */
 static int
 pm_setup_args(const pm_arguments_node_t *arguments_node, const pm_node_t *block, int *flags, struct rb_callinfo_kwarg **kw_arg, rb_iseq_t *iseq, LINK_ANCHOR *const ret, pm_scope_node_t *scope_node, const pm_node_location_t *node_location)
 {
+    VALUE dup_rest = Qtrue;
+
+    const pm_node_list_t *arguments;
+    size_t arguments_size;
+
+    // Calls like foo(1, *f, **hash) that use splat and kwsplat could be
+    // eligible for eliding duping the rest array (dup_reset=false).
+    if (
+        arguments_node != NULL &&
+        (arguments = &arguments_node->arguments, arguments_size = arguments->size) >= 2 &&
+        PM_NODE_FLAG_P(arguments_node, PM_ARGUMENTS_NODE_FLAGS_CONTAINS_SPLAT) &&
+        !PM_NODE_FLAG_P(arguments_node, PM_ARGUMENTS_NODE_FLAGS_CONTAINS_MULTIPLE_SPLATS) &&
+        PM_NODE_TYPE_P(arguments->nodes[arguments_size - 1], PM_KEYWORD_HASH_NODE)
+    ) {
+        // Start by assuming that dup_rest=false, then check each element of the
+        // hash to ensure we don't need to flip it back to true (in case one of
+        // the elements could potentially mutate the array).
+        dup_rest = Qfalse;
+
+        const pm_keyword_hash_node_t *keyword_hash = (const pm_keyword_hash_node_t *) arguments->nodes[arguments_size - 1];
+        const pm_node_list_t *elements = &keyword_hash->elements;
+
+        for (size_t index = 0; dup_rest == Qfalse && index < elements->size; index++) {
+            const pm_node_t *element = elements->nodes[index];
+
+            switch (PM_NODE_TYPE(element)) {
+              case PM_ASSOC_NODE: {
+                const pm_assoc_node_t *assoc = (const pm_assoc_node_t *) element;
+                if (pm_setup_args_dup_rest_p(assoc->key) || pm_setup_args_dup_rest_p(assoc->value)) dup_rest = Qtrue;
+                break;
+              }
+              case PM_ASSOC_SPLAT_NODE: {
+                const pm_assoc_splat_node_t *assoc = (const pm_assoc_splat_node_t *) element;
+                if (assoc->value != NULL && pm_setup_args_dup_rest_p(assoc->value)) dup_rest = Qtrue;
+                break;
+              }
+              default:
+                break;
+            }
+        }
+    }
+
+    VALUE initial_dup_rest = dup_rest;
+    int argc;
+
     if (block && PM_NODE_TYPE_P(block, PM_BLOCK_ARGUMENT_NODE)) {
         // We compile the `&block_arg` expression first and stitch it later
         // since the nature of the expression influences whether splat should
         // duplicate the array.
         bool regular_block_arg = true;
+
         DECL_ANCHOR(block_arg);
         INIT_ANCHOR(block_arg);
         pm_compile_node(iseq, block, block_arg, false, scope_node);
@@ -1818,19 +1907,31 @@ pm_setup_args(const pm_arguments_node_t *arguments_node, const pm_node_t *block,
                 if (iobj->insn_id == BIN(getblockparam)) {
                     iobj->insn_id = BIN(getblockparamproxy);
                 }
+
                 // Allow splat without duplication for simple one-instruction
-                // block arguments like `&arg`. It is known that this optimization
-                // can be too aggressive in some cases. See [Bug #16504].
+                // block arguments like `&arg`. It is known that this
+                // optimization can be too aggressive in some cases. See
+                // [Bug #16504].
                 regular_block_arg = false;
             }
         }
 
-        int argc = pm_setup_args_core(arguments_node, block, flags, regular_block_arg, kw_arg, iseq, ret, scope_node, node_location);
+        argc = pm_setup_args_core(arguments_node, block, flags, regular_block_arg, kw_arg, &dup_rest, iseq, ret, scope_node, node_location);
         PUSH_SEQ(ret, block_arg);
-        return argc;
+    }
+    else {
+        argc = pm_setup_args_core(arguments_node, block, flags, false, kw_arg, &dup_rest, iseq, ret, scope_node, node_location);
     }
 
-    return pm_setup_args_core(arguments_node, block, flags, false, kw_arg, iseq, ret, scope_node, node_location);
+    // If the dup_rest flag was consumed while compiling the arguments (which
+    // effectively means we found the splat node), then it would have changed
+    // during the call to pm_setup_args_core. In this case, we want to add the
+    // VM_CALL_ARGS_SPLAT_MUT flag.
+    if (*flags & VM_CALL_ARGS_SPLAT && dup_rest != initial_dup_rest) {
+        *flags |= VM_CALL_ARGS_SPLAT_MUT;
+    }
+
+    return argc;
 }
 
 /**
@@ -3006,6 +3107,7 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         scope->filepath_encoding = previous->filepath_encoding;
         scope->constants = previous->constants;
         scope->coverage_enabled = previous->coverage_enabled;
+        scope->script_lines = previous->script_lines;
     }
 
     switch (PM_NODE_TYPE(node)) {
@@ -6223,20 +6325,20 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             if (PM_BRANCH_COVERAGE_P(iseq)) {
                 rb_code_location_t branch_location;
 
-                if (cast->consequent == NULL) {
+                if (cast->else_clause == NULL) {
                     branch_location = case_location;
-                } else if (cast->consequent->statements == NULL) {
-                    branch_location = pm_code_location(scope_node, (const pm_node_t *) cast->consequent);
+                } else if (cast->else_clause->statements == NULL) {
+                    branch_location = pm_code_location(scope_node, (const pm_node_t *) cast->else_clause);
                 } else {
-                    branch_location = pm_code_location(scope_node, (const pm_node_t *) cast->consequent->statements);
+                    branch_location = pm_code_location(scope_node, (const pm_node_t *) cast->else_clause->statements);
                 }
 
                 add_trace_branch_coverage(iseq, cond_seq, &branch_location, branch_location.beg_pos.column, branch_id, "else", branches);
             }
 
-            // Compile the consequent else clause if there is one.
-            if (cast->consequent != NULL) {
-                pm_compile_node(iseq, (const pm_node_t *) cast->consequent, cond_seq, popped, scope_node);
+            // Compile the else clause if there is one.
+            if (cast->else_clause != NULL) {
+                pm_compile_node(iseq, (const pm_node_t *) cast->else_clause, cond_seq, popped, scope_node);
             }
             else if (!popped) {
                 PUSH_SYNTHETIC_PUTNIL(cond_seq, iseq);
@@ -6349,7 +6451,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
 
             // Now that we have compiled the conditions and the bodies of the
             // various when clauses, we can compile the predicate, lay out the
-            // conditions, compile the fallback consequent if there is one, and
+            // conditions, compile the fallback subsequent if there is one, and
             // finally put in the bodies of the when clauses.
             PM_COMPILE_NOT_POPPED(cast->predicate);
 
@@ -6367,17 +6469,17 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             // clause.
             PUSH_LABEL(ret, else_label);
 
-            if (cast->consequent != NULL) {
-                pm_node_location_t else_location = PM_NODE_START_LOCATION(parser, cast->consequent->statements != NULL ? ((const pm_node_t *) cast->consequent->statements) : ((const pm_node_t *) cast->consequent));
+            if (cast->else_clause != NULL) {
+                pm_node_location_t else_location = PM_NODE_START_LOCATION(parser, cast->else_clause->statements != NULL ? ((const pm_node_t *) cast->else_clause->statements) : ((const pm_node_t *) cast->else_clause));
                 PUSH_INSN(ret, else_location, pop);
 
                 // Establish branch coverage for the else clause.
                 if (PM_BRANCH_COVERAGE_P(iseq)) {
-                    rb_code_location_t branch_location = pm_code_location(scope_node, cast->consequent->statements != NULL ? ((const pm_node_t *) cast->consequent->statements) : ((const pm_node_t *) cast->consequent));
+                    rb_code_location_t branch_location = pm_code_location(scope_node, cast->else_clause->statements != NULL ? ((const pm_node_t *) cast->else_clause->statements) : ((const pm_node_t *) cast->else_clause));
                     add_trace_branch_coverage(iseq, ret, &branch_location, branch_location.beg_pos.column, branch_id, "else", branches);
                 }
 
-                PM_COMPILE((const pm_node_t *) cast->consequent);
+                PM_COMPILE((const pm_node_t *) cast->else_clause);
                 PUSH_INSNL(ret, else_location, jump, end_label);
             }
             else {
@@ -6444,7 +6546,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // If there is only one pattern, then the behavior changes a bit. It
         // effectively gets treated as a match required node (this is how it is
         // represented in the other parser).
-        bool in_single_pattern = cast->consequent == NULL && cast->conditions.size == 1;
+        bool in_single_pattern = cast->else_clause == NULL && cast->conditions.size == 1;
 
         // First, we're going to push a bunch of stuff onto the stack that is
         // going to serve as our scratch space.
@@ -6501,11 +6603,11 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
             LABEL_UNREMOVABLE(next_pattern_label);
         }
 
-        if (cast->consequent != NULL) {
+        if (cast->else_clause != NULL) {
             // If we have an `else` clause, then this becomes our fallback (and
             // there is no need to compile in code to potentially raise an
             // error).
-            const pm_else_node_t *else_node = (const pm_else_node_t *) cast->consequent;
+            const pm_else_node_t *else_node = cast->else_clause;
 
             PUSH_LABEL(cond_seq, else_label);
             PUSH_INSN(cond_seq, location, pop);
@@ -7245,7 +7347,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // foo ? bar : baz
         // ^^^^^^^^^^^^^^^
         const pm_if_node_t *cast = (const pm_if_node_t *) node;
-        pm_compile_conditional(iseq, &location, PM_IF_NODE, (const pm_node_t *) cast, cast->statements, cast->consequent, cast->predicate, ret, popped, scope_node);
+        pm_compile_conditional(iseq, &location, PM_IF_NODE, (const pm_node_t *) cast, cast->statements, cast->subsequent, cast->predicate, ret, popped, scope_node);
         return;
       }
       case PM_IMAGINARY_NODE: {
@@ -8337,8 +8439,8 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // either jump to the next rescue clause or it will fall through to the
         // subsequent instruction returning the raised error.
         PUSH_LABEL(ret, rescue_end_label);
-        if (cast->consequent) {
-            PM_COMPILE((const pm_node_t *) cast->consequent);
+        if (cast->subsequent) {
+            PM_COMPILE((const pm_node_t *) cast->subsequent);
         }
         else {
             PUSH_GETLOCAL(ret, location, 1, 0);
@@ -8600,6 +8702,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
                 if (PM_NODE_TYPE_P(parameters_node->keyword_rest, PM_FORWARDING_PARAMETER_NODE)) {
                     // Only optimize specifically methods like this: `foo(...)`
                     if (requireds_list->size == 0 && optionals_list->size == 0 && keywords_list->size == 0) {
+                        ISEQ_BODY(iseq)->param.flags.use_block = TRUE;
                         ISEQ_BODY(iseq)->param.flags.forwardable = TRUE;
                         table_size += 1;
                     }
@@ -9625,12 +9728,12 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         // bar unless foo
         // ^^^^^^^^^^^^^^
         const pm_unless_node_t *cast = (const pm_unless_node_t *) node;
-        const pm_statements_node_t *consequent = NULL;
-        if (cast->consequent != NULL) {
-            consequent = ((const pm_else_node_t *) cast->consequent)->statements;
+        const pm_statements_node_t *statements = NULL;
+        if (cast->else_clause != NULL) {
+            statements = ((const pm_else_node_t *) cast->else_clause)->statements;
         }
 
-        pm_compile_conditional(iseq, &location, PM_UNLESS_NODE, (const pm_node_t *) cast, consequent, (const pm_node_t *) cast->statements, cast->predicate, ret, popped, scope_node);
+        pm_compile_conditional(iseq, &location, PM_UNLESS_NODE, (const pm_node_t *) cast, statements, (const pm_node_t *) cast->statements, cast->predicate, ret, popped, scope_node);
         return;
       }
       case PM_UNTIL_NODE: {
@@ -10277,7 +10380,7 @@ pm_parse_process_error(const pm_parse_result_t *result)
  * result object is zeroed out.
  */
 static VALUE
-pm_parse_process(pm_parse_result_t *result, pm_node_t *node)
+pm_parse_process(pm_parse_result_t *result, pm_node_t *node, VALUE *script_lines)
 {
     pm_parser_t *parser = &result->parser;
 
@@ -10294,6 +10397,20 @@ pm_parse_process(pm_parse_result_t *result, pm_node_t *node)
     if (!scope_node->encoding) rb_bug("Encoding not found %s!", parser->encoding->name);
 
     scope_node->coverage_enabled = coverage_enabled;
+
+    // If RubyVM.keep_script_lines is set to true, then we need to create that
+    // array of script lines here.
+    if (script_lines != NULL) {
+        *script_lines = rb_ary_new_capa(parser->newline_list.size);
+
+        for (size_t index = 0; index < parser->newline_list.size; index++) {
+            size_t offset = parser->newline_list.offsets[index];
+            size_t length = index == parser->newline_list.size - 1 ? (parser->end - (parser->start + offset)) : (parser->newline_list.offsets[index + 1] - offset);
+            rb_ary_push(*script_lines, rb_enc_str_new((const char *) parser->start + offset, length, scope_node->encoding));
+        }
+
+        scope_node->script_lines = script_lines;
+    }
 
     // Emit all of the various warnings from the parse.
     const pm_diagnostic_t *warning;
@@ -10400,6 +10517,125 @@ pm_parse_file_script_lines(const pm_scope_node_t *scope_node, const pm_parser_t 
     return lines;
 }
 
+// This is essentially pm_string_mapped_init(), preferring to memory map the
+// file, with additional handling for files that require blocking to properly
+// read (e.g. pipes).
+static bool
+read_entire_file(pm_string_t *string, const char *filepath)
+{
+#ifdef _WIN32
+    // Open the file for reading.
+    HANDLE file = CreateFile(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    // Get the file size.
+    DWORD file_size = GetFileSize(file, NULL);
+    if (file_size == INVALID_FILE_SIZE) {
+        CloseHandle(file);
+        return false;
+    }
+
+    // If the file is empty, then we don't need to do anything else, we'll set
+    // the source to a constant empty string and return.
+    if (file_size == 0) {
+        CloseHandle(file);
+        const uint8_t source[] = "";
+        *string = (pm_string_t) { .type = PM_STRING_CONSTANT, .source = source, .length = 0 };
+        return true;
+    }
+
+    // Create a mapping of the file.
+    HANDLE mapping = CreateFileMapping(file, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (mapping == NULL) {
+        CloseHandle(file);
+        return false;
+    }
+
+    // Map the file into memory.
+    uint8_t *source = (uint8_t *) MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(mapping);
+    CloseHandle(file);
+
+    if (source == NULL) {
+        return false;
+    }
+
+    *string = (pm_string_t) { .type = PM_STRING_MAPPED, .source = source, .length = (size_t) file_size };
+    return true;
+#elif defined(_POSIX_MAPPED_FILES)
+    // Open the file for reading
+    const int open_mode = O_RDONLY | O_NONBLOCK;
+    int fd = open(filepath, open_mode);
+    if (fd == -1) {
+        return false;
+    }
+
+    // Stat the file to get the file size
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        close(fd);
+        return false;
+    }
+
+    // Ensure it is a file and not a directory
+    if (S_ISDIR(sb.st_mode)) {
+        close(fd);
+        errno = EISDIR;
+        return false;
+    }
+
+    // We need to wait for data first before reading from pipes and character
+    // devices. To not block the entire VM, we need to release the GVL while
+    // reading. Use IO#read to do this and let the GC handle closing the FD.
+    if (S_ISFIFO(sb.st_mode) || S_ISCHR(sb.st_mode)) {
+        VALUE io = rb_io_fdopen((int) fd, open_mode, filepath);
+        rb_io_wait(io, RB_INT2NUM(RUBY_IO_READABLE), Qnil);
+        VALUE contents = rb_funcall(io, rb_intern("read"), 0);
+
+        if (!RB_TYPE_P(contents, T_STRING)) {
+            return false;
+        }
+
+        long len = RSTRING_LEN(contents);
+        if (len < 0) {
+            return false;
+        }
+        size_t length = (size_t) len;
+
+        uint8_t *source = xmalloc(length);
+        memcpy(source, RSTRING_PTR(contents), length);
+        *string = (pm_string_t) { .type = PM_STRING_OWNED, .source = source, .length = length };
+
+        return true;
+    }
+
+    // mmap the file descriptor to virtually get the contents
+    size_t size = (size_t) sb.st_size;
+    uint8_t *source = NULL;
+
+    if (size == 0) {
+        close(fd);
+        const uint8_t source[] = "";
+        *string = (pm_string_t) { .type = PM_STRING_CONSTANT, .source = source, .length = 0 };
+        return true;
+    }
+
+    source = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (source == MAP_FAILED) {
+        return false;
+    }
+
+    close(fd);
+    *string = (pm_string_t) { .type = PM_STRING_MAPPED, .source = source, .length = size };
+    return true;
+#else
+    return pm_string_file_init(string, filepath);
+#endif
+}
+
 /**
  * Attempt to load the file into memory. Return a Ruby error if the file cannot
  * be read.
@@ -10407,7 +10643,7 @@ pm_parse_file_script_lines(const pm_scope_node_t *scope_node, const pm_parser_t 
 VALUE
 pm_load_file(pm_parse_result_t *result, VALUE filepath, bool load_error)
 {
-    if (!pm_string_mapped_init(&result->input, RSTRING_PTR(filepath))) {
+    if (!read_entire_file(&result->input, RSTRING_PTR(filepath))) {
 #ifdef _WIN32
         int e = rb_w32_map_errno(GetLastError());
 #else
@@ -10442,7 +10678,7 @@ pm_load_file(pm_parse_result_t *result, VALUE filepath, bool load_error)
  * is zeroed out.
  */
 VALUE
-pm_parse_file(pm_parse_result_t *result, VALUE filepath)
+pm_parse_file(pm_parse_result_t *result, VALUE filepath, VALUE *script_lines)
 {
     result->node.filepath_encoding = rb_enc_get(filepath);
     pm_options_filepath_set(&result->options, RSTRING_PTR(filepath));
@@ -10451,7 +10687,7 @@ pm_parse_file(pm_parse_result_t *result, VALUE filepath)
     pm_parser_init(&result->parser, pm_string_source(&result->input), pm_string_length(&result->input), &result->options);
     pm_node_t *node = pm_parse(&result->parser);
 
-    VALUE error = pm_parse_process(result, node);
+    VALUE error = pm_parse_process(result, node, script_lines);
 
     // If we're parsing a filepath, then we need to potentially support the
     // SCRIPT_LINES__ constant, which can be a hash that has an array of lines
@@ -10459,10 +10695,10 @@ pm_parse_file(pm_parse_result_t *result, VALUE filepath)
     ID id_script_lines = rb_intern("SCRIPT_LINES__");
 
     if (rb_const_defined_at(rb_cObject, id_script_lines)) {
-        VALUE script_lines = rb_const_get_at(rb_cObject, id_script_lines);
+        VALUE constant_script_lines = rb_const_get_at(rb_cObject, id_script_lines);
 
-        if (RB_TYPE_P(script_lines, T_HASH)) {
-            rb_hash_aset(script_lines, filepath, pm_parse_file_script_lines(&result->node, &result->parser));
+        if (RB_TYPE_P(constant_script_lines, T_HASH)) {
+            rb_hash_aset(constant_script_lines, filepath, pm_parse_file_script_lines(&result->node, &result->parser));
         }
     }
 
@@ -10474,11 +10710,11 @@ pm_parse_file(pm_parse_result_t *result, VALUE filepath)
  * cannot be read or if it cannot be parsed properly.
  */
 VALUE
-pm_load_parse_file(pm_parse_result_t *result, VALUE filepath)
+pm_load_parse_file(pm_parse_result_t *result, VALUE filepath, VALUE *script_lines)
 {
     VALUE error = pm_load_file(result, filepath, false);
     if (NIL_P(error)) {
-        error = pm_parse_file(result, filepath);
+        error = pm_parse_file(result, filepath, script_lines);
     }
 
     return error;
@@ -10491,7 +10727,7 @@ pm_load_parse_file(pm_parse_result_t *result, VALUE filepath)
  * error is returned.
  */
 VALUE
-pm_parse_string(pm_parse_result_t *result, VALUE source, VALUE filepath)
+pm_parse_string(pm_parse_result_t *result, VALUE source, VALUE filepath, VALUE *script_lines)
 {
     rb_encoding *encoding = rb_enc_get(source);
     if (!rb_enc_asciicompat(encoding)) {
@@ -10509,7 +10745,7 @@ pm_parse_string(pm_parse_result_t *result, VALUE source, VALUE filepath)
     pm_parser_init(&result->parser, pm_string_source(&result->input), pm_string_length(&result->input), &result->options);
     pm_node_t *node = pm_parse(&result->parser);
 
-    return pm_parse_process(result, node);
+    return pm_parse_process(result, node, script_lines);
 }
 
 /**
@@ -10559,7 +10795,7 @@ pm_parse_stdin(pm_parse_result_t *result)
     // we went through an IO object to be visible to the user.
     rb_reset_argf_lineno(0);
 
-    return pm_parse_process(result, node);
+    return pm_parse_process(result, node, NULL);
 }
 
 #undef NEW_ISEQ

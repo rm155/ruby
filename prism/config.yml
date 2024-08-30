@@ -651,6 +651,10 @@ flags:
         comment: "if arguments contain keywords"
       - name: CONTAINS_KEYWORD_SPLAT
         comment: "if arguments contain keyword splat"
+      - name: CONTAINS_SPLAT
+        comment: "if arguments contain splat"
+      - name: CONTAINS_MULTIPLE_SPLATS
+        comment: "if arguments contain multiple splats"
     comment: Flags for arguments nodes.
   - name: ArrayNodeFlags
     values:
@@ -772,15 +776,25 @@ nodes:
     fields:
       - name: new_name
         type: node
+        kind:
+          - GlobalVariableReadNode
+          - BackReferenceReadNode
+          - NumberedReferenceReadNode
         comment: |
-          Represents the new name of the global variable that can be used after aliasing. This can be either a global variable, a back reference, or a numbered reference.
+          Represents the new name of the global variable that can be used after aliasing.
 
               alias $foo $bar
                     ^^^^
       - name: old_name
         type: node
+        kind:
+          - GlobalVariableReadNode
+          - BackReferenceReadNode
+          - NumberedReferenceReadNode
+          - SymbolNode # On parsing error of `alias $a b`
+          - MissingNode # On parsing error of `alias $a 42`
         comment: |
-          Represents the old name of the global variable that could be used before aliasing. This can be either a global variable, a back reference, or a numbered reference.
+          Represents the old name of the global variable that can be used before aliasing.
 
               alias $foo $bar
                          ^^^^
@@ -800,8 +814,16 @@ nodes:
     fields:
       - name: new_name
         type: node
+        kind:
+          - SymbolNode
+          - InterpolatedSymbolNode
       - name: old_name
         type: node
+        kind:
+          - SymbolNode
+          - InterpolatedSymbolNode
+          - GlobalVariableReadNode # On parsing error of `alias a $b`
+          - MissingNode # On parsing error of `alias a 42`
       - name: keyword_loc
         type: location
     comment: |
@@ -1032,7 +1054,7 @@ nodes:
       - name: operator_loc
         type: location
     comment: |
-      Represents block method arguments.
+      Represents a block argument using `&`.
 
           bar(&args)
           ^^^^^^^^^^
@@ -1052,8 +1074,15 @@ nodes:
         type: constant[]
       - name: parameters
         type: node?
+        kind:
+          - BlockParametersNode
+          - NumberedParametersNode
+          - ItParametersNode
       - name: body
         type: node?
+        kind:
+          - StatementsNode
+          - BeginNode
       - name: opening_loc
         type: location
       - name: closing_loc
@@ -1073,7 +1102,7 @@ nodes:
       - name: operator_loc
         type: location
     comment: |
-      Represents a block parameter to a method, block, or lambda definition.
+      Represents a block parameter of a method, block, or lambda definition.
 
           def a(&b)
                 ^^
@@ -1283,7 +1312,7 @@ nodes:
         type: node?
       - name: conditions
         type: node[]
-      - name: consequent
+      - name: else_clause
         type: node?
         kind: ElseNode
       - name: case_keyword_loc
@@ -1303,7 +1332,7 @@ nodes:
         type: node?
       - name: conditions
         type: node[]
-      - name: consequent
+      - name: else_clause
         type: node?
         kind: ElseNode
       - name: case_keyword_loc
@@ -2160,8 +2189,11 @@ nodes:
                 baz
                 ^^^
               end
-      - name: consequent
+      - name: subsequent
         type: node?
+        kind:
+          - ElseNode
+          - IfNode
         comment: |
           Represents an `ElseNode` or an `IfNode` when there is an `else` or an `elsif` in the `if` statement.
 
@@ -3418,7 +3450,7 @@ nodes:
       - name: statements
         type: node?
         kind: StatementsNode
-      - name: consequent
+      - name: subsequent
         type: node?
         kind: RescueNode
     comment: |
@@ -3673,7 +3705,7 @@ nodes:
 
               unless cond then bar end
                                ^^^
-      - name: consequent
+      - name: else_clause
         type: node?
         kind: ElseNode
         comment: |

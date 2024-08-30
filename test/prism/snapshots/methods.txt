@@ -717,7 +717,7 @@
         │   │   │   ├── operator_loc: ∅
         │   │   │   ├── reference: ∅
         │   │   │   ├── statements: ∅
-        │   │   │   └── consequent: ∅
+        │   │   │   └── subsequent: ∅
         │   │   ├── else_clause:
         │   │   │   @ ElseNode (location: (77,15)-(77,27))
         │   │   │   ├── flags: ∅
@@ -901,7 +901,7 @@
         │   │       │   │                       ├── value_loc: (99,8)-(99,10) = "hi"
         │   │       │   │                       ├── closing_loc: ∅
         │   │       │   │                       └── unescaped: "hi"
-        │   │       │   ├── consequent: ∅
+        │   │       │   ├── subsequent: ∅
         │   │       │   └── end_keyword_loc: ∅
         │   │       └── @ SymbolNode (location: (100,0)-(100,4))
         │   │           ├── flags: newline, static_literal, forced_us_ascii_encoding
@@ -1041,7 +1041,7 @@
         │   │           ├── opening_loc: (110,11)-(110,12) = "("
         │   │           ├── arguments:
         │   │           │   @ ArgumentsNode (location: (110,12)-(110,13))
-        │   │           │   ├── flags: ∅
+        │   │           │   ├── flags: contains_splat
         │   │           │   └── arguments: (length: 1)
         │   │           │       └── @ SplatNode (location: (110,12)-(110,13))
         │   │           │           ├── flags: ∅

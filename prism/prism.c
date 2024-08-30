@@ -1093,7 +1093,7 @@ pm_check_value_expression(pm_parser_t *parser, pm_node_t *node) {
             }
             case PM_IF_NODE: {
                 pm_if_node_t *cast = (pm_if_node_t *) node;
-                if (cast->statements == NULL || cast->consequent == NULL) {
+                if (cast->statements == NULL || cast->subsequent == NULL) {
                     return NULL;
                 }
                 pm_node_t *vn = pm_check_value_expression(parser, (pm_node_t *) cast->statements);
@@ -1103,12 +1103,12 @@ pm_check_value_expression(pm_parser_t *parser, pm_node_t *node) {
                 if (void_node == NULL) {
                     void_node = vn;
                 }
-                node = cast->consequent;
+                node = cast->subsequent;
                 break;
             }
             case PM_UNLESS_NODE: {
                 pm_unless_node_t *cast = (pm_unless_node_t *) node;
-                if (cast->statements == NULL || cast->consequent == NULL) {
+                if (cast->statements == NULL || cast->else_clause == NULL) {
                     return NULL;
                 }
                 pm_node_t *vn = pm_check_value_expression(parser, (pm_node_t *) cast->statements);
@@ -1118,7 +1118,7 @@ pm_check_value_expression(pm_parser_t *parser, pm_node_t *node) {
                 if (void_node == NULL) {
                     void_node = vn;
                 }
-                node = (pm_node_t *) cast->consequent;
+                node = (pm_node_t *) cast->else_clause;
                 break;
             }
             case PM_ELSE_NODE: {
@@ -2063,6 +2063,14 @@ pm_arguments_node_arguments_append(pm_arguments_node_t *node, pm_node_t *argumen
 
     node->base.location.end = argument->location.end;
     pm_node_list_append(&node->arguments, argument);
+
+    if (PM_NODE_TYPE_P(argument, PM_SPLAT_NODE)) {
+        if (PM_NODE_FLAG_P(node, PM_ARGUMENTS_NODE_FLAGS_CONTAINS_SPLAT)) {
+            pm_node_flag_set((pm_node_t *) node, PM_ARGUMENTS_NODE_FLAGS_CONTAINS_MULTIPLE_SPLATS);
+        } else {
+            pm_node_flag_set((pm_node_t *) node, PM_ARGUMENTS_NODE_FLAGS_CONTAINS_SPLAT);
+        }
+    }
 }
 
 /**
@@ -2283,7 +2291,10 @@ pm_assoc_node_create(pm_parser_t *parser, pm_node_t *key, const pm_token_t *oper
     // If the key and value of this assoc node are both static literals, then
     // we can mark this node as a static literal.
     pm_node_flags_t flags = 0;
-    if (value && !PM_NODE_TYPE_P(value, PM_ARRAY_NODE) && !PM_NODE_TYPE_P(value, PM_HASH_NODE) && !PM_NODE_TYPE_P(value, PM_RANGE_NODE)) {
+    if (
+        !PM_NODE_TYPE_P(key, PM_ARRAY_NODE) && !PM_NODE_TYPE_P(key, PM_HASH_NODE) && !PM_NODE_TYPE_P(key, PM_RANGE_NODE) &&
+        value && !PM_NODE_TYPE_P(value, PM_ARRAY_NODE) && !PM_NODE_TYPE_P(value, PM_HASH_NODE) && !PM_NODE_TYPE_P(value, PM_RANGE_NODE)
+    ) {
         flags = key->flags & value->flags & PM_NODE_FLAG_STATIC_LITERAL;
     }
 
@@ -3261,7 +3272,7 @@ pm_case_node_create(pm_parser_t *parser, const pm_token_t *case_keyword, pm_node
             },
         },
         .predicate = predicate,
-        .consequent = NULL,
+        .else_clause = NULL,
         .case_keyword_loc = PM_LOCATION_TOKEN_VALUE(case_keyword),
         .end_keyword_loc = PM_LOCATION_TOKEN_VALUE(end_keyword),
         .conditions = { 0 }
@@ -3282,12 +3293,12 @@ pm_case_node_condition_append(pm_case_node_t *node, pm_node_t *condition) {
 }
 
 /**
- * Set the consequent of a CaseNode node.
+ * Set the else clause of a CaseNode node.
  */
 static void
-pm_case_node_consequent_set(pm_case_node_t *node, pm_else_node_t *consequent) {
-    node->consequent = consequent;
-    node->base.location.end = consequent->base.location.end;
+pm_case_node_else_clause_set(pm_case_node_t *node, pm_else_node_t *else_clause) {
+    node->else_clause = else_clause;
+    node->base.location.end = else_clause->base.location.end;
 }
 
 /**
@@ -3316,7 +3327,7 @@ pm_case_match_node_create(pm_parser_t *parser, const pm_token_t *case_keyword, p
             },
         },
         .predicate = predicate,
-        .consequent = NULL,
+        .else_clause = NULL,
         .case_keyword_loc = PM_LOCATION_TOKEN_VALUE(case_keyword),
         .end_keyword_loc = PM_LOCATION_TOKEN_VALUE(end_keyword),
         .conditions = { 0 }
@@ -3337,12 +3348,12 @@ pm_case_match_node_condition_append(pm_case_match_node_t *node, pm_node_t *condi
 }
 
 /**
- * Set the consequent of a CaseMatchNode node.
+ * Set the else clause of a CaseMatchNode node.
  */
 static void
-pm_case_match_node_consequent_set(pm_case_match_node_t *node, pm_else_node_t *consequent) {
-    node->consequent = consequent;
-    node->base.location.end = consequent->base.location.end;
+pm_case_match_node_else_clause_set(pm_case_match_node_t *node, pm_else_node_t *else_clause) {
+    node->else_clause = else_clause;
+    node->base.location.end = else_clause->base.location.end;
 }
 
 /**
@@ -4675,7 +4686,7 @@ pm_if_node_create(pm_parser_t *parser,
     pm_node_t *predicate,
     const pm_token_t *then_keyword,
     pm_statements_node_t *statements,
-    pm_node_t *consequent,
+    pm_node_t *subsequent,
     const pm_token_t *end_keyword
 ) {
     pm_conditional_predicate(parser, predicate, PM_CONDITIONAL_PREDICATE_TYPE_CONDITIONAL);
@@ -4684,8 +4695,8 @@ pm_if_node_create(pm_parser_t *parser,
     const uint8_t *end;
     if (end_keyword->type != PM_TOKEN_NOT_PROVIDED) {
         end = end_keyword->end;
-    } else if (consequent != NULL) {
-        end = consequent->location.end;
+    } else if (subsequent != NULL) {
+        end = subsequent->location.end;
     } else if (pm_statements_node_body_length(statements) != 0) {
         end = statements->base.location.end;
     } else {
@@ -4706,7 +4717,7 @@ pm_if_node_create(pm_parser_t *parser,
         .predicate = predicate,
         .then_keyword_loc = PM_OPTIONAL_LOCATION_TOKEN_VALUE(then_keyword),
         .statements = statements,
-        .consequent = consequent,
+        .subsequent = subsequent,
         .end_keyword_loc = PM_OPTIONAL_LOCATION_TOKEN_VALUE(end_keyword)
     };
 
@@ -4738,7 +4749,7 @@ pm_if_node_modifier_create(pm_parser_t *parser, pm_node_t *statement, const pm_t
         .predicate = predicate,
         .then_keyword_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE,
         .statements = statements,
-        .consequent = NULL,
+        .subsequent = NULL,
         .end_keyword_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE
     };
 
@@ -4778,7 +4789,7 @@ pm_if_node_ternary_create(pm_parser_t *parser, pm_node_t *predicate, const pm_to
         .predicate = predicate,
         .then_keyword_loc = PM_LOCATION_TOKEN_VALUE(qmark),
         .statements = if_statements,
-        .consequent = (pm_node_t *)else_node,
+        .subsequent = (pm_node_t *) else_node,
         .end_keyword_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE
     };
 
@@ -6140,14 +6151,14 @@ pm_numbered_reference_read_node_number(pm_parser_t *parser, const pm_token_t *to
     errno = 0;
     unsigned long value = strtoul(digits, &endptr, 10);
 
-    if ((digits == endptr) || (*endptr != '\0') || (errno == ERANGE)) {
+    if ((digits == endptr) || (*endptr != '\0')) {
         pm_parser_err(parser, start, end, PM_ERR_INVALID_NUMBER_DECIMAL);
         value = 0;
     }
 
     xfree(digits);
 
-    if (value > NTH_REF_MAX) {
+    if ((errno == ERANGE) || (value > NTH_REF_MAX)) {
         PM_PARSER_WARN_FORMAT(parser, start, end, PM_WARN_INVALID_NUMBERED_REFERENCE, (int) (length + 1), (const char *) token->start);
         value = 0;
     }
@@ -6637,7 +6648,7 @@ pm_rescue_node_create(pm_parser_t *parser, const pm_token_t *keyword) {
         .operator_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE,
         .reference = NULL,
         .statements = NULL,
-        .consequent = NULL,
+        .subsequent = NULL,
         .exceptions = { 0 }
     };
 
@@ -6670,12 +6681,12 @@ pm_rescue_node_statements_set(pm_rescue_node_t *node, pm_statements_node_t *stat
 }
 
 /**
- * Set the consequent of a rescue node, and update the location.
+ * Set the subsequent of a rescue node, and update the location.
  */
 static void
-pm_rescue_node_consequent_set(pm_rescue_node_t *node, pm_rescue_node_t *consequent) {
-    node->consequent = consequent;
-    node->base.location.end = consequent->base.location.end;
+pm_rescue_node_subsequent_set(pm_rescue_node_t *node, pm_rescue_node_t *subsequent) {
+    node->subsequent = subsequent;
+    node->base.location.end = subsequent->base.location.end;
 }
 
 /**
@@ -7582,7 +7593,7 @@ pm_unless_node_create(pm_parser_t *parser, const pm_token_t *keyword, pm_node_t 
         .predicate = predicate,
         .then_keyword_loc = PM_OPTIONAL_LOCATION_TOKEN_VALUE(then_keyword),
         .statements = statements,
-        .consequent = NULL,
+        .else_clause = NULL,
         .end_keyword_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE
     };
 
@@ -7614,7 +7625,7 @@ pm_unless_node_modifier_create(pm_parser_t *parser, pm_node_t *statement, const 
         .predicate = predicate,
         .then_keyword_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE,
         .statements = statements,
-        .consequent = NULL,
+        .else_clause = NULL,
         .end_keyword_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE
     };
 
@@ -14964,14 +14975,14 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
         if (current == NULL) {
             pm_begin_node_rescue_clause_set(parent_node, rescue);
         } else {
-            pm_rescue_node_consequent_set(current, rescue);
+            pm_rescue_node_subsequent_set(current, rescue);
         }
 
         current = rescue;
     }
 
     // The end node locations on rescue nodes will not be set correctly
-    // since we won't know the end until we've found all consequent
+    // since we won't know the end until we've found all subsequent
     // clauses. This sets the end location on all rescues once we know it.
     if (current != NULL) {
         const uint8_t *end_to_set = current->base.location.end;
@@ -14979,7 +14990,7 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
 
         while (clause != NULL) {
             clause->base.location.end = end_to_set;
-            clause = clause->consequent;
+            clause = clause->subsequent;
         }
     }
 
@@ -15703,7 +15714,7 @@ parse_conditional(pm_parser_t *parser, pm_context_t context, size_t opening_newl
             accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
 
             pm_node_t *elsif = (pm_node_t *) pm_if_node_create(parser, &elsif_keyword, predicate, &then_keyword, statements, NULL, &end_keyword);
-            ((pm_if_node_t *) current)->consequent = elsif;
+            ((pm_if_node_t *) current)->subsequent = elsif;
             current = elsif;
         }
     }
@@ -15727,10 +15738,10 @@ parse_conditional(pm_parser_t *parser, pm_context_t context, size_t opening_newl
 
         switch (context) {
             case PM_CONTEXT_IF:
-                ((pm_if_node_t *) current)->consequent = (pm_node_t *) else_node;
+                ((pm_if_node_t *) current)->subsequent = (pm_node_t *) else_node;
                 break;
             case PM_CONTEXT_UNLESS:
-                ((pm_unless_node_t *) parent)->consequent = else_node;
+                ((pm_unless_node_t *) parent)->else_clause = else_node;
                 break;
             default:
                 assert(false && "unreachable");
@@ -15751,7 +15762,7 @@ parse_conditional(pm_parser_t *parser, pm_context_t context, size_t opening_newl
                 switch (PM_NODE_TYPE(current)) {
                     case PM_IF_NODE:
                         pm_if_node_end_keyword_loc_set((pm_if_node_t *) current, &parser->previous);
-                        current = ((pm_if_node_t *) current)->consequent;
+                        current = ((pm_if_node_t *) current)->subsequent;
                         recursing = current != NULL;
                         break;
                     case PM_ELSE_NODE:
@@ -18704,9 +18715,9 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 }
 
                 if (PM_NODE_TYPE_P(node, PM_CASE_NODE)) {
-                    pm_case_node_consequent_set((pm_case_node_t *) node, else_node);
+                    pm_case_node_else_clause_set((pm_case_node_t *) node, else_node);
                 } else {
-                    pm_case_match_node_consequent_set((pm_case_match_node_t *) node, else_node);
+                    pm_case_match_node_else_clause_set((pm_case_match_node_t *) node, else_node);
                 }
             }
 
@@ -21767,7 +21778,7 @@ pm_strnstr(const char *big, const char *little, size_t big_length) {
  */
 static void
 pm_parser_warn_shebang_carriage_return(pm_parser_t *parser, const uint8_t *start, size_t length) {
-    if (length > 2 && start[length - 1] == '\n' && start[length - 2] == '\r') {
+    if (length > 2 && start[length - 2] == '\r' && start[length - 1] == '\n') {
         pm_parser_warn(parser, start, start + length, PM_WARN_SHEBANG_CARRIAGE_RETURN);
     }
 }
@@ -21954,17 +21965,23 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
 
     // If the first two bytes of the source are a shebang, then we'll indicate
     // that the encoding comment is at the end of the shebang.
-    if (peek(parser) == '#' && peek_offset(parser, 1) == '!') {
-        const uint8_t *newline = next_newline(parser->start, parser->end - parser->start);
-        size_t length = (size_t) ((newline != NULL ? newline : parser->end) - parser->start);
+    const uint8_t *newline = next_newline(parser->start, parser->end - parser->start);
+    size_t length = (size_t) ((newline != NULL ? newline : parser->end) - parser->start);
 
+    if (length > 2 && parser->current.end[0] == '#' && parser->current.end[1] == '!') {
         const char *engine;
         if ((engine = pm_strnstr((const char *) parser->start, "ruby", length)) != NULL) {
-            pm_parser_warn_shebang_carriage_return(parser, parser->start, length);
-            if (newline != NULL) parser->encoding_comment_start = newline + 1;
+            if (newline != NULL) {
+                size_t length_including_newline = length + 1;
+                pm_parser_warn_shebang_carriage_return(parser, parser->start, length_including_newline);
+
+                parser->encoding_comment_start = newline + 1;
+            }
+
             if (options != NULL && options->shebang_callback != NULL) {
                 pm_parser_init_shebang(parser, options, engine, length - ((size_t) (engine - (const char *) parser->start)));
             }
+
             search_shebang = false;
         } else if (!parser->parsing_eval) {
             search_shebang = true;
@@ -21994,17 +22011,20 @@ pm_parser_init(pm_parser_t *parser, const uint8_t *source, size_t size, const pm
 
             size_t length = (size_t) ((newline != NULL ? newline : parser->end) - cursor);
             if (length > 2 && cursor[0] == '#' && cursor[1] == '!') {
-                if (parser->newline_list.size == 1) {
-                    pm_parser_warn_shebang_carriage_return(parser, cursor, length);
-                }
-
                 const char *engine;
                 if ((engine = pm_strnstr((const char *) cursor, "ruby", length)) != NULL) {
                     found_shebang = true;
-                    if (newline != NULL) parser->encoding_comment_start = newline + 1;
+                    if (newline != NULL) {
+                        size_t length_including_newline = length + 1;
+                        pm_parser_warn_shebang_carriage_return(parser, cursor, length_including_newline);
+
+                        parser->encoding_comment_start = newline + 1;
+                    }
+
                     if (options != NULL && options->shebang_callback != NULL) {
                         pm_parser_init_shebang(parser, options, engine, length - ((size_t) (engine - (const char *) cursor)));
                     }
+
                     break;
                 }
             }

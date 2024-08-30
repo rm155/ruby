@@ -414,7 +414,7 @@
         │   ├── opening_loc: (35,1)-(35,2) = "("
         │   ├── arguments:
         │   │   @ ArgumentsNode (location: (35,2)-(35,7))
-        │   │   ├── flags: ∅
+        │   │   ├── flags: contains_splat
         │   │   └── arguments: (length: 1)
         │   │       └── @ SplatNode (location: (35,2)-(35,7))
         │   │           ├── flags: ∅
@@ -727,7 +727,7 @@
         │   │           │           └── unescaped: "b"
         │   │           ├── closing_loc: ∅
         │   │           └── block: ∅
-        │   ├── consequent: ∅
+        │   ├── subsequent: ∅
         │   └── end_keyword_loc: ∅
         ├── @ CallNode (location: (53,0)-(56,1))
         │   ├── flags: newline, ignore_visibility
@@ -763,7 +763,7 @@
         │   ├── opening_loc: (58,3)-(58,4) = "("
         │   ├── arguments:
         │   │   @ ArgumentsNode (location: (58,4)-(58,9))
-        │   │   ├── flags: ∅
+        │   │   ├── flags: contains_splat
         │   │   └── arguments: (length: 1)
         │   │       └── @ SplatNode (location: (58,4)-(58,9))
         │   │           ├── flags: ∅
@@ -2047,7 +2047,7 @@
         │   │           │               │           └── depth: 0
         │   │           │               ├── opening_loc: (121,8)-(121,10) = "do"
         │   │           │               └── closing_loc: (123,4)-(123,7) = "end"
-        │   │           ├── consequent: ∅
+        │   │           ├── subsequent: ∅
         │   │           └── end_keyword_loc: (124,2)-(124,5) = "end"
         │   ├── closing_loc: ∅
         │   └── block: ∅
@@ -2453,7 +2453,7 @@
         │   │           ├── opening_loc: ∅
         │   │           ├── arguments:
         │   │           │   @ ArgumentsNode (location: (149,12)-(149,13))
-        │   │           │   ├── flags: ∅
+        │   │           │   ├── flags: contains_splat
         │   │           │   └── arguments: (length: 1)
         │   │           │       └── @ SplatNode (location: (149,12)-(149,13))
         │   │           │           ├── flags: ∅

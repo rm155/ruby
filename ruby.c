@@ -559,6 +559,8 @@ translit_char_bin(char *p, int from, int to)
 #endif
 
 #ifdef _WIN32
+# undef chdir
+# define chdir rb_w32_uchdir
 # define UTF8_PATH 1
 #endif
 
@@ -1428,10 +1430,10 @@ proc_long_options(ruby_cmdline_options_t *opt, const char *s, long argc, char **
     }
     else if (is_option_with_arg("parser", Qfalse, Qtrue)) {
         if (strcmp("prism", s) == 0) {
-            (*rb_ruby_prism_ptr()) = true;
+            *rb_ruby_prism_ptr() = true;
         }
         else if (strcmp("parse.y", s) == 0) {
-            // default behavior
+            *rb_ruby_prism_ptr() = false;
         }
         else {
             rb_raise(rb_eRuntimeError, "unknown parser %s", s);
@@ -2121,12 +2123,24 @@ prism_script_shebang_callback(pm_options_t *options, const uint8_t *source, size
     memcpy(switches, source, length);
     switches[length] = '\0';
 
+    int no_src_enc = !opt->src.enc.name;
+    int no_ext_enc = !opt->ext.enc.name;
+    int no_int_enc = !opt->intern.enc.name;
+
     moreswitches(switches, opt, 0);
     free(switches);
 
     pm_options_command_line_set(options, prism_script_command_line(opt));
-    if (opt->ext.enc.name != 0) {
+
+    if (no_src_enc && opt->src.enc.name) {
+        opt->src.enc.index = opt_enc_index(opt->src.enc.name);
         pm_options_encoding_set(options, StringValueCStr(opt->ext.enc.name));
+    }
+    if (no_ext_enc && opt->ext.enc.name) {
+        opt->ext.enc.index = opt_enc_index(opt->ext.enc.name);
+    }
+    if (no_int_enc && opt->intern.enc.name) {
+        opt->intern.enc.index = opt_enc_index(opt->intern.enc.name);
     }
 }
 
@@ -2141,7 +2155,11 @@ prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
 
     pm_options_t *options = &result->options;
     pm_options_line_set(options, 1);
+    const bool read_stdin = (strcmp(opt->script, "-") == 0);
 
+    if (read_stdin) {
+        pm_options_encoding_set(options, rb_enc_name(rb_locale_encoding()));
+    }
     if (opt->src.enc.name != 0) {
         pm_options_encoding_set(options, StringValueCStr(opt->src.enc.name));
     }
@@ -2149,7 +2167,7 @@ prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
     uint8_t command_line = prism_script_command_line(opt);
     VALUE error;
 
-    if (strcmp(opt->script, "-") == 0) {
+    if (read_stdin) {
         pm_options_command_line_set(options, command_line);
         pm_options_filepath_set(options, "-");
         pm_options_shebang_callback_set(options, prism_script_shebang_callback, (void *) opt);
@@ -2170,7 +2188,7 @@ prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
 
         ruby_opt_init(opt);
         result->node.coverage_enabled = 0;
-        error = pm_parse_string(result, opt->e_script, rb_str_new2("-e"));
+        error = pm_parse_string(result, opt->e_script, rb_str_new2("-e"), NULL);
     }
     else {
         pm_options_command_line_set(options, command_line);
@@ -2183,7 +2201,7 @@ prism_script(ruby_cmdline_options_t *opt, pm_parse_result_t *result)
         // to load, it doesn't require files required by -r.
         if (NIL_P(error)) {
             ruby_opt_init(opt);
-            error = pm_parse_file(result, opt->script_name);
+            error = pm_parse_file(result, opt->script_name, NULL);
         }
 
         // Check if (after requiring all of the files through -r flags) we have
@@ -3113,8 +3131,6 @@ ruby_process_options(int argc, char **argv)
     ruby_cmdline_options_t opt;
     VALUE iseq;
     const char *script_name = (argc > 0 && argv[0]) ? argv[0] : ruby_engine;
-
-    (*rb_ruby_prism_ptr()) = false;
 
     if (!origarg.argv || origarg.argc <= 0) {
         origarg.argc = argc;
