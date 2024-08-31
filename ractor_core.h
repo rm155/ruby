@@ -247,7 +247,7 @@ struct rb_ractor_struct {
 
     bool late_to_barrier;
 #if VM_CHECK_MODE > 0
-    bool during_ractor_copy;
+    bool during_ractor_copy_or_move;
 #endif
 
     VALUE mark_object_ary; //TODO: Move into objspace_gate
@@ -482,7 +482,7 @@ rb_ractor_confirm_belonging(VALUE obj)
         }
     }
     else if (UNLIKELY(id != rb_ractor_current_id())) {
-        if (rb_ractor_shareable_p(obj)) {
+        if (rb_ractor_shareable_p(obj) || id == rb_ractor_id(rb_current_allocating_ractor())) {
             // ok
         }
         else {

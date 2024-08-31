@@ -2253,7 +2253,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
 
 #if VM_CHECK_MODE > 0
     r->late_to_barrier = false;
-    r->during_ractor_copy = false;
+    r->during_ractor_copy_or_move = false;
 #endif
 
     r->result_value = Qnil;
@@ -3870,8 +3870,18 @@ move_leave(VALUE obj, struct obj_traverse_replace_data *data)
 static VALUE
 ractor_move(VALUE obj)
 {
+#if VM_CHECK_MODE > 0
+    rb_ractor_t *cr = GET_RACTOR();
+    cr->during_ractor_copy_or_move = true;
+#endif
+
     if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_gate, obj);
     VALUE val = rb_obj_traverse_replace(obj, move_enter, move_leave, true);
+
+#if VM_CHECK_MODE > 0
+    cr->during_ractor_copy_or_move = false;
+#endif
+
     if (!UNDEF_P(val)) {
         return val;
     }
@@ -3904,14 +3914,14 @@ ractor_copy(VALUE obj)
 {
 #if VM_CHECK_MODE > 0
     rb_ractor_t *cr = GET_RACTOR();
-    cr->during_ractor_copy = true;
+    cr->during_ractor_copy_or_move = true;
 #endif
 
     if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_gate, obj);
     VALUE val = rb_obj_traverse_replace(obj, copy_enter, copy_leave, false);
 
 #if VM_CHECK_MODE > 0
-    cr->during_ractor_copy = false;
+    cr->during_ractor_copy_or_move = false;
 #endif
 
     if (!UNDEF_P(val)) {

@@ -1986,7 +1986,7 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_
 	}
 	else {
 	    VM_ASSERT(b_objspace == current_objspace || b_objspace == rb_current_allocating_ractor()->local_objspace);
-	    VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy);
+	    VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy_or_move);
 
 	    rb_gc_writebarrier_gc_blocked(b_objspace, a, b);
 	}
