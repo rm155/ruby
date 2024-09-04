@@ -522,7 +522,6 @@ typedef struct rb_objspace {
     struct {
         struct heap_page **sorted;
         size_t allocated_pages;
-        size_t allocatable_pages;
         size_t sorted_length;
         uintptr_t range[2];
         size_t freeable_pages;
@@ -1764,13 +1763,15 @@ rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE ptr)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
-    switch (BUILTIN_TYPE(ptr)) {
-      case T_NONE:
-      case T_MOVED:
-      case T_ZOMBIE:
-        return true;
-      default:
-        break;
+    asan_unpoisoning_object(ptr) {
+        switch (BUILTIN_TYPE(ptr)) {
+          case T_NONE:
+          case T_MOVED:
+          case T_ZOMBIE:
+            return true;
+          default:
+            break;
+        }
     }
 
     return is_lazy_sweeping(objspace) && GET_HEAP_PAGE(ptr)->flags.before_sweep &&
@@ -5252,32 +5253,25 @@ gc_mark(rb_objspace_t *objspace, VALUE obj)
 {
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
 
-    if (RB_LIKELY(during_gc)) {
-	if (!confirm_global_connections(objspace, obj)) return;
-        rgengc_check_relation(objspace, obj);
-        if (!gc_mark_set(objspace, obj)) return; /* already marked */
+    GC_ASSERT(during_gc);
+    if (!confirm_global_connections(objspace, obj)) return;
+    rgengc_check_relation(objspace, obj);
+    if (!gc_mark_set(objspace, obj)) return; /* already marked */
 
-        if (0) { // for debug GC marking miss
-            if (objspace->rgengc.parent_object) {
-                RUBY_DEBUG_LOG("%p (%s) parent:%p (%s)",
-                               (void *)obj, obj_type_name(obj),
-                               (void *)objspace->rgengc.parent_object, obj_type_name(objspace->rgengc.parent_object));
-            }
-            else {
-                RUBY_DEBUG_LOG("%p (%s)", (void *)obj, obj_type_name(obj));
-            }
-        }
-
-	check_not_tnone(obj);
-        gc_aging(obj);
-        gc_grey(objspace, obj);
-    }
-    else {
-	VM_ASSERT(dont_gc_val() == TRUE);
-	if (GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE)) { //TODO: Remove condition when shareability rules are fully applied
-	    rb_gc_reachable_objects_from_callback(obj);
+    if (0) { // for debug GC marking miss
+	if (objspace->rgengc.parent_object) {
+	    RUBY_DEBUG_LOG("%p (%s) parent:%p (%s)",
+		    (void *)obj, obj_type_name(obj),
+		    (void *)objspace->rgengc.parent_object, obj_type_name(objspace->rgengc.parent_object));
+	}
+	else {
+	    RUBY_DEBUG_LOG("%p (%s)", (void *)obj, obj_type_name(obj));
 	}
     }
+
+    check_not_tnone(obj);
+    gc_aging(obj);
+    gc_grey(objspace, obj);
 }
 
 static inline void

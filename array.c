@@ -1884,6 +1884,7 @@ static VALUE rb_ary_aref2(VALUE ary, VALUE b, VALUE e);
  *    # Raises TypeError (no implicit conversion of Symbol into Integer):
  *    a[:foo]
  *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 VALUE
@@ -8582,7 +8583,7 @@ rb_ary_deconstruct(VALUE ary)
  *
  *  These methods do not modify +self+.
  *
- *  - #[]: Returns one or more elements.
+ *  - #[], #slice: Returns consecutive elements as determined by a given argument.
  *  - #fetch: Returns the element at a given offset.
  *  - #first: Returns one or more leading elements.
  *  - #last: Returns one or more trailing elements.
@@ -8604,7 +8605,6 @@ rb_ary_deconstruct(VALUE ary)
  *  - #take: Returns leading elements as determined by a given index.
  *  - #drop_while: Returns trailing elements as determined by a given block.
  *  - #take_while: Returns leading elements as determined by a given block.
- *  - #slice: Returns consecutive elements as determined by a given argument.
  *  - #sort: Returns all elements in an order determined by <tt><=></tt> or a given block.
  *  - #reverse: Returns all elements in reverse order.
  *  - #compact: Returns an array containing all non-+nil+ elements.
