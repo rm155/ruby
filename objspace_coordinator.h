@@ -194,6 +194,11 @@ typedef struct rb_objspace_gate {
     int local_gc_level;
     struct rb_objspace *gc_target;
     struct rb_objspace *current_parent_objspace;
+    struct gc_mark_func_data_struct {
+        void *data;
+        void (*mark_func)(VALUE v, void *data);
+    } *mark_func_data;
+
 
     //Objspace state
     bool objspace_closed;
@@ -270,6 +275,8 @@ bool rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
 bool shared_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 #endif
+
+#define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && FL_TEST_RAW(obj, FL_SHAREABLE))
 
 void add_local_immune_object(VALUE obj);
 void remove_local_immune_object(VALUE obj);
@@ -397,6 +404,19 @@ void global_gc_for_each_objspace(rb_vm_t *vm, rb_objspace_gate_t *runner_gate, v
 void rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm);
 void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_objspace);
 
-#define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && FL_TEST_RAW(obj, FL_SHAREABLE))
+#define WITH_MARK_FUNC_BEGIN(_mark_func, _data_ptr) do { \
+    struct gc_mark_func_data_struct _mfd = { \
+	.mark_func = _mark_func, \
+	.data = _data_ptr, \
+    }; \
+    struct gc_mark_func_data_struct *prev_mark_func_data = GET_RACTOR()->local_gate->mark_func_data; \
+    GET_RACTOR()->local_gate->mark_func_data = (&_mfd);
+
+#define WITH_MARK_FUNC_END() GET_RACTOR()->local_gate->mark_func_data = prev_mark_func_data;} while (0)
+
+#define MARK_FUNC_RUN(cr, obj) do { \
+    VM_ASSERT(cr->local_gate->mark_func_data->mark_func); \
+    cr->local_gate->mark_func_data->mark_func(obj, cr->local_gate->mark_func_data->data); \
+} while (0)
 
 #endif

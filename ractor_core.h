@@ -236,12 +236,6 @@ struct rb_ractor_struct {
 	uintptr_t borrowing_id;
     } borrowing_sync;
 
-    // gc.c rb_objspace_reachable_objects_from
-    struct gc_mark_func_data_struct {
-        void *data;
-        void (*mark_func)(VALUE v, void *data);
-    } *mfd;
-
     struct rb_objspace *local_objspace;
     rb_objspace_gate_t *local_gate;
 

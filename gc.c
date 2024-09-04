@@ -3806,7 +3806,7 @@ void
 rb_gc_reachable_objects_from_callback(VALUE obj)
 {
     rb_ractor_t *cr = GET_RACTOR();
-    cr->mfd->mark_func(obj, cr->mfd->data);
+    MARK_FUNC_RUN(cr, obj);
 }
 
 void
@@ -3815,24 +3815,18 @@ rb_objspace_reachable_objects_from(VALUE obj, void (func)(VALUE, void *), void *
     if (rb_gc_impl_during_gc_p(rb_gc_get_objspace())) rb_bug("rb_objspace_reachable_objects_from() is not supported while during GC");
 
     if (!RB_SPECIAL_CONST_P(obj)) {
-	rb_ractor_t *cr = GET_RACTOR();
-	struct gc_mark_func_data_struct mfd = {
-	    .mark_func = func,
-	    .data = data,
-	}, *prev_mfd = cr->mfd;
-
-	cr->mfd = &mfd;
-
-	void *objspace = rb_gc_get_objspace();
-	LOCAL_GC_BEGIN(objspace);
+	WITH_MARK_FUNC_BEGIN(func, data);
 	{
-	    VALUE already_disabled = rb_objspace_gc_disable(objspace);
-	    rb_gc_mark_children(objspace, obj);
-	    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+	    void *objspace = rb_gc_get_objspace();
+	    LOCAL_GC_BEGIN(objspace);
+	    {
+		VALUE already_disabled = rb_objspace_gc_disable(objspace);
+		rb_gc_mark_children(objspace, obj);
+		if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+	    }
+	    LOCAL_GC_END(objspace);
 	}
-	LOCAL_GC_END(objspace);
-
-	cr->mfd = prev_mfd;
+	WITH_MARK_FUNC_END();
     }
 }
 
@@ -3859,23 +3853,19 @@ rb_objspace_reachable_objects_from_root(void (func)(const char *category, VALUE,
         .func = func,
         .data = passing_data,
     };
-    struct gc_mark_func_data_struct mfd = {
-        .mark_func = root_objects_from,
-        .data = &data,
-    }, *prev_mfd = cr->mfd;
 
-    cr->mfd = &mfd;
-
-    void *objspace = rb_gc_get_objspace();
-    LOCAL_GC_BEGIN(objspace);
+    WITH_MARK_FUNC_BEGIN(root_objects_from, &data);
     {
-	VALUE already_disabled = rb_objspace_gc_disable(objspace);
-	rb_gc_mark_roots(objspace, &data.category);
-	if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+	void *objspace = rb_gc_get_objspace();
+	LOCAL_GC_BEGIN(objspace);
+	{
+	    VALUE already_disabled = rb_objspace_gc_disable(objspace);
+	    rb_gc_mark_roots(objspace, &data.category);
+	    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+	}
+	LOCAL_GC_END(objspace);
     }
-    LOCAL_GC_END(objspace);
-
-    cr->mfd = prev_mfd;
+    WITH_MARK_FUNC_END();
 }
 
 /*

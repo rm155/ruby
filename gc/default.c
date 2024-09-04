@@ -5703,17 +5703,11 @@ allrefs_roots_i(VALUE obj, void *ptr)
         push_mark_stack(&data->mark_stack, obj);
     }
 }
-#define PUSH_MARK_FUNC_DATA(v) do { \
-    struct gc_mark_func_data_struct *prev_mark_func_data = GET_RACTOR()->mfd; \
-    GET_RACTOR()->mfd = (v);
-
-#define POP_MARK_FUNC_DATA() GET_RACTOR()->mfd = prev_mark_func_data;} while (0)
 
 static st_table *
 objspace_allrefs(rb_objspace_t *objspace)
 {
     struct allrefs data;
-    struct gc_mark_func_data_struct mfd;
     VALUE obj;
     int prev_dont_gc = dont_gc_val();
     dont_gc_on();
@@ -5722,14 +5716,12 @@ objspace_allrefs(rb_objspace_t *objspace)
     data.references = st_init_numtable();
     init_mark_stack(&data.mark_stack);
 
-    mfd.mark_func = allrefs_roots_i;
-    mfd.data = &data;
-
     /* traverse root objects */
-    PUSH_MARK_FUNC_DATA(&mfd);
-    GET_RACTOR()->mfd = &mfd;
-    mark_roots(objspace, &data.category);
-    POP_MARK_FUNC_DATA();
+    WITH_MARK_FUNC_BEGIN(allrefs_roots_i, &data);
+    {
+	mark_roots(objspace, &data.category);
+    }
+    WITH_MARK_FUNC_END();
 
     /* traverse rest objects reachable from root objects */
     while (pop_mark_stack(&data.mark_stack, &obj)) {
