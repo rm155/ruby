@@ -6717,7 +6717,6 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
 static void
 gc_marks_start(rb_objspace_t *objspace, int full_mark)
 {
-    rb_gc_mark_roots(objspace, NULL);
     mark_roots(objspace, NULL);
 
     gc_report(1, objspace, "gc_marks_start: (%s) end, stack in %"PRIdSIZE"\n",
