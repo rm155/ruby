@@ -5450,29 +5450,6 @@ pin_value(st_data_t key, st_data_t value, st_data_t data)
     return ST_CONTINUE;
 }
 
-static void
-mark_roots(rb_objspace_t *objspace, const char **categoryp)
-{
-#define MARK_CHECKPOINT(category) do { \
-    if (categoryp) *categoryp = category; \
-} while (0)
-
-    MARK_CHECKPOINT("objspace");
-    objspace->rgengc.parent_object = Qfalse;
-
-    if (finalizer_table != NULL) {
-        st_foreach(finalizer_table, pin_value, (st_data_t)objspace);
-    }
-
-    rb_native_mutex_lock(&objspace->obj_id_lock);
-    st_foreach(objspace->obj_to_id_tbl, gc_mark_tbl_no_pin_i, (st_data_t)objspace);
-    rb_native_mutex_unlock(&objspace->obj_id_lock);
-
-    if (stress_to_class) rb_gc_mark(stress_to_class);
-
-    rb_gc_mark_roots(objspace, categoryp);
-}
-
 static inline void
 gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
 {
@@ -5504,6 +5481,30 @@ gc_mark_children(rb_objspace_t *objspace, VALUE obj)
 {
     gc_mark_set_parent(objspace, obj);
     rb_gc_mark_children(objspace, obj);
+}
+
+static void
+mark_roots(rb_objspace_t *objspace, const char **categoryp)
+{
+#define MARK_CHECKPOINT(category) do { \
+    if (categoryp) *categoryp = category; \
+} while (0)
+
+    gc_mark_reset_parent(objspace);
+
+    MARK_CHECKPOINT("objspace");
+
+    if (finalizer_table != NULL) {
+        st_foreach(finalizer_table, pin_value, (st_data_t)objspace);
+    }
+
+    rb_native_mutex_lock(&objspace->obj_id_lock);
+    st_foreach(objspace->obj_to_id_tbl, gc_mark_tbl_no_pin_i, (st_data_t)objspace);
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
+
+    if (stress_to_class) rb_gc_mark(stress_to_class);
+
+    rb_gc_mark_roots(objspace, categoryp);
 }
 
 /**

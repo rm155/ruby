@@ -2605,8 +2605,6 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
     rb_vm_t *vm = rb_ec_vm_ptr(ec);
     rb_objspace_gate_t *local_gate = rb_gc_local_gate_of_objspace(objspace);
 
-    gc_mark_reset_parent(objspace);
-
 #define MARK_CHECKPOINT(category) do { \
     if (categoryp) *categoryp = category; \
 } while (0)
