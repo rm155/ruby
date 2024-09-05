@@ -2197,9 +2197,9 @@ ruby_stack_check(void)
     if (!RB_SPECIAL_CONST_P(obj)) { \
         rb_vm_t *vm = GET_VM(); \
 	rb_ractor_t *cr = GET_RACTOR(); \
-	void *objspace = cr->local_objspace; \
-        if (LIKELY(cr->local_gate->mark_func_data == NULL)) { \
-            (func)(bjspace, (obj_or_ptr)); \
+	void *objspace = rb_gc_get_objspace(); \
+        if (LIKELY(!MARK_FUNC_IN_USE(cr))) { \
+            (func)(objspace, (obj_or_ptr)); \
         } \
         else if (check_obj ? \
                 rb_gc_impl_pointer_to_heap_p(objspace, (const void *)obj) && \
@@ -2207,10 +2207,7 @@ ruby_stack_check(void)
                 true) { \
 	    if (GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE)) { /* TODO: Remove condition when shareability rules are fully applied */ \
 		GC_ASSERT(!rb_gc_impl_during_gc_p(objspace)); \
-		struct gc_mark_func_data_struct *mark_func_data = cr->local_gate->mark_func_data; \
-		cr->local_gate->mark_func_data = NULL; \
-		mark_func_data->mark_func((obj), mark_func_data->data); \
-		cr->local_gate->mark_func_data = mark_func_data; \
+		MARK_FUNC_RUN(cr, obj); \
 	    } \
         } \
     } \
@@ -2259,11 +2256,9 @@ rb_gc_mark_maybe(VALUE obj)
 }
 
 static inline void
-gc_stack_location_mark_maybe_internal(void *objspace, VALUE obj)
+gc_stack_location_mark_maybe_internal(VALUE obj)
 {
-    if (RB_SPECIAL_CONST_P(obj)) return;
-
-    rb_gc_impl_stack_location_mark_maybe(objspace, obj);
+    RB_GC_MARK_OR_TRAVERSE(rb_gc_impl_stack_location_mark_maybe, obj, obj, true);
 }
 
 void
@@ -2298,15 +2293,15 @@ each_location_ptr(const VALUE *start, const VALUE *end, void (*cb)(VALUE, void *
 }
 
 static void
-gc_mark_maybe_each_location(VALUE obj, void *data)
+gc_stack_location_mark_maybe_each_location(VALUE obj, void *data)
 {
-    gc_mark_maybe_internal(obj);
+    gc_stack_location_mark_maybe_internal(obj);
 }
 
 void
 rb_gc_mark_locations(const VALUE *start, const VALUE *end)
 {
-    each_location_ptr(start, end, rb_gc_impl_stack_location_mark_maybe, NULL);
+    each_location_ptr(start, end, gc_stack_location_mark_maybe_each_location, NULL);
 }
 
 void
@@ -2418,8 +2413,6 @@ mark_m_tbl(void *objspace, struct rb_id_table *tbl)
 static void
 gc_mark_machine_stack_location_maybe(VALUE obj, void *data)
 {
-    void *objspace = ((struct mark_machine_stack_location_maybe_data *)data)->objspace;
-
     gc_stack_location_mark_maybe_internal(obj);
 
 #ifdef RUBY_ASAN_ENABLED

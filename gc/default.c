@@ -10684,7 +10684,6 @@ static void
 update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from)
 {
     rb_objspace_t *objspace = objspace_to_copy_from;
-    size_t allocatable_pages = objspace->heap_pages.allocatable_pages;
     int freeable_pages = heap_pages_freeable_pages;
     size_t uncollectible_wb_unprotected_objects = objspace->rgengc.uncollectible_wb_unprotected_objects;
     size_t uncollectible_wb_unprotected_objects_limit = objspace->rgengc.uncollectible_wb_unprotected_objects_limit;
@@ -10692,7 +10691,6 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     size_t old_objects_limit = objspace->rgengc.old_objects_limit;
 
     objspace = objspace_to_update;
-    objspace->heap_pages.allocatable_pages += allocatable_pages;
     heap_pages_freeable_pages += freeable_pages;
     objspace->rgengc.uncollectible_wb_unprotected_objects += uncollectible_wb_unprotected_objects;
     objspace->rgengc.uncollectible_wb_unprotected_objects_limit += uncollectible_wb_unprotected_objects_limit;
