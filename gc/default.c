@@ -1656,7 +1656,12 @@ rb_gc_impl_gc_deactivate_prepare(void *objspace_ptr)
     rb_objspace_coordinator_t *coordinator = rb_get_objspace_coordinator();
     GLOBAL_GC_BEGIN(coordinator, objspace);
     {
-	gc_rest_global(objspace);
+	if (rb_gc_multi_ractor_p()) {
+	    gc_rest_global(objspace);
+	}
+	else {
+	    gc_rest(objspace);
+	}
     }
     GLOBAL_GC_END(coordinator, objspace);
 }
@@ -7587,7 +7592,7 @@ gc_rest(rb_objspace_t *objspace)
 static void
 gc_rest_global(rb_objspace_t *objspace)
 {
-    global_gc_for_each_objspace(GET_VM(), objspace, gc_rest);
+    global_gc_for_each_objspace(GET_VM(), objspace->local_gate, gc_rest);
 }
 
 struct objspace_and_reason {
