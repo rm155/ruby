@@ -414,7 +414,7 @@ void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *cur
 
 #define WITH_MARK_FUNC_END() GET_RACTOR()->local_gate->mark_func_data = prev_mark_func_data;} while (0)
 
-#define MARK_FUNC_IN_USE(cr) cr->local_gate->mark_func_data != NULL
+#define MARK_FUNC_IN_USE(cr) (cr->local_gate->mark_func_data != NULL)
 
 #define MARK_FUNC_RUN(cr, obj) do { \
     VM_ASSERT(MARK_FUNC_IN_USE(cr)); \
