@@ -3808,9 +3808,9 @@ rb_objspace_reachable_objects_from(VALUE obj, void (func)(VALUE, void *), void *
 	    void *objspace = rb_gc_get_objspace();
 	    LOCAL_GC_BEGIN(objspace);
 	    {
-		VALUE already_disabled = rb_objspace_gc_disable(objspace);
+		VALUE already_disabled = rb_gc_disable_no_rest();
 		rb_gc_mark_children(objspace, obj);
-		if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+		if (already_disabled == Qfalse) rb_gc_enable();
 	    }
 	    LOCAL_GC_END(objspace);
 	}
@@ -3848,9 +3848,9 @@ rb_objspace_reachable_objects_from_root(void (func)(const char *category, VALUE,
 	void *objspace = rb_gc_get_objspace();
 	LOCAL_GC_BEGIN(objspace);
 	{
-	    VALUE already_disabled = rb_objspace_gc_disable(objspace);
+	    VALUE already_disabled = rb_gc_disable_no_rest();
 	    rb_gc_mark_roots(objspace, &data.category);
-	    if (already_disabled == Qfalse) rb_objspace_gc_enable(objspace);
+	    if (already_disabled == Qfalse) rb_gc_enable();
 	}
 	LOCAL_GC_END(objspace);
     }
