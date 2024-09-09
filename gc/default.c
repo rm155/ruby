@@ -10610,15 +10610,6 @@ heap_append_free_page(rb_heap_t *heap, struct heap_page *page)
 }
 
 static void
-size_pool_allocatable_pages_update(rb_objspace_t *objspace, size_t additional_pages[SIZE_POOL_COUNT])
-{
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	size_pools[i].allocatable_pages += additional_pages[i];
-    }
-    heap_pages_expand_sorted(objspace);
-}
-
-static void
 allocatable_pages_update_for_transfer(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, bool eden)
 {
     size_t additional_pages[SIZE_POOL_COUNT];
@@ -10626,7 +10617,10 @@ allocatable_pages_update_for_transfer(rb_objspace_t *receiving_objspace, rb_objs
 	additional_pages[i] = select_heap(closing_objspace, i, eden)->total_pages;
     }
 
-    size_pool_allocatable_pages_update(receiving_objspace, additional_pages);
+    rb_objspace_t *objspace = receiving_objspace;
+    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+	size_pool_allocatable_pages_set(objspace, &size_pools[i], size_pools[i].allocatable_pages + additional_pages[i]);
+    }
 }
 
 static void
