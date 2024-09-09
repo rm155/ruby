@@ -2084,6 +2084,32 @@ set_sorted_page_list_range(struct heap_page **sorted_page_list, size_t list_allo
 }
 
 static void
+heap_discard_unlinked_pages(void)
+{
+    size_t i, j;
+    rb_global_space_t *global_space = rb_gc_get_global_space();
+    rb_native_mutex_lock(&global_space->global_pages_lock);
+
+    for (i = j = 0; j < all_allocated_pages_global; i++) {
+	struct heap_page *page = all_pages_sorted_global[i];
+
+	if (page->unlinked) {
+	    heap_page_free(page->objspace, page, true);
+	}
+	else {
+	    if (i != j) {
+		all_pages_sorted_global[j] = page;
+	    }
+	    j++;
+	}
+    }
+    GC_ASSERT(j == all_allocated_pages_global);
+
+    set_sorted_page_list_range(all_pages_sorted_global, all_allocated_pages_global, &all_pages_lomem_global, &all_pages_himem_global);
+    rb_native_mutex_unlock(&global_space->global_pages_lock);
+}
+
+static void
 heap_pages_free_unused_pages(rb_objspace_t *objspace)
 {
     size_t i, j;
@@ -2114,32 +2140,12 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
             }
         }
 
-	set_sorted_page_list_range(heap_pages_sorted, heap_allocated_pages - unlinked_pages, &heap_pages_lomem, &heap_pages_himem);
-
         GC_ASSERT(j == heap_allocated_pages - unlinked_pages);
 
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-	rb_native_mutex_lock(&global_space->global_pages_lock);
+	heap_discard_unlinked_pages();
 
-        for (i = j = 0; j < all_allocated_pages_global; i++) {
-            struct heap_page *page = all_pages_sorted_global[i];
+	set_sorted_page_list_range(heap_pages_sorted, heap_allocated_pages, &heap_pages_lomem, &heap_pages_himem);
 
-            if (page->unlinked) {
-                heap_page_free(objspace, page, true);
-            }
-            else {
-                if (i != j) {
-                    all_pages_sorted_global[j] = page;
-                }
-                j++;
-            }
-        }
-
-	set_sorted_page_list_range(all_pages_sorted_global, all_allocated_pages_global, &all_pages_lomem_global, &all_pages_himem_global);
-
-        GC_ASSERT(j == all_allocated_pages_global);
-
-	rb_native_mutex_unlock(&global_space->global_pages_lock);
     }
 }
 
