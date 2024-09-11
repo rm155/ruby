@@ -3401,7 +3401,7 @@ rb_f_integer(rb_execution_context_t *ec, VALUE obj, VALUE arg, VALUE base, VALUE
 }
 
 static double
-rb_cstr_to_dbl_raise(const char *p, int badcheck, int raise, int *error)
+rb_cstr_to_dbl_raise(const char *p, rb_encoding *enc, int badcheck, int raise, int *error)
 {
     const char *q;
     char *end;
@@ -3412,6 +3412,7 @@ rb_cstr_to_dbl_raise(const char *p, int badcheck, int raise, int *error)
 #define OutOfRange() ((end - p > max_width) ? \
                       (w = max_width, ellipsis = "...") : \
                       (w = (int)(end - p), ellipsis = ""))
+    /* p...end has been parsed with strtod, should be ASCII-only */
 
     if (!p) return 0.0;
     q = p;
@@ -3507,7 +3508,8 @@ rb_cstr_to_dbl_raise(const char *p, int badcheck, int raise, int *error)
 
   bad:
     if (raise) {
-        rb_invalid_str(q, "Float()");
+        VALUE s = rb_enc_str_new_cstr(q, enc);
+        rb_raise(rb_eArgError, "invalid value for Float(): %+"PRIsVALUE, s);
         UNREACHABLE_RETURN(nan(""));
     }
     else {
@@ -3519,7 +3521,7 @@ rb_cstr_to_dbl_raise(const char *p, int badcheck, int raise, int *error)
 double
 rb_cstr_to_dbl(const char *p, int badcheck)
 {
-    return rb_cstr_to_dbl_raise(p, badcheck, TRUE, NULL);
+    return rb_cstr_to_dbl_raise(p, NULL, badcheck, TRUE, NULL);
 }
 
 static double
@@ -3531,6 +3533,7 @@ rb_str_to_dbl_raise(VALUE str, int badcheck, int raise, int *error)
     VALUE v = 0;
 
     StringValue(str);
+    rb_must_asciicompat(str);
     s = RSTRING_PTR(str);
     len = RSTRING_LEN(str);
     if (s) {
@@ -3549,9 +3552,11 @@ rb_str_to_dbl_raise(VALUE str, int badcheck, int raise, int *error)
             s = p;
         }
     }
-    ret = rb_cstr_to_dbl_raise(s, badcheck, raise, error);
+    ret = rb_cstr_to_dbl_raise(s, rb_enc_get(str), badcheck, raise, error);
     if (v)
         ALLOCV_END(v);
+    else
+        RB_GC_GUARD(str);
     return ret;
 }
 

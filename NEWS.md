@@ -79,11 +79,13 @@ The following default gems are updated.
 * net-http 0.4.1
 * optparse 0.5.0
 * prism 1.0.0
+* psych 5.2.0.beta1
 * rdoc 6.7.0
 * reline 0.5.10
 * resolv 0.4.0
 * stringio 3.1.2.dev
 * strscan 3.1.1.dev
+* time 0.4.0
 * uri 0.13.1
 * zlib 3.1.1
 

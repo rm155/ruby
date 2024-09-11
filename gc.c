@@ -1144,7 +1144,7 @@ rb_data_free(void *objspace, VALUE obj)
 
         if (dfree) {
             if (dfree == RUBY_DEFAULT_FREE) {
-                if (!RTYPEDDATA_EMBEDDED_P(obj)) {
+                if (!RTYPEDDATA_P(obj) || !RTYPEDDATA_EMBEDDED_P(obj)) {
                     xfree(data);
                     RB_DEBUG_COUNTER_INC(obj_data_xfree);
                 }
@@ -2513,7 +2513,8 @@ rb_gc_mark_machine_context(const rb_execution_context_t *ec)
 
     void *data =
 #ifdef RUBY_ASAN_ENABLED
-        ec;
+        /* gc_mark_machine_stack_location_maybe() uses data as const */
+        (rb_execution_context_t *)ec;
 #else
         NULL;
 #endif
