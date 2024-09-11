@@ -641,21 +641,6 @@ typedef struct rb_objspace {
     bool pages_absorbed;
 } rb_objspace_t;
 
-typedef struct rb_global_space {
-    rb_nativethread_lock_t global_pages_lock;
-
-    struct heap_page **sorted;
-    size_t allocated_pages;
-    size_t sorted_length;
-    uintptr_t range[2];
-} rb_global_space_t;
-
-struct rb_global_space *
-rb_gc_get_global_space(void)
-{
-    return GET_VM()->global_space;
-}
-
 #ifndef HEAP_PAGE_ALIGN_LOG
 /* default tiny heap size: 64KiB */
 #define HEAP_PAGE_ALIGN_LOG 16
@@ -889,12 +874,6 @@ RVALUE_AGE_SET(VALUE obj, int age)
 #define stress_to_class         (objspace, 0)
 #define set_stress_to_class(c)  (objspace, (c))
 #endif
-
-#define all_pages_sorted_global       global_space->sorted
-#define all_allocated_pages_global    global_space->allocated_pages
-#define all_pages_sorted_length_global global_space->sorted_length
-#define all_pages_lomem_global	global_space->range[0]
-#define all_pages_himem_global	global_space->range[1]
 
 #if 0
 #define dont_gc_on()          (fprintf(stderr, "dont_gc_on@%s:%d\n",      __FILE__, __LINE__), objspace->flags.dont_gc = 1)
@@ -1894,16 +1873,6 @@ heap_pages_expand_sorted_to(rb_objspace_t *objspace, size_t next_length)
     heap_pages_sorted = page_list_expand_sorted_to_size(heap_pages_sorted, heap_pages_sorted_length, size);
     heap_pages_sorted_length = next_length;
 
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-    rb_native_mutex_lock(&global_space->global_pages_lock);
-
-    size_t next_length_global = length_diff + all_pages_sorted_length_global;
-    size_t global_size = rb_size_mul_or_raise(next_length_global, sizeof(struct heap_page *), rb_eRuntimeError);
-    all_pages_sorted_global = page_list_expand_sorted_to_size(all_pages_sorted_global, all_pages_sorted_length_global, global_size);
-    all_pages_sorted_length_global = next_length_global;
-
-    rb_native_mutex_unlock(&global_space->global_pages_lock);
-
 }
 
 static void
@@ -2049,20 +2018,9 @@ heap_page_body_free(struct heap_page_body *page_body)
 }
 
 static void
-decrement_global_allocated_pages(bool global_pages_locked)
-{
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-    if (!global_pages_locked) rb_native_mutex_lock(&global_space->global_pages_lock);
-    all_allocated_pages_global--;
-    if (!global_pages_locked) rb_native_mutex_unlock(&global_space->global_pages_lock);
-}
-
-static void
 heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked)
 {
     heap_allocated_pages--;
-
-    decrement_global_allocated_pages(global_pages_locked);
 
     page->size_pool->total_freed_pages++;
     heap_page_body_free(GET_PAGE_BODY(page->start));
@@ -2084,32 +2042,6 @@ set_sorted_page_list_range(struct heap_page **sorted_page_list, size_t list_allo
 }
 
 static void
-heap_discard_unlinked_pages(void)
-{
-    size_t i, j;
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-    rb_native_mutex_lock(&global_space->global_pages_lock);
-
-    for (i = j = 0; j < all_allocated_pages_global; i++) {
-	struct heap_page *page = all_pages_sorted_global[i];
-
-	if (page->unlinked) {
-	    heap_page_free(page->objspace, page, true);
-	}
-	else {
-	    if (i != j) {
-		all_pages_sorted_global[j] = page;
-	    }
-	    j++;
-	}
-    }
-    GC_ASSERT(j == all_allocated_pages_global);
-
-    set_sorted_page_list_range(all_pages_sorted_global, all_allocated_pages_global, &all_pages_lomem_global, &all_pages_himem_global);
-    rb_native_mutex_unlock(&global_space->global_pages_lock);
-}
-
-static void
 heap_pages_free_unused_pages(rb_objspace_t *objspace)
 {
     size_t i, j;
@@ -2123,14 +2055,13 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
     }
 
     if (has_pages_in_tomb_heap) {
-	int unlinked_pages = 0;
-        for (i = j = 0; j < heap_allocated_pages - unlinked_pages; i++) {
+        for (i = j = 0; j < heap_allocated_pages; i++) {
             struct heap_page *page = heap_pages_sorted[i];
 
             if (page->flags.in_tomb && page->free_slots == page->total_slots) {
                 heap_unlink_page(objspace, SIZE_POOL_TOMB_HEAP(page->size_pool), page);
 		page->unlinked = true;
-		unlinked_pages++;
+		heap_page_free(page->objspace, page, true);
             }
             else {
                 if (i != j) {
@@ -2140,9 +2071,7 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
             }
         }
 
-        GC_ASSERT(j == heap_allocated_pages - unlinked_pages);
-
-	heap_discard_unlinked_pages();
+        GC_ASSERT(j == heap_allocated_pages);
 
 	set_sorted_page_list_range(heap_pages_sorted, heap_allocated_pages, &heap_pages_lomem, &heap_pages_himem);
 
@@ -2308,14 +2237,6 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 
     heap_allocated_pages++;
 
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-    rb_native_mutex_lock(&global_space->global_pages_lock);
-
-    insert_into_sorted_page_list(objspace, all_pages_sorted_global, all_allocated_pages_global, page, start);
-    all_allocated_pages_global++;
-
-    rb_native_mutex_unlock(&global_space->global_pages_lock);
-
     GC_ASSERT(heap_eden_total_pages(objspace) + heap_allocatable_pages(objspace) <= heap_pages_sorted_length);
     GC_ASSERT(heap_eden_total_pages(objspace) + heap_tomb_total_pages(objspace) == heap_allocated_pages - 1);
     GC_ASSERT(heap_allocated_pages <= heap_pages_sorted_length);
@@ -2329,13 +2250,6 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 
     if (heap_pages_lomem == 0 || heap_pages_lomem > start) heap_pages_lomem = start;
     if (heap_pages_himem < end) heap_pages_himem = end;
-
-    rb_native_mutex_lock(&global_space->global_pages_lock);
-
-    if (all_pages_lomem_global == 0 || all_pages_lomem_global > start) all_pages_lomem_global = start;
-    if (all_pages_himem_global < end) all_pages_himem_global = end;
-
-    rb_native_mutex_unlock(&global_space->global_pages_lock);
 
     page->start = start;
     page->total_slots = limit;
@@ -3087,30 +3001,6 @@ heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
     }
 }
 
-PUREFUNC(static inline struct heap_page * global_heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr);)
-static inline struct heap_page *
-global_heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
-{
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-    struct heap_page **res;
-
-    if (ptr < (uintptr_t)all_pages_lomem_global ||
-            ptr > (uintptr_t)all_pages_himem_global) {
-        return NULL;
-    }
-
-    res = bsearch((void *)ptr, all_pages_sorted_global,
-                  (size_t)all_allocated_pages_global, sizeof(struct heap_page *),
-                  ptr_in_page_body_p);
-
-    if (res) {
-        return *res;
-    }
-    else {
-        return NULL;
-    }
-}
-
 PUREFUNC(static inline bool pointer_is_on_page(register uintptr_t p, register struct heap_page *page);)
 static inline bool
 pointer_is_on_page(register uintptr_t p, register struct heap_page *page)
@@ -3177,37 +3067,18 @@ PUREFUNC(static inline bool is_pointer_to_global_heap(rb_objspace_t *objspace, c
 static inline bool
 is_pointer_to_global_heap(rb_objspace_t *objspace, const void *ptr)
 {
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-    register uintptr_t p = (uintptr_t)ptr;
-    register struct heap_page *page = NULL;
-
-    if (objspace->flags.during_global_gc) {
-	if (heap_page_possible(p, all_pages_lomem_global, all_pages_himem_global) == TRUE) {
-	    page = global_heap_page_for_ptr(objspace, (uintptr_t)ptr);
+    bool result = false;
+    lock_ractor_set();
+    rb_objspace_gate_t *local_gate = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
+	struct rb_objspace *os = local_gate->objspace;
+	result = is_pointer_to_local_heap(os, ptr);
+	if (result) {
+	    break;
 	}
-	return pointer_is_on_page(p, page);
     }
-    else {
-	rb_objspace_t *page_objspace;
-	int ret;
-
-	rb_native_mutex_lock(&global_space->global_pages_lock);
-	if (heap_page_possible(p, all_pages_lomem_global, all_pages_himem_global) == TRUE) {
-	    page = global_heap_page_for_ptr(objspace, (uintptr_t)ptr);
-	    if (page) {
-		page_objspace = page->objspace;
-		rb_native_mutex_unlock(&global_space->global_pages_lock);
-		OBJSPACE_LOCK_ENTER(page_objspace);
-		{
-		    ret = pointer_is_on_page(p, page);
-		}
-		OBJSPACE_LOCK_LEAVE(page_objspace);
-		return ret;
-	    }
-	}
-	rb_native_mutex_unlock(&global_space->global_pages_lock);
-	return FALSE;
-    }
+    unlock_ractor_set();
+    return result;
 }
 
 PUREFUNC(static inline bool is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr);)
@@ -10501,23 +10372,6 @@ gc_verify_compaction_references(int argc, VALUE* argv, VALUE self)
 # define gc_verify_compaction_references rb_f_notimplement
 #endif
 
-static void
-global_space_free(rb_global_space_t *global_space)
-{
-    rb_nativethread_lock_destroy(&global_space->global_pages_lock);
-
-    if (all_pages_sorted_global) {
-        free(all_pages_sorted_global);
-        all_allocated_pages_global = 0;
-        all_pages_sorted_length_global = 0;
-        all_pages_lomem_global = 0;
-        all_pages_himem_global = 0;
-    }
-    free(global_space);
-    rb_vm_t *vm = GET_VM();
-    vm->global_space = NULL;
-}
-
 void
 rb_gc_impl_objspace_free(void *objspace_ptr)
 {
@@ -10559,8 +10413,6 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     mark_stack_free_cache(&objspace->mark_stack);
 
     rb_darray_free(objspace->weak_references);
-
-    if (objspace == GET_VM()->objspace) global_space_free(rb_gc_get_global_space());
 
     free(objspace);
 }
@@ -10901,24 +10753,10 @@ rb_gc_impl_attach_local_gate(void *objspace_ptr, void *local_gate_ptr)
     }
 }
 
-static rb_global_space_t *
-global_space_init(void)
-{
-    rb_global_space_t *global_space = malloc(sizeof(rb_global_space_t));
-    rb_nativethread_lock_initialize(&global_space->global_pages_lock);
-    rb_vm_t *vm = GET_VM();
-    vm->global_space = global_space;
-    return global_space;
-}
-
 void
 rb_gc_impl_objspace_init(void *objspace_ptr, void *ractor)
 {
     rb_objspace_t *objspace = objspace_ptr;
-
-    if (objspace == ruby_single_main_objspace) {
-	global_space_init();
-    }
 
     objspace_setup(objspace, ractor);
 }
