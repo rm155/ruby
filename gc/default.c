@@ -854,7 +854,6 @@ RVALUE_AGE_SET(VALUE obj, int age)
 #define malloc_limit		objspace->malloc_params.limit
 #define malloc_increase 	objspace->malloc_params.increase
 #define malloc_allocated_size 	objspace->malloc_params.allocated_size
-#define heap_allocated_pages    objspace->heap_pages.allocated_pages
 #define heap_pages_lomem	objspace->heap_pages.range[0]
 #define heap_pages_himem	objspace->heap_pages.range[1]
 #define heap_pages_freeable_pages	objspace->heap_pages.freeable_pages
@@ -1963,8 +1962,6 @@ heap_page_body_free(struct heap_page_body *page_body)
 static void
 heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked)
 {
-    heap_allocated_pages--;
-
     page->size_pool->total_freed_pages++;
     heap_page_body_free(GET_PAGE_BODY(page->start));
     free(page);
@@ -2013,11 +2010,9 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
             }
         }
 
-        GC_ASSERT(j == heap_allocated_pages);
         rb_darray_pop(objspace->heap_pages.sorted, i - j);
 
 	set_sorted_page_list_range(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem);
-
     }
 }
 
@@ -2172,8 +2167,6 @@ heap_page_allocate(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 
     /* setup heap_pages_sorted */
     insert_into_sorted_page_list(objspace, &objspace->heap_pages.sorted, page, start);
-
-    heap_allocated_pages++;
 
     size_pool->total_allocated_pages++;
 
@@ -2916,7 +2909,7 @@ heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
     }
 
     res = bsearch((void *)ptr, rb_darray_ref(objspace->heap_pages.sorted, 0),
-                  (size_t)heap_allocated_pages, sizeof(struct heap_page *),
+                  rb_darray_size(objspace->heap_pages.sorted), sizeof(struct heap_page *),
                   ptr_in_page_body_p);
 
     if (res) {
@@ -3538,7 +3531,7 @@ rb_gc_impl_shutdown_free_objects(void *objspace_ptr)
 
     objspace->local_gate->freeing_all = true;
 
-    for (size_t i = 0; i < heap_allocated_pages; i++) {
+    for (size_t i = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
         struct heap_page *page = rb_darray_get(objspace->heap_pages.sorted, i);
 
 	POSSIBLE_USAGE_OF_BORROWING_PAGE_BEGIN(objspace, page);
@@ -3617,9 +3610,9 @@ rb_gc_impl_shutdown_call_finalizer(void *objspace_ptr)
     {
 	gc_enter(objspace, gc_enter_event_finalizer);
 
-	/* run data/file object's finalizers */
-	for (size_t i = 0; i < heap_allocated_pages; i++) {
-	    struct heap_page *page = rb_darray_get(objspace->heap_pages.sorted, i);
+    /* run data/file object's finalizers */
+    for (size_t i = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
+        struct heap_page *page = rb_darray_get(objspace->heap_pages.sorted, i);
 
 	    POSSIBLE_USAGE_OF_BORROWING_PAGE_BEGIN(objspace, page);
 
@@ -3659,7 +3652,7 @@ rb_gc_impl_each_object(void *objspace_ptr, void (*func)(VALUE obj, void *data), 
 {
     rb_objspace_t *objspace = objspace_ptr;
 
-    for (size_t i = 0; i < heap_allocated_pages; i++) {
+    for (size_t i = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
         struct heap_page *page = rb_darray_get(objspace->heap_pages.sorted, i);
 
 	POSSIBLE_USAGE_OF_BORROWING_PAGE_BEGIN(objspace, page);
@@ -5861,7 +5854,7 @@ gc_verify_internal_consistency_(rb_objspace_t *objspace)
     gc_report(5, objspace, "gc_verify_internal_consistency: start\n");
 
     /* check relations */
-    for (size_t i = 0; i < heap_allocated_pages; i++) {
+    for (size_t i = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
         struct heap_page *page = rb_darray_get(objspace->heap_pages.sorted, i);
         short slot_size = page->slot_size;
 
@@ -7142,7 +7135,7 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason, bool need_f
 	    rb_objspace_t *os = local_gate->objspace;
 	    if (os == objspace) continue;
 
-	    global_gc_possible = global_gc_possible && (os->heap_pages.allocated_pages && ((reason & GPR_FLAG_METHOD) || ready_to_gc(os)));
+	    global_gc_possible = global_gc_possible && (rb_darray_size(objspace->heap_pages.sorted) && ((reason & GPR_FLAG_METHOD) || ready_to_gc(os)));
 
 	    GC_ASSERT(gc_mode(os) == gc_mode_none);
 	    GC_ASSERT(!is_lazy_sweeping(os));
@@ -7264,7 +7257,7 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
     objspace->profile.count++;
     objspace->profile.latest_gc_info = reason;
     objspace->profile.total_allocated_objects_at_gc_start = total_allocated_objects(objspace);
-    objspace->profile.heap_used_at_gc_start = heap_allocated_pages;
+    objspace->profile.heap_used_at_gc_start = rb_darray_size(objspace->heap_pages.sorted);
     objspace->profile.weak_references_count = 0;
     objspace->profile.retained_weak_references_count = 0;
     gc_prof_setup_new_record(objspace, reason);
@@ -7293,7 +7286,7 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
     unsigned int immediate_mark = reason & GPR_FLAG_IMMEDIATE_MARK;
     gc_set_flags_start(objspace, reason, &do_full_mark);
 
-    if (!heap_allocated_pages) return TRUE; /* heap is not ready */
+    if (!rb_darray_size(objspace->heap_pages.sorted)) return TRUE; /* heap is not ready */
     if (!(reason & GPR_FLAG_METHOD) && !ready_to_gc(objspace)) return TRUE; /* GC is not allowed */
 
     GC_ASSERT(gc_mode(objspace) == gc_mode_none);
@@ -8580,7 +8573,7 @@ rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym)
     SET(sweeping_time, (size_t)ns_to_ms(objspace->profile.sweeping_time_ns));
 
     /* implementation dependent counters */
-    SET(heap_allocated_pages, heap_allocated_pages);
+    SET(heap_allocated_pages, rb_darray_size(objspace->heap_pages.sorted));
     SET(heap_allocatable_pages, heap_allocatable_pages(objspace));
     SET(heap_available_slots, objspace_available_slots(objspace));
     SET(heap_live_slots, objspace_live_slots(objspace));
@@ -10299,11 +10292,10 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     free(objspace->profile.records);
     objspace->profile.records = NULL;
 
-    for (size_t i = 0; i < heap_allocated_pages; i++) {
+    for (size_t i = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
 	if (!objspace->pages_absorbed) heap_page_free(objspace, rb_darray_get(objspace->heap_pages.sorted, i), false);
     }
     rb_darray_free(objspace->heap_pages.sorted);
-    heap_allocated_pages = 0;
     heap_pages_lomem = 0;
     heap_pages_himem = 0;
 
@@ -10349,7 +10341,6 @@ absorb_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int s
     heap_add_page(objspace, size_pool, heap, page);
     insert_into_sorted_page_list(objspace, &objspace->heap_pages.sorted, page, page->start);
     size_pool->allocatable_pages--;
-    heap_allocated_pages++;
 
     struct heap_page_body *page_body = GET_PAGE_BODY(page->start);
     size_t stride = (size_pool)->slot_size;
