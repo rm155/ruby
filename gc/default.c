@@ -1968,20 +1968,6 @@ heap_page_free(rb_objspace_t *objspace, struct heap_page *page)
 }
 
 static void
-set_sorted_page_list_range(rb_darray(struct heap_page *) *sorted_page_list, uintptr_t *lo, uintptr_t *hi)
-{
-    struct heap_page *hipage = rb_darray_get(*sorted_page_list, rb_darray_size(*sorted_page_list) - 1);
-    uintptr_t himem = (uintptr_t)hipage->start + (hipage->total_slots * hipage->slot_size);
-    GC_ASSERT(himem <= *hi);
-    *hi = himem;
-
-    struct heap_page *lopage = rb_darray_get(*sorted_page_list, 0);
-    uintptr_t lomem = (uintptr_t)lopage->start;
-    GC_ASSERT(lomem >= *lo);
-    *lo = lomem;
-}
-
-static void
 heap_pages_free_unused_pages(rb_objspace_t *objspace)
 {
     bool has_pages_in_tomb_heap = FALSE;
@@ -2010,8 +1996,17 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
         }
 
         rb_darray_pop(objspace->heap_pages.sorted, i - j);
+        GC_ASSERT(rb_darray_size(objspace->heap_pages.sorted) == j);
 
-	set_sorted_page_list_range(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem);
+        struct heap_page *hipage = rb_darray_get(objspace->heap_pages.sorted, rb_darray_size(objspace->heap_pages.sorted) - 1);
+        uintptr_t himem = (uintptr_t)hipage->start + (hipage->total_slots * hipage->slot_size);
+        GC_ASSERT(himem <= heap_pages_himem);
+        heap_pages_himem = himem;
+
+        struct heap_page *lopage = rb_darray_get(objspace->heap_pages.sorted, 0);
+        uintptr_t lomem = (uintptr_t)lopage->start;
+        GC_ASSERT(lomem >= heap_pages_lomem);
+        heap_pages_lomem = lomem;
     }
 }
 
