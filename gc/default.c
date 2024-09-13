@@ -1839,7 +1839,7 @@ update_obj_id_refs(rb_objspace_t *objspace)
 
 static void free_stack_chunks(mark_stack_t *);
 static void mark_stack_free_cache(mark_stack_t *);
-static void heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked);
+static void heap_page_free(rb_objspace_t *objspace, struct heap_page *page);
 
 static void
 size_pool_allocatable_pages_set(rb_objspace_t *objspace, rb_size_pool_t *size_pool, size_t s)
@@ -1960,7 +1960,7 @@ heap_page_body_free(struct heap_page_body *page_body)
 }
 
 static void
-heap_page_free(rb_objspace_t *objspace, struct heap_page *page, bool global_pages_locked)
+heap_page_free(rb_objspace_t *objspace, struct heap_page *page)
 {
     page->size_pool->total_freed_pages++;
     heap_page_body_free(GET_PAGE_BODY(page->start));
@@ -1999,8 +1999,7 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
 
             if (page->flags.in_tomb && page->free_slots == page->total_slots) {
                 heap_unlink_page(objspace, SIZE_POOL_TOMB_HEAP(page->size_pool), page);
-		page->unlinked = true;
-		heap_page_free(page->objspace, page, true);
+                heap_page_free(objspace, page);
             }
             else {
                 if (i != j) {
@@ -10293,7 +10292,7 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     objspace->profile.records = NULL;
 
     for (size_t i = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
-	if (!objspace->pages_absorbed) heap_page_free(objspace, rb_darray_get(objspace->heap_pages.sorted, i), false);
+	if (!objspace->pages_absorbed) heap_page_free(objspace, rb_darray_get(objspace->heap_pages.sorted, i));
     }
     rb_darray_free(objspace->heap_pages.sorted);
     heap_pages_lomem = 0;
