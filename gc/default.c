@@ -5109,7 +5109,7 @@ rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr)
     if (RB_UNLIKELY(!during_gc)) return;
 
     VALUE obj = *ptr;
-    if (RB_SPECIAL_CONST_P(obj) || (using_local_limits(objspace) && GET_OBJSPACE_OF_VALUE(obj) != objspace)) return;
+    if (using_local_limits(objspace) && GET_OBJSPACE_OF_VALUE(obj) != objspace) return;
 
     GC_ASSERT(objspace->rgengc.parent_object == 0 || FL_TEST(objspace->rgengc.parent_object, FL_WB_PROTECTED));
 

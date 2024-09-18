@@ -1421,7 +1421,7 @@ rb_ary_cat(VALUE ary, const VALUE *argv, long len)
  *    a = [:foo, 'bar', 2]               # => [:foo, "bar", 2]
       a.push([:baz, :bat], [:bam, :bad]) # => [:foo, "bar", 2, [:baz, :bat], [:bam, :bad]]
  *
- *  Related: Array#pop, Array#shift, Array#unshift.
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 static VALUE
@@ -1951,7 +1951,8 @@ rb_ary_aref1(VALUE ary, VALUE arg)
  *
  *    a.at(-2) # => "bar"
  *
- *  Related: Array#[].
+ *  Related: Array#[];
+ *  see also {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 VALUE
@@ -2000,17 +2001,19 @@ rb_ary_last(int argc, const VALUE *argv, VALUE ary) // used by parse.y
 
 /*
  *  call-seq:
- *    array.fetch(index) -> element
- *    array.fetch(index, default_value) -> element
- *    array.fetch(index) {|index| ... } -> element
+ *    fetch(index) -> element
+ *    fetch(index, default_value) -> element or default_value
+ *    fetch(index) {|index| ... } -> element or block_return_value
  *
- *  Returns the element at offset  +index+.
+ *  Returns the element of +self+ at offset +index+ if +index+ is in range; +index+ must be an
+ *  {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects].
  *
- *  With the single Integer argument +index+,
+ *  With the single argument +index+ and no block,
  *  returns the element at offset +index+:
  *
  *    a = [:foo, 'bar', 2]
- *    a.fetch(1) # => "bar"
+ *    a.fetch(1)   # => "bar"
+ *    a.fetch(1.1) # => "bar"
  *
  *  If +index+ is negative, counts from the end of the array:
  *
@@ -2018,12 +2021,12 @@ rb_ary_last(int argc, const VALUE *argv, VALUE ary) // used by parse.y
  *    a.fetch(-1) # => 2
  *    a.fetch(-2) # => "bar"
  *
- *  With arguments +index+ and +default_value+,
- *  returns the element at offset +index+ if index is in range,
- *  otherwise returns +default_value+:
+ *  With arguments +index+ and +default_value+ (which may be any object) and no block,
+ *  returns +default_value+ if +index+ is out-of-range:
  *
  *    a = [:foo, 'bar', 2]
- *    a.fetch(1, nil) # => "bar"
+ *    a.fetch(1, nil)  # => "bar"
+ *    a.fetch(3, :foo) # => :foo
  *
  *  With argument +index+ and a block,
  *  returns the element at offset +index+ if index is in range
@@ -2033,6 +2036,7 @@ rb_ary_last(int argc, const VALUE *argv, VALUE ary) // used by parse.y
  *    a.fetch(1) {|index| raise 'Cannot happen' } # => "bar"
  *    a.fetch(50) {|index| "Value for #{index}" } # => "Value for 50"
  *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -2618,12 +2622,11 @@ rb_ary_each(VALUE ary)
 
 /*
  *  call-seq:
- *    array.each_index {|index| ... } -> self
- *    array.each_index -> Enumerator
+ *    each_index {|index| ... } -> self
+ *    each_index -> new_enumerator
  *
- *  Iterates over array indexes.
- *
- *  When a block given, passes each successive array index to the block;
+ *  With a block given, iterates over the elements of +self+,
+ *  passing each <i>array index</i> to the block;
  *  returns +self+:
  *
  *    a = [:foo, 'bar', 2]
@@ -2645,20 +2648,9 @@ rb_ary_each(VALUE ary)
  *    0
  *    1
  *
- *  When no block given, returns a new Enumerator:
+ *  With no block given, returns a new Enumerator.
  *
- *    a = [:foo, 'bar', 2]
- *    e = a.each_index
- *    e # => #<Enumerator: [:foo, "bar", 2]:each_index>
- *    a1 = e.each {|index|  puts "#{index} #{a[index]}"}
- *
- *  Output:
- *
- *    0 foo
- *    1 bar
- *    2 2
- *
- *  Related: #each, #reverse_each.
+ *  Related: see {Methods for Iterating}[rdoc-ref:Array@Methods+for+Iterating].
  */
 
 static VALUE
@@ -2756,6 +2748,8 @@ rb_ary_length(VALUE ary)
  *
  *  Returns +true+ if the count of elements in +self+ is zero,
  *  +false+ otherwise.
+ *
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -3564,6 +3558,8 @@ static VALUE rb_ary_bsearch_index(VALUE ary);
  *  or +nil+ if the search found no suitable element.
  *
  *  See {Binary Searching}[rdoc-ref:bsearch.rdoc].
+ *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -3586,6 +3582,8 @@ rb_ary_bsearch(VALUE ary)
  *  or +nil+ if the search found no suitable element.
  *
  *  See {Binary Searching}[rdoc-ref:bsearch.rdoc].
+ *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -3696,6 +3694,9 @@ rb_ary_sort_by_bang(VALUE ary)
  *    a1 # => [Symbol, String, Integer]
  *
  *  With no block given, returns a new Enumerator.
+ *
+ *  Related: #collect!;
+ *  see also {Methods for Converting}[rdoc-ref:Array@Methods+for+Converting].
  */
 
 static VALUE
@@ -3728,6 +3729,9 @@ rb_ary_collect(VALUE ary)
  *    a.map! { |element| element.class } # => [Symbol, String, Integer]
  *
  *  With no block given, returns a new Enumerator.
+ *
+ *  Related: #collect;
+ *  see also {Methods for Converting}[rdoc-ref:Array@Methods+for+Converting].
  */
 
 static VALUE
@@ -4010,14 +4014,14 @@ ary_resize_smaller(VALUE ary, long len)
 
 /*
  *  call-seq:
- *    delete(object) -> last_deleted_object
- *    delete(object) {|element| ... } -> last_deleted_object or block_return
+ *    delete(object) -> last_removed_object
+ *    delete(object) {|element| ... } -> last_removed_object or block_return
  *
  *  Removes zero or more elements from +self+.
  *
  *  With no block given,
  *  removes from +self+ each element +ele+ such that <tt>ele == object</tt>;
- *  returns the last deleted element:
+ *  returns the last removed element:
  *
  *    a = [0, 1, 2, 2.0]
  *    a.delete(2) # => 2.0
@@ -4031,7 +4035,7 @@ ary_resize_smaller(VALUE ary, long len)
  *  removes from +self+ each element +ele+ such that <tt>ele == object</tt>.
  *
  *  If any such elements are found, ignores the block
- *  and returns the last deleted element:
+ *  and returns the last removed element:
  *
  *    a = [0, 1, 2, 2.0]
  *    a.delete(2) {|element| fail 'Cannot happen' } # => 2.0
@@ -4043,7 +4047,6 @@ ary_resize_smaller(VALUE ary, long len)
  *    # => "Element 2 not found."
  *
  *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
- *
  */
 
 VALUE
@@ -4124,9 +4127,9 @@ rb_ary_delete_at(VALUE ary, long pos)
 
 /*
  *  call-seq:
- *    delete_at(index) -> deleted_object or nil
+ *    delete_at(index) -> removed_object or nil
  *
- *  Deletes the element of +self+ at the given +index+, which must be an
+ *  Removes the element of +self+ at the given +index+, which must be an
  *  {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects].
  *
  *  When +index+ is non-negative, deletes the element at offset +index+:
@@ -4147,6 +4150,7 @@ rb_ary_delete_at(VALUE ary, long pos)
  *    a.delete_at(3)  # => nil
  *    a.delete_at(-4) # => nil
  *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  */
 
 static VALUE
@@ -4402,6 +4406,8 @@ rb_ary_reject(VALUE ary)
  *    a.delete_if {|element| element.to_s.start_with?('b') } # => [:foo, 2]
  *
  *  With no block given, returns a new Enumerator.
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  */
 
 static VALUE
@@ -4664,6 +4670,7 @@ rb_ary_replace(VALUE copy, VALUE orig)
  *    a = [:foo, 'bar', 2]
  *    a.clear # => []
  *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  */
 
 VALUE
@@ -4997,6 +5004,7 @@ ary_append(VALUE x, VALUE y)
  *    a.concat(['two', 'three'], [:four, :five], a)
  *    # => [0, 1, "two", "three", :four, :five, 0, 1]
  *
+ *  Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
  */
 
 static VALUE
@@ -5100,7 +5108,8 @@ rb_ary_times(VALUE ary, VALUE times)
  *
  *  Returns +nil+ if no such element is found.
  *
- *  Related: Array#rassoc.
+ *  Related: Array#rassoc;
+ *  see also {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 VALUE
@@ -5237,7 +5246,7 @@ recursive_eql(VALUE ary1, VALUE ary2, int recur)
 
 /*
  *  call-seq:
- *    array.eql?(other_array) -> true or false
+ *    eql?(other_array) -> true or false
  *
  *  Returns +true+ if +self+ and +other_array+ are the same size,
  *  and if, for each index +i+ in +self+, <tt>self[i].eql?(other_array[i])</tt>:
@@ -5250,6 +5259,8 @@ recursive_eql(VALUE ary1, VALUE ary2, int recur)
  *
  *  This method is different from method Array#==,
  *  which compares using method <tt>Object#==</tt>.
+ *
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -5511,19 +5522,21 @@ rb_ary_diff(VALUE ary1, VALUE ary2)
 
 /*
  *  call-seq:
- *    array.difference(*other_arrays) -> new_array
+ *    difference(*other_arrays = []) -> new_array
  *
- *  Returns a new +Array+ containing only those elements from +self+
- *  that are not found in any of the Arrays +other_arrays+;
+ *  Returns a new array containing only those elements from +self+
+ *  that are not found in any of the given +other_arrays+;
  *  items are compared using <tt>eql?</tt>;  order from +self+ is preserved:
  *
  *    [0, 1, 1, 2, 1, 1, 3, 1, 1].difference([1]) # => [0, 2, 3]
- *    [0, 1, 2, 3].difference([3, 0], [1, 3]) # => [2]
- *    [0, 1, 2].difference([4]) # => [0, 1, 2]
+ *    [0, 1, 2, 3].difference([3, 0], [1, 3])     # => [2]
+ *    [0, 1, 2].difference([4])                   # => [0, 1, 2]
+ *    [0, 1, 2].difference                        # => [0, 1, 2]
  *
- *  Returns a copy of +self+ if no arguments given.
+ *  Returns a copy of +self+ if no arguments are given.
  *
- *  Related: Array#-.
+ *  Related: Array#-;
+ *  see also {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 static VALUE
@@ -6311,7 +6324,8 @@ rb_ary_uniq(VALUE ary)
  *    a          # => [0, false, "", [], {}]
  *    a.compact! # => nil
  *
- *  Related: Array#compact.
+ *  Related: Array#compact;
+ *  see also {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  */
 
 static VALUE
@@ -6347,7 +6361,8 @@ rb_ary_compact_bang(VALUE ary)
  *    a = [nil, 0, nil, false, nil, '', nil, [], nil, {}]
  *    a.compact # => [0, false, "", [], {}]
  *
- *  Related: Array#compact!.
+ *  Related: Array#compact!;
+ *  see also {Methods for Deleting}[rdoc-ref:Array@Methods+for+Deleting].
  */
 
 static VALUE
@@ -6377,10 +6392,12 @@ rb_ary_compact(VALUE ary)
  *  With no argument and a block given, calls the block with each element;
  *  returns the count of elements for which the block returns a truthy value:
  *
- *    [0, 1, 2, 3].count {|element| element > 1} # => 2
+ *    [0, 1, 2, 3].count {|element| element > 1 } # => 2
  *
  *  With argument +object+ and a block given, issues a warning, ignores the block,
  *  and returns the count of elements <tt>==</tt> to +object+.
+ *
+ *  Related: see {Methods for Querying}[rdoc-ref:Array@Methods+for+Querying].
  */
 
 static VALUE
@@ -6804,7 +6821,7 @@ rb_ary_cycle_size(VALUE self, VALUE args, VALUE eobj)
  *  {integer-convertible object}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects],
  *  or +nil+.
  *
- *  If +count+ is positive,
+ *  When +count+ is positive,
  *  calls the block with each element, then does so repeatedly,
  *  until it has done so +count+ times; returns +nil+:
  *
@@ -6812,18 +6829,20 @@ rb_ary_cycle_size(VALUE self, VALUE args, VALUE eobj)
  *    [0, 1].cycle(2) {|element| output.push(element) } # => nil
  *    output # => [0, 1, 0, 1]
  *
- *  If +count+ is zero or negative, does not call the block:
+ *  When +count+ is zero or negative, does not call the block:
  *
  *    [0, 1].cycle(0) {|element| fail 'Cannot happen' }  # => nil
  *    [0, 1].cycle(-1) {|element| fail 'Cannot happen' } # => nil
  *
- *  If +count+ is +nil+, cycles forever:
+ *  When +count+ is +nil+, cycles forever:
  *
  *    # Prints 0 and 1 forever.
  *    [0, 1].cycle {|element| puts element }
  *    [0, 1].cycle(nil) {|element| puts element }
  *
  *  With no block given, returns a new Enumerator.
+ *
+ *  Related: see {Methods for Iterating}[rdoc-ref:Array@Methods+for+Iterating].
  */
 static VALUE
 rb_ary_cycle(int argc, VALUE *argv, VALUE ary)
@@ -7153,7 +7172,8 @@ rb_ary_combination_size(VALUE ary, VALUE args, VALUE eobj)
  *
  *  With no block given, returns a new Enumerator.
  *
- *  Related: Array#permutation.
+ *  Related: Array#permutation;
+ *  see also {Methods for Iterating}[rdoc-ref:Array@Methods+for+Iterating].
  */
 
 static VALUE
@@ -7681,9 +7701,9 @@ rb_ary_take_while(VALUE ary)
 
 /*
  *  call-seq:
- *    array.drop(n) -> new_array
+ *    drop(n) -> new_array
  *
- *  Returns a new +Array+ containing all but the first +n+ element of +self+,
+ *  Returns a new array containing all but the first +n+ element of +self+,
  *  where +n+ is a non-negative Integer;
  *  does not modify +self+.
  *
@@ -7693,7 +7713,9 @@ rb_ary_take_while(VALUE ary)
  *    a.drop(0) # => [0, 1, 2, 3, 4, 5]
  *    a.drop(1) # => [1, 2, 3, 4, 5]
  *    a.drop(2) # => [2, 3, 4, 5]
+ *    a.drop(9) # => []
  *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -7712,23 +7734,20 @@ rb_ary_drop(VALUE ary, VALUE n)
 
 /*
  *  call-seq:
- *    array.drop_while {|element| ... } -> new_array
- *    array.drop_while -> new_enumerator
-
- *  Returns a new +Array+ containing zero or more trailing elements of +self+;
- *  does not modify +self+.
+ *    drop_while {|element| ... } -> new_array
+ *    drop_while -> new_enumerator
  *
  *  With a block given, calls the block with each successive element of +self+;
  *  stops if the block returns +false+ or +nil+;
- *  returns a new +Array+ _omitting_ those elements for which the block returned a truthy value:
+ *  returns a new array _omitting_ those elements for which the block returned a truthy value;
+ *  does not modify +self+:
  *
  *    a = [0, 1, 2, 3, 4, 5]
  *    a.drop_while {|element| element < 3 } # => [3, 4, 5]
  *
- *  With no block given, returns a new Enumerator:
+ *  With no block given, returns a new Enumerator.
  *
- *    [0, 1].drop_while # => # => #<Enumerator: [0, 1]:drop_while>
- *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -8015,9 +8034,9 @@ rb_ary_one_p(int argc, VALUE *argv, VALUE ary)
  *  call-seq:
  *    array.dig(index, *identifiers) -> object
  *
- *  Finds and returns the object in nested objects
- *  that is specified by +index+ and +identifiers+.
- *  The nested objects may be instances of various classes.
+ *  Finds and returns the object in nested object
+ *  specified by +index+ and +identifiers+;
+ *  the nested objects may be instances of various classes.
  *  See {Dig Methods}[rdoc-ref:dig_methods.rdoc].
  *
  *  Examples:
@@ -8028,6 +8047,7 @@ rb_ary_one_p(int argc, VALUE *argv, VALUE ary)
  *    a.dig(1, 2, 0) # => :bat
  *    a.dig(1, 2, 3) # => nil
  *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -8586,6 +8606,7 @@ rb_ary_deconstruct(VALUE ary)
  *
  *  - #[] (aliased as #slice): Returns consecutive elements as determined by a given argument.
  *  - #fetch: Returns the element at a given offset.
+ *  - #fetch_values: Returns elements at given offsets.
  *  - #first: Returns one or more leading elements.
  *  - #last: Returns one or more trailing elements.
  *  - #max: Returns one or more maximum-valued elements,
@@ -8648,6 +8669,7 @@ rb_ary_deconstruct(VALUE ary)
  *  - #delete: Removes elements equal to a given object.
  *  - #delete_at: Removes the element at a given offset.
  *  - #delete_if: Removes elements specified by a given block.
+ *  - #clear: Removes all elements.
  *  - #keep_if: Removes elements not specified by a given block.
  *  - #reject!: Removes elements specified by a given block.
  *  - #select! (aliased as #filter!): Removes elements not specified by a given block.

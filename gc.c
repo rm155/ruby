@@ -2264,6 +2264,8 @@ gc_stack_location_mark_maybe_internal(VALUE obj)
 void
 rb_gc_mark_weak(VALUE *ptr)
 {
+    if (RB_SPECIAL_CONST_P(*ptr)) return;
+
     rb_gc_impl_mark_weak(rb_gc_get_objspace(), ptr);
 }
 
