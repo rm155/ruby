@@ -5106,8 +5106,6 @@ rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
-    if (RB_UNLIKELY(!during_gc)) return;
-
     VALUE obj = *ptr;
     if (using_local_limits(objspace) && GET_OBJSPACE_OF_VALUE(obj) != objspace) return;
 

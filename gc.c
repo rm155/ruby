@@ -2199,6 +2199,7 @@ ruby_stack_check(void)
 	rb_ractor_t *cr = GET_RACTOR(); \
 	void *objspace = rb_gc_get_objspace(); \
         if (LIKELY(!MARK_FUNC_IN_USE(cr))) { \
+            GC_ASSERT(rb_gc_impl_during_gc_p(objspace)); \
             (func)(objspace, (obj_or_ptr)); \
         } \
         else if (check_obj ? \
@@ -2266,7 +2267,15 @@ rb_gc_mark_weak(VALUE *ptr)
 {
     if (RB_SPECIAL_CONST_P(*ptr)) return;
 
-    rb_gc_impl_mark_weak(rb_gc_get_objspace(), ptr);
+    void *objspace = rb_gc_get_objspace();
+    if (LIKELY(!MARK_FUNC_IN_USE(GET_RACTOR()))) {
+        GC_ASSERT(rb_gc_impl_during_gc_p(objspace));
+
+        rb_gc_impl_mark_weak(objspace, ptr);
+    }
+    else {
+        GC_ASSERT(!rb_gc_impl_during_gc_p(objspace));
+    }
 }
 
 void
