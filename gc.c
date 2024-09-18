@@ -646,9 +646,9 @@ typedef struct gc_function_map {
     VALUE (*object_id_to_ref)(void *objspace_ptr, VALUE object_id);
     VALUE (*object_id_local_search)(void *objspace_ptr, VALUE objid);
     // Statistics
-    VALUE (*set_measure_total_time)(void *objspace_ptr, VALUE flag);
-    VALUE (*get_measure_total_time)(void *objspace_ptr);
-    VALUE (*get_profile_total_time)(void *objspace_ptr);
+    void (*set_measure_total_time)(void *objspace_ptr, VALUE flag);
+    bool (*get_measure_total_time)(void *objspace_ptr);
+    unsigned long long (*get_total_time)(void *objspace_ptr);
     size_t (*gc_count)(void *objspace_ptr);
     VALUE (*latest_gc_info)(void *objspace_ptr, VALUE key);
     size_t (*stat)(void *objspace_ptr, VALUE hash_or_sym);
@@ -791,7 +791,7 @@ ruby_external_gc_init(void)
     // Statistics
     load_external_gc_func(set_measure_total_time);
     load_external_gc_func(get_measure_total_time);
-    load_external_gc_func(get_profile_total_time);
+    load_external_gc_func(get_total_time);
     load_external_gc_func(gc_count);
     load_external_gc_func(latest_gc_info);
     load_external_gc_func(stat);
@@ -882,7 +882,7 @@ ruby_external_gc_init(void)
 // Statistics
 # define rb_gc_impl_set_measure_total_time rb_gc_functions.set_measure_total_time
 # define rb_gc_impl_get_measure_total_time rb_gc_functions.get_measure_total_time
-# define rb_gc_impl_get_profile_total_time rb_gc_functions.get_profile_total_time
+# define rb_gc_impl_get_total_time rb_gc_functions.get_total_time
 # define rb_gc_impl_gc_count rb_gc_functions.gc_count
 # define rb_gc_impl_latest_gc_info rb_gc_functions.latest_gc_info
 # define rb_gc_impl_stat rb_gc_functions.stat
@@ -3641,19 +3641,6 @@ VALUE
 rb_gc_latest_gc_info(VALUE key)
 {
     return rb_gc_impl_latest_gc_info(rb_gc_get_objspace(), key);
-}
-
-static VALUE
-gc_latest_gc_info(rb_execution_context_t *ec, VALUE self, VALUE arg)
-{
-    if (NIL_P(arg)) {
-        arg = rb_hash_new();
-    }
-    else if (!SYMBOL_P(arg) && !RB_TYPE_P(arg, T_HASH)) {
-        rb_raise(rb_eTypeError, "non-hash or symbol given");
-    }
-
-    return rb_gc_latest_gc_info(arg);
 }
 
 static VALUE
