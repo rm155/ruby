@@ -200,11 +200,17 @@ rb_imemo_memsize(VALUE obj)
 int rb_during_global_gc(void);
 
 static enum rb_id_table_iterator_result
-cc_table_mark_i(ID id, VALUE ccs_ptr, void *data)
+cc_table_mark_i(VALUE ccs_ptr, void *data)
 {
     struct rb_class_cc_entries *ccs = (struct rb_class_cc_entries *)ccs_ptr;
     VM_ASSERT(vm_ccs_p(ccs));
-    VM_ASSERT(id == ccs->cme->called_id);
+#if VM_CHECK_MODE > 0
+    VALUE klass = (VALUE)data;
+
+    VALUE lookup_val;
+    VM_ASSERT(rb_id_table_lookup(RCLASS_CC_TBL(klass), ccs->cme->called_id, &lookup_val));
+    VM_ASSERT(lookup_val == ccs_ptr);
+#endif
 
     if (rb_during_global_gc() && METHOD_ENTRY_INVALIDATED(ccs->cme)) {
         rb_vm_ccs_free(ccs);
@@ -212,9 +218,8 @@ cc_table_mark_i(ID id, VALUE ccs_ptr, void *data)
     }
     else {
         rb_gc_mark_movable((VALUE)ccs->cme);
-
         for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
-            VM_ASSERT((VALUE)data == ccs->entries[i].cc->klass);
+            VM_ASSERT(klass == ccs->entries[i].cc->klass);
 
             rb_gc_mark_movable((VALUE)ccs->entries[i].cc);
         }
@@ -227,7 +232,7 @@ rb_cc_table_mark(VALUE klass)
 {
     struct rb_id_table *cc_tbl = RCLASS_CC_TBL(klass);
     if (cc_tbl) {
-        rb_id_table_foreach(cc_tbl, cc_table_mark_i, (void *)klass);
+        rb_id_table_foreach_values(cc_tbl, cc_table_mark_i, (void *)klass);
     }
 }
 
