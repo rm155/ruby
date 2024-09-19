@@ -586,7 +586,6 @@ typedef struct gc_function_map {
     void (*ractor_cache_free)(void *objspace_ptr, void *cache);
     void (*set_params)(void *objspace_ptr);
     void (*init)(void);
-    void (*initial_stress_set)(VALUE flag);
     size_t *(*size_pool_sizes)(void *objspace_ptr);
     // Shutdown
     void (*shutdown_free_objects)(void *objspace_ptr);
@@ -729,7 +728,6 @@ ruby_external_gc_init(void)
     load_external_gc_func(ractor_cache_free);
     load_external_gc_func(set_params);
     load_external_gc_func(init);
-    load_external_gc_func(initial_stress_set);
     load_external_gc_func(size_pool_sizes);
     // Shutdown
     load_external_gc_func(shutdown_free_objects);
@@ -820,7 +818,6 @@ ruby_external_gc_init(void)
 # define rb_gc_impl_ractor_cache_free rb_gc_functions.ractor_cache_free
 # define rb_gc_impl_set_params rb_gc_functions.set_params
 # define rb_gc_impl_init rb_gc_functions.init
-# define rb_gc_impl_initial_stress_set rb_gc_functions.initial_stress_set
 # define rb_gc_impl_size_pool_sizes rb_gc_functions.size_pool_sizes
 // Shutdown
 # define rb_gc_impl_shutdown_free_objects rb_gc_functions.shutdown_free_objects
@@ -899,6 +896,8 @@ ruby_external_gc_init(void)
 # define rb_gc_impl_copy_attributes rb_gc_functions.copy_attributes
 #endif
 
+static VALUE initial_stress = Qfalse;
+
 void *
 rb_objspace_alloc(rb_ractor_t *ractor)
 {
@@ -913,6 +912,7 @@ rb_objspace_alloc(rb_ractor_t *ractor)
 
     rb_gc_impl_objspace_init(objspace, ractor);
     rb_objspace_gate_init(objspace);
+    rb_gc_impl_stress_set(objspace, initial_stress);
 
     rb_objspace_gc_enable(ractor->local_objspace);
     return objspace;
@@ -3718,7 +3718,7 @@ gc_stress_set_m(rb_execution_context_t *ec, VALUE self, VALUE flag)
 void
 rb_gc_initial_stress_set(VALUE flag)
 {
-    rb_gc_impl_initial_stress_set(flag);
+    initial_stress = flag;
 }
 
 size_t *
