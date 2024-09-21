@@ -7027,7 +7027,7 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason, bool need_f
 	    ret = gc_start(objspace, reason);
 
 	    if (need_finalize_deferred) {
-		global_gc_for_each_objspace(GET_VM(), objspace, gc_finalize_deferred);
+		global_gc_for_each_objspace(GET_VM(), objspace->local_gate, gc_finalize_deferred);
 	    }
 	}
     }
