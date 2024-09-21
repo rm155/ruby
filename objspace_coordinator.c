@@ -395,7 +395,7 @@ objspace_gate_free(rb_objspace_gate_t *local_gate)
     rb_nativethread_lock_destroy(&local_gate->external_writebarrier_allowed_lock);
     rb_native_cond_destroy(&local_gate->external_writebarrier_allowed_cond);
 
-    if (local_gate->ractor && local_gate->ractor->local_gate == local_gate) {
+    if (!local_gate->objspace_closed && local_gate->ractor->local_gate == local_gate) {
 	local_gate->ractor = NULL;
     }
     if (GET_OBJSPACE_GATE() == local_gate) {
