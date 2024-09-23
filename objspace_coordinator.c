@@ -392,8 +392,8 @@ objspace_gate_free(rb_objspace_gate_t *local_gate)
 
     rb_nativethread_lock_destroy(&local_gate->objspace_lock);
 
-    rb_nativethread_lock_destroy(&local_gate->external_writebarrier_allowed_lock);
-    rb_native_cond_destroy(&local_gate->external_writebarrier_allowed_cond);
+    rb_nativethread_lock_destroy(&local_gate->running_local_gc_lock);
+    rb_native_cond_destroy(&local_gate->local_gc_stop_cond);
 
     if (!local_gate->objspace_closed && local_gate->ractor->local_gate == local_gate) {
 	local_gate->ractor = NULL;
@@ -476,9 +476,9 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
     local_gate->objspace_lock_owner = NULL;
     local_gate->objspace_lock_level = 0;
 
-    local_gate->external_writebarrier_allowed = true;
-    rb_nativethread_lock_initialize(&local_gate->external_writebarrier_allowed_lock);
-    rb_native_cond_initialize(&local_gate->external_writebarrier_allowed_cond);
+    local_gate->running_local_gc = false;
+    rb_nativethread_lock_initialize(&local_gate->running_local_gc_lock);
+    rb_native_cond_initialize(&local_gate->local_gc_stop_cond);
 
     local_gate->alloc_target_ractor = NULL;
 
@@ -1737,6 +1737,25 @@ objspace_locked(rb_objspace_gate_t *os_gate)
 }
 
 void
+local_gc_running_on(rb_objspace_gate_t *local_gate)
+{
+    VM_ASSERT(local_gate == GET_RACTOR()->local_gate);
+    rb_native_mutex_lock(&local_gate->running_local_gc_lock);
+    local_gate->running_local_gc = true;
+    rb_native_mutex_unlock(&local_gate->running_local_gc_lock);
+}
+
+void
+local_gc_running_off(rb_objspace_gate_t *local_gate)
+{
+    VM_ASSERT(local_gate == GET_RACTOR()->local_gate);
+    rb_native_mutex_lock(&local_gate->running_local_gc_lock);
+    local_gate->running_local_gc = false;
+    rb_native_mutex_unlock(&local_gate->running_local_gc_lock);
+    rb_native_cond_broadcast(&local_gate->local_gc_stop_cond);
+}
+
+void
 begin_local_gc_section(rb_objspace_gate_t *local_gate, rb_ractor_t *cr)
 {
     if (!local_gate->running_global_gc && local_gate->local_gc_level == 0) {
@@ -1746,18 +1765,13 @@ begin_local_gc_section(rb_objspace_gate_t *local_gate, rb_ractor_t *cr)
 
     local_gate->local_gc_level++;
 
-    rb_native_mutex_lock(&local_gate->external_writebarrier_allowed_lock);
-    local_gate->external_writebarrier_allowed = false;
-    rb_native_mutex_unlock(&local_gate->external_writebarrier_allowed_lock);
+    local_gc_running_on(local_gate);
 }
 
 void
 end_local_gc_section(rb_objspace_gate_t *local_gate, rb_ractor_t *cr)
 {
-    rb_native_mutex_lock(&local_gate->external_writebarrier_allowed_lock);
-    local_gate->external_writebarrier_allowed = true;
-    rb_native_mutex_unlock(&local_gate->external_writebarrier_allowed_lock);
-    rb_native_cond_broadcast(&local_gate->external_writebarrier_allowed_cond);
+    local_gc_running_off(local_gate);
 
     local_gate->local_gc_level--;
 
@@ -1885,10 +1899,7 @@ wait_for_object_graph_safety(rb_objspace_gate_t *local_gate)
 
     local_gate->waiting_for_object_graph_safety = true;
 
-    rb_native_mutex_lock(&local_gate->external_writebarrier_allowed_lock);
-    local_gate->external_writebarrier_allowed = true;
-    rb_native_mutex_unlock(&local_gate->external_writebarrier_allowed_lock);
-    rb_native_cond_broadcast(&local_gate->external_writebarrier_allowed_cond);
+    local_gc_running_off(local_gate);
 
     rb_ractor_borrowing_barrier_end(local_gate->ractor);
 
@@ -1900,9 +1911,7 @@ wait_for_object_graph_safety(rb_objspace_gate_t *local_gate)
 
     rb_ractor_borrowing_barrier_begin(local_gate->ractor);
 
-    rb_native_mutex_lock(&local_gate->external_writebarrier_allowed_lock);
-    local_gate->external_writebarrier_allowed = false;
-    rb_native_mutex_unlock(&local_gate->external_writebarrier_allowed_lock);
+    local_gc_running_on(local_gate);
 
     local_gate->waiting_for_object_graph_safety = false;
 }
@@ -1951,12 +1960,12 @@ rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm)
 static void
 gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_gate_t *os_gate)
 {
-    rb_native_mutex_lock(&os_gate->external_writebarrier_allowed_lock);
-    while (!os_gate->external_writebarrier_allowed) {
-	rb_native_cond_wait(&os_gate->external_writebarrier_allowed_cond, &os_gate->external_writebarrier_allowed_lock);
+    rb_native_mutex_lock(&os_gate->running_local_gc_lock);
+    while (os_gate->running_local_gc) {
+	rb_native_cond_wait(&os_gate->local_gc_stop_cond, &os_gate->running_local_gc_lock);
     }
     rb_gc_writebarrier_gc_blocked(os_gate->objspace, a, b);
-    rb_native_mutex_unlock(&os_gate->external_writebarrier_allowed_lock);
+    rb_native_mutex_unlock(&os_gate->running_local_gc_lock);
 }
 
 void

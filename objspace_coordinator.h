@@ -206,9 +206,9 @@ typedef struct rb_objspace_gate {
     bool belong_to_single_main_ractor;
     bool freeing_all;
 
-    bool external_writebarrier_allowed;
-    rb_nativethread_lock_t external_writebarrier_allowed_lock;
-    rb_nativethread_cond_t external_writebarrier_allowed_cond;
+    bool running_local_gc;
+    rb_nativethread_lock_t running_local_gc_lock;
+    rb_nativethread_cond_t local_gc_stop_cond;
 
     rb_nativethread_lock_t objspace_lock;
     rb_ractor_t *objspace_lock_owner;
@@ -357,6 +357,9 @@ bool objspace_locked(rb_objspace_gate_t *os_gate);
 	_local_gate->objspace_lock_level = _old_objspace_lock_level; \
     } \
 }
+
+void local_gc_running_on(rb_objspace_gate_t *local_gate);
+void local_gc_running_off(rb_objspace_gate_t *local_gate);
 
 void begin_local_gc_section(rb_objspace_gate_t *local_gate, rb_ractor_t *cr);
 void end_local_gc_section(rb_objspace_gate_t *local_gate, rb_ractor_t *cr);

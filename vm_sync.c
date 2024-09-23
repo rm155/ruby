@@ -79,6 +79,8 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
         ASSERT_vm_locking();
     }
     else {
+	VM_ASSERT(!!cr);
+
 	if (!no_barrier) rb_objspace_coordinator_object_graph_safety_advance(cr, OGS_FLAG_ENTERING_VM_LOCK);
 
 #if RACTOR_CHECK_MODE
@@ -86,14 +88,18 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
         VM_ASSERT(cr->sync.locked_by != rb_ractor_self(cr) || cr->sync.locking_thread != GET_THREAD());
 #endif
 
-	rb_borrowing_status_pause(cr);
+	rb_objspace_gate_t *local_gate = cr->local_gate;
+	bool local_gc_break = local_gate->running_local_gc;
+
+	if (local_gc_break) local_gc_running_off(local_gate);
 
         // lock
         rb_native_mutex_lock(&vm->ractor.sync.lock);
         VM_ASSERT(vm->ractor.sync.lock_owner == NULL);
         VM_ASSERT(vm->ractor.sync.lock_rec == 0);
 
-	rb_borrowing_status_resume(cr);
+	if (local_gc_break) local_gc_running_on(local_gate);
+
         // barrier
         if (vm_need_barrier(no_barrier, cr, vm)) {
             rb_execution_context_t *ec = GET_EC();
