@@ -2657,6 +2657,7 @@ newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size
     rb_heap_t *heap = SIZE_POOL_EDEN_HEAP(size_pool);
     VALUE obj = Qfalse;
 
+    OBJSPACE_LOCK_ENTER(objspace);
     {
         if (is_incremental_marking(objspace)) {
             gc_continue(objspace, size_pool, heap);
@@ -2675,6 +2676,7 @@ newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size
             obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
         }
     }
+    OBJSPACE_LOCK_LEAVE(objspace);
 
     if (RB_UNLIKELY(obj == Qfalse)) {
         rb_memerror();
