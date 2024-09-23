@@ -283,6 +283,8 @@ typedef struct RNode_CASE {
 
     struct RNode *nd_head;
     struct RNode *nd_body;
+    rb_code_location_t case_keyword_loc;
+    rb_code_location_t end_keyword_loc;
 } rb_node_case_t;
 
 typedef struct RNode_CASE2 {
@@ -290,6 +292,8 @@ typedef struct RNode_CASE2 {
 
     struct RNode *nd_head;
     struct RNode *nd_body;
+    rb_code_location_t case_keyword_loc;
+    rb_code_location_t end_keyword_loc;
 } rb_node_case2_t;
 
 typedef struct RNode_CASE3 {
@@ -297,6 +301,8 @@ typedef struct RNode_CASE3 {
 
     struct RNode *nd_head;
     struct RNode *nd_body;
+    rb_code_location_t case_keyword_loc;
+    rb_code_location_t end_keyword_loc;
 } rb_node_case3_t;
 
 typedef struct RNode_WHEN {
@@ -1205,8 +1211,6 @@ typedef struct rb_parser_config_struct {
     RBIMPL_ATTR_FORMAT(RBIMPL_PRINTF_FORMAT, 2, 3)
     VALUE (*str_catf)(VALUE str, const char *format, ...);
     VALUE (*str_cat_cstr)(VALUE str, const char *ptr);
-    void (*str_modify)(VALUE str);
-    void (*str_set_len)(VALUE str, long len);
     VALUE (*str_cat)(VALUE str, const char *ptr, long len);
     VALUE (*str_resize)(VALUE str, long len);
     VALUE (*str_new)(const char *ptr, long len);
