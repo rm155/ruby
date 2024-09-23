@@ -220,6 +220,7 @@ cc_table_mark_i(VALUE ccs_ptr, void *data)
         rb_gc_mark_movable((VALUE)ccs->cme);
         for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
             VM_ASSERT(klass == ccs->entries[i].cc->klass);
+            VM_ASSERT(vm_cc_check_cme(ccs->entries[i].cc, ccs->cme));
 
             rb_gc_mark_movable((VALUE)ccs->entries[i].cc);
         }
@@ -232,7 +233,11 @@ rb_cc_table_mark(VALUE klass)
 {
     struct rb_id_table *cc_tbl = RCLASS_CC_TBL(klass);
     if (cc_tbl) {
-        rb_id_table_foreach_values(cc_tbl, cc_table_mark_i, (void *)klass);
+	RB_VM_LOCK_ENTER();
+	{
+	    rb_id_table_foreach_values(cc_tbl, cc_table_mark_i, (void *)klass);
+	}
+	RB_VM_LOCK_LEAVE();
     }
 }
 
