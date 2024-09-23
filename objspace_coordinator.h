@@ -313,8 +313,6 @@ struct rb_borrowing_location_lock {
     bool page_recently_locked;
 };
 
-void rb_borrowing_status_pause(rb_ractor_t *cr);
-void rb_borrowing_status_resume(rb_ractor_t *cr);
 VALUE rb_attempt_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args, bool *borrowing_success);
 VALUE rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args);
 rb_ractor_t *rb_current_allocating_ractor(void);

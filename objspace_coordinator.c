@@ -1462,22 +1462,6 @@ borrowing_count_decrement(rb_ractor_t *r)
     rb_native_mutex_unlock(&r->borrowing_sync.borrowing_allowed_lock);
 }
 
-void
-rb_borrowing_status_pause(rb_ractor_t *cr)
-{
-    for (struct borrowing_target_node_t *btn = cr->borrowing_target_top; !!btn; btn = btn->next) {
-	borrowing_count_decrement(btn->target_ractor);
-    }
-}
-
-void
-rb_borrowing_status_resume(rb_ractor_t *cr)
-{
-    for (struct borrowing_target_node_t *btn = cr->borrowing_target_top; !!btn; btn = btn->next) {
-	borrowing_count_increment(btn->target_ractor);
-    }
-}
-
 struct borrowing_data_args {
     rb_ractor_t *borrower;
     rb_ractor_t *target_ractor;
