@@ -641,6 +641,18 @@ typedef struct rb_objspace {
     bool pages_absorbed;
 } rb_objspace_t;
 
+typedef struct rb_global_space {
+    rb_nativethread_lock_t global_pages_lock;
+    rb_darray(struct heap_page *) sorted;
+    uintptr_t range[2];
+} rb_global_space_t;
+
+struct rb_global_space *
+rb_gc_get_global_space(void)
+{
+    return GET_VM()->global_space;
+}
+
 #ifndef HEAP_PAGE_ALIGN_LOG
 /* default tiny heap size: 64KiB */
 #define HEAP_PAGE_ALIGN_LOG 16
@@ -802,7 +814,7 @@ asan_unlock_freelist(struct heap_page *page)
 }
 
 static inline bool
-heap_page_in_global_empty_pages_pool(rb_objspace_t *objspace, struct heap_page *page)
+heap_page_in_objspace_empty_pages_pool(rb_objspace_t *objspace, struct heap_page *page)
 {
     if (page->total_slots == 0) {
         GC_ASSERT(page->start == 0);
@@ -1340,7 +1352,7 @@ check_rvalue_consistency_force(rb_objspace_t *objspace, const VALUE obj, int ter
             while (empty_page) {
                 if ((uintptr_t)empty_page->body <= (uintptr_t)obj &&
                         (uintptr_t)obj < (uintptr_t)empty_page->body + HEAP_PAGE_SIZE) {
-                    GC_ASSERT(heap_page_in_global_empty_pages_pool(objspace, empty_page));
+                    GC_ASSERT(heap_page_in_objspace_empty_pages_pool(objspace, empty_page));
                     fprintf(stderr, "check_rvalue_consistency: %p is in an empty page (%p).\n",
                             (void *)obj, (void *)empty_page);
                     err++;
@@ -1360,7 +1372,7 @@ check_rvalue_consistency_force(rb_objspace_t *objspace, const VALUE obj, int ter
             const int remembered_bit = MARKED_IN_BITMAP(GET_HEAP_PAGE(obj)->remembered_bits, obj) != 0;
             const int age = RVALUE_AGE_GET((VALUE)obj);
 
-            if (heap_page_in_global_empty_pages_pool(objspace, GET_HEAP_PAGE(obj))) {
+            if (heap_page_in_objspace_empty_pages_pool(objspace, GET_HEAP_PAGE(obj))) {
                 fprintf(stderr, "check_rvalue_consistency: %s is in tomb page.\n", rb_obj_info(obj));
                 err++;
             }
@@ -1933,6 +1945,20 @@ heap_page_free(rb_objspace_t *objspace, struct heap_page *page)
 }
 
 static void
+update_page_list_range(rb_darray(struct heap_page *) *sorted_pages, uintptr_t *pages_low, uintptr_t *pages_high)
+{
+    struct heap_page *hipage = rb_darray_get(*sorted_pages, rb_darray_size(*sorted_pages) - 1);
+    uintptr_t himem = (uintptr_t)hipage->body + HEAP_PAGE_SIZE;
+    GC_ASSERT(himem <= *pages_high);
+    *pages_high = himem;
+
+    struct heap_page *lopage = rb_darray_get(*sorted_pages, 0);
+    uintptr_t lomem = (uintptr_t)lopage->body + sizeof(struct heap_page_header);
+    GC_ASSERT(lomem >= *pages_low);
+    *pages_low = lomem;
+}
+
+static void
 heap_pages_free_unused_pages(rb_objspace_t *objspace)
 {
     size_t pages_to_keep_count =
@@ -1950,11 +1976,11 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
         for (i = j = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
             struct heap_page *page = rb_darray_get(objspace->heap_pages.sorted, i);
 
-            if (heap_page_in_global_empty_pages_pool(objspace, page) && pages_to_keep_count == 0) {
-                heap_page_free(objspace, page);
+            if (heap_page_in_objspace_empty_pages_pool(objspace, page) && pages_to_keep_count == 0) {
+		page->unlinked = true;
             }
             else {
-                if (heap_page_in_global_empty_pages_pool(objspace, page) && pages_to_keep_count > 0) {
+                if (heap_page_in_objspace_empty_pages_pool(objspace, page) && pages_to_keep_count > 0) {
                     page->free_next = objspace->empty_pages;
                     objspace->empty_pages = page;
                     objspace->empty_pages_count++;
@@ -1971,15 +1997,31 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
         rb_darray_pop(objspace->heap_pages.sorted, i - j);
         GC_ASSERT(rb_darray_size(objspace->heap_pages.sorted) == j);
 
-        struct heap_page *hipage = rb_darray_get(objspace->heap_pages.sorted, rb_darray_size(objspace->heap_pages.sorted) - 1);
-        uintptr_t himem = (uintptr_t)hipage->body + HEAP_PAGE_SIZE;
-        GC_ASSERT(himem <= heap_pages_himem);
-        heap_pages_himem = himem;
+	update_page_list_range(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem);
 
-        struct heap_page *lopage = rb_darray_get(objspace->heap_pages.sorted, 0);
-        uintptr_t lomem = (uintptr_t)lopage->body + sizeof(struct heap_page_header);
-        GC_ASSERT(lomem >= heap_pages_lomem);
-        heap_pages_lomem = lomem;
+	rb_global_space_t *global_space = rb_gc_get_global_space();
+	rb_native_mutex_lock(&global_space->global_pages_lock);
+
+        for (i = j = 0; i < rb_darray_size(global_space->sorted); i++) {
+            struct heap_page *page = rb_darray_get(global_space->sorted, i);
+
+            if (page->unlinked) {
+                heap_page_free(objspace, page);
+            }
+            else {
+                if (i != j) {
+                    rb_darray_set(global_space->sorted, j, page);
+                }
+                j++;
+            }
+        }
+
+        rb_darray_pop(global_space->sorted, i - j);
+        GC_ASSERT(rb_darray_size(global_space->sorted) == j);
+
+	update_page_list_range(&global_space->sorted, &global_space->range[0], &global_space->range[1]);
+
+	rb_native_mutex_unlock(&global_space->global_pages_lock);
     }
 }
 
@@ -2066,19 +2108,19 @@ heap_page_body_allocate(void)
 }
 
 static void
-insert_into_sorted_page_list(rb_objspace_t *objspace, struct heap_page *page)
+insert_into_sorted_page_list(rb_darray(struct heap_page *) *sorted_pages, uintptr_t *pages_low, uintptr_t *pages_high, struct heap_page *page)
 {
     struct heap_page_body *page_body = page->body;
     uintptr_t start = (uintptr_t)page_body + sizeof(struct heap_page_header);
     uintptr_t end = (uintptr_t)page_body + HEAP_PAGE_SIZE;
 
     size_t lo = 0;
-    size_t hi = rb_darray_size(objspace->heap_pages.sorted);
+    size_t hi = rb_darray_size(*sorted_pages);
     while (lo < hi) {
         struct heap_page *mid_page;
 
         size_t mid = (lo + hi) / 2;
-        mid_page = rb_darray_get(objspace->heap_pages.sorted, mid);
+        mid_page = rb_darray_get(*sorted_pages, mid);
         if ((uintptr_t)mid_page->start < start) {
             lo = mid + 1;
         }
@@ -2090,10 +2132,10 @@ insert_into_sorted_page_list(rb_objspace_t *objspace, struct heap_page *page)
         }
     }
 
-    rb_darray_insert(&objspace->heap_pages.sorted, hi, page);
+    rb_darray_insert(sorted_pages, hi, page);
 
-    if (heap_pages_lomem == 0 || heap_pages_lomem > start) heap_pages_lomem = start;
-    if (heap_pages_himem < end) heap_pages_himem = end;
+    if (*pages_low == 0 || *pages_low > start) *pages_low = start;
+    if (*pages_high < end) *pages_high = end;
 }
 
 static struct heap_page *
@@ -2131,9 +2173,19 @@ heap_page_allocate(rb_objspace_t *objspace)
     page->objspace = objspace;
 
     /* setup heap_pages_sorted */
-    insert_into_sorted_page_list(objspace, page);
+    insert_into_sorted_page_list(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem, page);
 
     objspace->heap_pages.allocated_pages++;
+
+
+    rb_global_space_t *global_space = rb_gc_get_global_space();
+    rb_native_mutex_lock(&global_space->global_pages_lock);
+
+    /* setup heap_pages_sorted */
+    insert_into_sorted_page_list(&global_space->sorted, &global_space->range[0], &global_space->range[1], page);
+
+    rb_native_mutex_unlock(&global_space->global_pages_lock);
+
 
     return page;
 }
@@ -2151,7 +2203,7 @@ size_pool_add_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, rb_heap_t
 {
     /* Adding to eden heap during incremental sweeping is forbidden */
     GC_ASSERT(!heap->sweeping_page);
-    GC_ASSERT(heap_page_in_global_empty_pages_pool(objspace, page));
+    GC_ASSERT(heap_page_in_objspace_empty_pages_pool(objspace, page));
 
     /* adjust obj_limit (object number available in this page) */
     uintptr_t start = (uintptr_t)page->body + sizeof(struct heap_page_header);
@@ -2837,13 +2889,37 @@ heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
     }
 }
 
+PUREFUNC(static inline struct heap_page * global_heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr);)
+static inline struct heap_page *
+global_heap_page_for_ptr(rb_objspace_t *objspace, uintptr_t ptr)
+{
+    rb_global_space_t *global_space = rb_gc_get_global_space();
+    struct heap_page **res;
+
+    if (ptr < (uintptr_t)global_space->range[0] ||
+            ptr > (uintptr_t)global_space->range[1]) {
+        return NULL;
+    }
+
+    res = bsearch((void *)ptr, rb_darray_ref(global_space->sorted, 0),
+                  rb_darray_size(global_space->sorted), sizeof(struct heap_page *),
+                  ptr_in_page_body_p);
+
+    if (res) {
+        return *res;
+    }
+    else {
+        return NULL;
+    }
+}
+
 PUREFUNC(static inline bool pointer_is_on_page(register uintptr_t p, register struct heap_page *page);)
 static inline bool
 pointer_is_on_page(register uintptr_t p, register struct heap_page *page)
 {
     if (page) {
         RB_DEBUG_COUNTER_INC(gc_isptr_maybe);
-        if (heap_page_in_global_empty_pages_pool(page->objspace, page)) {
+        if (heap_page_in_objspace_empty_pages_pool(page->objspace, page)) {
             return FALSE;
         }
         else {
@@ -2903,18 +2979,37 @@ PUREFUNC(static inline bool is_pointer_to_global_heap(rb_objspace_t *objspace, c
 static inline bool
 is_pointer_to_global_heap(rb_objspace_t *objspace, const void *ptr)
 {
-    bool result = false;
-    lock_ractor_set();
-    rb_objspace_gate_t *local_gate = NULL;
-    ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
-	struct rb_objspace *os = local_gate->objspace;
-	result = is_pointer_to_local_heap(os, ptr);
-	if (result) {
-	    break;
+    rb_global_space_t *global_space = rb_gc_get_global_space();
+    register uintptr_t p = (uintptr_t)ptr;
+    register struct heap_page *page = NULL;
+
+    if (objspace->flags.during_global_gc) {
+	if (heap_page_possible(p, global_space->range[0], global_space->range[1]) == TRUE) {
+	    page = global_heap_page_for_ptr(objspace, (uintptr_t)ptr);
 	}
+	return pointer_is_on_page(p, page);
     }
-    unlock_ractor_set();
-    return result;
+    else {
+	rb_objspace_t *page_objspace;
+	int ret;
+
+	rb_native_mutex_lock(&global_space->global_pages_lock);
+	if (heap_page_possible(p, global_space->range[0], global_space->range[1]) == TRUE) {
+	    page = global_heap_page_for_ptr(objspace, (uintptr_t)ptr);
+	    if (page) {
+		page_objspace = page->objspace;
+		rb_native_mutex_unlock(&global_space->global_pages_lock);
+		OBJSPACE_LOCK_ENTER(page_objspace);
+		{
+		    ret = pointer_is_on_page(p, page);
+		}
+		OBJSPACE_LOCK_LEAVE(page_objspace);
+		return ret;
+	    }
+	}
+	rb_native_mutex_unlock(&global_space->global_pages_lock);
+	return FALSE;
+    }
 }
 
 PUREFUNC(static inline bool is_pointer_to_heap(rb_objspace_t *objspace, const void *ptr);)
@@ -10102,6 +10197,19 @@ gc_verify_compaction_references(int argc, VALUE* argv, VALUE self)
 # define gc_verify_compaction_references rb_f_notimplement
 #endif
 
+static void
+global_space_free(rb_global_space_t *global_space)
+{
+    rb_nativethread_lock_destroy(&global_space->global_pages_lock);
+    rb_darray_free(global_space->sorted);
+    global_space->range[0] = 0;
+    global_space->range[1] = 0;
+
+    free(global_space);
+    rb_vm_t *vm = GET_VM();
+    vm->global_space = NULL;
+}
+
 void
 rb_gc_impl_objspace_free(void *objspace_ptr)
 {
@@ -10138,6 +10246,8 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
 
     rb_darray_free(objspace->weak_references);
 
+    if (objspace == GET_VM()->objspace) global_space_free(rb_gc_get_global_space());
+
     free(objspace);
 }
 
@@ -10164,7 +10274,7 @@ absorb_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int s
     size_pool->total_allocated_pages++;
 
     heap_add_page(objspace, size_pool, heap, page);
-    insert_into_sorted_page_list(objspace, page);
+    insert_into_sorted_page_list(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem, page);
 
     RUBY_ATOMIC_PTR_EXCHANGE(page->ractor, objspace->ractor);
     RUBY_ATOMIC_PTR_EXCHANGE(page->objspace, objspace);
@@ -10293,7 +10403,7 @@ absorb_empty_pages(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to
     struct heap_page *empty_page = objspace_to_copy_from->empty_pages;
     struct heap_page *prev_page = NULL;
     while (empty_page) {
-	insert_into_sorted_page_list(objspace_to_update, empty_page);
+	insert_into_sorted_page_list(&objspace_to_update->heap_pages.sorted, &objspace_to_update->heap_pages.range[0], &objspace_to_update->heap_pages.range[1], empty_page);
 	empty_page->ractor = objspace_to_update->ractor;
 	empty_page->objspace = objspace_to_update;
 	prev_page = empty_page;
@@ -10468,10 +10578,28 @@ rb_gc_impl_attach_local_gate(void *objspace_ptr, void *local_gate_ptr)
     }
 }
 
+static rb_global_space_t *
+global_space_init(void)
+{
+    rb_global_space_t *global_space = malloc(sizeof(rb_global_space_t));
+
+    rb_nativethread_lock_initialize(&global_space->global_pages_lock);
+    rb_darray_make(&global_space->sorted, 0);
+
+    rb_vm_t *vm = GET_VM();
+    vm->global_space = global_space;
+
+    return global_space;
+}
+
 void
 rb_gc_impl_objspace_init(void *objspace_ptr, void *ractor)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    if (objspace == ruby_single_main_objspace) {
+	global_space_init();
+    }
 
     objspace_setup(objspace, ractor);
 }
