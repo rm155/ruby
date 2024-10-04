@@ -156,22 +156,22 @@
 
 #define USE_TICK_T                 (PRINT_ENTER_EXIT_TICK || PRINT_ROOT_TICKS)
 
-#ifndef SIZE_POOL_COUNT
-# define SIZE_POOL_COUNT 5
+#ifndef HEAP_COUNT
+# define HEAP_COUNT 5
 #endif
 
-typedef struct ractor_newobj_size_pool_cache {
+typedef struct ractor_newobj_heap_cache {
     struct free_slot *freelist;
     struct heap_page *using_page;
-} rb_ractor_newobj_size_pool_cache_t;
+} rb_ractor_newobj_heap_cache_t;
 
 typedef struct ractor_newobj_cache {
     size_t incremental_mark_step_allocated_slots;
-    rb_ractor_newobj_size_pool_cache_t size_pool_caches[SIZE_POOL_COUNT];
+    rb_ractor_newobj_heap_cache_t heap_caches[HEAP_COUNT];
 } rb_ractor_newobj_cache_t;
 
 typedef struct {
-    size_t size_pool_init_slots[SIZE_POOL_COUNT];
+    size_t heap_init_slots[HEAP_COUNT];
     size_t heap_free_slots;
     double growth_factor;
     size_t growth_max_slots;
@@ -415,7 +415,7 @@ typedef struct mark_stack {
 
 typedef int (*gc_compact_compare_func)(const void *l, const void *r, void *d);
 
-typedef struct rb_size_pool_struct {
+typedef struct rb_heap_struct {
     short slot_size;
 
     /* Basic statistics */
@@ -440,7 +440,7 @@ typedef struct rb_size_pool_struct {
     size_t total_pages;      /* total page count in a heap */
     size_t total_slots;      /* total slot count (about total_pages * HEAP_PAGE_OBJ_LIMIT) */
 
-} rb_size_pool_t;
+} rb_heap_t;
 
 enum {
     gc_stress_no_major,
@@ -488,7 +488,7 @@ typedef struct rb_objspace {
 
     rb_event_flag_t hook_events;
 
-    rb_size_pool_t size_pools[SIZE_POOL_COUNT];
+    rb_heap_t heaps[HEAP_COUNT];
     size_t empty_pages_count;
     struct heap_page *empty_pages;
 
@@ -619,7 +619,7 @@ typedef struct rb_objspace {
     rb_ractor_t *ractor;
     rb_objspace_gate_t *local_gate;
     
-    struct rb_borrowing_location_lock location_locks[SIZE_POOL_COUNT];
+    struct rb_borrowing_location_lock location_locks[HEAP_COUNT];
 
     bool pages_absorbed;
 } rb_objspace_t;
@@ -753,7 +753,7 @@ struct heap_page {
         unsigned int has_uncollectible_wb_unprotected_objects : 1;
     } flags;
 
-    rb_size_pool_t *size_pool;
+    rb_heap_t *heap;
 
     struct heap_page *free_next;
     struct heap_page_body *body;
@@ -802,7 +802,7 @@ heap_page_in_objspace_empty_pages_pool(rb_objspace_t *objspace, struct heap_page
     if (page->total_slots == 0) {
         GC_ASSERT(page->start == 0);
         GC_ASSERT(page->slot_size == 0);
-        GC_ASSERT(page->size_pool == NULL);
+        GC_ASSERT(page->heap == NULL);
         GC_ASSERT(page->free_slots == 0);
         asan_unpoisoning_memory_region(&page->freelist, sizeof(&page->freelist)) {
             GC_ASSERT(page->freelist == NULL);
@@ -813,7 +813,7 @@ heap_page_in_objspace_empty_pages_pool(rb_objspace_t *objspace, struct heap_page
     else {
         GC_ASSERT(page->start != 0);
         GC_ASSERT(page->slot_size != 0);
-        GC_ASSERT(page->size_pool != NULL);
+        GC_ASSERT(page->heap != NULL);
 
         return false;
     }
@@ -876,7 +876,7 @@ RVALUE_AGE_SET(VALUE obj, int age)
 #define heap_pages_himem	objspace->heap_pages.range[1]
 #define heap_pages_freeable_pages	objspace->heap_pages.freeable_pages
 #define heap_pages_deferred_final	objspace->heap_pages.deferred_final
-#define size_pools              objspace->size_pools
+#define heaps              objspace->heaps
 #define during_gc		objspace->flags.during_gc
 #define finalizing		objspace->atomic_flags.finalizing
 #define finalizer_table 	objspace->finalizer_table
@@ -937,8 +937,8 @@ gc_mode_verify(enum gc_mode mode)
 static inline bool
 has_sweeping_pages(rb_objspace_t *objspace)
 {
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        if ((&size_pools[i])->sweeping_page) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        if ((&heaps[i])->sweeping_page) {
             return TRUE;
         }
     }
@@ -949,8 +949,8 @@ static inline size_t
 heap_eden_total_pages(rb_objspace_t *objspace)
 {
     size_t count = 0;
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        count += (&size_pools[i])->total_pages;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        count += (&heaps[i])->total_pages;
     }
     return count;
 }
@@ -962,16 +962,16 @@ total_allocated_objects(rb_objspace_t *objspace)
 
     rb_ractor_t *r = objspace->ractor;
     if (!during_gc) rb_borrowing_sync_lock(r);
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-	size_pool->total_allocated_objects += size_pool->newly_created_by_borrowing_count;
-	size_pool->newly_created_by_borrowing_count = 0;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+	heap->total_allocated_objects += heap->newly_created_by_borrowing_count;
+	heap->newly_created_by_borrowing_count = 0;
     }
     if (!during_gc) rb_borrowing_sync_unlock(r);
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        count += size_pool->total_allocated_objects;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        count += heap->total_allocated_objects;
     }
     return count;
 }
@@ -980,9 +980,9 @@ static inline size_t
 total_freed_objects(rb_objspace_t *objspace)
 {
     size_t count = 0;
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        count += size_pool->total_freed_objects;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        count += heap->total_freed_objects;
     }
     return count;
 }
@@ -991,9 +991,9 @@ static inline size_t
 total_final_slots_count(rb_objspace_t *objspace)
 {
     size_t count = 0;
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        count += size_pool->final_slots_count;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        count += heap->final_slots_count;
     }
     return count;
 }
@@ -1060,11 +1060,11 @@ static void gc_marking_enter(rb_objspace_t *objspace);
 static void gc_marking_exit(rb_objspace_t *objspace);
 static void gc_sweeping_enter(rb_objspace_t *objspace);
 static void gc_sweeping_exit(rb_objspace_t *objspace);
-static bool gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool);
+static bool gc_marks_continue(rb_objspace_t *objspace, rb_heap_t *heap);
 
 static void gc_sweep(rb_objspace_t *objspace);
-static void gc_sweep_finish_size_pool(rb_objspace_t *objspace, rb_size_pool_t *size_pool);
-static void gc_sweep_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool);
+static void gc_sweep_finish_heap(rb_objspace_t *objspace, rb_heap_t *heap);
+static void gc_sweep_continue(rb_objspace_t *objspace, rb_heap_t *heap);
 
 static inline void gc_mark(rb_objspace_t *objspace, VALUE ptr);
 static inline void gc_pin(rb_objspace_t *objspace, VALUE ptr);
@@ -1290,8 +1290,8 @@ rb_gc_impl_local_gate_of_objspace(void *objspace_ptr)
 #define RVALUE_PAGE_MARKING(page, obj)        MARKED_IN_BITMAP((page)->marking_bits, (obj))
 
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
-static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_size_pool_t *size_pool);
-static void rgengc_rememberset_mark(rb_objspace_t *objspace, rb_size_pool_t *size_pool);
+static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
+static void rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap);
 
 static int
 check_rvalue_consistency_force(rb_objspace_t *objspace, const VALUE obj, int terminate)
@@ -1622,10 +1622,10 @@ rb_gc_impl_get_measure_total_time(void *objspace_ptr)
 }
 
 static size_t
-minimum_slots_for_size_pool(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+minimum_slots_for_heap(rb_objspace_t *objspace, rb_heap_t *heap)
 {
-    size_t size_pool_idx = size_pool - size_pools;
-    return gc_params.size_pool_init_slots[size_pool_idx];
+    size_t heap_idx = heap - heaps;
+    return gc_params.heap_init_slots[heap_idx];
 }
 
 static int
@@ -1785,8 +1785,8 @@ heap_page_add_freeobj(rb_objspace_t *objspace, struct heap_page *page, VALUE obj
 }
 
 static void
-size_pool_allocatable_slots_expand(rb_objspace_t *objspace,
-        rb_size_pool_t *size_pool, size_t free_slots, size_t total_slots)
+heap_allocatable_slots_expand(rb_objspace_t *objspace,
+        rb_heap_t *heap, size_t free_slots, size_t total_slots)
 {
     double goal_ratio = gc_params.heap_free_slots_goal_ratio;
     size_t target_total_slots;
@@ -1795,7 +1795,7 @@ size_pool_allocatable_slots_expand(rb_objspace_t *objspace,
         target_total_slots = (size_t)(total_slots * gc_params.growth_factor);
     }
     else if (total_slots == 0) {
-        target_total_slots = minimum_slots_for_size_pool(objspace, size_pool);
+        target_total_slots = minimum_slots_for_heap(objspace, heap);
     }
     else {
         /* Find `f' where free_slots = f * total_slots * goal_ratio
@@ -1831,14 +1831,14 @@ size_pool_allocatable_slots_expand(rb_objspace_t *objspace,
 }
 
 static inline void
-heap_add_freepage(rb_size_pool_t *size_pool, struct heap_page *page)
+heap_add_freepage(rb_heap_t *heap, struct heap_page *page)
 {
     asan_unlock_freelist(page);
     GC_ASSERT(page->free_slots != 0);
     GC_ASSERT(page->freelist != NULL);
 
-    page->free_next = size_pool->free_pages;
-    size_pool->free_pages = page;
+    page->free_next = heap->free_pages;
+    heap->free_pages = page;
 
     RUBY_DEBUG_LOG("page:%p freelist:%p", (void *)page, (void *)page->freelist);
 
@@ -1846,25 +1846,25 @@ heap_add_freepage(rb_size_pool_t *size_pool, struct heap_page *page)
 }
 
 static inline void
-heap_add_poolpage(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_page *page)
+heap_add_poolpage(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
 {
     asan_unlock_freelist(page);
     GC_ASSERT(page->free_slots != 0);
     GC_ASSERT(page->freelist != NULL);
 
-    page->free_next = size_pool->pooled_pages;
-    size_pool->pooled_pages = page;
+    page->free_next = heap->pooled_pages;
+    heap->pooled_pages = page;
     objspace->rincgc.pooled_slots += page->free_slots;
 
     asan_lock_freelist(page);
 }
 
 static void
-heap_unlink_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_page *page)
+heap_unlink_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
 {
     ccan_list_del(&page->page_node);
-    size_pool->total_pages--;
-    size_pool->total_slots -= page->total_slots;
+    heap->total_pages--;
+    heap->total_slots -= page->total_slots;
 }
 
 static void
@@ -1928,7 +1928,7 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
         // Get number of pages estimated for the smallest size pool
         CEILDIV(objspace->heap_pages.allocatable_slots, HEAP_PAGE_OBJ_LIMIT) *
             // Estimate the average slot size multiple
-            (1 << (SIZE_POOL_COUNT / 2));
+            (1 << (HEAP_COUNT / 2));
 
     if (objspace->empty_pages != NULL && objspace->empty_pages_count > pages_to_keep_count) {
         GC_ASSERT(objspace->empty_pages_count > 0);
@@ -2154,18 +2154,18 @@ heap_page_allocate(rb_objspace_t *objspace)
 }
 
 static void
-heap_append_added_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_page *page)
+heap_append_added_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
 {
-    ccan_list_add_tail(&size_pool->pages, &page->page_node);
-    size_pool->total_pages++;
-    size_pool->total_slots += page->total_slots;
+    ccan_list_add_tail(&heap->pages, &page->page_node);
+    heap->total_pages++;
+    heap->total_slots += page->total_slots;
 }
 
 static void
-size_pool_add_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_page *page)
+heap_add_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
 {
     /* Adding to eden heap during incremental sweeping is forbidden */
-    GC_ASSERT(!size_pool->sweeping_page);
+    GC_ASSERT(!heap->sweeping_page);
     GC_ASSERT(heap_page_in_objspace_empty_pages_pool(objspace, page));
 
     /* adjust obj_limit (object number available in this page) */
@@ -2180,48 +2180,48 @@ size_pool_add_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct he
          * In other words, ensure there are an even number of objects
          * per bit plane. */
         if (NUM_IN_PAGE(start) == 1) {
-            start += size_pool->slot_size - BASE_SLOT_SIZE;
+            start += heap->slot_size - BASE_SLOT_SIZE;
         }
 
-        GC_ASSERT(NUM_IN_PAGE(start) * BASE_SLOT_SIZE % size_pool->slot_size == 0);
+        GC_ASSERT(NUM_IN_PAGE(start) * BASE_SLOT_SIZE % heap->slot_size == 0);
     }
 
-    int slot_count = (int)((HEAP_PAGE_SIZE - (start - (uintptr_t)page->body))/size_pool->slot_size);
+    int slot_count = (int)((HEAP_PAGE_SIZE - (start - (uintptr_t)page->body))/heap->slot_size);
 
     page->start = start;
     page->total_slots = slot_count;
-    page->slot_size = size_pool->slot_size;
-    page->size_pool = size_pool;
+    page->slot_size = heap->slot_size;
+    page->heap = heap;
 
     asan_unlock_freelist(page);
     page->freelist = NULL;
     asan_unpoison_memory_region(page->body, HEAP_PAGE_SIZE, false);
-    for (VALUE p = (VALUE)start; p < start + (slot_count * size_pool->slot_size); p += size_pool->slot_size) {
+    for (VALUE p = (VALUE)start; p < start + (slot_count * heap->slot_size); p += heap->slot_size) {
         heap_page_add_freeobj(objspace, page, p);
     }
     asan_lock_freelist(page);
 
     page->free_slots = slot_count;
 
-    size_pool->total_allocated_pages++;
+    heap->total_allocated_pages++;
 
-    heap_append_added_page(objspace, size_pool, page);
+    heap_append_added_page(objspace, heap, page);
 }
 
 static int
-heap_page_allocate_and_initialize(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+heap_page_allocate_and_initialize(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     if (objspace->heap_pages.allocatable_slots > 0) {
         gc_report(1, objspace, "heap_page_allocate_and_initialize: rb_darray_size(objspace->heap_pages.sorted): %"PRIdSIZE", "
                   "allocatable_slots: %"PRIdSIZE", heap->total_pages: %"PRIdSIZE"\n",
-                  rb_darray_size(objspace->heap_pages.sorted), objspace->heap_pages.allocatable_slots, size_pool->total_pages);
+                  rb_darray_size(objspace->heap_pages.sorted), objspace->heap_pages.allocatable_slots, heap->total_pages);
 
         struct heap_page *page = heap_page_resurrect(objspace);
         if (page == NULL) {
             page = heap_page_allocate(objspace);
         }
-        size_pool_add_page(objspace, size_pool, page);
-        heap_add_freepage(size_pool, page);
+        heap_add_page(objspace, heap, page);
+        heap_add_freepage(heap, page);
 
         if (objspace->heap_pages.allocatable_slots > (size_t)page->total_slots) {
             objspace->heap_pages.allocatable_slots -= page->total_slots;
@@ -2237,18 +2237,18 @@ heap_page_allocate_and_initialize(rb_objspace_t *objspace, rb_size_pool_t *size_
 }
 
 static void
-heap_page_allocate_and_initialize_force(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+heap_page_allocate_and_initialize_force(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     size_t prev_allocatable_slots = objspace->heap_pages.allocatable_slots;
     // Set allocatable slots to 1 to force a page to be created.
     objspace->heap_pages.allocatable_slots = 1;
-    heap_page_allocate_and_initialize(objspace, size_pool);
-    GC_ASSERT(size_pool->free_pages != NULL);
+    heap_page_allocate_and_initialize(objspace, heap);
+    GC_ASSERT(heap->free_pages != NULL);
     objspace->heap_pages.allocatable_slots = prev_allocatable_slots;
 }
 
 static void
-gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+gc_continue(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     LOCAL_GC_BEGIN(objspace);
     {
@@ -2256,15 +2256,15 @@ gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 
 	/* Continue marking if in incremental marking. */
 	if (is_incremental_marking(objspace)) {
-		if (gc_marks_continue(objspace, size_pool)) {
+		if (gc_marks_continue(objspace, heap)) {
 			gc_sweep(objspace);
 		}
 	}
 
 	/* Continue sweeping if in lazy sweeping or the previous incremental
 	 * marking finished and did not yield a free page. */
-	if (size_pool->free_pages == NULL && is_lazy_sweeping(objspace)) {
-		gc_sweep_continue(objspace, size_pool);
+	if (heap->free_pages == NULL && is_lazy_sweeping(objspace)) {
+		gc_sweep_continue(objspace, heap);
 	}
 
 	gc_exit(objspace, gc_enter_event_continue);
@@ -2273,31 +2273,31 @@ gc_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 }
 
 static void
-heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, bool borrowing)
+heap_prepare(rb_objspace_t *objspace, rb_heap_t *heap, bool borrowing)
 {
 
-    if (size_pool->total_slots < gc_params.size_pool_init_slots[size_pool - size_pools] &&
-            size_pool->sweeping_page == NULL) {
-        heap_page_allocate_and_initialize_force(objspace, size_pool);
-        GC_ASSERT(size_pool->free_pages != NULL);
+    if (heap->total_slots < gc_params.heap_init_slots[heap - heaps] &&
+            heap->sweeping_page == NULL) {
+        heap_page_allocate_and_initialize_force(objspace, heap);
+        GC_ASSERT(heap->free_pages != NULL);
         return;
     }
 
     if (!borrowing) {
 	/* Continue incremental marking or lazy sweeping, if in any of those steps. */
-	gc_continue(objspace, size_pool);
+	gc_continue(objspace, heap);
     }
 
-    if (size_pool->free_pages == NULL) {
-        heap_page_allocate_and_initialize(objspace, size_pool);
+    if (heap->free_pages == NULL) {
+        heap_page_allocate_and_initialize(objspace, heap);
     }
 
     /* If we still don't have a free page and not allowed to create a new page,
      * we should start a new GC cycle. */
-    if (size_pool->free_pages == NULL) {
+    if (heap->free_pages == NULL) {
 	if (borrowing) {
             objspace->heap_pages.allocatable_slots = 1;
-            if (!heap_page_allocate_and_initialize(objspace, size_pool)) {
+            if (!heap_page_allocate_and_initialize(objspace, heap)) {
 		rb_bug("cannot create a new borrowing page in target Ractor");
 	    }
 	}
@@ -2306,18 +2306,18 @@ heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, bool borrowing)
         }
         else {
             if (objspace->heap_pages.allocatable_slots == 0 && !gc_config_full_mark_val) {
-                size_pool_allocatable_slots_expand(objspace, size_pool,
-                        size_pool->freed_slots + size_pool->empty_slots,
-                        size_pool->total_slots);
+                heap_allocatable_slots_expand(objspace, heap,
+                        heap->freed_slots + heap->empty_slots,
+                        heap->total_slots);
                 GC_ASSERT(objspace->heap_pages.allocatable_slots > 0);
             }
             /* Do steps of incremental marking or lazy sweeping if the GC run permits. */
-            gc_continue(objspace, size_pool);
+            gc_continue(objspace, heap);
 
             /* If we're not incremental marking (e.g. a minor GC) or finished
              * sweeping and still don't have a free page, then
-             * gc_sweep_finish_size_pool should allow us to create a new page. */
-            if (size_pool->free_pages == NULL && !heap_page_allocate_and_initialize(objspace, size_pool)) {
+             * gc_sweep_finish_heap should allow us to create a new page. */
+            if (heap->free_pages == NULL && !heap_page_allocate_and_initialize(objspace, heap)) {
                 if (gc_needs_major_flags == GPR_FLAG_NONE) {
                     rb_bug("cannot create a new page after GC");
                 }
@@ -2327,10 +2327,10 @@ heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, bool borrowing)
                     }
                     else {
                         /* Do steps of incremental marking or lazy sweeping. */
-                        gc_continue(objspace, size_pool);
+                        gc_continue(objspace, heap);
 
-                        if (size_pool->free_pages == NULL &&
-                                !heap_page_allocate_and_initialize(objspace, size_pool)) {
+                        if (heap->free_pages == NULL &&
+                                !heap_page_allocate_and_initialize(objspace, heap)) {
                             rb_bug("cannot create a new page after major GC");
                         }
                     }
@@ -2339,7 +2339,7 @@ heap_prepare(rb_objspace_t *objspace, rb_size_pool_t *size_pool, bool borrowing)
         }
     }
 
-    GC_ASSERT(size_pool->free_pages != NULL);
+    GC_ASSERT(heap->free_pages != NULL);
 }
 
 static inline VALUE
@@ -2444,15 +2444,15 @@ rb_gc_impl_obj_slot_size(VALUE obj)
 }
 
 static inline size_t
-size_pool_slot_size(unsigned char pool_id)
+heap_slot_size(unsigned char pool_id)
 {
-    GC_ASSERT(pool_id < SIZE_POOL_COUNT);
+    GC_ASSERT(pool_id < HEAP_COUNT);
 
     size_t slot_size = (1 << pool_id) * BASE_SLOT_SIZE;
 
 #if RGENGC_CHECK_MODE
     rb_objspace_t *objspace = rb_gc_get_objspace();
-    GC_ASSERT(size_pools[pool_id].slot_size == (short)slot_size);
+    GC_ASSERT(heaps[pool_id].slot_size == (short)slot_size);
 #endif
 
     slot_size -= RVALUE_OVERHEAD;
@@ -2463,15 +2463,15 @@ size_pool_slot_size(unsigned char pool_id)
 bool
 rb_gc_impl_size_allocatable_p(size_t size)
 {
-    return size <= size_pool_slot_size(SIZE_POOL_COUNT - 1);
+    return size <= heap_slot_size(HEAP_COUNT - 1);
 }
 
 static inline VALUE
 ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
-                           size_t size_pool_idx, bool borrowing)
+                           size_t heap_idx, bool borrowing)
 {
-    rb_ractor_newobj_size_pool_cache_t *size_pool_cache = &cache->size_pool_caches[size_pool_idx];
-    struct free_slot *p = size_pool_cache->freelist;
+    rb_ractor_newobj_heap_cache_t *heap_cache = &cache->heap_caches[heap_idx];
+    struct free_slot *p = heap_cache->freelist;
 
     if (!borrowing && RB_UNLIKELY(is_incremental_marking(objspace))) {
         // Not allowed to allocate without running an incremental marking step
@@ -2486,8 +2486,8 @@ ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *ca
 
     if (RB_LIKELY(p)) {
         VALUE obj = (VALUE)p;
-        MAYBE_UNUSED(const size_t) stride = size_pool_slot_size(size_pool_idx);
-        size_pool_cache->freelist = p->next;
+        MAYBE_UNUSED(const size_t) stride = heap_slot_size(heap_idx);
+        heap_cache->freelist = p->next;
         asan_unpoison_memory_region(p, stride, true);
 #if RGENGC_CHECK_MODE
         GC_ASSERT(rb_gc_impl_obj_slot_size(obj) == stride);
@@ -2502,16 +2502,16 @@ ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *ca
 }
 
 static struct heap_page *
-heap_next_free_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, bool borrowing)
+heap_next_free_page(rb_objspace_t *objspace, rb_heap_t *heap, bool borrowing)
 {
     struct heap_page *page;
 
-    if (size_pool->free_pages == NULL) {
-        heap_prepare(objspace, size_pool, borrowing);
+    if (heap->free_pages == NULL) {
+        heap_prepare(objspace, heap, borrowing);
     }
 
-    page = size_pool->free_pages;
-    size_pool->free_pages = page->free_next;
+    page = heap->free_pages;
+    heap->free_pages = page->free_next;
 
     GC_ASSERT(page->free_slots != 0);
 
@@ -2521,94 +2521,94 @@ heap_next_free_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, bool bor
 }
 
 static inline void
-ractor_cache_set_page(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx,
+ractor_cache_set_page(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx,
                       struct heap_page *page)
 {
     gc_report(3, objspace, "ractor_set_cache: Using page %p\n", (void *)page->body);
 
-    rb_ractor_newobj_size_pool_cache_t *size_pool_cache = &cache->size_pool_caches[size_pool_idx];
+    rb_ractor_newobj_heap_cache_t *heap_cache = &cache->heap_caches[heap_idx];
 
-    GC_ASSERT(size_pool_cache->freelist == NULL);
+    GC_ASSERT(heap_cache->freelist == NULL);
     GC_ASSERT(page->free_slots != 0);
     GC_ASSERT(page->freelist != NULL);
 
-    size_pool_cache->using_page = page;
-    size_pool_cache->freelist = page->freelist;
+    heap_cache->using_page = page;
+    heap_cache->freelist = page->freelist;
     page->free_slots = 0;
     page->freelist = NULL;
 
-    asan_unpoison_object((VALUE)size_pool_cache->freelist, false);
-    GC_ASSERT(RB_TYPE_P((VALUE)size_pool_cache->freelist, T_NONE));
-    asan_poison_object((VALUE)size_pool_cache->freelist);
+    asan_unpoison_object((VALUE)heap_cache->freelist, false);
+    GC_ASSERT(RB_TYPE_P((VALUE)heap_cache->freelist, T_NONE));
+    asan_poison_object((VALUE)heap_cache->freelist);
 }
 
 static inline size_t
-size_pool_idx_for_size(size_t size)
+heap_idx_for_size(size_t size)
 {
     size += RVALUE_OVERHEAD;
 
     size_t slot_count = CEILDIV(size, BASE_SLOT_SIZE);
 
-    /* size_pool_idx is ceil(log2(slot_count)) */
-    size_t size_pool_idx = 64 - nlz_int64(slot_count - 1);
+    /* heap_idx is ceil(log2(slot_count)) */
+    size_t heap_idx = 64 - nlz_int64(slot_count - 1);
 
-    if (size_pool_idx >= SIZE_POOL_COUNT) {
-        rb_bug("size_pool_idx_for_size: allocation size too large "
-               "(size=%"PRIuSIZE"u, size_pool_idx=%"PRIuSIZE"u)", size, size_pool_idx);
+    if (heap_idx >= HEAP_COUNT) {
+        rb_bug("heap_idx_for_size: allocation size too large "
+               "(size=%"PRIuSIZE"u, heap_idx=%"PRIuSIZE"u)", size, heap_idx);
     }
 
 #if RGENGC_CHECK_MODE
     rb_objspace_t *objspace = rb_gc_get_objspace();
-    GC_ASSERT(size <= (size_t)size_pools[size_pool_idx].slot_size);
-    if (size_pool_idx > 0) GC_ASSERT(size > (size_t)size_pools[size_pool_idx - 1].slot_size);
+    GC_ASSERT(size <= (size_t)heaps[heap_idx].slot_size);
+    if (heap_idx > 0) GC_ASSERT(size > (size_t)heaps[heap_idx - 1].slot_size);
 #endif
 
-    return size_pool_idx;
+    return heap_idx;
 }
 
 size_t
-rb_gc_impl_size_pool_id_for_size(void *objspace_ptr, size_t size)
+rb_gc_impl_heap_id_for_size(void *objspace_ptr, size_t size)
 {
-    return size_pool_idx_for_size(size);
+    return heap_idx_for_size(size);
 }
 
 
-static size_t size_pool_sizes[SIZE_POOL_COUNT + 1] = { 0 };
+static size_t heap_sizes[HEAP_COUNT + 1] = { 0 };
 
 size_t *
-rb_gc_impl_size_pool_sizes(void *objspace_ptr)
+rb_gc_impl_heap_sizes(void *objspace_ptr)
 {
-    if (size_pool_sizes[0] == 0) {
-        for (unsigned char i = 0; i < SIZE_POOL_COUNT; i++) {
-            size_pool_sizes[i] = size_pool_slot_size(i);
+    if (heap_sizes[0] == 0) {
+        for (unsigned char i = 0; i < HEAP_COUNT; i++) {
+            heap_sizes[i] = heap_slot_size(i);
         }
     }
 
-    return size_pool_sizes;
+    return heap_sizes;
 }
 
-static void gc_ractor_newobj_size_pool_cache_clear(void *c);
+static void gc_ractor_newobj_heap_cache_clear(void *c);
 static VALUE
-newobj_borrowing_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool need_new_borrowing_page)
+newobj_borrowing_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx, bool need_new_borrowing_page)
 {
-    rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
+    rb_heap_t *heap = &heaps[heap_idx];
     VALUE obj = Qfalse;
 
     OBJSPACE_LOCK_ENTER(objspace);
     {
 	if (obj == Qfalse) {
 	    // Get next free page (possibly running GC)
-	    struct heap_page *page = heap_next_free_page(objspace, size_pool, true);
+	    struct heap_page *page = heap_next_free_page(objspace, heap, true);
 	    if (need_new_borrowing_page)
 	    {
-		rb_ractor_newobj_size_pool_cache_t *size_pool_cache = &cache->size_pool_caches[size_pool_idx];
-		gc_ractor_newobj_size_pool_cache_clear(size_pool_cache);
+		rb_ractor_newobj_heap_cache_t *heap_cache = &cache->heap_caches[heap_idx];
+		gc_ractor_newobj_heap_cache_clear(heap_cache);
 	    }
 
-	    ractor_cache_set_page(objspace, cache, size_pool_idx, page);
+	    ractor_cache_set_page(objspace, cache, heap_idx, page);
 
 	    // Retry allocation after moving to new page
-	    obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, true);
+	    obj = ractor_cache_allocate_slot(objspace, cache, heap_idx, true);
 	}
     }
     OBJSPACE_LOCK_LEAVE(objspace);
@@ -2620,7 +2620,7 @@ newobj_borrowing_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *c
 }
 
 static VALUE
-newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
+newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx)
 {
     rb_ractor_t *alloc_target_ractor = objspace->ractor;
     rb_ractor_t *cr = GET_RACTOR();
@@ -2628,61 +2628,61 @@ newobj_alloc_borrowing(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
     VM_ASSERT(alloc_target_ractor->borrowing_sync.lock_owner == cr);
 
     bool borrowable_page_locked = false;
-    borrowable_page_locked = !rb_native_mutex_trylock(&objspace->location_locks[size_pool_idx].page_lock);
+    borrowable_page_locked = !rb_native_mutex_trylock(&objspace->location_locks[heap_idx].page_lock);
     if (borrowable_page_locked) {
-	objspace->location_locks[size_pool_idx].page_lock_owner = cr;
+	objspace->location_locks[heap_idx].page_lock_owner = cr;
     }
 
-    bool need_new_borrowing_page = !borrowable_page_locked && objspace->location_locks[size_pool_idx].page_recently_locked;
+    bool need_new_borrowing_page = !borrowable_page_locked && objspace->location_locks[heap_idx].page_recently_locked;
 
     VALUE obj;
     if (need_new_borrowing_page) {
 	obj = Qfalse;
     }
     else {
-	obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, true);
+	obj = ractor_cache_allocate_slot(objspace, cache, heap_idx, true);
     }
 
     if (RB_UNLIKELY(obj == Qfalse)) {
-	obj = newobj_borrowing_cache_miss(objspace, cache, size_pool_idx, need_new_borrowing_page);
+	obj = newobj_borrowing_cache_miss(objspace, cache, heap_idx, need_new_borrowing_page);
     }
 
-    RUBY_ATOMIC_SIZE_ADD(size_pools[size_pool_idx].newly_created_by_borrowing_count, 1);
+    RUBY_ATOMIC_SIZE_ADD(heaps[heap_idx].newly_created_by_borrowing_count, 1);
 
     if (borrowable_page_locked) {
-	objspace->location_locks[size_pool_idx].page_lock_owner = NULL;
-	rb_native_mutex_unlock(&objspace->location_locks[size_pool_idx].page_lock);
+	objspace->location_locks[heap_idx].page_lock_owner = NULL;
+	rb_native_mutex_unlock(&objspace->location_locks[heap_idx].page_lock);
     }
-    objspace->location_locks[size_pool_idx].page_recently_locked = false;
+    objspace->location_locks[heap_idx].page_recently_locked = false;
 
     return obj;
 }
 
-NOINLINE(static VALUE newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx));
+NOINLINE(static VALUE newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx));
 
 static VALUE
-newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
+newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx)
 {
-    rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
+    rb_heap_t *heap = &heaps[heap_idx];
     VALUE obj = Qfalse;
 
     OBJSPACE_LOCK_ENTER(objspace);
     {
         if (is_incremental_marking(objspace)) {
-            gc_continue(objspace, size_pool);
+            gc_continue(objspace, heap);
             cache->incremental_mark_step_allocated_slots = 0;
 
             // Retry allocation after resetting incremental_mark_step_allocated_slots
-            obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
+            obj = ractor_cache_allocate_slot(objspace, cache, heap_idx, false);
         }
 
         if (obj == Qfalse) {
             // Get next free page (possibly running GC)
-            struct heap_page *page = heap_next_free_page(objspace, size_pool, false);
-            ractor_cache_set_page(objspace, cache, size_pool_idx, page);
+            struct heap_page *page = heap_next_free_page(objspace, heap, false);
+            ractor_cache_set_page(objspace, cache, heap_idx, page);
 
             // Retry allocation after moving to new page
-            obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
+            obj = ractor_cache_allocate_slot(objspace, cache, heap_idx, false);
         }
     }
     OBJSPACE_LOCK_LEAVE(objspace);
@@ -2694,27 +2694,27 @@ newobj_cache_miss(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size
 }
 
 static VALUE
-newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx)
+newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx)
 {
-    VALUE obj = ractor_cache_allocate_slot(objspace, cache, size_pool_idx, false);
+    VALUE obj = ractor_cache_allocate_slot(objspace, cache, heap_idx, false);
 
     if (RB_UNLIKELY(obj == Qfalse)) {
-        obj = newobj_cache_miss(objspace, cache, size_pool_idx);
+        obj = newobj_cache_miss(objspace, cache, heap_idx);
     }
 
-    rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
-    size_pool->total_allocated_objects++;
+    rb_heap_t *heap = &heaps[heap_idx];
+    heap->total_allocated_objects++;
     GC_ASSERT(rb_gc_multi_ractor_p() ||
-        size_pool->total_slots >=
-            (size_pool->total_allocated_objects - size_pool->total_freed_objects - size_pool->final_slots_count));
+        heap->total_slots >=
+            (heap->total_allocated_objects - heap->total_freed_objects - heap->final_slots_count));
 
     return obj;
 }
 
-ALWAYS_INLINE(static VALUE newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t size_pool_idx, bool borrowing));
+ALWAYS_INLINE(static VALUE newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t heap_idx, bool borrowing));
 
 static inline VALUE
-newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t size_pool_idx, bool borrowing)
+newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, int wb_protected, size_t heap_idx, bool borrowing)
 {
     VALUE obj;
     unsigned int lev;
@@ -2732,7 +2732,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_new
 	}
     }
 
-    obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx);
+    obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, heap_idx) : newobj_alloc(objspace, cache, heap_idx);
 
     OBJSPACE_LOCK_ENTER(objspace);
     {
@@ -2744,20 +2744,20 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_new
 }
 
 NOINLINE(static VALUE newobj_slowpath_wb_protected(VALUE klass, VALUE flags,
-                                                   rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing));
+                                                   rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx, bool borrowing));
 NOINLINE(static VALUE newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags,
-                                                     rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing));
+                                                     rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx, bool borrowing));
 
 static VALUE
-newobj_slowpath_wb_protected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing)
+newobj_slowpath_wb_protected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx, bool borrowing)
 {
-    return newobj_slowpath(klass, flags, objspace, cache, TRUE, size_pool_idx, borrowing);
+    return newobj_slowpath(klass, flags, objspace, cache, TRUE, heap_idx, borrowing);
 }
 
 static VALUE
-newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t size_pool_idx, bool borrowing)
+newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t heap_idx, bool borrowing)
 {
-    return newobj_slowpath(klass, flags, objspace, cache, FALSE, size_pool_idx, borrowing);
+    return newobj_slowpath(klass, flags, objspace, cache, FALSE, heap_idx, borrowing);
 }
 
 static inline int gc_mark_set(rb_objspace_t *objspace, VALUE obj);
@@ -2780,7 +2780,7 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
         }
     }
 
-    size_t size_pool_idx = size_pool_idx_for_size(alloc_size);
+    size_t heap_idx = heap_idx_for_size(alloc_size);
 
     rb_ractor_newobj_cache_t *cache = (rb_ractor_newobj_cache_t *)cache_ptr;
 
@@ -2788,15 +2788,15 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
 
     if (!RB_UNLIKELY(during_gc || ruby_gc_stressful) &&
             wb_protected) {
-        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, size_pool_idx) : newobj_alloc(objspace, cache, size_pool_idx);
+        obj = UNLIKELY(borrowing) ? newobj_alloc_borrowing(objspace, cache, heap_idx) : newobj_alloc(objspace, cache, heap_idx);
         newobj_init(klass, flags, wb_protected, objspace, obj);
     }
     else {
         RB_DEBUG_COUNTER_INC(obj_newobj_slowpath);
 
         obj = wb_protected ?
-          newobj_slowpath_wb_protected(klass, flags, objspace, cache, size_pool_idx, borrowing) :
-          newobj_slowpath_wb_unprotected(klass, flags, objspace, cache, size_pool_idx, borrowing);
+          newobj_slowpath_wb_protected(klass, flags, objspace, cache, heap_idx, borrowing) :
+          newobj_slowpath_wb_unprotected(klass, flags, objspace, cache, heap_idx, borrowing);
     }
     
     if (borrowing && (is_incremental_marking(objspace) || objspace->local_gate->waiting_for_object_graph_safety)) {
@@ -3020,7 +3020,7 @@ rb_gc_impl_make_zombie(void *objspace_ptr, VALUE obj, void (*dfree)(void *), voi
 
     struct heap_page *page = GET_HEAP_PAGE(obj);
     page->final_slots++;
-    page->size_pool->final_slots_count++;
+    page->heap->final_slots_count++;
 }
 
 static int
@@ -3065,10 +3065,10 @@ struct each_obj_data {
     each_page_callback *each_page_callback;
     void *data;
 
-    struct heap_page **pages[SIZE_POOL_COUNT];
-    size_t pages_counts[SIZE_POOL_COUNT];
+    struct heap_page **pages[HEAP_COUNT];
+    size_t pages_counts[HEAP_COUNT];
     
-    bool using_borrowable_page[SIZE_POOL_COUNT];
+    bool using_borrowable_page[HEAP_COUNT];
 };
 
 static VALUE
@@ -3077,7 +3077,7 @@ objspace_each_objects_ensure(VALUE arg)
     struct each_obj_data *data = (struct each_obj_data *)arg;
     rb_objspace_t *objspace = data->objspace;
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
 	if (data->using_borrowable_page[i]) {
 	    rb_ractor_t *cr = GET_RACTOR();
 	    unlock_own_borrowable_page(cr, &objspace->location_locks[i]);
@@ -3089,7 +3089,7 @@ objspace_each_objects_ensure(VALUE arg)
         objspace->flags.dont_incremental = FALSE;
     }
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
         struct heap_page **pages = data->pages[i];
         free(pages);
     }
@@ -3098,17 +3098,17 @@ objspace_each_objects_ensure(VALUE arg)
 }
 
 static struct heap_page *
-current_borrowable_page(rb_ractor_t *r, int size_pool_idx)
+current_borrowable_page(rb_ractor_t *r, int heap_idx)
 {
     rb_ractor_newobj_cache_t *cache = (rb_ractor_newobj_cache_t *)r->newobj_borrowing_cache;
-    return cache->size_pool_caches[size_pool_idx].using_page;
+    return cache->heap_caches[heap_idx].using_page;
 }
 
 static int
-get_size_pool_idx(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+get_heap_idx(rb_objspace_t *objspace, rb_heap_t *heap)
 {
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	if(&size_pools[i] == size_pool) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
+	if(&heaps[i] == heap) {
 	    return i;
 	}
     }
@@ -3117,12 +3117,12 @@ get_size_pool_idx(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 
 #define POSSIBLE_USAGE_OF_BORROWING_PAGE_BEGIN(objspace, page) { \
     rb_ractor_t *_cr = GET_RACTOR(); \
-    int _size_pool_idx = get_size_pool_idx(objspace, page->size_pool); \
+    int _heap_idx = get_heap_idx(objspace, page->heap); \
     bool _using_borrowable_page = false; \
     if (!objspace->local_gate->freeing_all) { \
 	rb_borrowing_sync_lock(_cr); \
-	if (current_borrowable_page(_cr, _size_pool_idx) == page) { \
-	    lock_own_borrowable_page(_cr, &objspace->location_locks[_size_pool_idx]); \
+	if (current_borrowable_page(_cr, _heap_idx) == page) { \
+	    lock_own_borrowable_page(_cr, &objspace->location_locks[_heap_idx]); \
 	    _using_borrowable_page = true; \
 	} \
 	rb_borrowing_sync_unlock(_cr); \
@@ -3130,7 +3130,7 @@ get_size_pool_idx(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 
 #define POSSIBLE_USAGE_OF_BORROWING_PAGE_END() \
     if (_using_borrowable_page) { \
-	unlock_own_borrowable_page(_cr, &objspace->location_locks[_size_pool_idx]); \
+	unlock_own_borrowable_page(_cr, &objspace->location_locks[_heap_idx]); \
     } \
 }
 
@@ -3140,10 +3140,10 @@ objspace_each_objects_try(VALUE arg)
     struct each_obj_data *data = (struct each_obj_data *)arg;
     rb_objspace_t *objspace = data->objspace;
 
-    /* Copy pages from all size_pools to their respective buffers. */
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        size_t size = size_pool->total_pages * sizeof(struct heap_page *);
+    /* Copy pages from all heaps to their respective buffers. */
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        size_t size = heap->total_pages * sizeof(struct heap_page *);
 
         struct heap_page **pages = malloc(size);
         if (!pages) rb_memerror();
@@ -3155,22 +3155,22 @@ objspace_each_objects_try(VALUE arg)
          * an infinite loop. */
         struct heap_page *page = 0;
         size_t pages_count = 0;
-        ccan_list_for_each(&size_pool->pages, page, page_node) {
+        ccan_list_for_each(&heap->pages, page, page_node) {
             pages[pages_count] = page;
             pages_count++;
         }
         data->pages[i] = pages;
         data->pages_counts[i] = pages_count;
-        GC_ASSERT(pages_count == size_pool->total_pages);
+        GC_ASSERT(pages_count == heap->total_pages);
     }
 
     rb_ractor_t *r = GET_RACTOR();
-    for (int size_pool_idx = 0; size_pool_idx < SIZE_POOL_COUNT; size_pool_idx++) {
-        rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
-        size_t pages_count = data->pages_counts[size_pool_idx];
-        struct heap_page **pages = data->pages[size_pool_idx];
+    for (int heap_idx = 0; heap_idx < HEAP_COUNT; heap_idx++) {
+        rb_heap_t *heap = &heaps[heap_idx];
+        size_t pages_count = data->pages_counts[heap_idx];
+        struct heap_page **pages = data->pages[heap_idx];
 
-        struct heap_page *page = ccan_list_top(&size_pool->pages, struct heap_page, page_node);
+        struct heap_page *page = ccan_list_top(&heap->pages, struct heap_page, page_node);
         for (size_t i = 0; i < pages_count; i++) {
             /* If we have reached the end of the linked list then there are no
              * more pages, so break. */
@@ -3181,17 +3181,17 @@ objspace_each_objects_try(VALUE arg)
             if (pages[i] != page) continue;
 
 	    rb_borrowing_sync_lock(r);
-	    if (current_borrowable_page(r, size_pool_idx) == page) {
-		lock_own_borrowable_page(r, &objspace->location_locks[size_pool_idx]);
-		data->using_borrowable_page[size_pool_idx] = true;
+	    if (current_borrowable_page(r, heap_idx) == page) {
+		lock_own_borrowable_page(r, &objspace->location_locks[heap_idx]);
+		data->using_borrowable_page[heap_idx] = true;
 	    }
 	    rb_borrowing_sync_unlock(r);
 
             uintptr_t pstart = (uintptr_t)page->start;
-            uintptr_t pend = pstart + (page->total_slots * size_pool->slot_size);
+            uintptr_t pend = pstart + (page->total_slots * heap->slot_size);
 
             if (data->each_obj_callback &&
-                (*data->each_obj_callback)((void *)pstart, (void *)pend, size_pool->slot_size, data->data)) {
+                (*data->each_obj_callback)((void *)pstart, (void *)pend, heap->slot_size, data->data)) {
                 break;
             }
             if (data->each_page_callback &&
@@ -3199,17 +3199,17 @@ objspace_each_objects_try(VALUE arg)
                 break;
             }
 
-	    if (data->using_borrowable_page[size_pool_idx]) {
-		unlock_own_borrowable_page(r, &objspace->location_locks[size_pool_idx]);
-		data->using_borrowable_page[size_pool_idx] = false;
+	    if (data->using_borrowable_page[heap_idx]) {
+		unlock_own_borrowable_page(r, &objspace->location_locks[heap_idx]);
+		data->using_borrowable_page[heap_idx] = false;
 	    }
 
-            page = ccan_list_next(&size_pool->pages, page, page_node);
+            page = ccan_list_next(&heap->pages, page, page_node);
         }
 
-	if (data->using_borrowable_page[size_pool_idx]) {
-	    unlock_own_borrowable_page(r, &objspace->location_locks[size_pool_idx]);
-	    data->using_borrowable_page[size_pool_idx] = false;
+	if (data->using_borrowable_page[heap_idx]) {
+	    unlock_own_borrowable_page(r, &objspace->location_locks[heap_idx]);
+	    data->using_borrowable_page[heap_idx] = false;
 	}
     }
 
@@ -3245,7 +3245,7 @@ objspace_each_objects(rb_objspace_t *objspace, each_obj_callback *callback, void
         .each_page_callback = NULL,
         .data = data,
     };
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
 	each_obj_data.using_borrowable_page[i] = false;
     }
     objspace_each_exec(protected, &each_obj_data);
@@ -3406,14 +3406,14 @@ finalize_list(rb_objspace_t *objspace, VALUE zombie)
                 obj_free_object_id(objspace, zombie);
             }
 
-            GC_ASSERT(page->size_pool->final_slots_count > 0);
+            GC_ASSERT(page->heap->final_slots_count > 0);
             GC_ASSERT(page->final_slots > 0);
 
-            page->size_pool->final_slots_count--;
+            page->heap->final_slots_count--;
             page->final_slots--;
             page->free_slots++;
             heap_page_add_freeobj(objspace, page, zombie);
-            page->size_pool->total_freed_objects++;
+            page->heap->total_freed_objects++;
 	}
 	OBJSPACE_LOCK_LEAVE(objspace);
 
@@ -3475,21 +3475,21 @@ gc_abort(void *objspace_ptr)
     }
 
     if (is_lazy_sweeping(objspace)) {
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            rb_size_pool_t *size_pool = &size_pools[i];
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            rb_heap_t *heap = &heaps[i];
 
-            size_pool->sweeping_page = NULL;
+            heap->sweeping_page = NULL;
             struct heap_page *page = NULL;
 
-            ccan_list_for_each(&size_pool->pages, page, page_node) {
+            ccan_list_for_each(&heap->pages, page, page_node) {
                 page->flags.before_sweep = false;
             }
         }
     }
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        rgengc_mark_and_rememberset_clear(objspace, size_pool);
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        rgengc_mark_and_rememberset_clear(objspace, heap);
     }
 
     gc_mode_set(objspace, gc_mode_none);
@@ -3649,9 +3649,9 @@ static size_t
 objspace_available_slots(rb_objspace_t *objspace)
 {
     size_t total_slots = 0;
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        total_slots += size_pool->total_slots;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        total_slots += heap->total_slots;
     }
     return total_slots;
 }
@@ -3715,7 +3715,7 @@ unlock_page_body(rb_objspace_t *objspace, struct heap_page_body *body)
 }
 
 static bool
-try_move(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_page *free_page, VALUE src)
+try_move(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *free_page, VALUE src)
 {
     GC_ASSERT(gc_is_moveable_obj(objspace, src));
 
@@ -3761,13 +3761,13 @@ try_move(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_page *f
 }
 
 static void
-gc_unprotect_pages(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+gc_unprotect_pages(rb_objspace_t *objspace, rb_heap_t *heap)
 {
-    struct heap_page *cursor = size_pool->compact_cursor;
+    struct heap_page *cursor = heap->compact_cursor;
 
     while (cursor) {
         unlock_page_body(objspace, cursor->body);
-        cursor = ccan_list_next(&size_pool->pages, cursor, page_node);
+        cursor = ccan_list_next(&heap->pages, cursor, page_node);
     }
 }
 
@@ -3965,9 +3965,9 @@ install_handlers(void)
 static void
 gc_compact_finish(rb_objspace_t *objspace)
 {
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        gc_unprotect_pages(objspace, size_pool);
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        gc_unprotect_pages(objspace, heap);
     }
 
     uninstall_handlers();
@@ -3975,11 +3975,11 @@ gc_compact_finish(rb_objspace_t *objspace)
     gc_update_references(objspace);
     objspace->profile.compact_count++;
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        size_pool->compact_cursor = NULL;
-        size_pool->free_pages = NULL;
-        size_pool->compact_cursor_index = 0;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        heap->compact_cursor = NULL;
+        heap->free_pages = NULL;
+        heap->compact_cursor_index = 0;
     }
 
     if (gc_prof_enabled(objspace)) {
@@ -3997,7 +3997,7 @@ struct gc_sweep_context {
 };
 
 static inline void
-gc_sweep_plane(rb_objspace_t *objspace, rb_size_pool_t *size_pool, uintptr_t p, bits_t bitset, struct gc_sweep_context *ctx)
+gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bitset, struct gc_sweep_context *ctx)
 {
     struct heap_page *sweep_page = ctx->page;
     short slot_size = sweep_page->slot_size;
@@ -4077,10 +4077,10 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_size_pool_t *size_pool, uintptr_t p, 
 }
 
 static inline void
-gc_sweep_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct gc_sweep_context *ctx)
+gc_sweep_page(rb_objspace_t *objspace, rb_heap_t *heap, struct gc_sweep_context *ctx)
 {
     struct heap_page *sweep_page = ctx->page;
-    GC_ASSERT(sweep_page->size_pool == size_pool);
+    GC_ASSERT(sweep_page->heap == heap);
 
     uintptr_t p;
     bits_t *bits, bitset;
@@ -4117,19 +4117,19 @@ gc_sweep_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct gc_swee
     bitset = ~bits[0];
     bitset >>= NUM_IN_PAGE(p);
     if (bitset) {
-        gc_sweep_plane(objspace, size_pool, p, bitset, ctx);
+        gc_sweep_plane(objspace, heap, p, bitset, ctx);
     }
     p += (BITS_BITLENGTH - NUM_IN_PAGE(p)) * BASE_SLOT_SIZE;
 
     for (int i = 1; i < bitmap_plane_count; i++) {
         bitset = ~bits[i];
         if (bitset) {
-            gc_sweep_plane(objspace, size_pool, p, bitset, ctx);
+            gc_sweep_plane(objspace, heap, p, bitset, ctx);
         }
         p += BITS_BITLENGTH * BASE_SLOT_SIZE;
     }
 
-    if (!size_pool->compact_cursor) {
+    if (!heap->compact_cursor) {
         gc_setup_mark_bits(sweep_page);
     }
 
@@ -4146,7 +4146,7 @@ gc_sweep_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct gc_swee
                    ctx->freed_slots, ctx->empty_slots, ctx->final_slots);
 
     sweep_page->free_slots += ctx->freed_slots + ctx->empty_slots;
-    sweep_page->size_pool->total_freed_objects += ctx->freed_slots;
+    sweep_page->heap->total_freed_objects += ctx->freed_slots;
 
     if (heap_pages_deferred_final && !finalizing) {
         gc_finalize_deferred_register(objspace);
@@ -4222,15 +4222,15 @@ heap_page_freelist_append(struct heap_page *page, struct free_slot *freelist)
 }
 
 static void
-gc_sweep_start_heap(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+gc_sweep_start_heap(rb_objspace_t *objspace, rb_heap_t *heap)
 {
-    size_pool->sweeping_page = ccan_list_top(&size_pool->pages, struct heap_page, page_node);
-    size_pool->free_pages = NULL;
-    size_pool->pooled_pages = NULL;
+    heap->sweeping_page = ccan_list_top(&heap->pages, struct heap_page, page_node);
+    heap->free_pages = NULL;
+    heap->pooled_pages = NULL;
     if (!objspace->flags.immediate_sweep) {
         struct heap_page *page = NULL;
 
-        ccan_list_for_each(&size_pool->pages, page, page_node) {
+        ccan_list_for_each(&heap->pages, page, page_node) {
             page->flags.before_sweep = TRUE;
         }
     }
@@ -4246,9 +4246,9 @@ static int compare_pinned_slots(const void *left, const void *right, void *d);
 #endif
 
 static void
-gc_ractor_newobj_size_pool_cache_clear(void *c)
+gc_ractor_newobj_heap_cache_clear(void *c)
 {
-    rb_ractor_newobj_size_pool_cache_t *cache = (rb_ractor_newobj_size_pool_cache_t *)c;
+    rb_ractor_newobj_heap_cache_t *cache = (rb_ractor_newobj_heap_cache_t *)c;
     struct heap_page *page = cache->using_page;
     struct free_slot *freelist = cache->freelist;
     RUBY_DEBUG_LOG("ractor using_page:%p freelist:%p", (void *)page, (void *)freelist);
@@ -4265,9 +4265,9 @@ gc_ractor_newobj_cache_clear(void *c, void *data)
 
     newobj_cache->incremental_mark_step_allocated_slots = 0;
 
-    for (size_t size_pool_idx = 0; size_pool_idx < SIZE_POOL_COUNT; size_pool_idx++) {
-	rb_ractor_newobj_size_pool_cache_t *cache = &newobj_cache->size_pool_caches[size_pool_idx];
-	gc_ractor_newobj_size_pool_cache_clear(cache);
+    for (size_t heap_idx = 0; heap_idx < HEAP_COUNT; heap_idx++) {
+	rb_ractor_newobj_heap_cache_t *cache = &newobj_cache->heap_caches[heap_idx];
+	gc_ractor_newobj_heap_cache_clear(cache);
     }
 }
 
@@ -4287,15 +4287,15 @@ gc_sweep_start(rb_objspace_t *objspace)
     }
 #endif
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        gc_sweep_start_heap(objspace, size_pool);
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        gc_sweep_start_heap(objspace, heap);
 
-        /* We should call gc_sweep_finish_size_pool for size pools with no pages. */
-        if (size_pool->sweeping_page == NULL) {
-            GC_ASSERT(size_pool->total_pages == 0);
-            GC_ASSERT(size_pool->total_slots == 0);
-            gc_sweep_finish_size_pool(objspace, size_pool);
+        /* We should call gc_sweep_finish_heap for size pools with no pages. */
+        if (heap->sweeping_page == NULL) {
+            GC_ASSERT(heap->total_pages == 0);
+            GC_ASSERT(heap->total_slots == 0);
+            gc_sweep_finish_heap(objspace, heap);
         }
     }
 
@@ -4307,17 +4307,17 @@ gc_sweep_start(rb_objspace_t *objspace)
 }
 
 static void
-gc_sweep_finish_size_pool(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+gc_sweep_finish_heap(rb_objspace_t *objspace, rb_heap_t *heap)
 {
-    size_t total_slots = size_pool->total_slots;
-    size_t swept_slots = size_pool->freed_slots + size_pool->empty_slots;
+    size_t total_slots = heap->total_slots;
+    size_t swept_slots = heap->freed_slots + heap->empty_slots;
 
-    size_t init_slots = gc_params.size_pool_init_slots[size_pool - size_pools];
+    size_t init_slots = gc_params.heap_init_slots[heap - heaps];
     size_t min_free_slots = (size_t)(MAX(total_slots, init_slots) * gc_params.heap_free_slots_min_ratio);
 
     if (swept_slots < min_free_slots &&
             /* The heap is a growth heap if it freed more slots than had empty slots. */
-            (size_pool->empty_slots == 0 || size_pool->freed_slots > size_pool->empty_slots)) {
+            (heap->empty_slots == 0 || heap->freed_slots > heap->empty_slots)) {
         /* If we don't have enough slots and we have pages on the tomb heap, move
         * pages from the tomb heap to the eden heap. This may prevent page
         * creation thrashing (frequently allocating and deallocting pages) and
@@ -4325,8 +4325,8 @@ gc_sweep_finish_size_pool(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
         struct heap_page *resurrected_page;
         while (swept_slots < min_free_slots &&
                 (resurrected_page = heap_page_resurrect(objspace))) {
-            size_pool_add_page(objspace, size_pool, resurrected_page);
-            heap_add_freepage(size_pool, resurrected_page);
+            heap_add_page(objspace, heap, resurrected_page);
+            heap_add_freepage(heap, resurrected_page);
 
             swept_slots += resurrected_page->free_slots;
         }
@@ -4336,11 +4336,11 @@ gc_sweep_finish_size_pool(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
             * RVALUE_OLD_AGE minor GC since the last major GC. */
             if (is_full_marking(objspace) ||
                     objspace->profile.count - objspace->rgengc.last_major_gc < RVALUE_OLD_AGE) {
-                size_pool_allocatable_slots_expand(objspace, size_pool, swept_slots, size_pool->total_slots);
+                heap_allocatable_slots_expand(objspace, heap, swept_slots, heap->total_slots);
             }
             else {
                 gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_NOFREE;
-                size_pool->force_major_gc_count++;
+                heap->force_major_gc_count++;
             }
         }
     }
@@ -4354,22 +4354,22 @@ gc_sweep_finish(rb_objspace_t *objspace)
     gc_prof_set_heap_info(objspace);
     heap_pages_free_unused_pages(objspace);
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
 
-        size_pool->freed_slots = 0;
-        size_pool->empty_slots = 0;
+        heap->freed_slots = 0;
+        heap->empty_slots = 0;
 
         if (!will_be_incremental_marking(objspace)) {
-            struct heap_page *end_page = size_pool->free_pages;
+            struct heap_page *end_page = heap->free_pages;
             if (end_page) {
                 while (end_page->free_next) end_page = end_page->free_next;
-                end_page->free_next = size_pool->pooled_pages;
+                end_page->free_next = heap->pooled_pages;
             }
             else {
-                size_pool->free_pages = size_pool->pooled_pages;
+                heap->free_pages = heap->pooled_pages;
             }
-            size_pool->pooled_pages = NULL;
+            heap->pooled_pages = NULL;
             objspace->rincgc.pooled_slots = 0;
         }
     }
@@ -4383,9 +4383,9 @@ gc_sweep_finish(rb_objspace_t *objspace)
 }
 
 static int
-gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+gc_sweep_step(rb_objspace_t *objspace, rb_heap_t *heap)
 {
-    struct heap_page *sweep_page = size_pool->sweeping_page;
+    struct heap_page *sweep_page = heap->sweeping_page;
     int unlink_limit = GC_SWEEP_PAGES_FREEABLE_PER_STEP;
     int swept_slots = 0;
     int pooled_slots = 0;
@@ -4405,10 +4405,10 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
             .freed_slots = 0,
             .empty_slots = 0,
         };
-        gc_sweep_page(objspace, size_pool, &ctx);
+        gc_sweep_page(objspace, heap, &ctx);
         int free_slots = ctx.freed_slots + ctx.empty_slots;
 
-        size_pool->sweeping_page = ccan_list_next(&size_pool->pages, sweep_page, page_node);
+        heap->sweeping_page = ccan_list_next(&heap->pages, sweep_page, page_node);
 
         if (free_slots == sweep_page->total_slots &&
                 heap_pages_freeable_pages > 0 &&
@@ -4416,12 +4416,12 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
             heap_pages_freeable_pages--;
             unlink_limit--;
             /* There are no living objects, so move this page to the global empty pages. */
-            heap_unlink_page(objspace, size_pool, sweep_page);
+            heap_unlink_page(objspace, heap, sweep_page);
 
             sweep_page->start = 0;
             sweep_page->total_slots = 0;
             sweep_page->slot_size = 0;
-            sweep_page->size_pool = NULL;
+            sweep_page->heap = NULL;
             sweep_page->free_slots = 0;
 
             asan_unlock_freelist(sweep_page);
@@ -4435,15 +4435,15 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
             objspace->empty_pages = sweep_page;
         }
         else if (free_slots > 0) {
-            size_pool->freed_slots += ctx.freed_slots;
-            size_pool->empty_slots += ctx.empty_slots;
+            heap->freed_slots += ctx.freed_slots;
+            heap->empty_slots += ctx.empty_slots;
 
             if (pooled_slots < GC_INCREMENTAL_SWEEP_POOL_SLOT_COUNT) {
-                heap_add_poolpage(objspace, size_pool, sweep_page);
+                heap_add_poolpage(objspace, heap, sweep_page);
                 pooled_slots += free_slots;
             }
             else {
-                heap_add_freepage(size_pool, sweep_page);
+                heap_add_freepage(heap, sweep_page);
                 swept_slots += free_slots;
                 if (swept_slots > GC_INCREMENTAL_SWEEP_SLOT_COUNT) {
                     break;
@@ -4453,10 +4453,10 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
         else {
             sweep_page->free_next = NULL;
         }
-    } while ((sweep_page = size_pool->sweeping_page));
+    } while ((sweep_page = heap->sweeping_page));
 
-    if (!size_pool->sweeping_page) {
-        gc_sweep_finish_size_pool(objspace, size_pool);
+    if (!heap->sweeping_page) {
+        gc_sweep_finish_heap(objspace, heap);
 
         if (!has_sweeping_pages(objspace)) {
             gc_sweep_finish(objspace);
@@ -4467,35 +4467,35 @@ gc_sweep_step(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
     gc_prof_sweep_timer_stop(objspace);
 #endif
 
-    return size_pool->free_pages != NULL;
+    return heap->free_pages != NULL;
 }
 
 static void
 gc_sweep_rest(rb_objspace_t *objspace)
 {
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
 
-        while (size_pool->sweeping_page) {
-            gc_sweep_step(objspace, size_pool);
+        while (heap->sweeping_page) {
+            gc_sweep_step(objspace, heap);
         }
     }
 }
 
 static void
-gc_sweep_continue(rb_objspace_t *objspace, rb_size_pool_t *sweep_size_pool)
+gc_sweep_continue(rb_objspace_t *objspace, rb_heap_t *sweep_heap)
 {
     GC_ASSERT(dont_gc_val() == FALSE || objspace->profile.latest_gc_info & GPR_FLAG_METHOD);
     if (!GC_ENABLE_LAZY_SWEEP) return;
 
     gc_sweeping_enter(objspace);
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        if (!gc_sweep_step(objspace, size_pool)) {
-            /* sweep_size_pool requires a free slot but sweeping did not yield any
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        if (!gc_sweep_step(objspace, heap)) {
+            /* sweep_heap requires a free slot but sweeping did not yield any
              * and we cannot allocate a new page. */
-            if (size_pool == sweep_size_pool && objspace->heap_pages.allocatable_slots == 0) {
+            if (heap == sweep_heap && objspace->heap_pages.allocatable_slots == 0) {
                 /* Not allowed to create a new page so finish sweeping. */
                 gc_sweep_rest(objspace);
                 break;
@@ -4610,14 +4610,14 @@ gc_compact_start(rb_objspace_t *objspace)
     struct heap_page *page = NULL;
     gc_mode_transition(objspace, gc_mode_compacting);
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        ccan_list_for_each(&size_pool->pages, page, page_node) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        ccan_list_for_each(&heap->pages, page, page_node) {
             page->flags.before_sweep = TRUE;
         }
 
-        size_pool->compact_cursor = ccan_list_tail(&size_pool->pages, struct heap_page, page_node);
-        size_pool->compact_cursor_index = 0;
+        heap->compact_cursor = ccan_list_tail(&heap->pages, struct heap_page, page_node);
+        heap->compact_cursor_index = 0;
     }
 
     if (gc_prof_enabled(objspace)) {
@@ -4662,9 +4662,9 @@ gc_sweep(rb_objspace_t *objspace)
     else {
 
         /* Sweep every size pool. */
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            rb_size_pool_t *size_pool = &size_pools[i];
-            gc_sweep_step(objspace, size_pool);
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            rb_heap_t *heap = &heaps[i];
+            gc_sweep_step(objspace, heap);
         }
     }
 
@@ -5771,8 +5771,8 @@ static int
 gc_verify_heap_pages(rb_objspace_t *objspace)
 {
     int remembered_old_objects = 0;
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        remembered_old_objects += gc_verify_heap_pages_(objspace, &((&size_pools[i])->pages));
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        remembered_old_objects += gc_verify_heap_pages_(objspace, &((&heaps[i])->pages));
     }
     return remembered_old_objects;
 }
@@ -5881,21 +5881,21 @@ gc_verify_internal_consistency(void *objspace_ptr)
 }
 
 static void
-heap_move_pooled_pages_to_free_pages(rb_size_pool_t *size_pool)
+heap_move_pooled_pages_to_free_pages(rb_heap_t *heap)
 {
-    if (size_pool->pooled_pages) {
-        if (size_pool->free_pages) {
-            struct heap_page *free_pages_tail = size_pool->free_pages;
+    if (heap->pooled_pages) {
+        if (heap->free_pages) {
+            struct heap_page *free_pages_tail = heap->free_pages;
             while (free_pages_tail->free_next) {
                 free_pages_tail = free_pages_tail->free_next;
             }
-            free_pages_tail->free_next = size_pool->pooled_pages;
+            free_pages_tail->free_next = heap->pooled_pages;
         }
         else {
-            size_pool->free_pages = size_pool->pooled_pages;
+            heap->free_pages = heap->pooled_pages;
         }
 
-        size_pool->pooled_pages = NULL;
+        heap->pooled_pages = NULL;
     }
 }
 
@@ -5941,11 +5941,11 @@ gc_marks_wb_unprotected_objects_plane(rb_objspace_t *objspace, uintptr_t p, bits
 }
 
 static void
-gc_marks_wb_unprotected_objects(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+gc_marks_wb_unprotected_objects(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     struct heap_page *page = 0;
 
-    ccan_list_for_each(&size_pool->pages, page, page_node) {
+    ccan_list_for_each(&heap->pages, page, page_node) {
         bits_t *mark_bits = page->mark_bits;
         bits_t *wbun_bits = page->wb_unprotected_bits;
         uintptr_t p = page->start;
@@ -6018,8 +6018,8 @@ gc_marks_finish(rb_objspace_t *objspace)
 
         objspace->flags.during_incremental_marking = FALSE;
         /* check children of all marked wb-unprotected objects */
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            gc_marks_wb_unprotected_objects(objspace, &size_pools[i]);
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            gc_marks_wb_unprotected_objects(objspace, &heaps[i]);
         }
     }
 
@@ -6054,8 +6054,8 @@ gc_marks_finish(rb_objspace_t *objspace)
 
         /* Setup freeable slots. */
         size_t total_init_slots = 0;
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            total_init_slots += gc_params.size_pool_init_slots[i] * r_mul;
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            total_init_slots += gc_params.heap_init_slots[i] * r_mul;
         }
 
         if (max_free_slots < total_init_slots) {
@@ -6117,14 +6117,14 @@ gc_marks_finish(rb_objspace_t *objspace)
 }
 
 static bool
-gc_compact_heap_cursors_met_p(rb_size_pool_t *size_pool)
+gc_compact_heap_cursors_met_p(rb_heap_t *heap)
 {
-    return size_pool->sweeping_page == size_pool->compact_cursor;
+    return heap->sweeping_page == heap->compact_cursor;
 }
 
 
-static rb_size_pool_t *
-gc_compact_destination_pool(rb_objspace_t *objspace, rb_size_pool_t *src_pool, VALUE obj)
+static rb_heap_t *
+gc_compact_destination_pool(rb_objspace_t *objspace, rb_heap_t *src_pool, VALUE obj)
 {
     size_t obj_size = rb_gc_obj_optimal_size(obj);
     if (obj_size == 0) {
@@ -6133,34 +6133,34 @@ gc_compact_destination_pool(rb_objspace_t *objspace, rb_size_pool_t *src_pool, V
 
     size_t idx = 0;
     if (rb_gc_impl_size_allocatable_p(obj_size)) {
-        idx = size_pool_idx_for_size(obj_size);
+        idx = heap_idx_for_size(obj_size);
     }
 
-    return &size_pools[idx];
+    return &heaps[idx];
 }
 
 static bool
-gc_compact_move(rb_objspace_t *objspace, rb_size_pool_t *size_pool, VALUE src)
+gc_compact_move(rb_objspace_t *objspace, rb_heap_t *heap, VALUE src)
 {
     GC_ASSERT(BUILTIN_TYPE(src) != T_MOVED);
     GC_ASSERT(gc_is_moveable_obj(objspace, src));
 
-    rb_size_pool_t *dest_pool = gc_compact_destination_pool(objspace, size_pool, src);
+    rb_heap_t *dest_pool = gc_compact_destination_pool(objspace, heap, src);
     uint32_t orig_shape = 0;
     uint32_t new_shape = 0;
 
     if (gc_compact_heap_cursors_met_p(dest_pool)) {
-        return dest_pool != size_pool;
+        return dest_pool != heap;
     }
 
     if (RB_TYPE_P(src, T_OBJECT)) {
         orig_shape = rb_gc_get_shape(src);
 
-        if (dest_pool != size_pool) {
-            new_shape = rb_gc_rebuild_shape(src, dest_pool - size_pools);
+        if (dest_pool != heap) {
+            new_shape = rb_gc_rebuild_shape(src, dest_pool - heaps);
 
             if (new_shape == 0) {
-                dest_pool = size_pool;
+                dest_pool = heap;
             }
         }
     }
@@ -6186,7 +6186,7 @@ gc_compact_move(rb_objspace_t *objspace, rb_size_pool_t *size_pool, VALUE src)
 
         dest_pool->sweeping_page = ccan_list_next(&dest_pool->pages, dest_pool->sweeping_page, page_node);
         if (gc_compact_heap_cursors_met_p(dest_pool)) {
-            return dest_pool != size_pool;
+            return dest_pool != heap;
         }
     }
 
@@ -6202,7 +6202,7 @@ gc_compact_move(rb_objspace_t *objspace, rb_size_pool_t *size_pool, VALUE src)
 }
 
 static bool
-gc_compact_plane(rb_objspace_t *objspace, rb_size_pool_t *size_pool, uintptr_t p, bits_t bitset, struct heap_page *page)
+gc_compact_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bitset, struct heap_page *page)
 {
     short slot_size = page->slot_size;
     short slot_bits = slot_size / BASE_SLOT_SIZE;
@@ -6216,7 +6216,7 @@ gc_compact_plane(rb_objspace_t *objspace, rb_size_pool_t *size_pool, uintptr_t p
             objspace->rcompactor.considered_count_table[BUILTIN_TYPE(vp)]++;
 
             if (gc_is_moveable_obj(objspace, vp)) {
-                if (!gc_compact_move(objspace, size_pool, vp)) {
+                if (!gc_compact_move(objspace, heap, vp)) {
                     //the cursors met. bubble up
                     return false;
                 }
@@ -6231,9 +6231,9 @@ gc_compact_plane(rb_objspace_t *objspace, rb_size_pool_t *size_pool, uintptr_t p
 
 // Iterate up all the objects in page, moving them to where they want to go
 static bool
-gc_compact_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_page *page)
+gc_compact_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
 {
-    GC_ASSERT(page == size_pool->compact_cursor);
+    GC_ASSERT(page == heap->compact_cursor);
 
     bits_t *mark_bits, *pin_bits;
     bits_t bitset;
@@ -6246,7 +6246,7 @@ gc_compact_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_
     bitset = (mark_bits[0] & ~pin_bits[0]);
     bitset >>= NUM_IN_PAGE(p);
     if (bitset) {
-        if (!gc_compact_plane(objspace, size_pool, (uintptr_t)p, bitset, page))
+        if (!gc_compact_plane(objspace, heap, (uintptr_t)p, bitset, page))
             return false;
     }
     p += (BITS_BITLENGTH - NUM_IN_PAGE(p)) * BASE_SLOT_SIZE;
@@ -6254,7 +6254,7 @@ gc_compact_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_
     for (int j = 1; j < HEAP_PAGE_BITMAP_LIMIT; j++) {
         bitset = (mark_bits[j] & ~pin_bits[j]);
         if (bitset) {
-            if (!gc_compact_plane(objspace, size_pool, (uintptr_t)p, bitset, page))
+            if (!gc_compact_plane(objspace, heap, (uintptr_t)p, bitset, page))
                 return false;
         }
         p += BITS_BITLENGTH * BASE_SLOT_SIZE;
@@ -6266,11 +6266,11 @@ gc_compact_page(rb_objspace_t *objspace, rb_size_pool_t *size_pool, struct heap_
 static bool
 gc_compact_all_compacted_p(rb_objspace_t *objspace)
 {
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
 
-        if (size_pool->total_pages > 0 &&
-                !gc_compact_heap_cursors_met_p(size_pool)) {
+        if (heap->total_pages > 0 &&
+                !gc_compact_heap_cursors_met_p(heap)) {
             return false;
         }
     }
@@ -6287,16 +6287,16 @@ gc_sweep_compact(rb_objspace_t *objspace)
 #endif
 
     while (!gc_compact_all_compacted_p(objspace)) {
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            rb_size_pool_t *size_pool = &size_pools[i];
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            rb_heap_t *heap = &heaps[i];
 
-            if (gc_compact_heap_cursors_met_p(size_pool)) {
+            if (gc_compact_heap_cursors_met_p(heap)) {
                 continue;
             }
 
-            struct heap_page *start_page = size_pool->compact_cursor;
+            struct heap_page *start_page = heap->compact_cursor;
 
-            if (!gc_compact_page(objspace, size_pool, start_page)) {
+            if (!gc_compact_page(objspace, heap, start_page)) {
                 lock_page_body(objspace, start_page->body);
 
                 continue;
@@ -6305,7 +6305,7 @@ gc_sweep_compact(rb_objspace_t *objspace)
             // If we get here, we've finished moving all objects on the compact_cursor page
             // So we can lock it and move the cursor on to the next one.
             lock_page_body(objspace, start_page->body);
-            size_pool->compact_cursor = ccan_list_prev(&size_pool->pages, size_pool->compact_cursor, page_node);
+            heap->compact_cursor = ccan_list_prev(&heap->pages, heap->compact_cursor, page_node);
         }
     }
 
@@ -6321,8 +6321,8 @@ gc_marks_rest_no_finish(rb_objspace_t *objspace)
 {
     gc_report(1, objspace, "gc_marks_rest\n");
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        (&size_pools[i])->pooled_pages = NULL;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        (&heaps[i])->pooled_pages = NULL;
     }
 
     if (is_incremental_marking(objspace)) {
@@ -6356,14 +6356,14 @@ gc_marks_step(rb_objspace_t *objspace, size_t slots)
 }
 
 static bool
-gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+gc_marks_continue(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     GC_ASSERT(dont_gc_val() == FALSE || objspace->profile.latest_gc_info & GPR_FLAG_METHOD);
     bool marking_finished = true;
 
     gc_marking_enter(objspace);
 
-    if (size_pool->free_pages) {
+    if (heap->free_pages) {
         gc_report(2, objspace, "gc_marks_continue: has pooled pages");
 
         marking_finished = gc_marks_step(objspace, objspace->rincgc.step_slots);
@@ -6371,7 +6371,7 @@ gc_marks_continue(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
     else {
         gc_report(2, objspace, "gc_marks_continue: no more pooled pages (stack depth: %"PRIdSIZE").\n",
                   mark_stack_size(&objspace->mark_stack));
-        size_pool->force_incremental_marking_finish_count++;
+        heap->force_incremental_marking_finish_count++;
         gc_marks_rest(objspace);
     }
 
@@ -6408,15 +6408,15 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
         objspace->rgengc.last_major_gc = objspace->profile.count;
         objspace->marked_slots = 0;
 
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            rb_size_pool_t *size_pool = &size_pools[i];
-            rgengc_mark_and_rememberset_clear(objspace, size_pool);
-            heap_move_pooled_pages_to_free_pages(size_pool);
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            rb_heap_t *heap = &heaps[i];
+            rgengc_mark_and_rememberset_clear(objspace, heap);
+            heap_move_pooled_pages_to_free_pages(heap);
 
             if (objspace->flags.during_compacting) {
                 struct heap_page *page = NULL;
 
-                ccan_list_for_each(&size_pool->pages, page, page_node) {
+                ccan_list_for_each(&heap->pages, page, page_node) {
                     page->pinned_slots = 0;
                 }
             }
@@ -6428,8 +6428,8 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
           objspace->rgengc.old_objects + objspace->rgengc.uncollectible_wb_unprotected_objects; /* uncollectible objects are marked already */
         objspace->profile.minor_gc_count++;
 
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            rgengc_rememberset_mark(objspace, &size_pools[i]);
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            rgengc_rememberset_mark(objspace, &heaps[i]);
         }
     }
 
@@ -6621,7 +6621,7 @@ rgengc_rememberset_mark_plane(rb_objspace_t *objspace, uintptr_t p, bits_t bitse
 }
 
 static void
-rgengc_rememberset_mark(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     size_t j;
     struct heap_page *page = 0;
@@ -6630,7 +6630,7 @@ rgengc_rememberset_mark(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 #endif
     gc_report(1, objspace, "rgengc_rememberset_mark: start\n");
 
-    ccan_list_for_each(&size_pool->pages, page, page_node) {
+    ccan_list_for_each(&heap->pages, page, page_node) {
         if (page->flags.has_remembered_objects | page->flags.has_uncollectible_wb_unprotected_objects) {
             uintptr_t p = page->start;
             bits_t bitset, bits[HEAP_PAGE_BITMAP_LIMIT];
@@ -6673,11 +6673,11 @@ rgengc_rememberset_mark(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
 }
 
 static void
-rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap)
 {
     struct heap_page *page = 0;
 
-    ccan_list_for_each(&size_pool->pages, page, page_node) {
+    ccan_list_for_each(&heap->pages, page, page_node) {
         memset(&page->mark_bits[0],       0, HEAP_PAGE_BITMAP_SIZE);
         memset(&page->uncollectible_bits[0], 0, HEAP_PAGE_BITMAP_SIZE);
         memset(&page->marking_bits[0],    0, HEAP_PAGE_BITMAP_SIZE);
@@ -6901,12 +6901,12 @@ rb_gc_impl_ractor_cache_free(void *objspace_ptr, void *cache)
 }
 
 static void
-heap_ready_to_gc(rb_objspace_t *objspace, rb_size_pool_t *size_pool)
+heap_ready_to_gc(rb_objspace_t *objspace, rb_heap_t *heap)
 {
-    if (!size_pool->free_pages) {
-        if (!heap_page_allocate_and_initialize(objspace, size_pool)) {
+    if (!heap->free_pages) {
+        if (!heap_page_allocate_and_initialize(objspace, heap)) {
             objspace->heap_pages.allocatable_slots = 1;
-            heap_page_allocate_and_initialize(objspace, size_pool);
+            heap_page_allocate_and_initialize(objspace, heap);
         }
     }
 }
@@ -6915,9 +6915,9 @@ static int
 ready_to_gc(rb_objspace_t *objspace)
 {
     if (dont_gc_val() || during_gc || ruby_disable_gc) {
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-            rb_size_pool_t *size_pool = &size_pools[i];
-            heap_ready_to_gc(objspace, size_pool);
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            rb_heap_t *heap = &heaps[i];
+            heap_ready_to_gc(objspace, heap);
         }
         return FALSE;
     }
@@ -7883,8 +7883,8 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     RMOVED(src)->destination = dest;
     GC_ASSERT(BUILTIN_TYPE(dest) != T_NONE);
 
-    GET_HEAP_PAGE(src)->size_pool->total_freed_objects++;
-    GET_HEAP_PAGE(dest)->size_pool->total_allocated_objects++;
+    GET_HEAP_PAGE(src)->heap->total_freed_objects++;
+    GET_HEAP_PAGE(dest)->heap->total_allocated_objects++;
 
     return src;
 }
@@ -7917,16 +7917,16 @@ compare_free_slots(const void *left, const void *right, void *dummy)
 static void
 gc_sort_heap_by_compare_func(rb_objspace_t *objspace, gc_compact_compare_func compare_func)
 {
-    for (int j = 0; j < SIZE_POOL_COUNT; j++) {
-        rb_size_pool_t *size_pool = &size_pools[j];
+    for (int j = 0; j < HEAP_COUNT; j++) {
+        rb_heap_t *heap = &heaps[j];
 
-        size_t total_pages = size_pool->total_pages;
+        size_t total_pages = heap->total_pages;
         size_t size = rb_size_mul_or_raise(total_pages, sizeof(struct heap_page *), rb_eRuntimeError);
         struct heap_page *page = 0, **page_list = malloc(size);
         size_t i = 0;
 
-        size_pool->free_pages = NULL;
-        ccan_list_for_each(&size_pool->pages, page, page_node) {
+        heap->free_pages = NULL;
+        ccan_list_for_each(&heap->pages, page, page_node) {
             page_list[i++] = page;
             GC_ASSERT(page);
         }
@@ -7938,12 +7938,12 @@ gc_sort_heap_by_compare_func(rb_objspace_t *objspace, gc_compact_compare_func co
         ruby_qsort(page_list, total_pages, sizeof(struct heap_page *), compare_func, NULL);
 
         /* Reset the eden heap */
-        ccan_list_head_init(&size_pool->pages);
+        ccan_list_head_init(&heap->pages);
 
         for (i = 0; i < total_pages; i++) {
-            ccan_list_add(&size_pool->pages, &page_list[i]->page_node);
+            ccan_list_add(&heap->pages, &page_list[i]->page_node);
             if (page_list[i]->free_slots != 0) {
-                heap_add_freepage(size_pool, page_list[i]);
+                heap_add_freepage(heap, page_list[i]);
             }
         }
 
@@ -8004,16 +8004,16 @@ gc_update_references(rb_objspace_t *objspace)
 
     struct heap_page *page = NULL;
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
         bool should_set_mark_bits = TRUE;
-        rb_size_pool_t *size_pool = &size_pools[i];
+        rb_heap_t *heap = &heaps[i];
 
-        ccan_list_for_each(&size_pool->pages, page, page_node) {
+        ccan_list_for_each(&heap->pages, page, page_node) {
             uintptr_t start = (uintptr_t)page->start;
-            uintptr_t end = start + (page->total_slots * size_pool->slot_size);
+            uintptr_t end = start + (page->total_slots * heap->slot_size);
 
-            gc_ref_update((void *)start, (void *)end, size_pool->slot_size, objspace, page);
-            if (page == size_pool->sweeping_page) {
+            gc_ref_update((void *)start, (void *)end, heap->slot_size, objspace, page);
+            if (page == heap->sweeping_page) {
                 should_set_mark_bits = FALSE;
             }
             if (should_set_mark_bits) {
@@ -8532,7 +8532,7 @@ setup_gc_stat_heap_symbols(void)
 }
 
 static size_t
-stat_one_heap(rb_size_pool_t *size_pool, VALUE hash, VALUE key)
+stat_one_heap(rb_heap_t *heap, VALUE hash, VALUE key)
 {
 #define SET(name, attr) \
     if (key == gc_stat_heap_symbols[gc_stat_heap_sym_##name]) \
@@ -8540,14 +8540,14 @@ stat_one_heap(rb_size_pool_t *size_pool, VALUE hash, VALUE key)
     else if (hash != Qnil) \
         rb_hash_aset(hash, gc_stat_heap_symbols[gc_stat_heap_sym_##name], SIZET2NUM(attr));
 
-    SET(slot_size, size_pool->slot_size);
-    SET(heap_eden_pages, size_pool->total_pages);
-    SET(heap_eden_slots, size_pool->total_slots);
-    SET(total_allocated_pages, size_pool->total_allocated_pages);
-    SET(force_major_gc_count, size_pool->force_major_gc_count);
-    SET(force_incremental_marking_finish_count, size_pool->force_incremental_marking_finish_count);
-    SET(total_allocated_objects, size_pool->total_allocated_objects);
-    SET(total_freed_objects, size_pool->total_freed_objects);
+    SET(slot_size, heap->slot_size);
+    SET(heap_eden_pages, heap->total_pages);
+    SET(heap_eden_slots, heap->total_slots);
+    SET(total_allocated_pages, heap->total_allocated_pages);
+    SET(force_major_gc_count, heap->force_major_gc_count);
+    SET(force_incremental_marking_finish_count, heap->force_incremental_marking_finish_count);
+    SET(total_allocated_objects, heap->total_allocated_objects);
+    SET(total_freed_objects, heap->total_freed_objects);
 #undef SET
 
     if (!NIL_P(key)) { /* matched key should return above */
@@ -8569,35 +8569,35 @@ rb_gc_impl_stat_heap(void *objspace_ptr, VALUE heap_name, VALUE hash_or_sym)
             rb_raise(rb_eTypeError, "non-hash given");
         }
 
-        for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+        for (int i = 0; i < HEAP_COUNT; i++) {
             VALUE hash = rb_hash_aref(hash_or_sym, INT2FIX(i));
             if (NIL_P(hash)) {
                 hash = rb_hash_new();
                 rb_hash_aset(hash_or_sym, INT2FIX(i), hash);
             }
 
-            stat_one_heap(&size_pools[i], hash, Qnil);
+            stat_one_heap(&heaps[i], hash, Qnil);
         }
     }
     else if (FIXNUM_P(heap_name)) {
-        int size_pool_idx = FIX2INT(heap_name);
+        int heap_idx = FIX2INT(heap_name);
 
-        if (size_pool_idx < 0 || size_pool_idx >= SIZE_POOL_COUNT) {
+        if (heap_idx < 0 || heap_idx >= HEAP_COUNT) {
             rb_raise(rb_eArgError, "size pool index out of range");
         }
 
-	rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
+	rb_heap_t *heap = &heaps[heap_idx];
 
 	if (!during_gc) rb_borrowing_sync_lock(objspace->ractor);
-	size_pool->total_allocated_objects += size_pool->newly_created_by_borrowing_count;
-	size_pool->newly_created_by_borrowing_count = 0;
+	heap->total_allocated_objects += heap->newly_created_by_borrowing_count;
+	heap->newly_created_by_borrowing_count = 0;
 	if (!during_gc) rb_borrowing_sync_unlock(objspace->ractor);
 
         if (SYMBOL_P(hash_or_sym)) {
-            return stat_one_heap(size_pool, Qnil, hash_or_sym);
+            return stat_one_heap(heap, Qnil, hash_or_sym);
         }
         else if (RB_TYPE_P(hash_or_sym, T_HASH)) {
-            return stat_one_heap(size_pool, hash_or_sym, Qnil);
+            return stat_one_heap(heap, hash_or_sym, Qnil);
         }
         else {
             rb_raise(rb_eTypeError, "non-hash or symbol given");
@@ -8820,11 +8820,11 @@ rb_gc_impl_set_params(void *objspace_ptr)
         /* ok */
     }
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
         char env_key[sizeof("RUBY_GC_HEAP_" "_INIT_SLOTS") + DECIMAL_SIZE_OF_BITS(sizeof(int) * CHAR_BIT)];
         snprintf(env_key, sizeof(env_key), "RUBY_GC_HEAP_%d_INIT_SLOTS", i);
 
-        get_envparam_size(env_key, &gc_params.size_pool_init_slots[i], 0);
+        get_envparam_size(env_key, &gc_params.heap_init_slots[i], 0);
     }
 
     get_envparam_double("RUBY_GC_HEAP_GROWTH_FACTOR", &gc_params.growth_factor, 1.0, 0.0, FALSE);
@@ -10010,7 +10010,7 @@ gc_compact(VALUE self)
 #if GC_CAN_COMPILE_COMPACTION
 struct desired_compaction_pages_i_data {
     rb_objspace_t *objspace;
-    size_t required_slots[SIZE_POOL_COUNT];
+    size_t required_slots[HEAP_COUNT];
 };
 
 static int
@@ -10019,15 +10019,15 @@ desired_compaction_pages_i(struct heap_page *page, void *data)
     struct desired_compaction_pages_i_data *tdata = data;
     rb_objspace_t *objspace = tdata->objspace;
     VALUE vstart = (VALUE)page->start;
-    VALUE vend = vstart + (VALUE)(page->total_slots * page->size_pool->slot_size);
+    VALUE vend = vstart + (VALUE)(page->total_slots * page->heap->slot_size);
 
 
-    for (VALUE v = vstart; v != vend; v += page->size_pool->slot_size) {
+    for (VALUE v = vstart; v != vend; v += page->heap->slot_size) {
         asan_unpoisoning_object(v) {
             /* skip T_NONEs; they won't be moved */
             if (BUILTIN_TYPE(v) != T_NONE) {
-                rb_size_pool_t *dest_pool = gc_compact_destination_pool(objspace, page->size_pool, v);
-                size_t dest_pool_idx = dest_pool - size_pools;
+                rb_heap_t *dest_pool = gc_compact_destination_pool(objspace, page->heap, v);
+                size_t dest_pool_idx = dest_pool - heaps;
                 tdata->required_slots[dest_pool_idx]++;
             }
         }
@@ -10089,14 +10089,14 @@ gc_verify_compaction_references(int argc, VALUE* argv, VALUE self)
 
             /* Find out which pool has the most pages */
             size_t max_existing_pages = 0;
-            for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-                rb_size_pool_t *size_pool = &size_pools[i];
-                max_existing_pages = MAX(max_existing_pages, size_pool->total_pages);
+            for (int i = 0; i < HEAP_COUNT; i++) {
+                rb_heap_t *heap = &heaps[i];
+                max_existing_pages = MAX(max_existing_pages, heap->total_pages);
             }
 
             /* Add pages to each size pool so that compaction is guaranteed to move every object */
-            for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-                rb_size_pool_t *size_pool = &size_pools[i];
+            for (int i = 0; i < HEAP_COUNT; i++) {
+                rb_heap_t *heap = &heaps[i];
 
                 size_t pages_to_add = 0;
                 /*
@@ -10105,14 +10105,14 @@ gc_verify_compaction_references(int argc, VALUE* argv, VALUE self)
                  * through all of the pools in `gc_sweep_compact` without hitting the "sweep &
                  * compact cursors met" condition on some pools before fully compacting others
                  */
-                pages_to_add += max_existing_pages - size_pool->total_pages;
+                pages_to_add += max_existing_pages - heap->total_pages;
                 /*
                  * Step 2: Now add additional free pages to each size pool sufficient to hold all objects
                  * that want to be in that size pool, whether moved into it or moved within it
                  */
                 objspace->heap_pages.allocatable_slots = desired_compaction.required_slots[i];
                 while (objspace->heap_pages.allocatable_slots > 0) {
-                    heap_page_allocate_and_initialize(objspace, size_pool);
+                    heap_page_allocate_and_initialize(objspace, heap);
                 }
                 /*
                  * Step 3: Add two more pages so that the compact & sweep cursors will meet _after_ all objects
@@ -10121,7 +10121,7 @@ gc_verify_compaction_references(int argc, VALUE* argv, VALUE self)
                 pages_to_add += 2;
 
                 for (; pages_to_add > 0; pages_to_add--) {
-                    heap_page_allocate_and_initialize_force(objspace, size_pool);
+                    heap_page_allocate_and_initialize_force(objspace, heap);
                 }
             }
         }
@@ -10176,12 +10176,12 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     heap_pages_lomem = 0;
     heap_pages_himem = 0;
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
-        size_pool->total_pages = 0;
-        size_pool->total_slots = 0;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
+        heap->total_pages = 0;
+        heap->total_slots = 0;
     }
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
 	borrowing_location_lock_release(&objspace->location_locks[i]);
     }
 
@@ -10200,96 +10200,96 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
 }
 
 static void
-absorb_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int size_pool_idx)
+absorb_page_into_objspace(rb_objspace_t *objspace, struct heap_page *page, int heap_idx)
 {
     VM_ASSERT (page->objspace != objspace);
     VM_ASSERT(objspace->local_gate->currently_absorbing);
 
     ccan_list_del_init(&page->page_node);
 
-    rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
+    rb_heap_t *heap = &heaps[heap_idx];
 
-    VM_ASSERT(page->slot_size == size_pool->slot_size);
-    page->size_pool = size_pool;
-    size_pool->total_allocated_pages++;
+    VM_ASSERT(page->slot_size == heap->slot_size);
+    page->heap = heap;
+    heap->total_allocated_pages++;
 
-    heap_append_added_page(objspace, size_pool, page);
+    heap_append_added_page(objspace, heap, page);
     insert_into_sorted_page_list(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem, page);
 
     RUBY_ATOMIC_PTR_EXCHANGE(page->ractor, objspace->ractor);
     RUBY_ATOMIC_PTR_EXCHANGE(page->objspace, objspace);
 
     //TODO: What if another Ractor tries to access this pointer at this exact moment?
-    page->size_pool = size_pool;
+    page->heap = heap;
 }
 
 static void
-heap_append_free_page(rb_size_pool_t *size_pool, struct heap_page *page)
+heap_append_free_page(rb_heap_t *heap, struct heap_page *page)
 {
-    struct heap_page *end_page = size_pool->free_pages;
+    struct heap_page *end_page = heap->free_pages;
     if (end_page) {
 	while (end_page->free_next) end_page = end_page->free_next;
 	end_page->free_next = page;
     }
     else {
-	size_pool->free_pages = page;
+	heap->free_pages = page;
     }
 }
 
 static void
-merge_freepages(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx)
+merge_freepages(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int heap_idx)
 {
     rb_objspace_t *objspace = closing_objspace;
-    rb_size_pool_t *closing_size_pool = &size_pools[size_pool_idx];
+    rb_heap_t *closing_heap = &heaps[heap_idx];
     objspace = receiving_objspace;
-    rb_size_pool_t *receiving_size_pool = &size_pools[size_pool_idx];
+    rb_heap_t *receiving_heap = &heaps[heap_idx];
     
-    heap_append_free_page(receiving_size_pool, closing_size_pool->free_pages);
+    heap_append_free_page(receiving_heap, closing_heap->free_pages);
 }
 
 static void
-transfer_size_pool(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int size_pool_idx)
+transfer_heap(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace, int heap_idx)
 {
     rb_objspace_t *objspace = closing_objspace;
-    rb_size_pool_t *size_pool = &size_pools[size_pool_idx];
-    struct heap_page *page = ccan_list_top(&size_pool->pages, struct heap_page, page_node);
+    rb_heap_t *heap = &heaps[heap_idx];
+    struct heap_page *page = ccan_list_top(&heap->pages, struct heap_page, page_node);
     while (page) {
-	absorb_page_into_objspace(receiving_objspace, page, size_pool_idx);
-	page = ccan_list_top(&size_pool->pages, struct heap_page, page_node);
+	absorb_page_into_objspace(receiving_objspace, page, heap_idx);
+	page = ccan_list_top(&heap->pages, struct heap_page, page_node);
     }
-    merge_freepages(receiving_objspace, closing_objspace, size_pool_idx);
+    merge_freepages(receiving_objspace, closing_objspace, heap_idx);
 }
 
 static void
-transfer_all_size_pools(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace)
+transfer_all_heaps(rb_objspace_t *receiving_objspace, rb_objspace_t *closing_objspace)
 {
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	transfer_size_pool(receiving_objspace, closing_objspace, i);
+    for (int i = 0; i < HEAP_COUNT; i++) {
+	transfer_heap(receiving_objspace, closing_objspace, i);
     }
 }
 
 static void
-update_size_pool_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from, int size_pool_idx)
+update_heap_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to_copy_from, int heap_idx)
 {
     rb_objspace_t *objspace = objspace_to_copy_from;
-    rb_size_pool_t *size_pool_to_copy_from = &size_pools[size_pool_idx];
+    rb_heap_t *heap_to_copy_from = &heaps[heap_idx];
 
-    size_t total_allocated_pages = size_pool_to_copy_from->total_allocated_pages;
-    size_t force_major_gc_count = size_pool_to_copy_from->force_major_gc_count;
-    size_t force_incremental_marking_finish_count = size_pool_to_copy_from->force_incremental_marking_finish_count;
-    size_t total_allocated_objects = size_pool_to_copy_from->total_allocated_objects + size_pool_to_copy_from->newly_created_by_borrowing_count;
-    size_t total_freed_objects = size_pool_to_copy_from->total_freed_objects;
-    size_t final_slots_count = size_pool_to_copy_from->final_slots_count;
+    size_t total_allocated_pages = heap_to_copy_from->total_allocated_pages;
+    size_t force_major_gc_count = heap_to_copy_from->force_major_gc_count;
+    size_t force_incremental_marking_finish_count = heap_to_copy_from->force_incremental_marking_finish_count;
+    size_t total_allocated_objects = heap_to_copy_from->total_allocated_objects + heap_to_copy_from->newly_created_by_borrowing_count;
+    size_t total_freed_objects = heap_to_copy_from->total_freed_objects;
+    size_t final_slots_count = heap_to_copy_from->final_slots_count;
 
     objspace = objspace_to_update;
-    rb_size_pool_t *size_pool_to_update = &size_pools[size_pool_idx];
+    rb_heap_t *heap_to_update = &heaps[heap_idx];
 
-    size_pool_to_update->total_allocated_pages += total_allocated_pages;
-    size_pool_to_update->force_major_gc_count += force_major_gc_count;
-    size_pool_to_update->force_incremental_marking_finish_count += force_incremental_marking_finish_count;
-    size_pool_to_update->total_allocated_objects += total_allocated_objects;
-    size_pool_to_update->total_freed_objects += total_freed_objects;
-    size_pool_to_update->final_slots_count += final_slots_count;
+    heap_to_update->total_allocated_pages += total_allocated_pages;
+    heap_to_update->force_major_gc_count += force_major_gc_count;
+    heap_to_update->force_incremental_marking_finish_count += force_incremental_marking_finish_count;
+    heap_to_update->total_allocated_objects += total_allocated_objects;
+    heap_to_update->total_freed_objects += total_freed_objects;
+    heap_to_update->final_slots_count += final_slots_count;
 }
 
 static void
@@ -10309,8 +10309,8 @@ update_objspace_counts(rb_objspace_t *objspace_to_update, rb_objspace_t *objspac
     objspace->rgengc.old_objects += old_objects;
     objspace->rgengc.old_objects_limit += old_objects_limit;
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-	update_size_pool_counts(objspace_to_update, objspace_to_copy_from, i);
+    for (int i = 0; i < HEAP_COUNT; i++) {
+	update_heap_counts(objspace_to_update, objspace_to_copy_from, i);
     }
 }
 
@@ -10369,7 +10369,7 @@ rb_gc_impl_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_
     absorb_fin_tbl(receiving_objspace, closing_objspace);
     absorb_obj_id_tbls(receiving_objspace, closing_objspace);
 
-    transfer_all_size_pools(receiving_objspace, closing_objspace);
+    transfer_all_heaps(receiving_objspace, closing_objspace);
 
     absorb_empty_pages(receiving_objspace, closing_objspace);
 
@@ -10459,13 +10459,13 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
         rb_bug("Could not preregister postponed job for GC");
     }
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        rb_size_pool_t *size_pool = &size_pools[i];
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        rb_heap_t *heap = &heaps[i];
 
-        size_pool->slot_size = (1 << i) * BASE_SLOT_SIZE;
+        heap->slot_size = (1 << i) * BASE_SLOT_SIZE;
 
-        ccan_list_head_init(&size_pool->pages);
-        gc_params.size_pool_init_slots[i] = GC_HEAP_INIT_SLOTS;
+        ccan_list_head_init(&heap->pages);
+        gc_params.heap_init_slots[i] = GC_HEAP_INIT_SLOTS;
     }
 
     rb_darray_make(&objspace->heap_pages.sorted, 0);
@@ -10486,9 +10486,9 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
 #endif
 
     /* Set size pools allocatable pages. */
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        /* Set the default value of size_pool_init_slots. */
-        gc_params.size_pool_init_slots[i] = GC_HEAP_INIT_SLOTS;
+    for (int i = 0; i < HEAP_COUNT; i++) {
+        /* Set the default value of heap_init_slots. */
+        gc_params.heap_init_slots[i] = GC_HEAP_INIT_SLOTS;
     }
 
     init_mark_stack(&objspace->mark_stack);
@@ -10500,7 +10500,7 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
 
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
+    for (int i = 0; i < HEAP_COUNT; i++) {
 	borrowing_location_lock_init(&objspace->location_locks[i]);
     }
 
@@ -10577,8 +10577,8 @@ rb_gc_impl_init(void)
     rb_hash_aset(gc_constants, ID2SYM(rb_intern("HEAP_PAGE_OBJ_LIMIT")), SIZET2NUM(HEAP_PAGE_OBJ_LIMIT));
     rb_hash_aset(gc_constants, ID2SYM(rb_intern("HEAP_PAGE_BITMAP_SIZE")), SIZET2NUM(HEAP_PAGE_BITMAP_SIZE));
     rb_hash_aset(gc_constants, ID2SYM(rb_intern("HEAP_PAGE_SIZE")), SIZET2NUM(HEAP_PAGE_SIZE));
-    rb_hash_aset(gc_constants, ID2SYM(rb_intern("SIZE_POOL_COUNT")), LONG2FIX(SIZE_POOL_COUNT));
-    rb_hash_aset(gc_constants, ID2SYM(rb_intern("RVARGC_MAX_ALLOCATE_SIZE")), LONG2FIX(size_pool_slot_size(SIZE_POOL_COUNT - 1)));
+    rb_hash_aset(gc_constants, ID2SYM(rb_intern("HEAP_COUNT")), LONG2FIX(HEAP_COUNT));
+    rb_hash_aset(gc_constants, ID2SYM(rb_intern("RVARGC_MAX_ALLOCATE_SIZE")), LONG2FIX(heap_slot_size(HEAP_COUNT - 1)));
     rb_hash_aset(gc_constants, ID2SYM(rb_intern("RVALUE_OLD_AGE")), LONG2FIX(RVALUE_OLD_AGE));
     if (RB_BUG_INSTEAD_OF_RB_MEMERROR+0) {
         rb_hash_aset(gc_constants, ID2SYM(rb_intern("RB_BUG_INSTEAD_OF_RB_MEMERROR")), Qtrue);

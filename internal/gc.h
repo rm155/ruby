@@ -214,8 +214,8 @@ void rb_gc_ractor_cache_free(void *cache);
 void rb_gc_register_in_mark_object_ary(VALUE obj);
 
 bool rb_gc_size_allocatable_p(size_t size);
-size_t *rb_gc_size_pool_sizes(void);
-size_t rb_gc_size_pool_id_for_size(size_t size);
+size_t *rb_gc_heap_sizes(void);
+size_t rb_gc_heap_id_for_size(size_t size);
 
 int rb_during_local_gc(void);
 int rb_during_global_gc(void);
