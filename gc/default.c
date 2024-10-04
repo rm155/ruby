@@ -244,18 +244,6 @@ static ruby_gc_params_t gc_params = {
 #endif
 int ruby_rgengc_debug;
 
-/* RGENGC_CHECK_MODE
- * 0: disable all assertions
- * 1: enable assertions (to debug RGenGC)
- * 2: enable internal consistency check at each GC (for debugging)
- * 3: enable internal consistency check at each GC steps (for debugging)
- * 4: enable liveness check
- * 5: show all references
- */
-#ifndef RGENGC_CHECK_MODE
-# define RGENGC_CHECK_MODE  0
-#endif
-
 /* RGENGC_PROFILE
  * 0: disable RGenGC profiling
  * 1: enable profiling for basic information
@@ -973,16 +961,6 @@ heap_eden_total_pages(rb_objspace_t *objspace)
 }
 
 static inline size_t
-heap_eden_total_slots(rb_objspace_t *objspace)
-{
-    size_t count = 0;
-    for (int i = 0; i < SIZE_POOL_COUNT; i++) {
-        count += SIZE_POOL_EDEN_HEAP(&size_pools[i])->total_slots;
-    }
-    return count;
-}
-
-static inline size_t
 total_allocated_objects(rb_objspace_t *objspace)
 {
     size_t count = 0;
@@ -1228,13 +1206,6 @@ tick(void)
 #else /* USE_TICK_T */
 #define MEASURE_LINE(expr) expr
 #endif /* USE_TICK_T */
-
-#define FL_CHECK2(name, x, pred) \
-    ((RGENGC_CHECK_MODE && SPECIAL_CONST_P(x)) ? \
-     (rb_bug(name": SPECIAL_CONST (%p)", (void *)(x)), 0) : (pred))
-#define FL_TEST2(x,f)  FL_CHECK2("FL_TEST2",  x, FL_TEST_RAW((x),(f)) != 0)
-#define FL_SET2(x,f)   FL_CHECK2("FL_SET2",   x, RBASIC(x)->flags |= (f))
-#define FL_UNSET2(x,f) FL_CHECK2("FL_UNSET2", x, RBASIC(x)->flags &= ~(f))
 
 static inline VALUE check_rvalue_consistency(rb_objspace_t *objspace, const VALUE obj);
 
@@ -1817,9 +1788,6 @@ heap_page_add_freeobj(rb_objspace_t *objspace, struct heap_page *page, VALUE obj
     asan_poison_object(obj);
     gc_report(3, objspace, "heap_page_add_freeobj: add %p to freelist\n", (void *)obj);
 }
-
-static size_t
-objspace_available_slots(rb_objspace_t *objspace);
 
 static void
 size_pool_allocatable_slots_expand(rb_objspace_t *objspace,
@@ -4074,6 +4042,8 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 #undef CHECK
 #endif
 
+                rb_gc_event_hook(vp, RUBY_INTERNAL_EVENT_FREEOBJ);
+
                 bool has_object_id = FL_TEST(vp, FL_SEEN_OBJ_ID);
                 if (rb_gc_obj_free(objspace, vp)) {
                     if (has_object_id) {
@@ -5553,7 +5523,7 @@ gc_check_after_marks_i(st_data_t k, st_data_t v, st_data_t ptr)
     rb_objspace_t *objspace = (rb_objspace_t *)ptr;
 
     /* object should be marked or oldgen */
-    if (!RVALUE_MARKED(obj)) {
+    if (!RVALUE_MARKED(objspace, obj)) {
         fprintf(stderr, "gc_check_after_marks_i: %s is not marked and not oldgen.\n", rb_obj_info(obj));
         fprintf(stderr, "gc_check_after_marks_i: %p is referred from ", (void *)obj);
         reflist_dump(refs);
@@ -6085,7 +6055,7 @@ gc_marks_finish(rb_objspace_t *objspace)
     {
         const unsigned long r_mul = RACTOR_CACHE_COUNT;
 
-        size_t total_slots = heap_eden_total_slots(objspace);
+        size_t total_slots = objspace_available_slots(objspace);
         size_t sweep_slots = total_slots - objspace->marked_slots; /* will be swept slots */
         size_t max_free_slots = (size_t)(total_slots * gc_params.heap_free_slots_max_ratio);
         size_t min_free_slots = (size_t)(total_slots * gc_params.heap_free_slots_min_ratio);
@@ -6095,7 +6065,7 @@ gc_marks_finish(rb_objspace_t *objspace)
 
         int full_marking = is_full_marking(objspace);
 
-        GC_ASSERT(heap_eden_total_slots(objspace) >= objspace->marked_slots);
+        GC_ASSERT(objspace_available_slots(objspace) >= objspace->marked_slots);
 
         /* Setup freeable slots. */
         size_t total_init_slots = 0;
@@ -6151,7 +6121,7 @@ gc_marks_finish(rb_objspace_t *objspace)
         gc_report(1, objspace, "gc_marks_finish (marks %"PRIdSIZE" objects, "
                   "old %"PRIdSIZE" objects, total %"PRIdSIZE" slots, "
                   "sweep %"PRIdSIZE" slots, allocatable %"PRIdSIZE" slots, next GC: %s)\n",
-                  objspace->marked_slots, objspace->rgengc.old_objects, heap_eden_total_slots(objspace), sweep_slots, objspace->heap_pages.allocatable_slots,
+                  objspace->marked_slots, objspace->rgengc.old_objects, objspace_available_slots(objspace), sweep_slots, objspace->heap_pages.allocatable_slots,
                   global_gc_needed() ? "global" : (gc_needs_major_flags ? "major" : "minor"));
     }
 
@@ -7721,7 +7691,7 @@ rb_gc_impl_prepare_heap(void *objspace_ptr)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
-    size_t orig_total_slots = heap_eden_total_slots(objspace);
+    size_t orig_total_slots = objspace_available_slots(objspace);
     size_t orig_allocatable_slots = objspace->heap_pages.allocatable_slots;
 
     rb_gc_impl_each_objects(objspace, gc_set_candidate_object_i, objspace_ptr);
@@ -7737,7 +7707,7 @@ rb_gc_impl_prepare_heap(void *objspace_ptr)
     GC_ASSERT(objspace->empty_pages_count == 0);
     objspace->heap_pages.allocatable_slots = orig_allocatable_slots;
 
-    size_t total_slots = heap_eden_total_slots(objspace);
+    size_t total_slots = objspace_available_slots(objspace);
     if (orig_total_slots > total_slots) {
         objspace->heap_pages.allocatable_slots += orig_total_slots - total_slots;
     }

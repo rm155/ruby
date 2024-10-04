@@ -271,6 +271,18 @@ rb_str_encode_ospath(VALUE path)
 # define NORMALIZE_UTF8PATH 1
 
 # ifdef HAVE_WORKING_FORK
+static CFMutableStringRef
+mutable_CFString_new(CFStringRef *s, const char *ptr, long len)
+{
+    const CFAllocatorRef alloc = kCFAllocatorDefault;
+    *s = CFStringCreateWithBytesNoCopy(alloc, (const UInt8 *)ptr, len,
+                                       kCFStringEncodingUTF8, FALSE,
+                                       kCFAllocatorNull);
+    return CFStringCreateMutableCopy(alloc, len, *s);
+}
+
+#   define mutable_CFString_release(m, s) (CFRelease(m), CFRelease(s))
+
 static void
 rb_CFString_class_initialize_before_fork(void)
 {
@@ -297,15 +309,9 @@ rb_CFString_class_initialize_before_fork(void)
     /* Enough small but non-empty ASCII string to fit in NSTaggedPointerString. */
     const char small_str[] = "/";
     long len = sizeof(small_str) - 1;
-
-    const CFAllocatorRef alloc = kCFAllocatorDefault;
-    CFStringRef s = CFStringCreateWithBytesNoCopy(alloc,
-                                                  (const UInt8 *)small_str,
-                                                  len, kCFStringEncodingUTF8,
-                                                  FALSE, kCFAllocatorNull);
-    CFMutableStringRef m = CFStringCreateMutableCopy(alloc, len, s);
-    CFRelease(m);
-    CFRelease(s);
+    CFStringRef s;
+    CFMutableStringRef m = mutable_CFString_new(&s, small_str, len);
+    mutable_CFString_release(m, s);
 }
 # endif /* HAVE_WORKING_FORK */
 
@@ -314,11 +320,8 @@ rb_str_append_normalized_ospath(VALUE str, const char *ptr, long len)
 {
     CFIndex buflen = 0;
     CFRange all;
-    CFStringRef s = CFStringCreateWithBytesNoCopy(kCFAllocatorDefault,
-                                                  (const UInt8 *)ptr, len,
-                                                  kCFStringEncodingUTF8, FALSE,
-                                                  kCFAllocatorNull);
-    CFMutableStringRef m = CFStringCreateMutableCopy(kCFAllocatorDefault, len, s);
+    CFStringRef s;
+    CFMutableStringRef m = mutable_CFString_new(&s, ptr, len);
     long oldlen = RSTRING_LEN(str);
 
     CFStringNormalize(m, kCFStringNormalizationFormC);
@@ -328,8 +331,7 @@ rb_str_append_normalized_ospath(VALUE str, const char *ptr, long len)
     CFStringGetBytes(m, all, kCFStringEncodingUTF8, '?', FALSE,
                      (UInt8 *)(RSTRING_PTR(str) + oldlen), buflen, &buflen);
     rb_str_set_len(str, oldlen + buflen);
-    CFRelease(m);
-    CFRelease(s);
+    mutable_CFString_release(m, s);
     return str;
 }
 
@@ -4533,6 +4535,11 @@ rb_check_realpath_emulate_rescue(VALUE arg, VALUE exc)
 {
     return Qnil;
 }
+#elif !defined(NEEDS_REALPATH_BUFFER) && defined(__APPLE__) && \
+    (!defined(MAC_OS_X_VERSION_10_6) || (MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_6))
+/* realpath() on OSX < 10.6 doesn't implement automatic allocation */
+# include <sys/syslimits.h>
+# define NEEDS_REALPATH_BUFFER 1
 #endif /* HAVE_REALPATH */
 
 static VALUE
@@ -4542,6 +4549,11 @@ rb_check_realpath_internal(VALUE basedir, VALUE path, rb_encoding *origenc, enum
     VALUE unresolved_path;
     char *resolved_ptr = NULL;
     VALUE resolved;
+# if defined(NEEDS_REALPATH_BUFFER) && NEEDS_REALPATH_BUFFER
+    char resolved_buffer[PATH_MAX];
+# else
+    char *const resolved_buffer = NULL;
+# endif
 
     if (mode == RB_REALPATH_DIR) {
         return rb_check_realpath_emulate(basedir, path, origenc, mode);
@@ -4553,7 +4565,7 @@ rb_check_realpath_internal(VALUE basedir, VALUE path, rb_encoding *origenc, enum
     }
     if (origenc) unresolved_path = TO_OSPATH(unresolved_path);
 
-    if ((resolved_ptr = realpath(RSTRING_PTR(unresolved_path), NULL)) == NULL) {
+    if ((resolved_ptr = realpath(RSTRING_PTR(unresolved_path), resolved_buffer)) == NULL) {
         /* glibc realpath(3) does not allow /path/to/file.rb/../other_file.rb,
            returning ENOTDIR in that case.
            glibc realpath(3) can also return ENOENT for paths that exist,
@@ -4570,7 +4582,9 @@ rb_check_realpath_internal(VALUE basedir, VALUE path, rb_encoding *origenc, enum
         rb_sys_fail_path(unresolved_path);
     }
     resolved = ospath_new(resolved_ptr, strlen(resolved_ptr), rb_filesystem_encoding());
+# if !(defined(NEEDS_REALPATH_BUFFER) && NEEDS_REALPATH_BUFFER)
     free(resolved_ptr);
+# endif
 
 # if !defined(__LINUX__) && !defined(__APPLE__)
     /* As `resolved` is a String in the filesystem encoding, no

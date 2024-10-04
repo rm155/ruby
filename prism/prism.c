@@ -279,11 +279,6 @@ lex_state_beg_p(pm_parser_t *parser) {
 }
 
 static inline bool
-lex_state_arg_labeled_p(pm_parser_t *parser) {
-    return (parser->lex_state & (PM_LEX_STATE_ARG | PM_LEX_STATE_LABELED)) == (PM_LEX_STATE_ARG | PM_LEX_STATE_LABELED);
-}
-
-static inline bool
 lex_state_arg_p(pm_parser_t *parser) {
     return lex_state_p(parser, PM_LEX_STATE_ARG_ANY);
 }
@@ -549,10 +544,7 @@ pm_parser_warn_node(pm_parser_t *parser, const pm_node_t *node, pm_diagnostic_id
  * token.
  */
 static void
-pm_parser_err_heredoc_term(pm_parser_t *parser, pm_lex_mode_t *lex_mode) {
-    const uint8_t *ident_start = lex_mode->as.heredoc.ident_start;
-    size_t ident_length = lex_mode->as.heredoc.ident_length;
-
+pm_parser_err_heredoc_term(pm_parser_t *parser, const uint8_t *ident_start, size_t ident_length) {
     PM_PARSER_ERR_FORMAT(
         parser,
         ident_start,
@@ -1039,7 +1031,7 @@ pm_parser_optional_constant_id_token(pm_parser_t *parser, const pm_token_t *toke
  */
 static pm_node_t *
 pm_check_value_expression(pm_parser_t *parser, pm_node_t *node) {
-    pm_node_t* void_node = NULL;
+    pm_node_t *void_node = NULL;
 
     while (node != NULL) {
         switch (PM_NODE_TYPE(node)) {
@@ -1055,24 +1047,43 @@ pm_check_value_expression(pm_parser_t *parser, pm_node_t *node) {
             case PM_BEGIN_NODE: {
                 pm_begin_node_t *cast = (pm_begin_node_t *) node;
 
-                if (cast->statements == NULL && cast->ensure_clause != NULL) {
-                    node = (pm_node_t *) cast->ensure_clause;
-                }
-                else {
+                if (cast->ensure_clause != NULL) {
                     if (cast->rescue_clause != NULL) {
-                        if (cast->rescue_clause->statements == NULL) {
-                            return NULL;
+                        pm_node_t *vn = pm_check_value_expression(parser, (pm_node_t *) cast->rescue_clause);
+                        if (vn != NULL) return vn;
+                    }
+
+                    if (cast->statements != NULL) {
+                        pm_node_t *vn = pm_check_value_expression(parser, (pm_node_t *) cast->statements);
+                        if (vn != NULL) return vn;
+                    }
+
+                    node = (pm_node_t *) cast->ensure_clause;
+                } else if (cast->rescue_clause != NULL) {
+                    if (cast->statements == NULL) return NULL;
+
+                    pm_node_t *vn = pm_check_value_expression(parser, (pm_node_t *) cast->statements);
+                    if (vn == NULL) return NULL;
+                    if (void_node == NULL) void_node = vn;
+
+                    for (pm_rescue_node_t *rescue_clause = cast->rescue_clause; rescue_clause != NULL; rescue_clause = rescue_clause->subsequent) {
+                        pm_node_t *vn = pm_check_value_expression(parser, (pm_node_t *) rescue_clause->statements);
+                        if (vn == NULL) {
+                            void_node = NULL;
+                            break;
                         }
-                        else if (cast->else_clause != NULL) {
-                            node = (pm_node_t *) cast->else_clause;
-                        }
-                        else {
-                            node = (pm_node_t *) cast->statements;
+                        if (void_node == NULL) {
+                            void_node = vn;
                         }
                     }
-                    else {
-                        node = (pm_node_t *) cast->statements;
+
+                    if (cast->else_clause != NULL) {
+                        node = (pm_node_t *) cast->else_clause;
+                    } else {
+                        return void_node;
                     }
+                } else {
+                    node = (pm_node_t *) cast->statements;
                 }
 
                 break;
@@ -2990,6 +3001,7 @@ pm_index_and_write_node_create(pm_parser_t *parser, pm_call_node_t *target, cons
 
     pm_index_arguments_check(parser, target->arguments, target->block);
 
+    assert(!target->block || PM_NODE_TYPE_P(target->block, PM_BLOCK_ARGUMENT_NODE));
     *node = (pm_index_and_write_node_t) {
         {
             .type = PM_INDEX_AND_WRITE_NODE,
@@ -3005,7 +3017,7 @@ pm_index_and_write_node_create(pm_parser_t *parser, pm_call_node_t *target, cons
         .opening_loc = target->opening_loc,
         .arguments = target->arguments,
         .closing_loc = target->closing_loc,
-        .block = target->block,
+        .block = (pm_block_argument_node_t *) target->block,
         .operator_loc = PM_LOCATION_TOKEN_VALUE(operator),
         .value = value
     };
@@ -3065,6 +3077,7 @@ pm_index_operator_write_node_create(pm_parser_t *parser, pm_call_node_t *target,
 
     pm_index_arguments_check(parser, target->arguments, target->block);
 
+    assert(!target->block || PM_NODE_TYPE_P(target->block, PM_BLOCK_ARGUMENT_NODE));
     *node = (pm_index_operator_write_node_t) {
         {
             .type = PM_INDEX_OPERATOR_WRITE_NODE,
@@ -3080,7 +3093,7 @@ pm_index_operator_write_node_create(pm_parser_t *parser, pm_call_node_t *target,
         .opening_loc = target->opening_loc,
         .arguments = target->arguments,
         .closing_loc = target->closing_loc,
-        .block = target->block,
+        .block = (pm_block_argument_node_t *) target->block,
         .binary_operator = pm_parser_constant_id_location(parser, operator->start, operator->end - 1),
         .binary_operator_loc = PM_LOCATION_TOKEN_VALUE(operator),
         .value = value
@@ -3142,6 +3155,7 @@ pm_index_or_write_node_create(pm_parser_t *parser, pm_call_node_t *target, const
 
     pm_index_arguments_check(parser, target->arguments, target->block);
 
+    assert(!target->block || PM_NODE_TYPE_P(target->block, PM_BLOCK_ARGUMENT_NODE));
     *node = (pm_index_or_write_node_t) {
         {
             .type = PM_INDEX_OR_WRITE_NODE,
@@ -3157,7 +3171,7 @@ pm_index_or_write_node_create(pm_parser_t *parser, pm_call_node_t *target, const
         .opening_loc = target->opening_loc,
         .arguments = target->arguments,
         .closing_loc = target->closing_loc,
-        .block = target->block,
+        .block = (pm_block_argument_node_t *) target->block,
         .operator_loc = PM_LOCATION_TOKEN_VALUE(operator),
         .value = value
     };
@@ -3210,6 +3224,7 @@ pm_index_target_node_create(pm_parser_t *parser, pm_call_node_t *target) {
 
     pm_index_arguments_check(parser, target->arguments, target->block);
 
+    assert(!target->block || PM_NODE_TYPE_P(target->block, PM_BLOCK_ARGUMENT_NODE));
     *node = (pm_index_target_node_t) {
         {
             .type = PM_INDEX_TARGET_NODE,
@@ -3221,7 +3236,7 @@ pm_index_target_node_create(pm_parser_t *parser, pm_call_node_t *target) {
         .opening_loc = target->opening_loc,
         .arguments = target->arguments,
         .closing_loc = target->closing_loc,
-        .block = target->block
+        .block = (pm_block_argument_node_t *) target->block,
     };
 
     // Here we're going to free the target, since it is no longer necessary.
@@ -3236,7 +3251,7 @@ pm_index_target_node_create(pm_parser_t *parser, pm_call_node_t *target) {
  * Allocate and initialize a new CapturePatternNode node.
  */
 static pm_capture_pattern_node_t *
-pm_capture_pattern_node_create(pm_parser_t *parser, pm_node_t *value, pm_node_t *target, const pm_token_t *operator) {
+pm_capture_pattern_node_create(pm_parser_t *parser, pm_node_t *value, pm_local_variable_target_node_t *target, const pm_token_t *operator) {
     pm_capture_pattern_node_t *node = PM_NODE_ALLOC(parser, pm_capture_pattern_node_t);
 
     *node = (pm_capture_pattern_node_t) {
@@ -3245,7 +3260,7 @@ pm_capture_pattern_node_create(pm_parser_t *parser, pm_node_t *value, pm_node_t 
             .node_id = PM_NODE_IDENTIFY(parser),
             .location = {
                 .start = value->location.start,
-                .end = target->location.end
+                .end = target->base.location.end
             },
         },
         .value = value,
@@ -4037,14 +4052,25 @@ pm_find_pattern_node_create(pm_parser_t *parser, pm_node_list_t *nodes) {
     pm_find_pattern_node_t *node = PM_NODE_ALLOC(parser, pm_find_pattern_node_t);
 
     pm_node_t *left = nodes->nodes[0];
+    assert(PM_NODE_TYPE_P(left, PM_SPLAT_NODE));
+    pm_splat_node_t *left_splat_node = (pm_splat_node_t *) left;
+
     pm_node_t *right;
 
     if (nodes->size == 1) {
         right = (pm_node_t *) pm_missing_node_create(parser, left->location.end, left->location.end);
     } else {
         right = nodes->nodes[nodes->size - 1];
+        assert(PM_NODE_TYPE_P(right, PM_SPLAT_NODE));
     }
 
+#if PRISM_SERIALIZE_ONLY_SEMANTICS_FIELDS
+    // FindPatternNode#right is typed as SplatNode in this case, so replace the potential MissingNode with a SplatNode.
+    // The resulting AST will anyway be ignored, but this file still needs to compile.
+    pm_splat_node_t *right_splat_node = PM_NODE_TYPE_P(right, PM_SPLAT_NODE) ? (pm_splat_node_t *) right : left_splat_node;
+#else
+    pm_node_t *right_splat_node = right;
+#endif
     *node = (pm_find_pattern_node_t) {
         {
             .type = PM_FIND_PATTERN_NODE,
@@ -4055,8 +4081,8 @@ pm_find_pattern_node_create(pm_parser_t *parser, pm_node_list_t *nodes) {
             },
         },
         .constant = NULL,
-        .left = left,
-        .right = right,
+        .left = left_splat_node,
+        .right = right_splat_node,
         .requireds = { 0 },
         .opening_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE,
         .closing_loc = PM_OPTIONAL_LOCATION_NOT_PROVIDED_VALUE
@@ -9022,6 +9048,10 @@ lex_global_variable(pm_parser_t *parser) {
         return PM_TOKEN_GLOBAL_VARIABLE;
     }
 
+    // True if multiple characters are allowed after the declaration of the
+    // global variable. Not true when it starts with "$-".
+    bool allow_multiple = true;
+
     switch (*parser->current.end) {
         case '~':  // $~: match-data
         case '*':  // $*: argv
@@ -9080,6 +9110,7 @@ lex_global_variable(pm_parser_t *parser) {
 
         case '-':
             parser->current.end++;
+            allow_multiple = false;
             /* fallthrough */
         default: {
             size_t width;
@@ -9087,7 +9118,7 @@ lex_global_variable(pm_parser_t *parser) {
             if ((width = char_is_identifier(parser, parser->current.end)) > 0) {
                 do {
                     parser->current.end += width;
-                } while (parser->current.end < parser->end && (width = char_is_identifier(parser, parser->current.end)) > 0);
+                } while (allow_multiple && parser->current.end < parser->end && (width = char_is_identifier(parser, parser->current.end)) > 0);
             } else if (pm_char_is_whitespace(peek(parser))) {
                 // If we get here, then we have a $ followed by whitespace,
                 // which is not allowed.
@@ -11124,12 +11155,14 @@ parser_lex(pm_parser_t *parser) {
                                 lex_mode_push(parser, (pm_lex_mode_t) {
                                     .mode = PM_LEX_HEREDOC,
                                     .as.heredoc = {
-                                        .ident_start = ident_start,
-                                        .ident_length = ident_length,
+                                        .base = {
+                                            .ident_start = ident_start,
+                                            .ident_length = ident_length,
+                                            .quote = quote,
+                                            .indent = indent
+                                        },
                                         .next_start = parser->current.end,
-                                        .quote = quote,
-                                        .indent = indent,
-                                        .common_whitespace = (size_t) -1,
+                                        .common_whitespace = NULL,
                                         .line_continuation = false
                                     }
                                 });
@@ -11142,7 +11175,7 @@ parser_lex(pm_parser_t *parser) {
                                         // this is not a valid heredoc declaration. In this case we
                                         // will add an error, but we will still return a heredoc
                                         // start.
-                                        if (!ident_error) pm_parser_err_heredoc_term(parser, parser->lex_modes.current);
+                                        if (!ident_error) pm_parser_err_heredoc_term(parser, ident_start, ident_length);
                                         body_start = parser->end;
                                     } else {
                                         // Otherwise, we want to indicate that the body of the
@@ -11423,10 +11456,7 @@ parser_lex(pm_parser_t *parser) {
                     if (match(parser, '.')) {
                         if (match(parser, '.')) {
                             // If we're _not_ inside a range within default parameters
-                            if (
-                                !context_p(parser, PM_CONTEXT_DEFAULT_PARAMS) &&
-                                context_p(parser, PM_CONTEXT_DEF_PARAMS)
-                            ) {
+                            if (!context_p(parser, PM_CONTEXT_DEFAULT_PARAMS) && context_p(parser, PM_CONTEXT_DEF_PARAMS)) {
                                 if (lex_state_p(parser, PM_LEX_STATE_END)) {
                                     lex_state_set(parser, PM_LEX_STATE_BEG);
                                 } else {
@@ -12488,6 +12518,7 @@ parser_lex(pm_parser_t *parser) {
             // Now let's grab the information about the identifier off of the
             // current lex mode.
             pm_lex_mode_t *lex_mode = parser->lex_modes.current;
+            pm_heredoc_lex_mode_t *heredoc_lex_mode = &lex_mode->as.heredoc.base;
 
             bool line_continuation = lex_mode->as.heredoc.line_continuation;
             lex_mode->as.heredoc.line_continuation = false;
@@ -12497,15 +12528,16 @@ parser_lex(pm_parser_t *parser) {
             // terminator) but still continue parsing so that content after the
             // declaration of the heredoc can be parsed.
             if (parser->current.end >= parser->end) {
-                pm_parser_err_heredoc_term(parser, lex_mode);
+                pm_parser_err_heredoc_term(parser, heredoc_lex_mode->ident_start, heredoc_lex_mode->ident_length);
                 parser->next_start = lex_mode->as.heredoc.next_start;
                 parser->heredoc_end = parser->current.end;
                 lex_state_set(parser, PM_LEX_STATE_END);
+                lex_mode_pop(parser);
                 LEX(PM_TOKEN_HEREDOC_END);
             }
 
-            const uint8_t *ident_start = lex_mode->as.heredoc.ident_start;
-            size_t ident_length = lex_mode->as.heredoc.ident_length;
+            const uint8_t *ident_start = heredoc_lex_mode->ident_start;
+            size_t ident_length = heredoc_lex_mode->ident_length;
 
             // If we are immediately following a newline and we have hit the
             // terminator, then we need to return the ending of the heredoc.
@@ -12530,10 +12562,7 @@ parser_lex(pm_parser_t *parser) {
                     const uint8_t *terminator_start = ident_end - ident_length;
                     const uint8_t *cursor = start;
 
-                    if (
-                        lex_mode->as.heredoc.indent == PM_HEREDOC_INDENT_DASH ||
-                        lex_mode->as.heredoc.indent == PM_HEREDOC_INDENT_TILDE
-                    ) {
+                    if (heredoc_lex_mode->indent == PM_HEREDOC_INDENT_DASH || heredoc_lex_mode->indent == PM_HEREDOC_INDENT_TILDE) {
                         while (cursor < terminator_start && pm_char_is_inline_whitespace(*cursor)) {
                             cursor++;
                         }
@@ -12556,17 +12585,19 @@ parser_lex(pm_parser_t *parser) {
                         }
 
                         lex_state_set(parser, PM_LEX_STATE_END);
+                        lex_mode_pop(parser);
                         LEX(PM_TOKEN_HEREDOC_END);
                     }
                 }
 
-                size_t whitespace = pm_heredoc_strspn_inline_whitespace(parser, &start, lex_mode->as.heredoc.indent);
+                size_t whitespace = pm_heredoc_strspn_inline_whitespace(parser, &start, heredoc_lex_mode->indent);
                 if (
-                    lex_mode->as.heredoc.indent == PM_HEREDOC_INDENT_TILDE &&
-                    (lex_mode->as.heredoc.common_whitespace > whitespace) &&
+                    heredoc_lex_mode->indent == PM_HEREDOC_INDENT_TILDE &&
+                    lex_mode->as.heredoc.common_whitespace != NULL &&
+                    (*lex_mode->as.heredoc.common_whitespace > whitespace) &&
                     peek_at(parser, start) != '\n'
                 ) {
-                    lex_mode->as.heredoc.common_whitespace = whitespace;
+                    *lex_mode->as.heredoc.common_whitespace = whitespace;
                 }
             }
 
@@ -12575,7 +12606,7 @@ parser_lex(pm_parser_t *parser) {
             // strpbrk to find the first of these characters.
             uint8_t breakpoints[] = "\r\n\\#";
 
-            pm_heredoc_quote_t quote = lex_mode->as.heredoc.quote;
+            pm_heredoc_quote_t quote = heredoc_lex_mode->quote;
             if (quote == PM_HEREDOC_QUOTE_SINGLE) {
                 breakpoints[3] = '\0';
             }
@@ -12638,8 +12669,7 @@ parser_lex(pm_parser_t *parser) {
                             // leading whitespace if we have a - or ~ heredoc.
                             const uint8_t *cursor = start;
 
-                            if (lex_mode->as.heredoc.indent == PM_HEREDOC_INDENT_DASH ||
-                                lex_mode->as.heredoc.indent == PM_HEREDOC_INDENT_TILDE) {
+                            if (heredoc_lex_mode->indent == PM_HEREDOC_INDENT_DASH || heredoc_lex_mode->indent == PM_HEREDOC_INDENT_TILDE) {
                                 while (cursor < terminator_start && pm_char_is_inline_whitespace(*cursor)) {
                                     cursor++;
                                 }
@@ -12655,16 +12685,16 @@ parser_lex(pm_parser_t *parser) {
                             }
                         }
 
-                        size_t whitespace = pm_heredoc_strspn_inline_whitespace(parser, &start, lex_mode->as.heredoc.indent);
+                        size_t whitespace = pm_heredoc_strspn_inline_whitespace(parser, &start, lex_mode->as.heredoc.base.indent);
 
                         // If we have hit a newline that is followed by a valid
                         // terminator, then we need to return the content of the
                         // heredoc here as string content. Then, the next time a
                         // token is lexed, it will match again and return the
                         // end of the heredoc.
-                        if (lex_mode->as.heredoc.indent == PM_HEREDOC_INDENT_TILDE) {
-                            if ((lex_mode->as.heredoc.common_whitespace > whitespace) && peek_at(parser, start) != '\n') {
-                                lex_mode->as.heredoc.common_whitespace = whitespace;
+                        if (lex_mode->as.heredoc.base.indent == PM_HEREDOC_INDENT_TILDE) {
+                            if ((lex_mode->as.heredoc.common_whitespace != NULL) && (*lex_mode->as.heredoc.common_whitespace > whitespace) && peek_at(parser, start) != '\n') {
+                                *lex_mode->as.heredoc.common_whitespace = whitespace;
                             }
 
                             parser->current.end = breakpoint + 1;
@@ -12731,7 +12761,7 @@ parser_lex(pm_parser_t *parser) {
                                     // If we are in a tilde here, we should
                                     // break out of the loop and return the
                                     // string content.
-                                    if (lex_mode->as.heredoc.indent == PM_HEREDOC_INDENT_TILDE) {
+                                    if (heredoc_lex_mode->indent == PM_HEREDOC_INDENT_TILDE) {
                                         const uint8_t *end = parser->current.end;
                                         pm_newline_list_append(&parser->newline_list, end);
 
@@ -13139,28 +13169,26 @@ expect3(pm_parser_t *parser, pm_token_type_t type1, pm_token_type_t type2, pm_to
  * lex mode accordingly.
  */
 static void
-expect1_heredoc_term(pm_parser_t *parser, pm_lex_mode_t *lex_mode) {
+expect1_heredoc_term(pm_parser_t *parser, const uint8_t *ident_start, size_t ident_length) {
     if (match1(parser, PM_TOKEN_HEREDOC_END)) {
-        lex_mode_pop(parser);
         parser_lex(parser);
     } else {
-        pm_parser_err_heredoc_term(parser, lex_mode);
-        lex_mode_pop(parser);
+        pm_parser_err_heredoc_term(parser, ident_start, ident_length);
         parser->previous.start = parser->previous.end;
         parser->previous.type = PM_TOKEN_MISSING;
     }
 }
 
 static pm_node_t *
-parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id);
+parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, bool accepts_label, pm_diagnostic_id_t diag_id, uint16_t depth);
 
 /**
  * This is a wrapper of parse_expression, which also checks whether the
  * resulting node is a value expression.
  */
 static pm_node_t *
-parse_value_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id) {
-    pm_node_t *node = parse_expression(parser, binding_power, accepts_command_call, diag_id);
+parse_value_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, bool accepts_label, pm_diagnostic_id_t diag_id, uint16_t depth) {
+    pm_node_t *node = parse_expression(parser, binding_power, accepts_command_call, accepts_label, diag_id, depth);
     pm_assert_value_expression(parser, node);
     return node;
 }
@@ -13244,14 +13272,14 @@ token_begins_expression_p(pm_token_type_t type) {
  * prefixed by the * operator.
  */
 static pm_node_t *
-parse_starred_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id) {
+parse_starred_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id, uint16_t depth) {
     if (accept1(parser, PM_TOKEN_USTAR)) {
         pm_token_t operator = parser->previous;
-        pm_node_t *expression = parse_value_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR);
+        pm_node_t *expression = parse_value_expression(parser, binding_power, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR, (uint16_t) (depth + 1));
         return (pm_node_t *) pm_splat_node_create(parser, &operator, expression);
     }
 
-    return parse_value_expression(parser, binding_power, accepts_command_call, diag_id);
+    return parse_value_expression(parser, binding_power, accepts_command_call, false, diag_id, depth);
 }
 
 /**
@@ -13745,7 +13773,7 @@ parse_unwriteable_write(pm_parser_t *parser, pm_node_t *target, const pm_token_t
  * target node or a multi-target node.
  */
 static pm_node_t *
-parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t binding_power) {
+parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t binding_power, uint16_t depth) {
     bool has_rest = PM_NODE_TYPE_P(first_target, PM_SPLAT_NODE);
 
     pm_multi_target_node_t *result = pm_multi_target_node_create(parser);
@@ -13764,7 +13792,7 @@ parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t b
             pm_node_t *name = NULL;
 
             if (token_begins_expression_p(parser->current.type)) {
-                name = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR);
+                name = parse_expression(parser, binding_power, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR, (uint16_t) (depth + 1));
                 name = parse_target(parser, name, true, true);
             }
 
@@ -13772,7 +13800,7 @@ parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t b
             pm_multi_target_node_targets_append(parser, result, splat);
             has_rest = true;
         } else if (token_begins_expression_p(parser->current.type)) {
-            pm_node_t *target = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_COMMA);
+            pm_node_t *target = parse_expression(parser, binding_power, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_COMMA, (uint16_t) (depth + 1));
             target = parse_target(parser, target, true, false);
 
             pm_multi_target_node_targets_append(parser, result, target);
@@ -13793,8 +13821,8 @@ parse_targets(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t b
  * assignment.
  */
 static pm_node_t *
-parse_targets_validate(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t binding_power) {
-    pm_node_t *result = parse_targets(parser, first_target, binding_power);
+parse_targets_validate(pm_parser_t *parser, pm_node_t *first_target, pm_binding_power_t binding_power, uint16_t depth) {
+    pm_node_t *result = parse_targets(parser, first_target, binding_power, depth);
     accept1(parser, PM_TOKEN_NEWLINE);
 
     // Ensure that we have either an = or a ) after the targets.
@@ -13809,7 +13837,7 @@ parse_targets_validate(pm_parser_t *parser, pm_node_t *first_target, pm_binding_
  * Parse a list of statements separated by newlines or semicolons.
  */
 static pm_statements_node_t *
-parse_statements(pm_parser_t *parser, pm_context_t context) {
+parse_statements(pm_parser_t *parser, pm_context_t context, uint16_t depth) {
     // First, skip past any optional terminators that might be at the beginning
     // of the statements.
     while (accept2(parser, PM_TOKEN_SEMICOLON, PM_TOKEN_NEWLINE));
@@ -13824,7 +13852,7 @@ parse_statements(pm_parser_t *parser, pm_context_t context) {
     context_push(parser, context);
 
     while (true) {
-        pm_node_t *node = parse_expression(parser, PM_BINDING_POWER_STATEMENT, true, PM_ERR_CANNOT_PARSE_EXPRESSION);
+        pm_node_t *node = parse_expression(parser, PM_BINDING_POWER_STATEMENT, true, false, PM_ERR_CANNOT_PARSE_EXPRESSION, (uint16_t) (depth + 1));
         pm_statements_node_body_append(parser, statements, node, true);
 
         // If we're recovering from a syntax error, then we need to stop parsing
@@ -13944,7 +13972,7 @@ pm_when_clause_static_literals_add(pm_parser_t *parser, pm_static_literals_t *li
  * Parse all of the elements of a hash. Return true if a double splat was found.
  */
 static bool
-parse_assocs(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *node) {
+parse_assocs(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *node, uint16_t depth) {
     assert(PM_NODE_TYPE_P(node, PM_HASH_NODE) || PM_NODE_TYPE_P(node, PM_KEYWORD_HASH_NODE));
     bool contains_keyword_splat = false;
 
@@ -13963,9 +13991,9 @@ parse_assocs(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *nod
                     // inner hash to share the static literals with the outer
                     // hash.
                     parser->current_hash_keys = literals;
-                    value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_EXPECT_EXPRESSION_AFTER_SPLAT_HASH);
+                    value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_SPLAT_HASH, (uint16_t) (depth + 1));
                 } else if (token_begins_expression_p(parser->current.type)) {
-                    value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_EXPECT_EXPRESSION_AFTER_SPLAT_HASH);
+                    value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_SPLAT_HASH, (uint16_t) (depth + 1));
                 } else {
                     pm_parser_scope_forwarding_keywords_check(parser, &operator);
                 }
@@ -13985,7 +14013,7 @@ parse_assocs(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *nod
                 pm_node_t *value = NULL;
 
                 if (token_begins_expression_p(parser->current.type)) {
-                    value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_HASH_EXPRESSION_AFTER_LABEL);
+                    value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_HASH_EXPRESSION_AFTER_LABEL, (uint16_t) (depth + 1));
                 } else {
                     if (parser->encoding->isupper_char(label.start, (label.end - 1) - label.start)) {
                         pm_token_t constant = { .type = PM_TOKEN_CONSTANT, .start = label.start, .end = label.end - 1 };
@@ -14015,7 +14043,7 @@ parse_assocs(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *nod
                 break;
             }
             default: {
-                pm_node_t *key = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_HASH_KEY);
+                pm_node_t *key = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, true, PM_ERR_HASH_KEY, (uint16_t) (depth + 1));
 
                 // Hash keys that are strings are automatically frozen. We will
                 // mark that here.
@@ -14033,7 +14061,7 @@ parse_assocs(pm_parser_t *parser, pm_static_literals_t *literals, pm_node_t *nod
                     operator = parser->previous;
                 }
 
-                pm_node_t *value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_HASH_VALUE);
+                pm_node_t *value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_HASH_VALUE, (uint16_t) (depth + 1));
                 element = (pm_node_t *) pm_assoc_node_create(parser, key, &operator, value);
                 break;
             }
@@ -14079,7 +14107,7 @@ parse_arguments_append(pm_parser_t *parser, pm_arguments_t *arguments, pm_node_t
  * Parse a list of arguments.
  */
 static void
-parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_forwarding, pm_token_type_t terminator) {
+parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_forwarding, pm_token_type_t terminator, uint16_t depth) {
     pm_binding_power_t binding_power = pm_binding_powers[parser->current.type].left;
 
     // First we need to check if the next token is one that could be the start of
@@ -14118,7 +14146,7 @@ parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_for
                 argument = (pm_node_t *) hash;
 
                 pm_static_literals_t hash_keys = { 0 };
-                bool contains_keyword_splat = parse_assocs(parser, &hash_keys, (pm_node_t *) hash);
+                bool contains_keyword_splat = parse_assocs(parser, &hash_keys, (pm_node_t *) hash, (uint16_t) (depth + 1));
 
                 parse_arguments_append(parser, arguments, argument);
 
@@ -14137,7 +14165,7 @@ parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_for
                 pm_node_t *expression = NULL;
 
                 if (token_begins_expression_p(parser->current.type)) {
-                    expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_EXPECT_ARGUMENT);
+                    expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_EXPECT_ARGUMENT, (uint16_t) (depth + 1));
                 } else {
                     pm_parser_scope_forwarding_block_check(parser, &operator);
                 }
@@ -14160,7 +14188,7 @@ parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_for
                     pm_parser_scope_forwarding_positionals_check(parser, &operator);
                     argument = (pm_node_t *) pm_splat_node_create(parser, &operator, NULL);
                 } else {
-                    pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_EXPECT_EXPRESSION_AFTER_SPLAT);
+                    pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_SPLAT, (uint16_t) (depth + 1));
 
                     if (parsed_bare_hash) {
                         pm_parser_err(parser, operator.start, expression->location.end, PM_ERR_ARGUMENT_SPLAT_AFTER_ASSOC_SPLAT);
@@ -14177,10 +14205,20 @@ parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_for
                     parser_lex(parser);
 
                     if (token_begins_expression_p(parser->current.type)) {
-                        // If the token begins an expression then this ... was not actually
-                        // argument forwarding but was instead a range.
+                        // If the token begins an expression then this ... was
+                        // not actually argument forwarding but was instead a
+                        // range.
                         pm_token_t operator = parser->previous;
-                        pm_node_t *right = parse_expression(parser, PM_BINDING_POWER_RANGE, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                        pm_node_t *right = parse_expression(parser, PM_BINDING_POWER_RANGE, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
+
+                        // If we parse a range, we need to validate that we
+                        // didn't accidentally violate the nonassoc rules of the
+                        // ... operator.
+                        if (PM_NODE_TYPE_P(right, PM_RANGE_NODE)) {
+                            pm_range_node_t *range = (pm_range_node_t *) right;
+                            pm_parser_err(parser, range->operator_loc.start, range->operator_loc.end, PM_ERR_UNEXPECTED_RANGE_OPERATOR);
+                        }
+
                         argument = (pm_node_t *) pm_range_node_create(parser, NULL, &operator, right);
                     } else {
                         pm_parser_scope_forwarding_all_check(parser, &parser->previous);
@@ -14200,7 +14238,7 @@ parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_for
             /* fallthrough */
             default: {
                 if (argument == NULL) {
-                    argument = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, !parsed_first_argument, PM_ERR_EXPECT_ARGUMENT);
+                    argument = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, !parsed_first_argument, true, PM_ERR_EXPECT_ARGUMENT, (uint16_t) (depth + 1));
                 }
 
                 bool contains_keywords = false;
@@ -14226,7 +14264,7 @@ parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_for
                     pm_hash_key_static_literals_add(parser, &hash_keys, argument);
 
                     // Finish parsing the one we are part way through.
-                    pm_node_t *value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_HASH_VALUE);
+                    pm_node_t *value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_HASH_VALUE, (uint16_t) (depth + 1));
                     argument = (pm_node_t *) pm_assoc_node_create(parser, argument, &operator, value);
 
                     pm_keyword_hash_node_elements_append(bare_hash, argument);
@@ -14237,14 +14275,11 @@ parse_arguments(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_for
                         token_begins_expression_p(parser->current.type) ||
                         match2(parser, PM_TOKEN_USTAR_STAR, PM_TOKEN_LABEL)
                     )) {
-                        contains_keyword_splat = parse_assocs(parser, &hash_keys, (pm_node_t *) bare_hash);
+                        contains_keyword_splat = parse_assocs(parser, &hash_keys, (pm_node_t *) bare_hash, (uint16_t) (depth + 1));
                     }
 
                     pm_static_literals_free(&hash_keys);
                     parsed_bare_hash = true;
-                } else if (accept1(parser, PM_TOKEN_KEYWORD_IN)) {
-                    // TODO: Could we solve this with binding powers instead?
-                    pm_parser_err_current(parser, PM_ERR_ARGUMENT_IN);
                 }
 
                 parse_arguments_append(parser, arguments, argument);
@@ -14433,7 +14468,8 @@ parse_parameters(
     bool uses_parentheses,
     bool allows_trailing_comma,
     bool allows_forwarding_parameters,
-    bool accepts_blocks_in_defaults
+    bool accepts_blocks_in_defaults,
+    uint16_t depth
 ) {
     pm_parameters_node_t *params = pm_parameters_node_create(parser);
     bool looping = true;
@@ -14544,15 +14580,16 @@ parse_parameters(
                 bool repeated = pm_parser_parameter_name_check(parser, &name);
                 pm_parser_local_add_token(parser, &name, 1);
 
-                if (accept1(parser, PM_TOKEN_EQUAL)) {
-                    pm_token_t operator = parser->previous;
+                if (match1(parser, PM_TOKEN_EQUAL)) {
+                    pm_token_t operator = parser->current;
                     context_push(parser, PM_CONTEXT_DEFAULT_PARAMS);
+                    parser_lex(parser);
 
                     pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &name);
                     uint32_t reads = parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 ? pm_locals_reads(&parser->current_scope->locals, name_id) : 0;
 
                     if (accepts_blocks_in_defaults) pm_accepts_block_stack_push(parser, true);
-                    pm_node_t *value = parse_value_expression(parser, binding_power, false, PM_ERR_PARAMETER_NO_DEFAULT);
+                    pm_node_t *value = parse_value_expression(parser, binding_power, false, false, PM_ERR_PARAMETER_NO_DEFAULT, (uint16_t) (depth + 1));
                     if (accepts_blocks_in_defaults) pm_accepts_block_stack_pop(parser);
 
                     pm_optional_parameter_node_t *param = pm_optional_parameter_node_create(parser, &name, &operator, value);
@@ -14597,6 +14634,8 @@ parse_parameters(
             case PM_TOKEN_LABEL: {
                 if (!uses_parentheses) parser->in_keyword_arg = true;
                 update_parameter_state(parser, &parser->current, &order);
+
+                context_push(parser, PM_CONTEXT_DEFAULT_PARAMS);
                 parser_lex(parser);
 
                 pm_token_t name = parser->previous;
@@ -14616,15 +14655,20 @@ parse_parameters(
                     case PM_TOKEN_COMMA:
                     case PM_TOKEN_PARENTHESIS_RIGHT:
                     case PM_TOKEN_PIPE: {
+                        context_pop(parser);
+
                         pm_node_t *param = (pm_node_t *) pm_required_keyword_parameter_node_create(parser, &name);
                         if (repeated) {
                             pm_node_flag_set_repeated_parameter(param);
                         }
+
                         pm_parameters_node_keywords_append(params, param);
                         break;
                     }
                     case PM_TOKEN_SEMICOLON:
                     case PM_TOKEN_NEWLINE: {
+                        context_pop(parser);
+
                         if (uses_parentheses) {
                             looping = false;
                             break;
@@ -14634,6 +14678,7 @@ parse_parameters(
                         if (repeated) {
                             pm_node_flag_set_repeated_parameter(param);
                         }
+
                         pm_parameters_node_keywords_append(params, param);
                         break;
                     }
@@ -14641,20 +14686,17 @@ parse_parameters(
                         pm_node_t *param;
 
                         if (token_begins_expression_p(parser->current.type)) {
-                            context_push(parser, PM_CONTEXT_DEFAULT_PARAMS);
-
                             pm_constant_id_t name_id = pm_parser_constant_id_token(parser, &local);
                             uint32_t reads = parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 ? pm_locals_reads(&parser->current_scope->locals, name_id) : 0;
 
                             if (accepts_blocks_in_defaults) pm_accepts_block_stack_push(parser, true);
-                            pm_node_t *value = parse_value_expression(parser, binding_power, false, PM_ERR_PARAMETER_NO_DEFAULT_KW);
+                            pm_node_t *value = parse_value_expression(parser, binding_power, false, false, PM_ERR_PARAMETER_NO_DEFAULT_KW, (uint16_t) (depth + 1));
                             if (accepts_blocks_in_defaults) pm_accepts_block_stack_pop(parser);
 
                             if (parser->version == PM_OPTIONS_VERSION_CRUBY_3_3 && (pm_locals_reads(&parser->current_scope->locals, name_id) != reads)) {
                                 PM_PARSER_ERR_TOKEN_FORMAT_CONTENT(parser, local, PM_ERR_PARAMETER_CIRCULAR);
                             }
 
-                            context_pop(parser);
                             param = (pm_node_t *) pm_optional_keyword_parameter_node_create(parser, &name, value);
                         }
                         else {
@@ -14664,6 +14706,8 @@ parse_parameters(
                         if (repeated) {
                             pm_node_flag_set_repeated_parameter(param);
                         }
+
+                        context_pop(parser);
                         pm_parameters_node_keywords_append(params, param);
 
                         // If parsing the value of the parameter resulted in error recovery,
@@ -14756,7 +14800,7 @@ parse_parameters(
             }
             default:
                 if (parser->previous.type == PM_TOKEN_COMMA) {
-                    if (allows_trailing_comma) {
+                    if (allows_trailing_comma && order >= PM_PARAMETERS_ORDER_NAMED) {
                         // If we get here, then we have a trailing comma in a
                         // block parameter list.
                         pm_node_t *param = (pm_node_t *) pm_implicit_rest_node_create(parser, &parser->previous);
@@ -14908,7 +14952,7 @@ typedef enum {
  * nodes pointing to each other from the top.
  */
 static inline void
-parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_t *opening, pm_begin_node_t *parent_node, pm_rescues_type_t type) {
+parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_t *opening, pm_begin_node_t *parent_node, pm_rescues_type_t type, uint16_t depth) {
     pm_rescue_node_t *current = NULL;
 
     while (match1(parser, PM_TOKEN_KEYWORD_RESCUE)) {
@@ -14925,7 +14969,7 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
                 parser_lex(parser);
                 pm_rescue_node_operator_set(rescue, &parser->previous);
 
-                pm_node_t *reference = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_RESCUE_VARIABLE);
+                pm_node_t *reference = parse_expression(parser, PM_BINDING_POWER_INDEX, false, false, PM_ERR_RESCUE_VARIABLE, (uint16_t) (depth + 1));
                 reference = parse_target(parser, reference, false, false);
 
                 pm_rescue_node_reference_set(rescue, reference);
@@ -14943,7 +14987,7 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
                     // we'll attempt to parse it here and any others delimited by commas.
 
                     do {
-                        pm_node_t *expression = parse_starred_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_RESCUE_EXPRESSION);
+                        pm_node_t *expression = parse_starred_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_RESCUE_EXPRESSION, (uint16_t) (depth + 1));
                         pm_rescue_node_exceptions_append(rescue, expression);
 
                         // If we hit a newline, then this is the end of the rescue expression. We
@@ -14955,7 +14999,7 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
                         if (accept1(parser, PM_TOKEN_EQUAL_GREATER)) {
                             pm_rescue_node_operator_set(rescue, &parser->previous);
 
-                            pm_node_t *reference = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_RESCUE_VARIABLE);
+                            pm_node_t *reference = parse_expression(parser, PM_BINDING_POWER_INDEX, false, false, PM_ERR_RESCUE_VARIABLE, (uint16_t) (depth + 1));
                             reference = parse_target(parser, reference, false, false);
 
                             pm_rescue_node_reference_set(rescue, reference);
@@ -14987,7 +15031,7 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
                 default: assert(false && "unreachable"); context = PM_CONTEXT_BEGIN_RESCUE; break;
             }
 
-            pm_statements_node_t *statements = parse_statements(parser, context);
+            pm_statements_node_t *statements = parse_statements(parser, context, (uint16_t) (depth + 1));
             if (statements != NULL) pm_rescue_node_statements_set(rescue, statements);
 
             pm_accepts_block_stack_pop(parser);
@@ -15043,7 +15087,7 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
                 default: assert(false && "unreachable"); context = PM_CONTEXT_BEGIN_RESCUE; break;
             }
 
-            else_statements = parse_statements(parser, context);
+            else_statements = parse_statements(parser, context, (uint16_t) (depth + 1));
             pm_accepts_block_stack_pop(parser);
 
             accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
@@ -15080,7 +15124,7 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
                 default: assert(false && "unreachable"); context = PM_CONTEXT_BEGIN_RESCUE; break;
             }
 
-            ensure_statements = parse_statements(parser, context);
+            ensure_statements = parse_statements(parser, context, (uint16_t) (depth + 1));
             pm_accepts_block_stack_pop(parser);
 
             accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
@@ -15104,11 +15148,11 @@ parse_rescues(pm_parser_t *parser, size_t opening_newline_index, const pm_token_
  * class, module, def, etc.).
  */
 static pm_begin_node_t *
-parse_rescues_implicit_begin(pm_parser_t *parser, size_t opening_newline_index, const pm_token_t *opening, const uint8_t *start, pm_statements_node_t *statements, pm_rescues_type_t type) {
+parse_rescues_implicit_begin(pm_parser_t *parser, size_t opening_newline_index, const pm_token_t *opening, const uint8_t *start, pm_statements_node_t *statements, pm_rescues_type_t type, uint16_t depth) {
     pm_token_t begin_keyword = not_provided(parser);
     pm_begin_node_t *node = pm_begin_node_create(parser, &begin_keyword, statements);
 
-    parse_rescues(parser, opening_newline_index, opening, node, type);
+    parse_rescues(parser, opening_newline_index, opening, node, type, (uint16_t) (depth + 1));
     node->base.location.start = start;
 
     return node;
@@ -15123,7 +15167,8 @@ parse_block_parameters(
     bool allows_trailing_comma,
     const pm_token_t *opening,
     bool is_lambda_literal,
-    bool accepts_blocks_in_defaults
+    bool accepts_blocks_in_defaults,
+    uint16_t depth
 ) {
     pm_parameters_node_t *parameters = NULL;
     if (!match1(parser, PM_TOKEN_SEMICOLON)) {
@@ -15133,7 +15178,8 @@ parse_block_parameters(
             false,
             allows_trailing_comma,
             false,
-            accepts_blocks_in_defaults
+            accepts_blocks_in_defaults,
+            (uint16_t) (depth + 1)
         );
     }
 
@@ -15287,7 +15333,7 @@ parse_blocklike_parameters(pm_parser_t *parser, pm_node_t *parameters, const pm_
  * Parse a block.
  */
 static pm_block_node_t *
-parse_block(pm_parser_t *parser) {
+parse_block(pm_parser_t *parser, uint16_t depth) {
     pm_token_t opening = parser->previous;
     accept1(parser, PM_TOKEN_NEWLINE);
 
@@ -15303,7 +15349,7 @@ parse_block(pm_parser_t *parser) {
             parser->command_start = true;
             parser_lex(parser);
         } else {
-            block_parameters = parse_block_parameters(parser, true, &block_parameters_opening, false, true);
+            block_parameters = parse_block_parameters(parser, true, &block_parameters_opening, false, true, (uint16_t) (depth + 1));
             accept1(parser, PM_TOKEN_NEWLINE);
             parser->command_start = true;
             expect1(parser, PM_TOKEN_PIPE, PM_ERR_BLOCK_PARAM_PIPE_TERM);
@@ -15317,7 +15363,7 @@ parse_block(pm_parser_t *parser) {
 
     if (opening.type == PM_TOKEN_BRACE_LEFT) {
         if (!match1(parser, PM_TOKEN_BRACE_RIGHT)) {
-            statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_BLOCK_BRACES);
+            statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_BLOCK_BRACES, (uint16_t) (depth + 1));
         }
 
         expect1(parser, PM_TOKEN_BRACE_RIGHT, PM_ERR_BLOCK_TERM_BRACE);
@@ -15325,13 +15371,13 @@ parse_block(pm_parser_t *parser) {
         if (!match1(parser, PM_TOKEN_KEYWORD_END)) {
             if (!match3(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_ENSURE)) {
                 pm_accepts_block_stack_push(parser, true);
-                statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_BLOCK_KEYWORDS);
+                statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_BLOCK_KEYWORDS, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
             }
 
             if (match2(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE)) {
                 assert(statements == NULL || PM_NODE_TYPE_P(statements, PM_STATEMENTS_NODE));
-                statements = (pm_node_t *) parse_rescues_implicit_begin(parser, 0, NULL, opening.start, (pm_statements_node_t *) statements, PM_RESCUES_BLOCK);
+                statements = (pm_node_t *) parse_rescues_implicit_begin(parser, 0, NULL, opening.start, (pm_statements_node_t *) statements, PM_RESCUES_BLOCK, (uint16_t) (depth + 1));
             }
         }
 
@@ -15354,7 +15400,7 @@ parse_block(pm_parser_t *parser) {
  * arguments, or blocks).
  */
 static bool
-parse_arguments_list(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_block, bool accepts_command_call) {
+parse_arguments_list(pm_parser_t *parser, pm_arguments_t *arguments, bool accepts_block, bool accepts_command_call, uint16_t depth) {
     bool found = false;
 
     if (accept1(parser, PM_TOKEN_PARENTHESIS_LEFT)) {
@@ -15365,7 +15411,7 @@ parse_arguments_list(pm_parser_t *parser, pm_arguments_t *arguments, bool accept
             arguments->closing_loc = PM_LOCATION_TOKEN_VALUE(&parser->previous);
         } else {
             pm_accepts_block_stack_push(parser, true);
-            parse_arguments(parser, arguments, accepts_block, PM_TOKEN_PARENTHESIS_RIGHT);
+            parse_arguments(parser, arguments, accepts_block, PM_TOKEN_PARENTHESIS_RIGHT, (uint16_t) (depth + 1));
 
             if (!accept1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                 PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_ARGUMENT_TERM_PAREN, pm_token_type_human(parser->current.type));
@@ -15383,13 +15429,13 @@ parse_arguments_list(pm_parser_t *parser, pm_arguments_t *arguments, bool accept
         // If we get here, then the subsequent token cannot be used as an infix
         // operator. In this case we assume the subsequent token is part of an
         // argument to this method call.
-        parse_arguments(parser, arguments, accepts_block, PM_TOKEN_EOF);
+        parse_arguments(parser, arguments, accepts_block, PM_TOKEN_EOF, (uint16_t) (depth + 1));
 
         // If we have done with the arguments and still not consumed the comma,
         // then we have a trailing comma where we need to check whether it is
         // allowed or not.
         if (parser->previous.type == PM_TOKEN_COMMA && !match1(parser, PM_TOKEN_SEMICOLON)) {
-            pm_parser_err_previous(parser, PM_ERR_EXPECT_ARGUMENT);
+            PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->previous, PM_ERR_EXPECT_ARGUMENT, pm_token_type_human(parser->current.type));
         }
 
         pm_accepts_block_stack_pop(parser);
@@ -15403,11 +15449,11 @@ parse_arguments_list(pm_parser_t *parser, pm_arguments_t *arguments, bool accept
 
         if (accept1(parser, PM_TOKEN_BRACE_LEFT)) {
             found |= true;
-            block = parse_block(parser);
+            block = parse_block(parser, (uint16_t) (depth + 1));
             pm_arguments_validate_block(parser, arguments, block);
         } else if (pm_accepts_block_stack_p(parser) && accept1(parser, PM_TOKEN_KEYWORD_DO)) {
             found |= true;
-            block = parse_block(parser);
+            block = parse_block(parser, (uint16_t) (depth + 1));
         }
 
         if (block != NULL) {
@@ -15662,10 +15708,10 @@ pop_block_exits(pm_parser_t *parser, pm_node_list_t *previous_block_exits) {
 }
 
 static inline pm_node_t *
-parse_predicate(pm_parser_t *parser, pm_binding_power_t binding_power, pm_context_t context, pm_token_t *then_keyword) {
+parse_predicate(pm_parser_t *parser, pm_binding_power_t binding_power, pm_context_t context, pm_token_t *then_keyword, uint16_t depth) {
     context_push(parser, PM_CONTEXT_PREDICATE);
     pm_diagnostic_id_t error_id = context == PM_CONTEXT_IF ? PM_ERR_CONDITIONAL_IF_PREDICATE : PM_ERR_CONDITIONAL_UNLESS_PREDICATE;
-    pm_node_t *predicate = parse_value_expression(parser, binding_power, true, error_id);
+    pm_node_t *predicate = parse_value_expression(parser, binding_power, true, false, error_id, (uint16_t) (depth + 1));
 
     // Predicates are closed by a term, a "then", or a term and then a "then".
     bool predicate_closed = accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
@@ -15684,19 +15730,19 @@ parse_predicate(pm_parser_t *parser, pm_binding_power_t binding_power, pm_contex
 }
 
 static inline pm_node_t *
-parse_conditional(pm_parser_t *parser, pm_context_t context, size_t opening_newline_index, bool if_after_else) {
+parse_conditional(pm_parser_t *parser, pm_context_t context, size_t opening_newline_index, bool if_after_else, uint16_t depth) {
     pm_node_list_t current_block_exits = { 0 };
     pm_node_list_t *previous_block_exits = push_block_exits(parser, &current_block_exits);
 
     pm_token_t keyword = parser->previous;
     pm_token_t then_keyword = not_provided(parser);
 
-    pm_node_t *predicate = parse_predicate(parser, PM_BINDING_POWER_MODIFIER, context, &then_keyword);
+    pm_node_t *predicate = parse_predicate(parser, PM_BINDING_POWER_MODIFIER, context, &then_keyword, (uint16_t) (depth + 1));
     pm_statements_node_t *statements = NULL;
 
     if (!match3(parser, PM_TOKEN_KEYWORD_ELSIF, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
         pm_accepts_block_stack_push(parser, true);
-        statements = parse_statements(parser, context);
+        statements = parse_statements(parser, context, (uint16_t) (depth + 1));
         pm_accepts_block_stack_pop(parser);
         accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
     }
@@ -15730,10 +15776,10 @@ parse_conditional(pm_parser_t *parser, pm_context_t context, size_t opening_newl
             pm_token_t elsif_keyword = parser->current;
             parser_lex(parser);
 
-            pm_node_t *predicate = parse_predicate(parser, PM_BINDING_POWER_MODIFIER, PM_CONTEXT_ELSIF, &then_keyword);
+            pm_node_t *predicate = parse_predicate(parser, PM_BINDING_POWER_MODIFIER, PM_CONTEXT_ELSIF, &then_keyword, (uint16_t) (depth + 1));
             pm_accepts_block_stack_push(parser, true);
 
-            pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_ELSIF);
+            pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_ELSIF, (uint16_t) (depth + 1));
             pm_accepts_block_stack_pop(parser);
             accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
 
@@ -15751,7 +15797,7 @@ parse_conditional(pm_parser_t *parser, pm_context_t context, size_t opening_newl
         pm_token_t else_keyword = parser->previous;
 
         pm_accepts_block_stack_push(parser, true);
-        pm_statements_node_t *else_statements = parse_statements(parser, PM_CONTEXT_ELSE);
+        pm_statements_node_t *else_statements = parse_statements(parser, PM_CONTEXT_ELSE, (uint16_t) (depth + 1));
         pm_accepts_block_stack_pop(parser);
 
         accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
@@ -15908,7 +15954,7 @@ parse_unescaped_encoding(const pm_parser_t *parser) {
  * parsed as a string part, then NULL is returned.
  */
 static pm_node_t *
-parse_string_part(pm_parser_t *parser) {
+parse_string_part(pm_parser_t *parser, uint16_t depth) {
     switch (parser->current.type) {
         // Here the lexer has returned to us plain string content. In this case
         // we'll create a string node that has no opening or closing and return that
@@ -15949,7 +15995,7 @@ parse_string_part(pm_parser_t *parser) {
 
             if (!match1(parser, PM_TOKEN_EMBEXPR_END)) {
                 pm_accepts_block_stack_push(parser, true);
-                statements = parse_statements(parser, PM_CONTEXT_EMBEXPR);
+                statements = parse_statements(parser, PM_CONTEXT_EMBEXPR, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
             }
 
@@ -16074,7 +16120,7 @@ parse_operator_symbol(pm_parser_t *parser, const pm_token_t *opening, pm_lex_sta
  * symbols.
  */
 static pm_node_t *
-parse_symbol(pm_parser_t *parser, pm_lex_mode_t *lex_mode, pm_lex_state_t next_state) {
+parse_symbol(pm_parser_t *parser, pm_lex_mode_t *lex_mode, pm_lex_state_t next_state, uint16_t depth) {
     const pm_token_t opening = parser->previous;
 
     if (lex_mode->mode != PM_LEX_STRING) {
@@ -16120,7 +16166,7 @@ parse_symbol(pm_parser_t *parser, pm_lex_mode_t *lex_mode, pm_lex_state_t next_s
         }
 
         // Now we can parse the first part of the symbol.
-        pm_node_t *part = parse_string_part(parser);
+        pm_node_t *part = parse_string_part(parser, (uint16_t) (depth + 1));
 
         // If we got a string part, then it's possible that we could transform
         // what looks like an interpolated symbol into a regular symbol.
@@ -16135,7 +16181,7 @@ parse_symbol(pm_parser_t *parser, pm_lex_mode_t *lex_mode, pm_lex_state_t next_s
         if (part) pm_interpolated_symbol_node_append(symbol, part);
 
         while (!match2(parser, PM_TOKEN_STRING_END, PM_TOKEN_EOF)) {
-            if ((part = parse_string_part(parser)) != NULL) {
+            if ((part = parse_string_part(parser, (uint16_t) (depth + 1))) != NULL) {
                 pm_interpolated_symbol_node_append(symbol, part);
             }
         }
@@ -16211,7 +16257,7 @@ parse_symbol(pm_parser_t *parser, pm_lex_mode_t *lex_mode, pm_lex_state_t next_s
  * constant, or an interpolated symbol.
  */
 static inline pm_node_t *
-parse_undef_argument(pm_parser_t *parser) {
+parse_undef_argument(pm_parser_t *parser, uint16_t depth) {
     switch (parser->current.type) {
         case PM_CASE_OPERATOR: {
             const pm_token_t opening = not_provided(parser);
@@ -16236,7 +16282,7 @@ parse_undef_argument(pm_parser_t *parser) {
             pm_lex_mode_t lex_mode = *parser->lex_modes.current;
             parser_lex(parser);
 
-            return parse_symbol(parser, &lex_mode, PM_LEX_STATE_NONE);
+            return parse_symbol(parser, &lex_mode, PM_LEX_STATE_NONE, (uint16_t) (depth + 1));
         }
         default:
             pm_parser_err_current(parser, PM_ERR_UNDEF_ARGUMENT);
@@ -16251,7 +16297,7 @@ parse_undef_argument(pm_parser_t *parser) {
  * between the first and second arguments.
  */
 static inline pm_node_t *
-parse_alias_argument(pm_parser_t *parser, bool first) {
+parse_alias_argument(pm_parser_t *parser, bool first, uint16_t depth) {
     switch (parser->current.type) {
         case PM_CASE_OPERATOR: {
             const pm_token_t opening = not_provided(parser);
@@ -16277,7 +16323,7 @@ parse_alias_argument(pm_parser_t *parser, bool first) {
             pm_lex_mode_t lex_mode = *parser->lex_modes.current;
             parser_lex(parser);
 
-            return parse_symbol(parser, &lex_mode, first ? PM_LEX_STATE_FNAME | PM_LEX_STATE_FITEM : PM_LEX_STATE_NONE);
+            return parse_symbol(parser, &lex_mode, first ? PM_LEX_STATE_FNAME | PM_LEX_STATE_FITEM : PM_LEX_STATE_NONE, (uint16_t) (depth + 1));
         }
         case PM_TOKEN_BACK_REFERENCE:
             parser_lex(parser);
@@ -16477,11 +16523,9 @@ parse_strings_empty_content(const uint8_t *location) {
  * Parse a set of strings that could be concatenated together.
  */
 static inline pm_node_t *
-parse_strings(pm_parser_t *parser, pm_node_t *current) {
+parse_strings(pm_parser_t *parser, pm_node_t *current, bool accepts_label, uint16_t depth) {
     assert(parser->current.type == PM_TOKEN_STRING_BEGIN);
-
     bool concating = false;
-    bool state_is_arg_labeled = lex_state_arg_labeled_p(parser);
 
     while (match1(parser, PM_TOKEN_STRING_BEGIN)) {
         pm_node_t *node = NULL;
@@ -16491,6 +16535,7 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
         const pm_lex_mode_t *lex_mode = parser->lex_modes.current;
         assert(lex_mode->mode == PM_LEX_STRING);
         bool lex_interpolation = lex_mode->as.string.interpolation;
+        bool label_allowed = lex_mode->as.string.label_allowed && accepts_label;
 
         pm_token_t opening = parser->current;
         parser_lex(parser);
@@ -16514,6 +16559,8 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
 
             pm_string_shared_init(&symbol->unescaped, content.start, content.end);
             node = (pm_node_t *) symbol;
+
+            if (!label_allowed) pm_parser_err_node(parser, node, PM_ERR_UNEXPECTED_LABEL);
         } else if (!lex_interpolation) {
             // If we don't accept interpolation then we expect the string to
             // start with a single string content node.
@@ -16557,8 +16604,9 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
                 node = (pm_node_t *) pm_interpolated_string_node_create(parser, &opening, &parts, &parser->previous);
 
                 pm_node_list_free(&parts);
-            } else if (accept1(parser, PM_TOKEN_LABEL_END) && !state_is_arg_labeled) {
+            } else if (accept1(parser, PM_TOKEN_LABEL_END)) {
                 node = (pm_node_t *) pm_symbol_node_create_unescaped(parser, &opening, &content, &parser->previous, &unescaped, parse_symbol_encoding(parser, &content, &unescaped, true));
+                if (!label_allowed) pm_parser_err_node(parser, node, PM_ERR_UNEXPECTED_LABEL);
             } else if (match1(parser, PM_TOKEN_EOF)) {
                 pm_parser_err_token(parser, &opening, PM_ERR_STRING_LITERAL_EOF);
                 node = (pm_node_t *) pm_string_node_create_unescaped(parser, &opening, &content, &parser->current, &unescaped);
@@ -16597,6 +16645,7 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
                 }
             } else if (accept1(parser, PM_TOKEN_LABEL_END)) {
                 node = (pm_node_t *) pm_symbol_node_create_unescaped(parser, &opening, &content, &parser->previous, &unescaped, parse_symbol_encoding(parser, &content, &unescaped, true));
+                if (!label_allowed) pm_parser_err_node(parser, node, PM_ERR_UNEXPECTED_LABEL);
             } else {
                 // If we get here, then we have interpolation so we'll need
                 // to create a string or symbol node with interpolation.
@@ -16609,13 +16658,14 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
                 pm_node_list_append(&parts, part);
 
                 while (!match3(parser, PM_TOKEN_STRING_END, PM_TOKEN_LABEL_END, PM_TOKEN_EOF)) {
-                    if ((part = parse_string_part(parser)) != NULL) {
+                    if ((part = parse_string_part(parser, (uint16_t) (depth + 1))) != NULL) {
                         pm_node_list_append(&parts, part);
                     }
                 }
 
-                if (accept1(parser, PM_TOKEN_LABEL_END) && !state_is_arg_labeled) {
+                if (accept1(parser, PM_TOKEN_LABEL_END)) {
                     node = (pm_node_t *) pm_interpolated_symbol_node_create(parser, &opening, &parts, &parser->previous);
+                    if (!label_allowed) pm_parser_err_node(parser, node, PM_ERR_UNEXPECTED_LABEL);
                 } else if (match1(parser, PM_TOKEN_EOF)) {
                     pm_parser_err_token(parser, &opening, PM_ERR_STRING_INTERPOLATED_TERM);
                     node = (pm_node_t *) pm_interpolated_string_node_create(parser, &opening, &parts, &parser->current);
@@ -16634,13 +16684,14 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
             pm_node_t *part;
 
             while (!match3(parser, PM_TOKEN_STRING_END, PM_TOKEN_LABEL_END, PM_TOKEN_EOF)) {
-                if ((part = parse_string_part(parser)) != NULL) {
+                if ((part = parse_string_part(parser, (uint16_t) (depth + 1))) != NULL) {
                     pm_node_list_append(&parts, part);
                 }
             }
 
             if (accept1(parser, PM_TOKEN_LABEL_END)) {
                 node = (pm_node_t *) pm_interpolated_symbol_node_create(parser, &opening, &parts, &parser->previous);
+                if (!label_allowed) pm_parser_err_node(parser, node, PM_ERR_UNEXPECTED_LABEL);
             } else if (match1(parser, PM_TOKEN_EOF)) {
                 pm_parser_err_token(parser, &opening, PM_ERR_STRING_INTERPOLATED_TERM);
                 node = (pm_node_t *) pm_interpolated_string_node_create(parser, &opening, &parts, &parser->current);
@@ -16694,7 +16745,7 @@ parse_strings(pm_parser_t *parser, pm_node_t *current) {
 #define PM_PARSE_PATTERN_MULTI 2
 
 static pm_node_t *
-parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flags, pm_diagnostic_id_t diag_id);
+parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flags, pm_diagnostic_id_t diag_id, uint16_t depth);
 
 /**
  * Add the newly created local to the list of captures for this pattern matching
@@ -16717,7 +16768,7 @@ parse_pattern_capture(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_c
  * Accept any number of constants joined by :: delimiters.
  */
 static pm_node_t *
-parse_pattern_constant_path(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node_t *node) {
+parse_pattern_constant_path(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node_t *node, uint16_t depth) {
     // Now, if there are any :: operators that follow, parse them as constant
     // path nodes.
     while (accept1(parser, PM_TOKEN_COLON_COLON)) {
@@ -16742,7 +16793,7 @@ parse_pattern_constant_path(pm_parser_t *parser, pm_constant_id_list_t *captures
         accept1(parser, PM_TOKEN_NEWLINE);
 
         if (!accept1(parser, PM_TOKEN_BRACKET_RIGHT)) {
-            inner = parse_pattern(parser, captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_BRACKET);
+            inner = parse_pattern(parser, captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_BRACKET, (uint16_t) (depth + 1));
             accept1(parser, PM_TOKEN_NEWLINE);
             expect1(parser, PM_TOKEN_BRACKET_RIGHT, PM_ERR_PATTERN_TERM_BRACKET);
         }
@@ -16754,7 +16805,7 @@ parse_pattern_constant_path(pm_parser_t *parser, pm_constant_id_list_t *captures
         accept1(parser, PM_TOKEN_NEWLINE);
 
         if (!accept1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
-            inner = parse_pattern(parser, captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_PAREN);
+            inner = parse_pattern(parser, captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_PAREN, (uint16_t) (depth + 1));
             accept1(parser, PM_TOKEN_NEWLINE);
             expect1(parser, PM_TOKEN_PARENTHESIS_RIGHT, PM_ERR_PATTERN_TERM_PAREN);
         }
@@ -16980,7 +17031,7 @@ parse_pattern_hash_key(pm_parser_t *parser, pm_static_literals_t *keys, pm_node_
  * Parse a hash pattern.
  */
 static pm_hash_pattern_node_t *
-parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node_t *first_node) {
+parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node_t *first_node, uint16_t depth) {
     pm_node_list_t assocs = { 0 };
     pm_static_literals_t keys = { 0 };
     pm_node_t *rest = NULL;
@@ -17002,7 +17053,7 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
                 } else {
                     // Here we have a value for the first assoc in the list, so
                     // we will parse it now.
-                    value = parse_pattern(parser, captures, PM_PARSE_PATTERN_SINGLE, PM_ERR_PATTERN_EXPRESSION_AFTER_KEY);
+                    value = parse_pattern(parser, captures, PM_PARSE_PATTERN_SINGLE, PM_ERR_PATTERN_EXPRESSION_AFTER_KEY, (uint16_t) (depth + 1));
                 }
 
                 pm_token_t operator = not_provided(parser);
@@ -17049,7 +17100,7 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
             pm_node_t *key;
 
             if (match1(parser, PM_TOKEN_STRING_BEGIN)) {
-                key = parse_strings(parser, NULL);
+                key = parse_strings(parser, NULL, true, (uint16_t) (depth + 1));
 
                 if (PM_NODE_TYPE_P(key, PM_INTERPOLATED_SYMBOL_NODE)) {
                     pm_parser_err_node(parser, key, PM_ERR_PATTERN_HASH_KEY_INTERPOLATED);
@@ -17067,7 +17118,7 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
             if (match7(parser, PM_TOKEN_COMMA, PM_TOKEN_KEYWORD_THEN, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_PARENTHESIS_RIGHT, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON)) {
                 value = parse_pattern_hash_implicit_value(parser, captures, (pm_symbol_node_t *) key);
             } else {
-                value = parse_pattern(parser, captures, PM_PARSE_PATTERN_SINGLE, PM_ERR_PATTERN_EXPRESSION_AFTER_KEY);
+                value = parse_pattern(parser, captures, PM_PARSE_PATTERN_SINGLE, PM_ERR_PATTERN_EXPRESSION_AFTER_KEY, (uint16_t) (depth + 1));
             }
 
             pm_token_t operator = not_provided(parser);
@@ -17092,7 +17143,7 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
  * Parse a pattern expression primitive.
  */
 static pm_node_t *
-parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_diagnostic_id_t diag_id) {
+parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_diagnostic_id_t diag_id, uint16_t depth) {
     switch (parser->current.type) {
         case PM_TOKEN_IDENTIFIER:
         case PM_TOKEN_METHOD_NAME: {
@@ -17124,7 +17175,7 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
 
             // Otherwise, we'll parse the inner pattern, then deal with it depending
             // on the type it returns.
-            pm_node_t *inner = parse_pattern(parser, captures, PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_BRACKET);
+            pm_node_t *inner = parse_pattern(parser, captures, PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_BRACKET, (uint16_t) (depth + 1));
 
             accept1(parser, PM_TOKEN_NEWLINE);
             expect1(parser, PM_TOKEN_BRACKET_RIGHT, PM_ERR_PATTERN_TERM_BRACKET);
@@ -17191,7 +17242,7 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
                         first_node = parse_pattern_keyword_rest(parser, captures);
                         break;
                     case PM_TOKEN_STRING_BEGIN:
-                        first_node = parse_expression(parser, PM_BINDING_POWER_MAX, false, PM_ERR_PATTERN_HASH_KEY_LABEL);
+                        first_node = parse_expression(parser, PM_BINDING_POWER_MAX, false, true, PM_ERR_PATTERN_HASH_KEY_LABEL, (uint16_t) (depth + 1));
                         break;
                     default: {
                         PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_PATTERN_HASH_KEY, pm_token_type_human(parser->current.type));
@@ -17202,7 +17253,7 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
                     }
                 }
 
-                node = parse_pattern_hash(parser, captures, first_node);
+                node = parse_pattern_hash(parser, captures, first_node, (uint16_t) (depth + 1));
 
                 accept1(parser, PM_TOKEN_NEWLINE);
                 expect1(parser, PM_TOKEN_BRACE_RIGHT, PM_ERR_PATTERN_TERM_BRACE);
@@ -17227,7 +17278,7 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
             // expression as the right side of the range.
             switch (parser->current.type) {
                 case PM_CASE_PRIMITIVE: {
-                    pm_node_t *right = parse_expression(parser, PM_BINDING_POWER_MAX, false, PM_ERR_PATTERN_EXPRESSION_AFTER_RANGE);
+                    pm_node_t *right = parse_expression(parser, PM_BINDING_POWER_MAX, false, false, PM_ERR_PATTERN_EXPRESSION_AFTER_RANGE, (uint16_t) (depth + 1));
                     return (pm_node_t *) pm_range_node_create(parser, NULL, &operator, right);
                 }
                 default: {
@@ -17238,7 +17289,10 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
             }
         }
         case PM_CASE_PRIMITIVE: {
-            pm_node_t *node = parse_expression(parser, PM_BINDING_POWER_MAX, false, diag_id);
+            pm_node_t *node = parse_expression(parser, PM_BINDING_POWER_MAX, false, true, diag_id, (uint16_t) (depth + 1));
+
+            // If we found a label, we need to immediately return to the caller.
+            if (pm_symbol_node_label_p(node)) return node;
 
             // Now that we have a primitive, we need to check if it's part of a range.
             if (accept2(parser, PM_TOKEN_DOT_DOT, PM_TOKEN_DOT_DOT_DOT)) {
@@ -17249,7 +17303,7 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
                 // node. Otherwise, we'll create an endless range.
                 switch (parser->current.type) {
                     case PM_CASE_PRIMITIVE: {
-                        pm_node_t *right = parse_expression(parser, PM_BINDING_POWER_MAX, false, PM_ERR_PATTERN_EXPRESSION_AFTER_RANGE);
+                        pm_node_t *right = parse_expression(parser, PM_BINDING_POWER_MAX, false, false, PM_ERR_PATTERN_EXPRESSION_AFTER_RANGE, (uint16_t) (depth + 1));
                         return (pm_node_t *) pm_range_node_create(parser, node, &operator, right);
                     }
                     default:
@@ -17314,7 +17368,7 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
                     pm_token_t lparen = parser->current;
                     parser_lex(parser);
 
-                    pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_STATEMENT, true, PM_ERR_PATTERN_EXPRESSION_AFTER_PIN);
+                    pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_STATEMENT, true, false, PM_ERR_PATTERN_EXPRESSION_AFTER_PIN, (uint16_t) (depth + 1));
                     parser->pattern_matching_newlines = previous_pattern_matching_newlines;
 
                     accept1(parser, PM_TOKEN_NEWLINE);
@@ -17337,14 +17391,14 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
             expect1(parser, PM_TOKEN_CONSTANT, PM_ERR_CONSTANT_PATH_COLON_COLON_CONSTANT);
             pm_constant_path_node_t *node = pm_constant_path_node_create(parser, NULL, &delimiter, &parser->previous);
 
-            return parse_pattern_constant_path(parser, captures, (pm_node_t *) node);
+            return parse_pattern_constant_path(parser, captures, (pm_node_t *) node, (uint16_t) (depth + 1));
         }
         case PM_TOKEN_CONSTANT: {
             pm_token_t constant = parser->current;
             parser_lex(parser);
 
             pm_node_t *node = (pm_node_t *) pm_constant_read_node_create(parser, &constant);
-            return parse_pattern_constant_path(parser, captures, node);
+            return parse_pattern_constant_path(parser, captures, node, (uint16_t) (depth + 1));
         }
         default:
             pm_parser_err_current(parser, diag_id);
@@ -17357,10 +17411,10 @@ parse_pattern_primitive(pm_parser_t *parser, pm_constant_id_list_t *captures, pm
  * assignment.
  */
 static pm_node_t *
-parse_pattern_primitives(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_diagnostic_id_t diag_id) {
-    pm_node_t *node = NULL;
+parse_pattern_primitives(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node_t *first_node, pm_diagnostic_id_t diag_id, uint16_t depth) {
+    pm_node_t *node = first_node;
 
-    do {
+    while ((node == NULL) || accept1(parser, PM_TOKEN_PIPE)) {
         pm_token_t operator = parser->previous;
 
         switch (parser->current.type) {
@@ -17374,9 +17428,9 @@ parse_pattern_primitives(pm_parser_t *parser, pm_constant_id_list_t *captures, p
             case PM_TOKEN_UDOT_DOT_DOT:
             case PM_CASE_PRIMITIVE: {
                 if (node == NULL) {
-                    node = parse_pattern_primitive(parser, captures, diag_id);
+                    node = parse_pattern_primitive(parser, captures, diag_id, (uint16_t) (depth + 1));
                 } else {
-                    pm_node_t *right = parse_pattern_primitive(parser, captures, PM_ERR_PATTERN_EXPRESSION_AFTER_PIPE);
+                    pm_node_t *right = parse_pattern_primitive(parser, captures, PM_ERR_PATTERN_EXPRESSION_AFTER_PIPE, (uint16_t) (depth + 1));
                     node = (pm_node_t *) pm_alternation_pattern_node_create(parser, node, right, &operator);
                 }
 
@@ -17387,7 +17441,7 @@ parse_pattern_primitives(pm_parser_t *parser, pm_constant_id_list_t *captures, p
                 pm_token_t opening = parser->current;
                 parser_lex(parser);
 
-                pm_node_t *body = parse_pattern(parser, captures, PM_PARSE_PATTERN_SINGLE, PM_ERR_PATTERN_EXPRESSION_AFTER_PAREN);
+                pm_node_t *body = parse_pattern(parser, captures, PM_PARSE_PATTERN_SINGLE, PM_ERR_PATTERN_EXPRESSION_AFTER_PAREN, (uint16_t) (depth + 1));
                 accept1(parser, PM_TOKEN_NEWLINE);
                 expect1(parser, PM_TOKEN_PARENTHESIS_RIGHT, PM_ERR_PATTERN_TERM_PAREN);
                 pm_node_t *right = (pm_node_t *) pm_parentheses_node_create(parser, &opening, body, &parser->previous);
@@ -17413,7 +17467,7 @@ parse_pattern_primitives(pm_parser_t *parser, pm_constant_id_list_t *captures, p
                 break;
             }
         }
-    } while (accept1(parser, PM_TOKEN_PIPE));
+    }
 
     // If we have an =>, then we are assigning this pattern to a variable.
     // In this case we should create an assignment node.
@@ -17429,7 +17483,7 @@ parse_pattern_primitives(pm_parser_t *parser, pm_constant_id_list_t *captures, p
         }
 
         parse_pattern_capture(parser, captures, constant_id, &PM_LOCATION_TOKEN_VALUE(&parser->previous));
-        pm_node_t *target = (pm_node_t *) pm_local_variable_target_node_create(
+        pm_local_variable_target_node_t *target = pm_local_variable_target_node_create(
             parser,
             &PM_LOCATION_TOKEN_VALUE(&parser->previous),
             constant_id,
@@ -17446,7 +17500,7 @@ parse_pattern_primitives(pm_parser_t *parser, pm_constant_id_list_t *captures, p
  * Parse a pattern matching expression.
  */
 static pm_node_t *
-parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flags, pm_diagnostic_id_t diag_id) {
+parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flags, pm_diagnostic_id_t diag_id, uint16_t depth) {
     pm_node_t *node = NULL;
 
     bool leading_rest = false;
@@ -17456,7 +17510,7 @@ parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flag
         case PM_TOKEN_LABEL: {
             parser_lex(parser);
             pm_node_t *key = (pm_node_t *) pm_symbol_node_label_create(parser, &parser->previous);
-            node = (pm_node_t *) parse_pattern_hash(parser, captures, key);
+            node = (pm_node_t *) parse_pattern_hash(parser, captures, key, (uint16_t) (depth + 1));
 
             if (!(flags & PM_PARSE_PATTERN_TOP)) {
                 pm_parser_err_node(parser, node, PM_ERR_PATTERN_HASH_IMPLICIT);
@@ -17466,13 +17520,31 @@ parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flag
         }
         case PM_TOKEN_USTAR_STAR: {
             node = parse_pattern_keyword_rest(parser, captures);
-            node = (pm_node_t *) parse_pattern_hash(parser, captures, node);
+            node = (pm_node_t *) parse_pattern_hash(parser, captures, node, (uint16_t) (depth + 1));
 
             if (!(flags & PM_PARSE_PATTERN_TOP)) {
                 pm_parser_err_node(parser, node, PM_ERR_PATTERN_HASH_IMPLICIT);
             }
 
             return node;
+        }
+        case PM_TOKEN_STRING_BEGIN: {
+            // We need special handling for string beginnings because they could
+            // be dynamic symbols leading to hash patterns.
+            node = parse_pattern_primitive(parser, captures, diag_id, (uint16_t) (depth + 1));
+
+            if (pm_symbol_node_label_p(node)) {
+                node = (pm_node_t *) parse_pattern_hash(parser, captures, node, (uint16_t) (depth + 1));
+
+                if (!(flags & PM_PARSE_PATTERN_TOP)) {
+                    pm_parser_err_node(parser, node, PM_ERR_PATTERN_HASH_IMPLICIT);
+                }
+
+                return node;
+            }
+
+            node = parse_pattern_primitives(parser, captures, node, diag_id, (uint16_t) (depth + 1));
+            break;
         }
         case PM_TOKEN_USTAR: {
             if (flags & (PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI)) {
@@ -17484,14 +17556,14 @@ parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flag
         }
         /* fallthrough */
         default:
-            node = parse_pattern_primitives(parser, captures, diag_id);
+            node = parse_pattern_primitives(parser, captures, NULL, diag_id, (uint16_t) (depth + 1));
             break;
     }
 
     // If we got a dynamic label symbol, then we need to treat it like the
     // beginning of a hash pattern.
     if (pm_symbol_node_label_p(node)) {
-        return (pm_node_t *) parse_pattern_hash(parser, captures, node);
+        return (pm_node_t *) parse_pattern_hash(parser, captures, node, (uint16_t) (depth + 1));
     }
 
     if ((flags & PM_PARSE_PATTERN_MULTI) && match1(parser, PM_TOKEN_COMMA)) {
@@ -17504,7 +17576,7 @@ parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flag
         // Gather up all of the patterns into the list.
         while (accept1(parser, PM_TOKEN_COMMA)) {
             // Break early here in case we have a trailing comma.
-            if (match6(parser, PM_TOKEN_KEYWORD_THEN, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON, PM_TOKEN_EOF)) {
+            if (match4(parser, PM_TOKEN_KEYWORD_THEN, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_SEMICOLON)) {
                 node = (pm_node_t *) pm_implicit_rest_node_create(parser, &parser->previous);
                 pm_node_list_append(&nodes, node);
                 break;
@@ -17522,7 +17594,7 @@ parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flag
 
                 trailing_rest = true;
             } else {
-                node = parse_pattern_primitives(parser, captures, PM_ERR_PATTERN_EXPRESSION_AFTER_COMMA);
+                node = parse_pattern_primitives(parser, captures, NULL, PM_ERR_PATTERN_EXPRESSION_AFTER_COMMA, (uint16_t) (depth + 1));
             }
 
             pm_node_list_append(&nodes, node);
@@ -17614,7 +17686,8 @@ pm_parser_err_prefix(pm_parser_t *parser, pm_diagnostic_id_t diag_id) {
             PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->previous, diag_id, human, parser->previous.start[0]);
             break;
         }
-        case PM_ERR_UNARY_DISALLOWED: {
+        case PM_ERR_UNARY_DISALLOWED:
+        case PM_ERR_EXPECT_ARGUMENT: {
             PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, diag_id, pm_token_type_human(parser->current.type));
             break;
         }
@@ -17869,7 +17942,7 @@ parse_regular_expression_errors(pm_parser_t *parser, pm_regular_expression_node_
  * Parse an expression that begins with the previous node that we just lexed.
  */
 static inline pm_node_t *
-parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id) {
+parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, bool accepts_label, pm_diagnostic_id_t diag_id, uint16_t depth) {
     switch (parser->current.type) {
         case PM_TOKEN_BRACKET_LEFT_ARRAY: {
             parser_lex(parser);
@@ -17908,7 +17981,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     if (match3(parser, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_COMMA, PM_TOKEN_EOF)) {
                         pm_parser_scope_forwarding_positionals_check(parser, &operator);
                     } else {
-                        expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_ARRAY_EXPRESSION_AFTER_STAR);
+                        expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_ARRAY_EXPRESSION_AFTER_STAR, (uint16_t) (depth + 1));
                     }
 
                     element = (pm_node_t *) pm_splat_node_create(parser, &operator, expression);
@@ -17921,13 +17994,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     pm_static_literals_t hash_keys = { 0 };
 
                     if (!match8(parser, PM_TOKEN_EOF, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON, PM_TOKEN_EOF, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_KEYWORD_DO, PM_TOKEN_PARENTHESIS_RIGHT)) {
-                        parse_assocs(parser, &hash_keys, element);
+                        parse_assocs(parser, &hash_keys, element, (uint16_t) (depth + 1));
                     }
 
                     pm_static_literals_free(&hash_keys);
                     parsed_bare_hash = true;
                 } else {
-                    element = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_ARRAY_EXPRESSION);
+                    element = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, true, PM_ERR_ARRAY_EXPRESSION, (uint16_t) (depth + 1));
 
                     if (pm_symbol_node_label_p(element) || accept1(parser, PM_TOKEN_EQUAL_GREATER)) {
                         if (parsed_bare_hash) {
@@ -17945,13 +18018,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                             operator = not_provided(parser);
                         }
 
-                        pm_node_t *value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_HASH_VALUE);
+                        pm_node_t *value = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_HASH_VALUE, (uint16_t) (depth + 1));
                         pm_node_t *assoc = (pm_node_t *) pm_assoc_node_create(parser, element, &operator, value);
                         pm_keyword_hash_node_elements_append(hash, assoc);
 
                         element = (pm_node_t *) hash;
                         if (accept1(parser, PM_TOKEN_COMMA) && !match1(parser, PM_TOKEN_BRACKET_RIGHT)) {
-                            parse_assocs(parser, &hash_keys, element);
+                            parse_assocs(parser, &hash_keys, element, (uint16_t) (depth + 1));
                         }
 
                         pm_static_literals_free(&hash_keys);
@@ -17964,7 +18037,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             }
 
             accept1(parser, PM_TOKEN_NEWLINE);
-            expect1(parser, PM_TOKEN_BRACKET_RIGHT, PM_ERR_ARRAY_TERM);
+
+            if (!accept1(parser, PM_TOKEN_BRACKET_RIGHT)) {
+                PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_ARRAY_TERM, pm_token_type_human(parser->current.type));
+                parser->previous.start = parser->previous.end;
+                parser->previous.type = PM_TOKEN_MISSING;
+            }
+
             pm_array_node_close_set(array, &parser->previous);
             pm_accepts_block_stack_pop(parser);
 
@@ -17995,7 +18074,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             // of statements within the parentheses.
             pm_accepts_block_stack_push(parser, true);
             context_push(parser, PM_CONTEXT_PARENS);
-            pm_node_t *statement = parse_expression(parser, PM_BINDING_POWER_STATEMENT, true, PM_ERR_CANNOT_PARSE_EXPRESSION);
+            pm_node_t *statement = parse_expression(parser, PM_BINDING_POWER_STATEMENT, true, false, PM_ERR_CANNOT_PARSE_EXPRESSION, (uint16_t) (depth + 1));
             context_pop(parser);
 
             // Determine if this statement is followed by a terminator. In the
@@ -18043,7 +18122,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
                     if (match1(parser, PM_TOKEN_COMMA)) {
                         if (binding_power == PM_BINDING_POWER_STATEMENT) {
-                            return parse_targets_validate(parser, (pm_node_t *) multi_target, PM_BINDING_POWER_INDEX);
+                            return parse_targets_validate(parser, (pm_node_t *) multi_target, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
                         }
                         return (pm_node_t *) multi_target;
                     }
@@ -18075,7 +18154,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             // Parse each statement within the parentheses.
             while (true) {
-                pm_node_t *node = parse_expression(parser, PM_BINDING_POWER_STATEMENT, true, PM_ERR_CANNOT_PARSE_EXPRESSION);
+                pm_node_t *node = parse_expression(parser, PM_BINDING_POWER_STATEMENT, true, false, PM_ERR_CANNOT_PARSE_EXPRESSION, (uint16_t) (depth + 1));
                 pm_statements_node_body_append(parser, statements, node, true);
 
                 // If we're recovering from a syntax error, then we need to stop
@@ -18133,10 +18212,10 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (!match2(parser, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_EOF)) {
                 if (current_hash_keys != NULL) {
-                    parse_assocs(parser, current_hash_keys, (pm_node_t *) node);
+                    parse_assocs(parser, current_hash_keys, (pm_node_t *) node, (uint16_t) (depth + 1));
                 } else {
                     pm_static_literals_t hash_keys = { 0 };
-                    parse_assocs(parser, &hash_keys, (pm_node_t *) node);
+                    parse_assocs(parser, &hash_keys, (pm_node_t *) node, (uint16_t) (depth + 1));
                     pm_static_literals_free(&hash_keys);
                 }
 
@@ -18167,7 +18246,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             // Characters can be followed by strings in which case they are
             // automatically concatenated.
             if (match1(parser, PM_TOKEN_STRING_BEGIN)) {
-                return parse_strings(parser, node);
+                return parse_strings(parser, node, false, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18177,7 +18256,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_node_t *node = (pm_node_t *) pm_class_variable_read_node_create(parser, &parser->previous);
 
             if (binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18195,7 +18274,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 match1(parser, PM_TOKEN_BRACE_LEFT)
             ) {
                 pm_arguments_t arguments = { 0 };
-                parse_arguments_list(parser, &arguments, true, accepts_command_call);
+                parse_arguments_list(parser, &arguments, true, accepts_command_call, (uint16_t) (depth + 1));
                 return (pm_node_t *) pm_call_node_fcall_create(parser, &constant, &arguments);
             }
 
@@ -18204,7 +18283,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             if ((binding_power == PM_BINDING_POWER_STATEMENT) && match1(parser, PM_TOKEN_COMMA)) {
                 // If we get here, then we have a comma immediately following a
                 // constant, so we're going to parse this as a multiple assignment.
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18217,7 +18296,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_node_t *node = (pm_node_t *) pm_constant_path_node_create(parser, NULL, &delimiter, &parser->previous);
 
             if ((binding_power == PM_BINDING_POWER_STATEMENT) && match1(parser, PM_TOKEN_COMMA)) {
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18227,7 +18306,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_token_t operator = parser->current;
             parser_lex(parser);
 
-            pm_node_t *right = parse_expression(parser, pm_binding_powers[operator.type].left, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+            pm_node_t *right = parse_expression(parser, pm_binding_powers[operator.type].left, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
 
             // Unary .. and ... are special because these are non-associative
             // operators that can also be unary operators. In this case we need
@@ -18256,7 +18335,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_node_t *node = (pm_node_t *) pm_numbered_reference_read_node_create(parser, &parser->previous);
 
             if (binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18266,7 +18345,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_node_t *node = (pm_node_t *) pm_global_variable_read_node_create(parser, &parser->previous);
 
             if (binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18276,7 +18355,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_node_t *node = (pm_node_t *) pm_back_reference_read_node_create(parser, &parser->previous);
 
             if (binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18295,7 +18374,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 pm_call_node_t *call = (pm_call_node_t *) node;
                 pm_arguments_t arguments = { 0 };
 
-                if (parse_arguments_list(parser, &arguments, true, accepts_command_call)) {
+                if (parse_arguments_list(parser, &arguments, true, accepts_command_call, (uint16_t) (depth + 1))) {
                     // Since we found arguments, we need to turn off the
                     // variable call bit in the flags.
                     pm_node_flag_unset((pm_node_t *)call, PM_CALL_NODE_FLAGS_VARIABLE_CALL);
@@ -18327,7 +18406,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     match1(parser, PM_TOKEN_BRACE_LEFT)
                 ) {
                     pm_arguments_t arguments = { 0 };
-                    parse_arguments_list(parser, &arguments, true, accepts_command_call);
+                    parse_arguments_list(parser, &arguments, true, accepts_command_call, (uint16_t) (depth + 1));
                     pm_call_node_t *fcall = pm_call_node_fcall_create(parser, &identifier, &arguments);
 
                     if (PM_NODE_TYPE_P(node, PM_IT_LOCAL_VARIABLE_READ_NODE)) {
@@ -18356,7 +18435,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             }
 
             if ((binding_power == PM_BINDING_POWER_STATEMENT) && match1(parser, PM_TOKEN_COMMA)) {
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18364,10 +18443,11 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
         case PM_TOKEN_HEREDOC_START: {
             // Here we have found a heredoc. We'll parse it and add it to the
             // list of strings.
-            pm_lex_mode_t *lex_mode = parser->lex_modes.current;
-            assert(lex_mode->mode == PM_LEX_HEREDOC);
-            pm_heredoc_quote_t quote = lex_mode->as.heredoc.quote;
-            pm_heredoc_indent_t indent = lex_mode->as.heredoc.indent;
+            assert(parser->lex_modes.current->mode == PM_LEX_HEREDOC);
+            pm_heredoc_lex_mode_t lex_mode = parser->lex_modes.current->as.heredoc.base;
+
+            size_t common_whitespace = (size_t) -1;
+            parser->lex_modes.current->as.heredoc.common_whitespace = &common_whitespace;
 
             parser_lex(parser);
             pm_token_t opening = parser->previous;
@@ -18378,17 +18458,17 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             if (match2(parser, PM_TOKEN_HEREDOC_END, PM_TOKEN_EOF)) {
                 // If we get here, then we have an empty heredoc. We'll create
                 // an empty content token and return an empty string node.
-                expect1_heredoc_term(parser, lex_mode);
+                expect1_heredoc_term(parser, lex_mode.ident_start, lex_mode.ident_length);
                 pm_token_t content = parse_strings_empty_content(parser->previous.start);
 
-                if (quote == PM_HEREDOC_QUOTE_BACKTICK) {
+                if (lex_mode.quote == PM_HEREDOC_QUOTE_BACKTICK) {
                     node = (pm_node_t *) pm_xstring_node_create_unescaped(parser, &opening, &content, &parser->previous, &PM_STRING_EMPTY);
                 } else {
                     node = (pm_node_t *) pm_string_node_create_unescaped(parser, &opening, &content, &parser->previous, &PM_STRING_EMPTY);
                 }
 
                 node->location.end = opening.end;
-            } else if ((part = parse_string_part(parser)) == NULL) {
+            } else if ((part = parse_string_part(parser, (uint16_t) (depth + 1))) == NULL) {
                 // If we get here, then we tried to find something in the
                 // heredoc but couldn't actually parse anything, so we'll just
                 // return a missing node.
@@ -18408,18 +18488,17 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 cast->closing_loc = PM_LOCATION_TOKEN_VALUE(&parser->current);
                 cast->base.location = cast->opening_loc;
 
-                if (quote == PM_HEREDOC_QUOTE_BACKTICK) {
+                if (lex_mode.quote == PM_HEREDOC_QUOTE_BACKTICK) {
                     assert(sizeof(pm_string_node_t) == sizeof(pm_x_string_node_t));
                     cast->base.type = PM_X_STRING_NODE;
                 }
 
-                size_t common_whitespace = lex_mode->as.heredoc.common_whitespace;
-                if (indent == PM_HEREDOC_INDENT_TILDE && (common_whitespace != (size_t) -1) && (common_whitespace != 0)) {
+                if (lex_mode.indent == PM_HEREDOC_INDENT_TILDE && (common_whitespace != (size_t) -1) && (common_whitespace != 0)) {
                     parse_heredoc_dedent_string(&cast->unescaped, common_whitespace);
                 }
 
                 node = (pm_node_t *) cast;
-                expect1_heredoc_term(parser, lex_mode);
+                expect1_heredoc_term(parser, lex_mode.ident_start, lex_mode.ident_length);
             } else {
                 // If we get here, then we have multiple parts in the heredoc,
                 // so we'll need to create an interpolated string node to hold
@@ -18428,20 +18507,18 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 pm_node_list_append(&parts, part);
 
                 while (!match2(parser, PM_TOKEN_HEREDOC_END, PM_TOKEN_EOF)) {
-                    if ((part = parse_string_part(parser)) != NULL) {
+                    if ((part = parse_string_part(parser, (uint16_t) (depth + 1))) != NULL) {
                         pm_node_list_append(&parts, part);
                     }
                 }
 
-                size_t common_whitespace = lex_mode->as.heredoc.common_whitespace;
-
                 // Now that we have all of the parts, create the correct type of
                 // interpolated node.
-                if (quote == PM_HEREDOC_QUOTE_BACKTICK) {
+                if (lex_mode.quote == PM_HEREDOC_QUOTE_BACKTICK) {
                     pm_interpolated_x_string_node_t *cast = pm_interpolated_xstring_node_create(parser, &opening, &opening);
                     cast->parts = parts;
 
-                    expect1_heredoc_term(parser, lex_mode);
+                    expect1_heredoc_term(parser, lex_mode.ident_start, lex_mode.ident_length);
                     pm_interpolated_xstring_node_closing_set(cast, &parser->previous);
 
                     cast->base.location = cast->opening_loc;
@@ -18450,7 +18527,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     pm_interpolated_string_node_t *cast = pm_interpolated_string_node_create(parser, &opening, &parts, &opening);
                     pm_node_list_free(&parts);
 
-                    expect1_heredoc_term(parser, lex_mode);
+                    expect1_heredoc_term(parser, lex_mode.ident_start, lex_mode.ident_length);
                     pm_interpolated_string_node_closing_set(cast, &parser->previous);
 
                     cast->base.location = cast->opening_loc;
@@ -18459,9 +18536,9 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
                 // If this is a heredoc that is indented with a ~, then we need
                 // to dedent each line by the common leading whitespace.
-                if (indent == PM_HEREDOC_INDENT_TILDE && (common_whitespace != (size_t) -1) && (common_whitespace != 0)) {
+                if (lex_mode.indent == PM_HEREDOC_INDENT_TILDE && (common_whitespace != (size_t) -1) && (common_whitespace != 0)) {
                     pm_node_list_t *nodes;
-                    if (quote == PM_HEREDOC_QUOTE_BACKTICK) {
+                    if (lex_mode.quote == PM_HEREDOC_QUOTE_BACKTICK) {
                         nodes = &((pm_interpolated_x_string_node_t *) node)->parts;
                     } else {
                         nodes = &((pm_interpolated_string_node_t *) node)->parts;
@@ -18472,7 +18549,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             }
 
             if (match1(parser, PM_TOKEN_STRING_BEGIN)) {
-                return parse_strings(parser, node);
+                return parse_strings(parser, node, false, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18482,7 +18559,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_node_t *node = (pm_node_t *) pm_instance_variable_read_node_create(parser, &parser->previous);
 
             if (binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
-                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX);
+                node = parse_targets_validate(parser, node, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             return node;
@@ -18524,8 +18601,8 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
             pm_token_t keyword = parser->previous;
 
-            pm_node_t *new_name = parse_alias_argument(parser, true);
-            pm_node_t *old_name = parse_alias_argument(parser, false);
+            pm_node_t *new_name = parse_alias_argument(parser, true, (uint16_t) (depth + 1));
+            pm_node_t *old_name = parse_alias_argument(parser, false, (uint16_t) (depth + 1));
 
             switch (PM_NODE_TYPE(new_name)) {
                 case PM_BACK_REFERENCE_READ_NODE:
@@ -18570,7 +18647,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
              } else if (!token_begins_expression_p(parser->current.type)) {
                 predicate = NULL;
             } else {
-                predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CASE_EXPRESSION_AFTER_CASE);
+                predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_CASE_EXPRESSION_AFTER_CASE, (uint16_t) (depth + 1));
                 while (accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON));
             }
 
@@ -18607,14 +18684,14 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     do {
                         if (accept1(parser, PM_TOKEN_USTAR)) {
                             pm_token_t operator = parser->previous;
-                            pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR);
+                            pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR, (uint16_t) (depth + 1));
 
                             pm_splat_node_t *splat_node = pm_splat_node_create(parser, &operator, expression);
                             pm_when_node_conditions_append(when_node, (pm_node_t *) splat_node);
 
                             if (PM_NODE_TYPE_P(expression, PM_MISSING_NODE)) break;
                         } else {
-                            pm_node_t *condition = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_CASE_EXPRESSION_AFTER_WHEN);
+                            pm_node_t *condition = parse_value_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_CASE_EXPRESSION_AFTER_WHEN, (uint16_t) (depth + 1));
                             pm_when_node_conditions_append(when_node, condition);
 
                             // If we found a missing node, then this is a syntax
@@ -18643,7 +18720,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     }
 
                     if (!match3(parser, PM_TOKEN_KEYWORD_WHEN, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
-                        pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_CASE_WHEN);
+                        pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_CASE_WHEN, (uint16_t) (depth + 1));
                         if (statements != NULL) {
                             pm_when_node_statements_set(when_node, statements);
                         }
@@ -18685,7 +18762,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     pm_token_t in_keyword = parser->previous;
 
                     pm_constant_id_list_t captures = { 0 };
-                    pm_node_t *pattern = parse_pattern(parser, &captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_IN);
+                    pm_node_t *pattern = parse_pattern(parser, &captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_IN, (uint16_t) (depth + 1));
 
                     parser->pattern_matching_newlines = previous_pattern_matching_newlines;
                     pm_constant_id_list_free(&captures);
@@ -18695,11 +18772,11 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     // `unless` statements.
                     if (accept1(parser, PM_TOKEN_KEYWORD_IF_MODIFIER)) {
                         pm_token_t keyword = parser->previous;
-                        pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CONDITIONAL_IF_PREDICATE);
+                        pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_CONDITIONAL_IF_PREDICATE, (uint16_t) (depth + 1));
                         pattern = (pm_node_t *) pm_if_node_modifier_create(parser, pattern, &keyword, predicate);
                     } else if (accept1(parser, PM_TOKEN_KEYWORD_UNLESS_MODIFIER)) {
                         pm_token_t keyword = parser->previous;
-                        pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CONDITIONAL_UNLESS_PREDICATE);
+                        pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_CONDITIONAL_UNLESS_PREDICATE, (uint16_t) (depth + 1));
                         pattern = (pm_node_t *) pm_unless_node_modifier_create(parser, pattern, &keyword, predicate);
                     }
 
@@ -18724,7 +18801,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     if (match3(parser, PM_TOKEN_KEYWORD_IN, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
                         statements = NULL;
                     } else {
-                        statements = parse_statements(parser, PM_CONTEXT_CASE_IN);
+                        statements = parse_statements(parser, PM_CONTEXT_CASE_IN, (uint16_t) (depth + 1));
                     }
 
                     // Now that we have the full pattern and statements, we can
@@ -18748,7 +18825,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 pm_else_node_t *else_node;
 
                 if (!match1(parser, PM_TOKEN_KEYWORD_END)) {
-                    else_node = pm_else_node_create(parser, &else_keyword, parse_statements(parser, PM_CONTEXT_ELSE), &parser->current);
+                    else_node = pm_else_node_create(parser, &else_keyword, parse_statements(parser, PM_CONTEXT_ELSE, (uint16_t) (depth + 1)), &parser->current);
                 } else {
                     else_node = pm_else_node_create(parser, &else_keyword, NULL, &parser->current);
                 }
@@ -18787,13 +18864,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (!match4(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
                 pm_accepts_block_stack_push(parser, true);
-                begin_statements = parse_statements(parser, PM_CONTEXT_BEGIN);
+                begin_statements = parse_statements(parser, PM_CONTEXT_BEGIN, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
                 accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
             }
 
             pm_begin_node_t *begin_node = pm_begin_node_create(parser, &begin_keyword, begin_statements);
-            parse_rescues(parser, opening_newline_index, &begin_keyword, begin_node, PM_RESCUES_BEGIN);
+            parse_rescues(parser, opening_newline_index, &begin_keyword, begin_node, PM_RESCUES_BEGIN, (uint16_t) (depth + 1));
             expect1(parser, PM_TOKEN_KEYWORD_END, PM_ERR_BEGIN_TERM);
 
             begin_node->base.location.end = parser->previous.end;
@@ -18817,7 +18894,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             expect1(parser, PM_TOKEN_BRACE_LEFT, PM_ERR_BEGIN_UPCASE_BRACE);
             pm_token_t opening = parser->previous;
-            pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_PREEXE);
+            pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_PREEXE, (uint16_t) (depth + 1));
 
             expect1(parser, PM_TOKEN_BRACE_RIGHT, PM_ERR_BEGIN_UPCASE_TERM);
             pm_context_t context = parser->current_context->context;
@@ -18845,7 +18922,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 pm_binding_power_t binding_power = pm_binding_powers[parser->current.type].left;
 
                 if (binding_power == PM_BINDING_POWER_UNSET || binding_power >= PM_BINDING_POWER_RANGE) {
-                    parse_arguments(parser, &arguments, false, PM_TOKEN_EOF);
+                    parse_arguments(parser, &arguments, false, PM_TOKEN_EOF, (uint16_t) (depth + 1));
                 }
             }
 
@@ -18875,7 +18952,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             pm_token_t keyword = parser->previous;
             pm_arguments_t arguments = { 0 };
-            parse_arguments_list(parser, &arguments, true, accepts_command_call);
+            parse_arguments_list(parser, &arguments, true, accepts_command_call, (uint16_t) (depth + 1));
 
             if (
                 arguments.opening_loc.start == NULL &&
@@ -18892,7 +18969,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             pm_token_t keyword = parser->previous;
             pm_arguments_t arguments = { 0 };
-            parse_arguments_list(parser, &arguments, false, accepts_command_call);
+            parse_arguments_list(parser, &arguments, false, accepts_command_call, (uint16_t) (depth + 1));
 
             // It's possible that we've parsed a block argument through our
             // call to parse_arguments_list. If we found one, we should mark it
@@ -18921,21 +18998,23 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (accept1(parser, PM_TOKEN_LESS_LESS)) {
                 pm_token_t operator = parser->previous;
-                pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_EXPECT_EXPRESSION_AFTER_LESS_LESS);
+                pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_EXPECT_EXPRESSION_AFTER_LESS_LESS, (uint16_t) (depth + 1));
 
                 pm_parser_scope_push(parser, true);
-                accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
+                if (!match2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON)) {
+                    PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_EXPECT_SINGLETON_CLASS_DELIMITER, pm_token_type_human(parser->current.type));
+                }
 
                 pm_node_t *statements = NULL;
                 if (!match4(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
                     pm_accepts_block_stack_push(parser, true);
-                    statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_SCLASS);
+                    statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_SCLASS, (uint16_t) (depth + 1));
                     pm_accepts_block_stack_pop(parser);
                 }
 
                 if (match2(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE)) {
                     assert(statements == NULL || PM_NODE_TYPE_P(statements, PM_STATEMENTS_NODE));
-                    statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &class_keyword, class_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_SCLASS);
+                    statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &class_keyword, class_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_SCLASS, (uint16_t) (depth + 1));
                 } else {
                     parser_warn_indentation_mismatch(parser, opening_newline_index, &class_keyword, false, false);
                 }
@@ -18954,7 +19033,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 return (pm_node_t *) pm_singleton_class_node_create(parser, &locals, &class_keyword, &operator, expression, statements, &parser->previous);
             }
 
-            pm_node_t *constant_path = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_CLASS_NAME);
+            pm_node_t *constant_path = parse_expression(parser, PM_BINDING_POWER_INDEX, false, false, PM_ERR_CLASS_NAME, (uint16_t) (depth + 1));
             pm_token_t name = parser->previous;
             if (name.type != PM_TOKEN_CONSTANT) {
                 pm_parser_err_token(parser, &name, PM_ERR_CLASS_NAME);
@@ -18970,7 +19049,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 parser->command_start = true;
                 parser_lex(parser);
 
-                superclass = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CLASS_SUPERCLASS);
+                superclass = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_CLASS_SUPERCLASS, (uint16_t) (depth + 1));
             } else {
                 inheritance_operator = not_provided(parser);
                 superclass = NULL;
@@ -18987,13 +19066,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (!match4(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
                 pm_accepts_block_stack_push(parser, true);
-                statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_CLASS);
+                statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_CLASS, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
             }
 
             if (match2(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE)) {
                 assert(statements == NULL || PM_NODE_TYPE_P(statements, PM_STATEMENTS_NODE));
-                statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &class_keyword, class_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_CLASS);
+                statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &class_keyword, class_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_CLASS, (uint16_t) (depth + 1));
             } else {
                 parser_warn_indentation_mismatch(parser, opening_newline_index, &class_keyword, false, false);
             }
@@ -19139,7 +19218,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     parser_lex(parser);
 
                     pm_token_t lparen = parser->previous;
-                    pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_STATEMENT, true, PM_ERR_DEF_RECEIVER);
+                    pm_node_t *expression = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_DEF_RECEIVER, (uint16_t) (depth + 1));
 
                     accept1(parser, PM_TOKEN_NEWLINE);
                     expect1(parser, PM_TOKEN_PARENTHESIS_RIGHT, PM_ERR_EXPECT_RPAREN);
@@ -19176,12 +19255,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     if (match1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                         params = NULL;
                     } else {
-                        params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, true, false, true, true);
+                        params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, true, false, true, true, (uint16_t) (depth + 1));
                     }
 
                     lex_state_set(parser, PM_LEX_STATE_BEG);
                     parser->command_start = true;
 
+                    context_pop(parser);
                     if (!accept1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                         PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_DEF_PARAMS_TERM_PAREN, pm_token_type_human(parser->current.type));
                         parser->previous.start = parser->previous.end;
@@ -19200,18 +19280,21 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
                     lparen = not_provided(parser);
                     rparen = not_provided(parser);
-                    params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, false, false, true, true);
+                    params = parse_parameters(parser, PM_BINDING_POWER_DEFINED, false, false, true, true, (uint16_t) (depth + 1));
+
+                    context_pop(parser);
                     break;
                 }
                 default: {
                     lparen = not_provided(parser);
                     rparen = not_provided(parser);
                     params = NULL;
+
+                    context_pop(parser);
                     break;
                 }
             }
 
-            context_pop(parser);
             pm_node_t *statements = NULL;
             pm_token_t equal;
             pm_token_t end_keyword;
@@ -19226,13 +19309,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 pm_do_loop_stack_push(parser, false);
                 statements = (pm_node_t *) pm_statements_node_create(parser);
 
-                pm_node_t *statement = parse_expression(parser, PM_BINDING_POWER_DEFINED + 1, binding_power < PM_BINDING_POWER_COMPOSITION, PM_ERR_DEF_ENDLESS);
+                pm_node_t *statement = parse_expression(parser, PM_BINDING_POWER_DEFINED + 1, binding_power < PM_BINDING_POWER_COMPOSITION, false, PM_ERR_DEF_ENDLESS, (uint16_t) (depth + 1));
 
                 if (accept1(parser, PM_TOKEN_KEYWORD_RESCUE_MODIFIER)) {
                     context_push(parser, PM_CONTEXT_RESCUE_MODIFIER);
 
                     pm_token_t rescue_keyword = parser->previous;
-                    pm_node_t *value = parse_expression(parser, binding_power, false, PM_ERR_RESCUE_MODIFIER_VALUE);
+                    pm_node_t *value = parse_expression(parser, binding_power, false, false, PM_ERR_RESCUE_MODIFIER_VALUE, (uint16_t) (depth + 1));
                     context_pop(parser);
 
                     statement = (pm_node_t *) pm_rescue_modifier_node_create(parser, statement, &rescue_keyword, value);
@@ -19258,13 +19341,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
                 if (!match4(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
                     pm_accepts_block_stack_push(parser, true);
-                    statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_DEF);
+                    statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_DEF, (uint16_t) (depth + 1));
                     pm_accepts_block_stack_pop(parser);
                 }
 
                 if (match3(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE, PM_TOKEN_KEYWORD_ELSE)) {
                     assert(statements == NULL || PM_NODE_TYPE_P(statements, PM_STATEMENTS_NODE));
-                    statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &def_keyword, def_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_DEF);
+                    statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &def_keyword, def_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_DEF, (uint16_t) (depth + 1));
                 } else {
                     parser_warn_indentation_mismatch(parser, opening_newline_index, &def_keyword, false, false);
                 }
@@ -19317,7 +19400,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (accept1(parser, PM_TOKEN_PARENTHESIS_LEFT)) {
                 lparen = parser->previous;
-                expression = parse_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_DEFINED_EXPRESSION);
+                expression = parse_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_DEFINED_EXPRESSION, (uint16_t) (depth + 1));
 
                 if (parser->recovering) {
                     rparen = not_provided(parser);
@@ -19329,7 +19412,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             } else {
                 lparen = not_provided(parser);
                 rparen = not_provided(parser);
-                expression = parse_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_DEFINED_EXPRESSION);
+                expression = parse_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_DEFINED_EXPRESSION, (uint16_t) (depth + 1));
             }
 
             context_pop(parser);
@@ -19355,7 +19438,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             expect1(parser, PM_TOKEN_BRACE_LEFT, PM_ERR_END_UPCASE_BRACE);
             pm_token_t opening = parser->previous;
-            pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_POSTEXE);
+            pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_POSTEXE, (uint16_t) (depth + 1));
 
             expect1(parser, PM_TOKEN_BRACE_RIGHT, PM_ERR_END_UPCASE_TERM);
             return (pm_node_t *) pm_post_execution_node_create(parser, &keyword, &opening, statements, &parser->previous);
@@ -19378,12 +19461,12 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 pm_node_t *name = NULL;
 
                 if (token_begins_expression_p(parser->current.type)) {
-                    name = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR);
+                    name = parse_expression(parser, PM_BINDING_POWER_INDEX, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR, (uint16_t) (depth + 1));
                 }
 
                 index = (pm_node_t *) pm_splat_node_create(parser, &star_operator, name);
             } else if (token_begins_expression_p(parser->current.type)) {
-                index = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_EXPECT_EXPRESSION_AFTER_COMMA);
+                index = parse_expression(parser, PM_BINDING_POWER_INDEX, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_COMMA, (uint16_t) (depth + 1));
             } else {
                 pm_parser_err_token(parser, &for_keyword, PM_ERR_FOR_INDEX);
                 index = (pm_node_t *) pm_missing_node_create(parser, for_keyword.start, for_keyword.end);
@@ -19391,7 +19474,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             // Now, if there are multiple index expressions, parse them out.
             if (match1(parser, PM_TOKEN_COMMA)) {
-                index = parse_targets(parser, index, PM_BINDING_POWER_INDEX);
+                index = parse_targets(parser, index, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             } else {
                 index = parse_target(parser, index, false, false);
             }
@@ -19402,7 +19485,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             expect1(parser, PM_TOKEN_KEYWORD_IN, PM_ERR_FOR_IN);
             pm_token_t in_keyword = parser->previous;
 
-            pm_node_t *collection = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_FOR_COLLECTION);
+            pm_node_t *collection = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_FOR_COLLECTION, (uint16_t) (depth + 1));
             pm_do_loop_stack_pop(parser);
 
             pm_token_t do_keyword;
@@ -19410,13 +19493,14 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 do_keyword = parser->previous;
             } else {
                 do_keyword = not_provided(parser);
+                if (!match2(parser, PM_TOKEN_SEMICOLON, PM_TOKEN_NEWLINE)) {
+                    PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_EXPECT_FOR_DELIMITER, pm_token_type_human(parser->current.type));
+                }
             }
-
-            accept2(parser, PM_TOKEN_SEMICOLON, PM_TOKEN_NEWLINE);
 
             pm_statements_node_t *statements = NULL;
             if (!match1(parser, PM_TOKEN_KEYWORD_END)) {
-                statements = parse_statements(parser, PM_CONTEXT_FOR);
+                statements = parse_statements(parser, PM_CONTEXT_FOR, (uint16_t) (depth + 1));
             }
 
             parser_warn_indentation_mismatch(parser, opening_newline_index, &for_keyword, false, false);
@@ -19433,7 +19517,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             bool if_after_else = parser->previous.type == PM_TOKEN_KEYWORD_ELSE;
             parser_lex(parser);
 
-            return parse_conditional(parser, PM_CONTEXT_IF, opening_newline_index, if_after_else);
+            return parse_conditional(parser, PM_CONTEXT_IF, opening_newline_index, if_after_else, (uint16_t) (depth + 1));
         case PM_TOKEN_KEYWORD_UNDEF: {
             if (binding_power != PM_BINDING_POWER_STATEMENT) {
                 pm_parser_err_current(parser, PM_ERR_STATEMENT_UNDEF);
@@ -19441,7 +19525,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             parser_lex(parser);
             pm_undef_node_t *undef = pm_undef_node_create(parser, &parser->previous);
-            pm_node_t *name = parse_undef_argument(parser);
+            pm_node_t *name = parse_undef_argument(parser, (uint16_t) (depth + 1));
 
             if (PM_NODE_TYPE_P(name, PM_MISSING_NODE)) {
                 pm_node_destroy(parser, name);
@@ -19451,7 +19535,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 while (match1(parser, PM_TOKEN_COMMA)) {
                     lex_state_set(parser, PM_LEX_STATE_FNAME | PM_LEX_STATE_FITEM);
                     parser_lex(parser);
-                    name = parse_undef_argument(parser);
+                    name = parse_undef_argument(parser, (uint16_t) (depth + 1));
 
                     if (PM_NODE_TYPE_P(name, PM_MISSING_NODE)) {
                         pm_node_destroy(parser, name);
@@ -19479,7 +19563,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 if (accept1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                     arguments.closing_loc = PM_LOCATION_TOKEN_VALUE(&parser->previous);
                 } else {
-                    receiver = parse_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_NOT_EXPRESSION);
+                    receiver = parse_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_NOT_EXPRESSION, (uint16_t) (depth + 1));
 
                     if (!parser->recovering) {
                         accept1(parser, PM_TOKEN_NEWLINE);
@@ -19488,7 +19572,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     }
                 }
             } else {
-                receiver = parse_expression(parser, PM_BINDING_POWER_NOT, true, PM_ERR_NOT_EXPRESSION);
+                receiver = parse_expression(parser, PM_BINDING_POWER_NOT, true, false, PM_ERR_NOT_EXPRESSION, (uint16_t) (depth + 1));
             }
 
             return (pm_node_t *) pm_call_node_not_create(parser, receiver, &message, &arguments);
@@ -19497,7 +19581,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             size_t opening_newline_index = token_newline_index(parser);
             parser_lex(parser);
 
-            return parse_conditional(parser, PM_CONTEXT_UNLESS, opening_newline_index, false);
+            return parse_conditional(parser, PM_CONTEXT_UNLESS, opening_newline_index, false, (uint16_t) (depth + 1));
         }
         case PM_TOKEN_KEYWORD_MODULE: {
             pm_node_list_t current_block_exits = { 0 };
@@ -19507,7 +19591,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
             pm_token_t module_keyword = parser->previous;
 
-            pm_node_t *constant_path = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_MODULE_NAME);
+            pm_node_t *constant_path = parse_expression(parser, PM_BINDING_POWER_INDEX, false, false, PM_ERR_MODULE_NAME, (uint16_t) (depth + 1));
             pm_token_t name;
 
             // If we can recover from a syntax error that occurred while parsing
@@ -19541,13 +19625,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (!match4(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE, PM_TOKEN_KEYWORD_ELSE, PM_TOKEN_KEYWORD_END)) {
                 pm_accepts_block_stack_push(parser, true);
-                statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_MODULE);
+                statements = (pm_node_t *) parse_statements(parser, PM_CONTEXT_MODULE, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
             }
 
             if (match3(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE, PM_TOKEN_KEYWORD_ELSE)) {
                 assert(statements == NULL || PM_NODE_TYPE_P(statements, PM_STATEMENTS_NODE));
-                statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &module_keyword, module_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_MODULE);
+                statements = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &module_keyword, module_keyword.start, (pm_statements_node_t *) statements, PM_RESCUES_MODULE, (uint16_t) (depth + 1));
             } else {
                 parser_warn_indentation_mismatch(parser, opening_newline_index, &module_keyword, false, false);
             }
@@ -19600,7 +19684,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             parser_lex(parser);
             pm_token_t keyword = parser->previous;
-            pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CONDITIONAL_UNTIL_PREDICATE);
+            pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_CONDITIONAL_UNTIL_PREDICATE, (uint16_t) (depth + 1));
 
             pm_do_loop_stack_pop(parser);
             context_pop(parser);
@@ -19610,7 +19694,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (!match1(parser, PM_TOKEN_KEYWORD_END)) {
                 pm_accepts_block_stack_push(parser, true);
-                statements = parse_statements(parser, PM_CONTEXT_UNTIL);
+                statements = parse_statements(parser, PM_CONTEXT_UNTIL, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
                 accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
             }
@@ -19628,7 +19712,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             parser_lex(parser);
             pm_token_t keyword = parser->previous;
-            pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, PM_ERR_CONDITIONAL_WHILE_PREDICATE);
+            pm_node_t *predicate = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, true, false, PM_ERR_CONDITIONAL_WHILE_PREDICATE, (uint16_t) (depth + 1));
 
             pm_do_loop_stack_pop(parser);
             context_pop(parser);
@@ -19638,7 +19722,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             if (!match1(parser, PM_TOKEN_KEYWORD_END)) {
                 pm_accepts_block_stack_push(parser, true);
-                statements = parse_statements(parser, PM_CONTEXT_WHILE);
+                statements = parse_statements(parser, PM_CONTEXT_WHILE, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
                 accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON);
             }
@@ -19771,7 +19855,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                             // interpolated string, then we'll just add the embedded variable.
                         }
 
-                        pm_node_t *part = parse_string_part(parser);
+                        pm_node_t *part = parse_string_part(parser, (uint16_t) (depth + 1));
                         pm_interpolated_symbol_node_append((pm_interpolated_symbol_node_t *) current, part);
                         if (!start_location_set) {
                             current->location.start = part->location.start;
@@ -19808,7 +19892,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                             assert(false && "unreachable");
                         }
 
-                        pm_node_t *part = parse_string_part(parser);
+                        pm_node_t *part = parse_string_part(parser, (uint16_t) (depth + 1));
                         pm_interpolated_symbol_node_append((pm_interpolated_symbol_node_t *) current, part);
                         if (!start_location_set) {
                             current->location.start = part->location.start;
@@ -19961,7 +20045,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                             // add the embedded variable.
                         }
 
-                        pm_node_t *part = parse_string_part(parser);
+                        pm_node_t *part = parse_string_part(parser, (uint16_t) (depth + 1));
                         pm_interpolated_string_node_append((pm_interpolated_string_node_t *) current, part);
                         break;
                     }
@@ -19992,7 +20076,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                             assert(false && "unreachable");
                         }
 
-                        pm_node_t *part = parse_string_part(parser);
+                        pm_node_t *part = parse_string_part(parser, (uint16_t) (depth + 1));
                         pm_interpolated_string_node_append((pm_interpolated_string_node_t *) current, part);
                         break;
                     }
@@ -20098,7 +20182,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             // parts into the list.
             pm_node_t *part;
             while (!match2(parser, PM_TOKEN_REGEXP_END, PM_TOKEN_EOF)) {
-                if ((part = parse_string_part(parser)) != NULL) {
+                if ((part = parse_string_part(parser, (uint16_t) (depth + 1))) != NULL) {
                     pm_interpolated_regular_expression_node_append(interpolated, part);
                 }
             }
@@ -20175,7 +20259,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
             pm_node_t *part;
             while (!match2(parser, PM_TOKEN_STRING_END, PM_TOKEN_EOF)) {
-                if ((part = parse_string_part(parser)) != NULL) {
+                if ((part = parse_string_part(parser, (uint16_t) (depth + 1))) != NULL) {
                     pm_interpolated_xstring_node_append(node, part);
                 }
             }
@@ -20206,13 +20290,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             pm_node_t *name = NULL;
 
             if (token_begins_expression_p(parser->current.type)) {
-                name = parse_expression(parser, PM_BINDING_POWER_INDEX, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR);
+                name = parse_expression(parser, PM_BINDING_POWER_INDEX, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_STAR, (uint16_t) (depth + 1));
             }
 
             pm_node_t *splat = (pm_node_t *) pm_splat_node_create(parser, &operator, name);
 
             if (match1(parser, PM_TOKEN_COMMA)) {
-                return parse_targets_validate(parser, splat, PM_BINDING_POWER_INDEX);
+                return parse_targets_validate(parser, splat, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             } else {
                 return parse_target_validate(parser, splat, true);
             }
@@ -20225,7 +20309,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
 
             pm_token_t operator = parser->previous;
-            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, binding_power < PM_BINDING_POWER_MATCH, PM_ERR_UNARY_RECEIVER);
+            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, binding_power < PM_BINDING_POWER_MATCH, false, PM_ERR_UNARY_RECEIVER, (uint16_t) (depth + 1));
             pm_call_node_t *node = pm_call_node_unary_create(parser, &operator, receiver, "!");
 
             pm_conditional_predicate(parser, receiver, PM_CONDITIONAL_PREDICATE_TYPE_NOT);
@@ -20238,7 +20322,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
 
             pm_token_t operator = parser->previous;
-            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, PM_ERR_UNARY_RECEIVER);
+            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, false, PM_ERR_UNARY_RECEIVER, (uint16_t) (depth + 1));
             pm_call_node_t *node = pm_call_node_unary_create(parser, &operator, receiver, "~");
 
             return (pm_node_t *) node;
@@ -20250,7 +20334,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
 
             pm_token_t operator = parser->previous;
-            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, PM_ERR_UNARY_RECEIVER);
+            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, false, PM_ERR_UNARY_RECEIVER, (uint16_t) (depth + 1));
             pm_call_node_t *node = pm_call_node_unary_create(parser, &operator, receiver, "-@");
 
             return (pm_node_t *) node;
@@ -20259,11 +20343,11 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
 
             pm_token_t operator = parser->previous;
-            pm_node_t *node = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, PM_ERR_UNARY_RECEIVER);
+            pm_node_t *node = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, false, PM_ERR_UNARY_RECEIVER, (uint16_t) (depth + 1));
 
             if (accept1(parser, PM_TOKEN_STAR_STAR)) {
                 pm_token_t exponent_operator = parser->previous;
-                pm_node_t *exponent = parse_expression(parser, pm_binding_powers[exponent_operator.type].right, false, PM_ERR_EXPECT_ARGUMENT);
+                pm_node_t *exponent = parse_expression(parser, pm_binding_powers[exponent_operator.type].right, false, false, PM_ERR_EXPECT_ARGUMENT, (uint16_t) (depth + 1));
                 node = (pm_node_t *) pm_call_node_binary_create(parser, node, &exponent_operator, exponent, 0);
                 node = (pm_node_t *) pm_call_node_unary_create(parser, &operator, node, "-@");
             } else {
@@ -20303,7 +20387,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                     if (match1(parser, PM_TOKEN_PARENTHESIS_RIGHT)) {
                         block_parameters = pm_block_parameters_node_create(parser, NULL, &opening);
                     } else {
-                        block_parameters = parse_block_parameters(parser, false, &opening, true, true);
+                        block_parameters = parse_block_parameters(parser, false, &opening, true, true, (uint16_t) (depth + 1));
                     }
 
                     accept1(parser, PM_TOKEN_NEWLINE);
@@ -20315,7 +20399,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 case PM_CASE_PARAMETER: {
                     pm_accepts_block_stack_push(parser, false);
                     pm_token_t opening = not_provided(parser);
-                    block_parameters = parse_block_parameters(parser, false, &opening, true, false);
+                    block_parameters = parse_block_parameters(parser, false, &opening, true, false, (uint16_t) (depth + 1));
                     pm_accepts_block_stack_pop(parser);
                     break;
                 }
@@ -20333,7 +20417,7 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
                 opening = parser->previous;
 
                 if (!match1(parser, PM_TOKEN_BRACE_RIGHT)) {
-                    body = (pm_node_t *) parse_statements(parser, PM_CONTEXT_LAMBDA_BRACES);
+                    body = (pm_node_t *) parse_statements(parser, PM_CONTEXT_LAMBDA_BRACES, (uint16_t) (depth + 1));
                 }
 
                 parser_warn_indentation_mismatch(parser, opening_newline_index, &operator, false, false);
@@ -20344,13 +20428,13 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
 
                 if (!match3(parser, PM_TOKEN_KEYWORD_END, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE)) {
                     pm_accepts_block_stack_push(parser, true);
-                    body = (pm_node_t *) parse_statements(parser, PM_CONTEXT_LAMBDA_DO_END);
+                    body = (pm_node_t *) parse_statements(parser, PM_CONTEXT_LAMBDA_DO_END, (uint16_t) (depth + 1));
                     pm_accepts_block_stack_pop(parser);
                 }
 
                 if (match2(parser, PM_TOKEN_KEYWORD_RESCUE, PM_TOKEN_KEYWORD_ENSURE)) {
                     assert(body == NULL || PM_NODE_TYPE_P(body, PM_STATEMENTS_NODE));
-                    body = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &operator, opening.start, (pm_statements_node_t *) body, PM_RESCUES_LAMBDA);
+                    body = (pm_node_t *) parse_rescues_implicit_begin(parser, opening_newline_index, &operator, opening.start, (pm_statements_node_t *) body, PM_RESCUES_LAMBDA, (uint16_t) (depth + 1));
                 } else {
                     parser_warn_indentation_mismatch(parser, opening_newline_index, &operator, false, false);
                 }
@@ -20374,18 +20458,18 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
             parser_lex(parser);
 
             pm_token_t operator = parser->previous;
-            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, PM_ERR_UNARY_RECEIVER);
+            pm_node_t *receiver = parse_expression(parser, pm_binding_powers[parser->previous.type].right, false, false, PM_ERR_UNARY_RECEIVER, (uint16_t) (depth + 1));
             pm_call_node_t *node = pm_call_node_unary_create(parser, &operator, receiver, "+@");
 
             return (pm_node_t *) node;
         }
         case PM_TOKEN_STRING_BEGIN:
-            return parse_strings(parser, NULL);
+            return parse_strings(parser, NULL, accepts_label, (uint16_t) (depth + 1));
         case PM_TOKEN_SYMBOL_BEGIN: {
             pm_lex_mode_t lex_mode = *parser->lex_modes.current;
             parser_lex(parser);
 
-            return parse_symbol(parser, &lex_mode, PM_LEX_STATE_END);
+            return parse_symbol(parser, &lex_mode, PM_LEX_STATE_END, (uint16_t) (depth + 1));
         }
         default: {
             pm_context_t recoverable = context_recoverable(parser, &parser->current);
@@ -20428,8 +20512,8 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, b
  * or any of the binary operators that can be written to a variable.
  */
 static pm_node_t *
-parse_assignment_value(pm_parser_t *parser, pm_binding_power_t previous_binding_power, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id) {
-    pm_node_t *value = parse_value_expression(parser, binding_power, previous_binding_power == PM_BINDING_POWER_ASSIGNMENT ? accepts_command_call : previous_binding_power < PM_BINDING_POWER_MATCH, diag_id);
+parse_assignment_value(pm_parser_t *parser, pm_binding_power_t previous_binding_power, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id, uint16_t depth) {
+    pm_node_t *value = parse_value_expression(parser, binding_power, previous_binding_power == PM_BINDING_POWER_ASSIGNMENT ? accepts_command_call : previous_binding_power < PM_BINDING_POWER_MATCH, false, diag_id, (uint16_t) (depth + 1));
 
     // Contradicting binding powers, the right-hand-side value of the assignment
     // allows the `rescue` modifier.
@@ -20439,7 +20523,7 @@ parse_assignment_value(pm_parser_t *parser, pm_binding_power_t previous_binding_
         pm_token_t rescue = parser->current;
         parser_lex(parser);
 
-        pm_node_t *right = parse_expression(parser, binding_power, false, PM_ERR_RESCUE_MODIFIER_VALUE);
+        pm_node_t *right = parse_expression(parser, binding_power, false, false, PM_ERR_RESCUE_MODIFIER_VALUE, (uint16_t) (depth + 1));
         context_pop(parser);
 
         return (pm_node_t *) pm_rescue_modifier_node_create(parser, value, &rescue, right);
@@ -20497,11 +20581,11 @@ parse_assignment_value_local(pm_parser_t *parser, const pm_node_t *node) {
  * operator that allows multiple values after it.
  */
 static pm_node_t *
-parse_assignment_values(pm_parser_t *parser, pm_binding_power_t previous_binding_power, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id) {
+parse_assignment_values(pm_parser_t *parser, pm_binding_power_t previous_binding_power, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id, uint16_t depth) {
     bool permitted = true;
     if (previous_binding_power != PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_USTAR)) permitted = false;
 
-    pm_node_t *value = parse_starred_expression(parser, binding_power, previous_binding_power == PM_BINDING_POWER_ASSIGNMENT ? accepts_command_call : previous_binding_power < PM_BINDING_POWER_MATCH, diag_id);
+    pm_node_t *value = parse_starred_expression(parser, binding_power, previous_binding_power == PM_BINDING_POWER_ASSIGNMENT ? accepts_command_call : previous_binding_power < PM_BINDING_POWER_MATCH, diag_id, (uint16_t) (depth + 1));
     if (!permitted) pm_parser_err_node(parser, value, PM_ERR_UNEXPECTED_MULTI_WRITE);
 
     parse_assignment_value_local(parser, value);
@@ -20517,7 +20601,7 @@ parse_assignment_values(pm_parser_t *parser, pm_binding_power_t previous_binding
         value = (pm_node_t *) array;
 
         while (accept1(parser, PM_TOKEN_COMMA)) {
-            pm_node_t *element = parse_starred_expression(parser, binding_power, false, PM_ERR_ARRAY_ELEMENT);
+            pm_node_t *element = parse_starred_expression(parser, binding_power, false, PM_ERR_ARRAY_ELEMENT, (uint16_t) (depth + 1));
 
             pm_array_node_elements_append(array, element);
             if (PM_NODE_TYPE_P(element, PM_MISSING_NODE)) break;
@@ -20545,7 +20629,7 @@ parse_assignment_values(pm_parser_t *parser, pm_binding_power_t previous_binding
             }
         }
 
-        pm_node_t *right = parse_expression(parser, binding_power, accepts_command_call_inner, PM_ERR_RESCUE_MODIFIER_VALUE);
+        pm_node_t *right = parse_expression(parser, binding_power, accepts_command_call_inner, false, PM_ERR_RESCUE_MODIFIER_VALUE, (uint16_t) (depth + 1));
         context_pop(parser);
 
         return (pm_node_t *) pm_rescue_modifier_node_create(parser, value, &rescue, right);
@@ -20700,7 +20784,7 @@ parse_regular_expression_named_captures(pm_parser_t *parser, const pm_string_t *
 }
 
 static inline pm_node_t *
-parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t previous_binding_power, pm_binding_power_t binding_power, bool accepts_command_call) {
+parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t previous_binding_power, pm_binding_power_t binding_power, bool accepts_command_call, uint16_t depth) {
     pm_token_t token = parser->current;
 
     switch (token.type) {
@@ -20719,7 +20803,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 /* fallthrough */
                 case PM_CASE_WRITABLE: {
                     parser_lex(parser);
-                    pm_node_t *value = parse_assignment_values(parser, previous_binding_power, PM_NODE_TYPE_P(node, PM_MULTI_TARGET_NODE) ? PM_BINDING_POWER_MULTI_ASSIGNMENT + 1 : binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_EQUAL);
+                    pm_node_t *value = parse_assignment_values(parser, previous_binding_power, PM_NODE_TYPE_P(node, PM_MULTI_TARGET_NODE) ? PM_BINDING_POWER_MULTI_ASSIGNMENT + 1 : binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_EQUAL, (uint16_t) (depth + 1));
 
                     if (PM_NODE_TYPE_P(node, PM_MULTI_TARGET_NODE) && previous_binding_power != PM_BINDING_POWER_STATEMENT) {
                         pm_parser_err_node(parser, node, PM_ERR_UNEXPECTED_MULTI_WRITE);
@@ -20732,7 +20816,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     pm_multi_target_node_targets_append(parser, multi_target, node);
 
                     parser_lex(parser);
-                    pm_node_t *value = parse_assignment_values(parser, previous_binding_power, PM_BINDING_POWER_MULTI_ASSIGNMENT + 1, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_EQUAL);
+                    pm_node_t *value = parse_assignment_values(parser, previous_binding_power, PM_BINDING_POWER_MULTI_ASSIGNMENT + 1, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_EQUAL, (uint16_t) (depth + 1));
                     return parse_write(parser, (pm_node_t *) multi_target, &token, value);
                 }
                 case PM_SOURCE_ENCODING_NODE:
@@ -20745,7 +20829,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     // In these special cases, we have specific error messages
                     // and we will replace them with local variable writes.
                     parser_lex(parser);
-                    pm_node_t *value = parse_assignment_values(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_EQUAL);
+                    pm_node_t *value = parse_assignment_values(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_EQUAL, (uint16_t) (depth + 1));
                     return parse_unwriteable_write(parser, node, &token, value);
                 }
                 default:
@@ -20766,7 +20850,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_GLOBAL_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_global_variable_and_write_node_create(parser, node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20775,7 +20859,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CLASS_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_class_variable_and_write_node_create(parser, (pm_class_variable_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20784,7 +20868,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CONSTANT_PATH_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                     pm_node_t *write = (pm_node_t *) pm_constant_path_and_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
 
                     return parse_shareable_constant_write(parser, write);
@@ -20792,7 +20876,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CONSTANT_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                     pm_node_t *write = (pm_node_t *) pm_constant_and_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20801,7 +20885,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_INSTANCE_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_instance_variable_and_write_node_create(parser, (pm_instance_variable_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20811,7 +20895,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     pm_local_variable_read_node_t *cast = (pm_local_variable_read_node_t *) node;
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_local_variable_and_write_node_create(parser, node, &token, value, cast->name, cast->depth);
 
                     pm_node_destroy(parser, node);
@@ -20830,7 +20914,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                         pm_constant_id_t constant_id = pm_parser_local_add_location(parser, message_loc->start, message_loc->end, 1);
                         parser_lex(parser);
 
-                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                         pm_node_t *result = (pm_node_t *) pm_local_variable_and_write_node_create(parser, (pm_node_t *) cast, &token, value, constant_id, 0);
 
                         pm_node_destroy(parser, (pm_node_t *) cast);
@@ -20845,7 +20929,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     // this is an aref expression, and we can transform it into
                     // an aset expression.
                     if (PM_NODE_FLAG_P(cast, PM_CALL_NODE_FLAGS_INDEX)) {
-                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                         return (pm_node_t *) pm_index_and_write_node_create(parser, cast, &token, value);
                     }
 
@@ -20857,7 +20941,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     }
 
                     parse_call_operator_write(parser, cast, &token);
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
                     return (pm_node_t *) pm_call_and_write_node_create(parser, cast, &token, value);
                 }
                 case PM_MULTI_WRITE_NODE: {
@@ -20884,7 +20968,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_GLOBAL_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_global_variable_or_write_node_create(parser, node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20893,7 +20977,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CLASS_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_class_variable_or_write_node_create(parser, (pm_class_variable_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20902,7 +20986,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CONSTANT_PATH_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                     pm_node_t *write = (pm_node_t *) pm_constant_path_or_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
 
                     return parse_shareable_constant_write(parser, write);
@@ -20910,7 +20994,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CONSTANT_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                     pm_node_t *write = (pm_node_t *) pm_constant_or_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20919,7 +21003,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_INSTANCE_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_instance_variable_or_write_node_create(parser, (pm_instance_variable_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -20929,7 +21013,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     pm_local_variable_read_node_t *cast = (pm_local_variable_read_node_t *) node;
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_local_variable_or_write_node_create(parser, node, &token, value, cast->name, cast->depth);
 
                     pm_node_destroy(parser, node);
@@ -20948,7 +21032,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                         pm_constant_id_t constant_id = pm_parser_local_add_location(parser, message_loc->start, message_loc->end, 1);
                         parser_lex(parser);
 
-                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                         pm_node_t *result = (pm_node_t *) pm_local_variable_or_write_node_create(parser, (pm_node_t *) cast, &token, value, constant_id, 0);
 
                         pm_node_destroy(parser, (pm_node_t *) cast);
@@ -20963,7 +21047,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     // this is an aref expression, and we can transform it into
                     // an aset expression.
                     if (PM_NODE_FLAG_P(cast, PM_CALL_NODE_FLAGS_INDEX)) {
-                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                         return (pm_node_t *) pm_index_or_write_node_create(parser, cast, &token, value);
                     }
 
@@ -20975,7 +21059,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     }
 
                     parse_call_operator_write(parser, cast, &token);
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
                     return (pm_node_t *) pm_call_or_write_node_create(parser, cast, &token, value);
                 }
                 case PM_MULTI_WRITE_NODE: {
@@ -21012,7 +21096,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_GLOBAL_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_global_variable_operator_write_node_create(parser, node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -21021,7 +21105,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CLASS_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_class_variable_operator_write_node_create(parser, (pm_class_variable_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -21030,7 +21114,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CONSTANT_PATH_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                     pm_node_t *write = (pm_node_t *) pm_constant_path_operator_write_node_create(parser, (pm_constant_path_node_t *) node, &token, value);
 
                     return parse_shareable_constant_write(parser, write);
@@ -21038,7 +21122,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_CONSTANT_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                     pm_node_t *write = (pm_node_t *) pm_constant_operator_write_node_create(parser, (pm_constant_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -21047,7 +21131,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 case PM_INSTANCE_VARIABLE_READ_NODE: {
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_instance_variable_operator_write_node_create(parser, (pm_instance_variable_read_node_t *) node, &token, value);
 
                     pm_node_destroy(parser, node);
@@ -21057,7 +21141,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     pm_local_variable_read_node_t *cast = (pm_local_variable_read_node_t *) node;
                     parser_lex(parser);
 
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                     pm_node_t *result = (pm_node_t *) pm_local_variable_operator_write_node_create(parser, node, &token, value, cast->name, cast->depth);
 
                     pm_node_destroy(parser, node);
@@ -21075,7 +21159,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                         pm_refute_numbered_parameter(parser, message_loc->start, message_loc->end);
 
                         pm_constant_id_t constant_id = pm_parser_local_add_location(parser, message_loc->start, message_loc->end, 1);
-                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                         pm_node_t *result = (pm_node_t *) pm_local_variable_operator_write_node_create(parser, (pm_node_t *) cast, &token, value, constant_id, 0);
 
                         pm_node_destroy(parser, (pm_node_t *) cast);
@@ -21086,7 +21170,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     // this is an aref expression, and we can transform it into
                     // an aset expression.
                     if (PM_NODE_FLAG_P(cast, PM_CALL_NODE_FLAGS_INDEX)) {
-                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                        pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                         return (pm_node_t *) pm_index_operator_write_node_create(parser, cast, &token, value);
                     }
 
@@ -21098,7 +21182,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     }
 
                     parse_call_operator_write(parser, cast, &token);
-                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
                     return (pm_node_t *) pm_call_operator_write_node_create(parser, cast, &token, value);
                 }
                 case PM_MULTI_WRITE_NODE: {
@@ -21120,14 +21204,14 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
         case PM_TOKEN_KEYWORD_AND: {
             parser_lex(parser);
 
-            pm_node_t *right = parse_expression(parser, binding_power, parser->previous.type == PM_TOKEN_KEYWORD_AND, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+            pm_node_t *right = parse_expression(parser, binding_power, parser->previous.type == PM_TOKEN_KEYWORD_AND, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_and_node_create(parser, node, &token, right);
         }
         case PM_TOKEN_KEYWORD_OR:
         case PM_TOKEN_PIPE_PIPE: {
             parser_lex(parser);
 
-            pm_node_t *right = parse_expression(parser, binding_power, parser->previous.type == PM_TOKEN_KEYWORD_OR, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+            pm_node_t *right = parse_expression(parser, binding_power, parser->previous.type == PM_TOKEN_KEYWORD_OR, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_or_node_create(parser, node, &token, right);
         }
         case PM_TOKEN_EQUAL_TILDE: {
@@ -21139,7 +21223,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             //
             // In this case, `foo` should be a method call and not a local yet.
             parser_lex(parser);
-            pm_node_t *argument = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+            pm_node_t *argument = parse_expression(parser, binding_power, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
 
             // By default, we're going to create a call node and then return it.
             pm_call_node_t *call = pm_call_node_binary_create(parser, node, &token, argument, 0);
@@ -21218,7 +21302,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
         case PM_TOKEN_STAR:
         case PM_TOKEN_STAR_STAR: {
             parser_lex(parser);
-            pm_node_t *argument = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+            pm_node_t *argument = parse_expression(parser, binding_power, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_call_node_binary_create(parser, node, &token, argument, 0);
         }
         case PM_TOKEN_GREATER:
@@ -21230,7 +21314,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             }
 
             parser_lex(parser);
-            pm_node_t *argument = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+            pm_node_t *argument = parse_expression(parser, binding_power, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_call_node_binary_create(parser, node, &token, argument, PM_CALL_NODE_FLAGS_COMPARISON);
         }
         case PM_TOKEN_AMPERSAND_DOT:
@@ -21241,7 +21325,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
 
             // This if statement handles the foo.() syntax.
             if (match1(parser, PM_TOKEN_PARENTHESIS_LEFT)) {
-                parse_arguments_list(parser, &arguments, true, false);
+                parse_arguments_list(parser, &arguments, true, false, (uint16_t) (depth + 1));
                 return (pm_node_t *) pm_call_node_shorthand_create(parser, node, &operator, &arguments);
             }
 
@@ -21263,7 +21347,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 }
             }
 
-            parse_arguments_list(parser, &arguments, true, accepts_command_call);
+            parse_arguments_list(parser, &arguments, true, accepts_command_call, (uint16_t) (depth + 1));
             pm_call_node_t *call = pm_call_node_call_create(parser, node, &operator, &message, &arguments);
 
             if (
@@ -21272,7 +21356,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                 arguments.opening_loc.start == NULL &&
                 match1(parser, PM_TOKEN_COMMA)
             ) {
-                return parse_targets_validate(parser, (pm_node_t *) call, PM_BINDING_POWER_INDEX);
+                return parse_targets_validate(parser, (pm_node_t *) call, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             } else {
                 return (pm_node_t *) call;
             }
@@ -21283,7 +21367,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
 
             pm_node_t *right = NULL;
             if (token_begins_expression_p(parser->current.type)) {
-                right = parse_expression(parser, binding_power, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+                right = parse_expression(parser, binding_power, false, false, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
             }
 
             return (pm_node_t *) pm_range_node_create(parser, node, &token, right);
@@ -21292,14 +21376,14 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             pm_token_t keyword = parser->current;
             parser_lex(parser);
 
-            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, PM_ERR_CONDITIONAL_IF_PREDICATE);
+            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, false, PM_ERR_CONDITIONAL_IF_PREDICATE, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_if_node_modifier_create(parser, node, &keyword, predicate);
         }
         case PM_TOKEN_KEYWORD_UNLESS_MODIFIER: {
             pm_token_t keyword = parser->current;
             parser_lex(parser);
 
-            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, PM_ERR_CONDITIONAL_UNLESS_PREDICATE);
+            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, false, PM_ERR_CONDITIONAL_UNLESS_PREDICATE, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_unless_node_modifier_create(parser, node, &keyword, predicate);
         }
         case PM_TOKEN_KEYWORD_UNTIL_MODIFIER: {
@@ -21307,7 +21391,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             pm_statements_node_t *statements = pm_statements_node_create(parser);
             pm_statements_node_body_append(parser, statements, node, true);
 
-            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, PM_ERR_CONDITIONAL_UNTIL_PREDICATE);
+            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, false, PM_ERR_CONDITIONAL_UNTIL_PREDICATE, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_until_node_modifier_create(parser, &token, predicate, statements, PM_NODE_TYPE_P(node, PM_BEGIN_NODE) ? PM_LOOP_FLAGS_BEGIN_MODIFIER : 0);
         }
         case PM_TOKEN_KEYWORD_WHILE_MODIFIER: {
@@ -21315,7 +21399,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             pm_statements_node_t *statements = pm_statements_node_create(parser);
             pm_statements_node_body_append(parser, statements, node, true);
 
-            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, PM_ERR_CONDITIONAL_WHILE_PREDICATE);
+            pm_node_t *predicate = parse_value_expression(parser, binding_power, true, false, PM_ERR_CONDITIONAL_WHILE_PREDICATE, (uint16_t) (depth + 1));
             return (pm_node_t *) pm_while_node_modifier_create(parser, &token, predicate, statements, PM_NODE_TYPE_P(node, PM_BEGIN_NODE) ? PM_LOOP_FLAGS_BEGIN_MODIFIER : 0);
         }
         case PM_TOKEN_QUESTION_MARK: {
@@ -21326,7 +21410,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             pm_token_t qmark = parser->current;
             parser_lex(parser);
 
-            pm_node_t *true_expression = parse_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_TERNARY_EXPRESSION_TRUE);
+            pm_node_t *true_expression = parse_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_TERNARY_EXPRESSION_TRUE, (uint16_t) (depth + 1));
 
             if (parser->recovering) {
                 // If parsing the true expression of this ternary resulted in a syntax
@@ -21349,7 +21433,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             expect1(parser, PM_TOKEN_COLON, PM_ERR_TERNARY_COLON);
 
             pm_token_t colon = parser->previous;
-            pm_node_t *false_expression = parse_expression(parser, PM_BINDING_POWER_DEFINED, false, PM_ERR_TERNARY_EXPRESSION_FALSE);
+            pm_node_t *false_expression = parse_expression(parser, PM_BINDING_POWER_DEFINED, false, false, PM_ERR_TERNARY_EXPRESSION_FALSE, (uint16_t) (depth + 1));
 
             context_pop(parser);
             pop_block_exits(parser, previous_block_exits);
@@ -21379,7 +21463,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                         pm_token_t message = parser->previous;
                         pm_arguments_t arguments = { 0 };
 
-                        parse_arguments_list(parser, &arguments, true, accepts_command_call);
+                        parse_arguments_list(parser, &arguments, true, accepts_command_call, (uint16_t) (depth + 1));
                         path = (pm_node_t *) pm_call_node_call_create(parser, node, &delimiter, &message, &arguments);
                     } else {
                         // Otherwise, this is a constant path. That would look like Foo::Bar.
@@ -21388,7 +21472,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
 
                     // If this is followed by a comma then it is a multiple assignment.
                     if (previous_binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
-                        return parse_targets_validate(parser, path, PM_BINDING_POWER_INDEX);
+                        return parse_targets_validate(parser, path, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
                     }
 
                     return path;
@@ -21403,12 +21487,12 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     // If we have an identifier following a '::' operator, then it is for
                     // sure a method call.
                     pm_arguments_t arguments = { 0 };
-                    parse_arguments_list(parser, &arguments, true, accepts_command_call);
+                    parse_arguments_list(parser, &arguments, true, accepts_command_call, (uint16_t) (depth + 1));
                     pm_call_node_t *call = pm_call_node_call_create(parser, node, &delimiter, &message, &arguments);
 
                     // If this is followed by a comma then it is a multiple assignment.
                     if (previous_binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
-                        return parse_targets_validate(parser, (pm_node_t *) call, PM_BINDING_POWER_INDEX);
+                        return parse_targets_validate(parser, (pm_node_t *) call, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
                     }
 
                     return (pm_node_t *) call;
@@ -21417,7 +21501,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     // If we have a parenthesis following a '::' operator, then it is the
                     // method call shorthand. That would look like Foo::(bar).
                     pm_arguments_t arguments = { 0 };
-                    parse_arguments_list(parser, &arguments, true, false);
+                    parse_arguments_list(parser, &arguments, true, false, (uint16_t) (depth + 1));
 
                     return (pm_node_t *) pm_call_node_shorthand_create(parser, node, &delimiter, &arguments);
                 }
@@ -21432,7 +21516,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             parser_lex(parser);
             accept1(parser, PM_TOKEN_NEWLINE);
 
-            pm_node_t *value = parse_expression(parser, binding_power, true, PM_ERR_RESCUE_MODIFIER_VALUE);
+            pm_node_t *value = parse_expression(parser, binding_power, true, false, PM_ERR_RESCUE_MODIFIER_VALUE, (uint16_t) (depth + 1));
             context_pop(parser);
 
             return (pm_node_t *) pm_rescue_modifier_node_create(parser, node, &token, value);
@@ -21445,7 +21529,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
 
             if (!accept1(parser, PM_TOKEN_BRACKET_RIGHT)) {
                 pm_accepts_block_stack_push(parser, true);
-                parse_arguments(parser, &arguments, false, PM_TOKEN_BRACKET_RIGHT);
+                parse_arguments(parser, &arguments, false, PM_TOKEN_BRACKET_RIGHT, (uint16_t) (depth + 1));
                 pm_accepts_block_stack_pop(parser);
                 expect1(parser, PM_TOKEN_BRACKET_RIGHT, PM_ERR_EXPECT_RBRACKET);
             }
@@ -21456,7 +21540,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             // assignment and we should parse the targets.
             if (previous_binding_power == PM_BINDING_POWER_STATEMENT && match1(parser, PM_TOKEN_COMMA)) {
                 pm_call_node_t *aref = pm_call_node_aref_create(parser, node, &arguments);
-                return parse_targets_validate(parser, (pm_node_t *) aref, PM_BINDING_POWER_INDEX);
+                return parse_targets_validate(parser, (pm_node_t *) aref, PM_BINDING_POWER_INDEX, (uint16_t) (depth + 1));
             }
 
             // If we're at the end of the arguments, we can now check if there is a
@@ -21464,10 +21548,10 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             // add it to the arguments.
             pm_block_node_t *block = NULL;
             if (accept1(parser, PM_TOKEN_BRACE_LEFT)) {
-                block = parse_block(parser);
+                block = parse_block(parser, (uint16_t) (depth + 1));
                 pm_arguments_validate_block(parser, &arguments, block);
             } else if (pm_accepts_block_stack_p(parser) && accept1(parser, PM_TOKEN_KEYWORD_DO)) {
-                block = parse_block(parser);
+                block = parse_block(parser, (uint16_t) (depth + 1));
             }
 
             if (block != NULL) {
@@ -21494,7 +21578,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             parser_lex(parser);
 
             pm_constant_id_list_t captures = { 0 };
-            pm_node_t *pattern = parse_pattern(parser, &captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_IN);
+            pm_node_t *pattern = parse_pattern(parser, &captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_IN, (uint16_t) (depth + 1));
 
             parser->pattern_matching_newlines = previous_pattern_matching_newlines;
             pm_constant_id_list_free(&captures);
@@ -21511,7 +21595,7 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
             parser_lex(parser);
 
             pm_constant_id_list_t captures = { 0 };
-            pm_node_t *pattern = parse_pattern(parser, &captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_HROCKET);
+            pm_node_t *pattern = parse_pattern(parser, &captures, PM_PARSE_PATTERN_TOP | PM_PARSE_PATTERN_MULTI, PM_ERR_PATTERN_EXPRESSION_AFTER_HROCKET, (uint16_t) (depth + 1));
 
             parser->pattern_matching_newlines = previous_pattern_matching_newlines;
             pm_constant_id_list_free(&captures);
@@ -21529,6 +21613,19 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
 #undef PM_PARSE_PATTERN_MULTI
 
 /**
+ * Determine if a given call node looks like a "command", which means it has
+ * arguments but does not have parentheses.
+ */
+static inline bool
+pm_call_node_command_p(const pm_call_node_t *node) {
+    return (
+        (node->opening_loc.start == NULL) &&
+        (node->block == NULL || PM_NODE_TYPE_P(node->block, PM_BLOCK_ARGUMENT_NODE)) &&
+        (node->arguments != NULL || node->block != NULL)
+    );
+}
+
+/**
  * Parse an expression at the given point of the parser using the given binding
  * power to parse subsequent chains. If this function finds a syntax error, it
  * will append the error message to the parser's error list.
@@ -21537,8 +21634,13 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
  * determine if they need to perform additional cleanup.
  */
 static pm_node_t *
-parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, pm_diagnostic_id_t diag_id) {
-    pm_node_t *node = parse_expression_prefix(parser, binding_power, accepts_command_call, diag_id);
+parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool accepts_command_call, bool accepts_label, pm_diagnostic_id_t diag_id, uint16_t depth) {
+    if (PRISM_UNLIKELY(depth >= PRISM_DEPTH_MAXIMUM)) {
+        pm_parser_err_current(parser, PM_ERR_NESTING_TOO_DEEP);
+        return (pm_node_t *) pm_missing_node_create(parser, parser->current.start, parser->current.end);
+    }
+
+    pm_node_t *node = parse_expression_prefix(parser, binding_power, accepts_command_call, accepts_label, diag_id, depth);
 
     switch (PM_NODE_TYPE(node)) {
         case PM_MISSING_NODE:
@@ -21557,6 +21659,23 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
                 return node;
             }
             break;
+        case PM_CALL_NODE:
+            // If we have a call node, then we need to check if it looks like a
+            // method call without parentheses that contains arguments. If it
+            // does, then it has different rules for parsing infix operators,
+            // namely that it only accepts composition (and/or) and modifiers
+            // (if/unless/etc.).
+            if ((pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_COMPOSITION) && pm_call_node_command_p((pm_call_node_t *) node)) {
+                return node;
+            }
+            break;
+        case PM_SYMBOL_NODE:
+            // If we have a symbol node that is being parsed as a label, then we
+            // need to immediately return, because there should never be an
+            // infix operator following this node.
+            if (pm_symbol_node_label_p(node)) {
+                return node;
+            }
         default:
             break;
     }
@@ -21569,9 +21688,16 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
         binding_power <= current_binding_powers.left &&
         current_binding_powers.binary
      ) {
-        node = parse_expression_infix(parser, node, binding_power, current_binding_powers.right, accepts_command_call);
+        node = parse_expression_infix(parser, node, binding_power, current_binding_powers.right, accepts_command_call, (uint16_t) (depth + 1));
 
         switch (PM_NODE_TYPE(node)) {
+            case PM_MULTI_WRITE_NODE:
+                // Multi-write nodes are statements, and cannot be followed by
+                // operators except modifiers.
+                if (pm_binding_powers[parser->current.type].left > PM_BINDING_POWER_MODIFIER) {
+                    return node;
+                }
+                break;
             case PM_CLASS_VARIABLE_WRITE_NODE:
             case PM_CONSTANT_PATH_WRITE_NODE:
             case PM_CONSTANT_WRITE_NODE:
@@ -21596,16 +21722,26 @@ parse_expression(pm_parser_t *parser, pm_binding_power_t binding_power, bool acc
                 break;
         }
 
+        // If the operator is nonassoc and we should not be able to parse the
+        // upcoming infix operator, break.
         if (current_binding_powers.nonassoc) {
-            bool endless_range_p = PM_NODE_TYPE_P(node, PM_RANGE_NODE) && ((pm_range_node_t *) node)->right == NULL;
-            pm_binding_power_t left = endless_range_p ? PM_BINDING_POWER_TERM : current_binding_powers.left;
-            if (
-                left <= pm_binding_powers[parser->current.type].left ||
-                // Exceptionally to operator precedences, '1.. & 2' is rejected.
-                // '1.. || 2' is also an exception, but it is handled by the lexer.
-                // (Here, parser->current is PM_TOKEN_PIPE, not PM_TOKEN_PIPE_PIPE).
-                (endless_range_p && match1(parser, PM_TOKEN_AMPERSAND))
-            ) {
+            // If this is an endless range, then we need to reject a couple of
+            // additional operators because it violates the normal operator
+            // precedence rules. Those patterns are:
+            //
+            //     1.. & 2
+            //     1.. * 2
+            //
+            if (PM_NODE_TYPE_P(node, PM_RANGE_NODE) && ((pm_range_node_t *) node)->right == NULL) {
+                if (match4(parser, PM_TOKEN_UAMPERSAND, PM_TOKEN_USTAR, PM_TOKEN_DOT, PM_TOKEN_AMPERSAND_DOT)) {
+                    PM_PARSER_ERR_TOKEN_FORMAT(parser, parser->current, PM_ERR_NON_ASSOCIATIVE_OPERATOR, pm_token_type_human(parser->current.type), pm_token_type_human(parser->previous.type));
+                    break;
+                }
+
+                if (PM_BINDING_POWER_TERM <= pm_binding_powers[parser->current.type].left) {
+                    break;
+                }
+            } else if (current_binding_powers.left <= pm_binding_powers[parser->current.type].left) {
                 break;
             }
         }
@@ -21751,7 +21887,7 @@ parse_program(pm_parser_t *parser) {
     pm_node_list_t *previous_block_exits = push_block_exits(parser, &current_block_exits);
 
     parser_lex(parser);
-    pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_MAIN);
+    pm_statements_node_t *statements = parse_statements(parser, PM_CONTEXT_MAIN, 0);
 
     if (statements == NULL) {
         statements = pm_statements_node_create(parser);
