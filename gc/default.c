@@ -7703,10 +7703,6 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 {
     GC_ASSERT(!SPECIAL_CONST_P(obj));
 
-    if (using_local_limits(objspace) && FL_TEST_RAW(obj, FL_SHAREABLE)) {
-	return FALSE;
-    }
-
     switch (BUILTIN_TYPE(obj)) {
       case T_NONE:
       case T_MOVED:
@@ -7747,6 +7743,17 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 
             return FALSE;
         }
+	if (rb_multi_ractor_p()) {
+	    if (FL_TEST_RAW(obj, FL_SHAREABLE)) {
+		return FALSE;
+	    }
+	    GC_ASSERT(!rb_local_immune_tbl_contains(objspace->local_gate, obj, false));
+	}
+	else {
+	    if (rb_local_immune_tbl_contains(objspace->local_gate, obj, false)) {
+		return FALSE;
+	    }
+	}
         GC_ASSERT(RVALUE_MARKED(objspace, obj));
         GC_ASSERT(!RVALUE_PINNED(objspace, obj));
 
@@ -10564,7 +10571,7 @@ static VALUE
 gc_local_immune_p(VALUE _, VALUE v)
 {
     rb_objspace_t *objspace = rb_gc_get_objspace();
-    return RBOOL(rb_local_immune_tbl_contains(objspace->local_gate, v));
+    return RBOOL(rb_local_immune_tbl_contains(objspace->local_gate, v, true));
 }
 
 void

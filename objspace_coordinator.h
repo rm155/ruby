@@ -281,7 +281,7 @@ bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 void add_local_immune_object(VALUE obj);
 void remove_local_immune_object(VALUE obj);
 void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
-bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
+bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed);
 
 void rb_add_zombie_thread(rb_thread_t *th);
 void mark_zombie_threads(rb_objspace_gate_t *os_gate);

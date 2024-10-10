@@ -766,9 +766,18 @@ mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
 }
 
 bool
-rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
+rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed)
 {
-    return !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
+    bool ret;
+    if (lock_needed) {
+	rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
+	ret = !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
+	rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
+    }
+    else {
+	ret = !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
+    }
+    return ret;
 }
 
 static int
