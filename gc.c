@@ -597,7 +597,7 @@ typedef struct gc_function_map {
     bool (*gc_enabled_p)(void *objspace_ptr);
     void (*gc_deactivate_prepare)(void *objspace_ptr);
     VALUE (*config_get)(void *objpace_ptr);
-    VALUE (*config_set)(void *objspace_ptr, VALUE hash);
+    void (*config_set)(void *objspace_ptr, VALUE hash);
     void (*stress_set)(void *objspace_ptr, VALUE flag);
     VALUE (*stress_get)(void *objspace_ptr);
     // Object allocation
@@ -664,8 +664,6 @@ static rb_gc_function_map_t rb_gc_functions;
 
 # define RUBY_GC_LIBRARY "RUBY_GC_LIBRARY"
 
-# define fatal(...) do {fprintf(stderr, "" __VA_ARGS__); return;} while (0)
-
 static void
 ruby_external_gc_init(void)
 {
@@ -688,7 +686,8 @@ ruby_external_gc_init(void)
               case '.':
                 break;
               default:
-                fatal("Only alphanumeric, dash, underscore, and period is allowed in "RUBY_GC_LIBRARY"");
+                fprintf(stderr, "Only alphanumeric, dash, underscore, and period is allowed in "RUBY_GC_LIBRARY"\n");
+                exit(1);
             }
         }
 
@@ -698,7 +697,8 @@ ruby_external_gc_init(void)
 
         handle = dlopen(gc_so_path, RTLD_LAZY | RTLD_GLOBAL);
         if (!handle) {
-            fatal("ruby_external_gc_init: Shared library %s cannot be opened: %s", gc_so_path, dlerror());
+            fprintf(stderr, "ruby_external_gc_init: Shared library %s cannot be opened: %s\n", gc_so_path, dlerror());
+            exit(1);
         }
     }
 
@@ -706,9 +706,11 @@ ruby_external_gc_init(void)
 
 # define load_external_gc_func(name) do { \
     if (handle) { \
-        gc_functions.name = dlsym(handle, "rb_gc_impl_" #name); \
+        const char *func_name = "rb_gc_impl_" #name; \
+        gc_functions.name = dlsym(handle, func_name); \
         if (!gc_functions.name) { \
-            fatal("ruby_external_gc_init: " #name " func not exported by library %s", gc_so_path); \
+            fprintf(stderr, "ruby_external_gc_init: %s function not exported by library %s\n", func_name, gc_so_path); \
+            exit(1); \
         } \
     } \
     else { \
@@ -2652,6 +2654,8 @@ rb_is_pointer_to_heap(const void *ptr)
     return rb_gc_impl_pointer_to_heap_p(rb_gc_get_objspace(), ptr);
 }
 
+#define TYPED_DATA_REFS_OFFSET_LIST(d) (size_t *)(uintptr_t)RTYPEDDATA(d)->type->function.dmark
+
 void
 rb_gc_mark_children(void *objspace, VALUE obj)
 {
@@ -2777,7 +2781,7 @@ rb_gc_mark_children(void *objspace, VALUE obj)
 
         if (ptr) {
             if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(RTYPEDDATA(obj)->type)) {
-                size_t *offset_list = (size_t *)RTYPEDDATA(obj)->type->function.dmark;
+                size_t *offset_list = TYPED_DATA_REFS_OFFSET_LIST(obj);
 
                 for (size_t offset = *offset_list; offset != RUBY_REF_END; offset = *offset_list++) {
                     gc_mark_internal(*(VALUE *)((char *)ptr + offset));
@@ -3483,7 +3487,7 @@ rb_gc_update_object_references(void *objspace, VALUE obj)
             void *const ptr = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
             if (ptr) {
                 if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(RTYPEDDATA(obj)->type)) {
-                    size_t *offset_list = (size_t *)RTYPEDDATA(obj)->type->function.dmark;
+                    size_t *offset_list = TYPED_DATA_REFS_OFFSET_LIST(obj);
 
                     for (size_t offset = *offset_list; offset != RUBY_REF_END; offset = *offset_list++) {
                         VALUE *ref = (VALUE *)((char *)ptr + offset);
@@ -3696,7 +3700,11 @@ gc_config_get(rb_execution_context_t *ec, VALUE self)
 static VALUE
 gc_config_set(rb_execution_context_t *ec, VALUE self, VALUE hash)
 {
-    return rb_gc_impl_config_set(rb_gc_get_objspace(), hash);
+    void *objspace = rb_gc_get_objspace();
+
+    rb_gc_impl_config_set(objspace, hash);
+
+    return rb_gc_impl_config_get(objspace);
 }
 
 static VALUE
@@ -4199,7 +4207,7 @@ rb_raw_obj_info_buitin_type(char *const buff, const size_t buff_size, const VALU
                              cme ? rb_id2name(cme->called_id) : "<NULL>",
                              cme ? (METHOD_ENTRY_INVALIDATED(cme) ? " [inv]" : "") : "",
                              (void *)cme,
-                             (void *)vm_cc_call(cc));
+                             (void *)(uintptr_t)vm_cc_call(cc));
                     break;
                 }
               default:

@@ -1975,6 +1975,7 @@ eom
     assert_valid_syntax('def nil(...) end')
     assert_valid_syntax('def true(...) end')
     assert_valid_syntax('def false(...) end')
+    assert_valid_syntax('->a=1...{}')
     unexpected = /unexpected \.{3}/
     assert_syntax_error('iter do |...| end', /unexpected/)
     assert_syntax_error('iter {|...|}', /unexpected/)
@@ -2247,11 +2248,11 @@ eom
     conds.each do |cond|
       code = %Q{
         def my_method
-          var = nil
+          var = "there"
           if #{cond}
-            "here"
+            var = "here"
           end
-          raise
+          raise var
         end
         begin
           my_method
