@@ -7033,12 +7033,12 @@ garbage_collect_local(rb_objspace_t *objspace, unsigned int reason, bool need_fi
 #endif
 
 	ret = gc_start(objspace, reason);
-
-	if (need_finalize_deferred) {
-	    gc_finalize_deferred(objspace);
-	}
     }
     LOCAL_GC_END(objspace);
+
+    if (need_finalize_deferred) {
+	gc_finalize_deferred(objspace);
+    }
 
     return ret;
 }
@@ -7077,14 +7077,16 @@ garbage_collect_global(rb_objspace_t *objspace, unsigned int reason, bool need_f
 
 	if (global_gc_possible) {
 	    ret = gc_start(objspace, reason);
-
-	    if (need_finalize_deferred) {
-		global_gc_for_each_objspace(GET_VM(), objspace->local_gate, gc_finalize_deferred);
-	    }
 	}
     }
     GLOBAL_GC_END(coordinator, objspace);
-    if (!global_gc_possible) {
+
+    if (global_gc_possible) {
+	if (need_finalize_deferred) {
+	    global_gc_for_each_objspace(GET_VM(), objspace->local_gate, gc_finalize_deferred);
+	}
+    }
+    else {
 	reason &= ~GPR_FLAG_GLOBAL;
 	return garbage_collect_local(objspace, reason, need_finalize_deferred);
     }
