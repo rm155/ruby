@@ -1194,10 +1194,6 @@ rb_gc_obj_free(void *objspace, VALUE obj)
         FL_UNSET(obj, FL_EXIVAR);
     }
 
-    if (FL_TEST_RAW(obj, FL_SHAREABLE)) {
-	remove_local_immune_object(obj);
-    }
-
     switch (BUILTIN_TYPE(obj)) {
       case T_OBJECT:
         if (rb_shape_obj_too_complex(obj)) {

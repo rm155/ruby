@@ -105,8 +105,8 @@
 #define GC_HEAP_OLDOBJECT_LIMIT_FACTOR 2.0
 #endif
 
-#ifndef GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR
-#define GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR 2.0
+#ifndef GC_HEAP_GLOBAL_GC_THRESHOLD_FACTOR
+#define GC_HEAP_GLOBAL_GC_THRESHOLD_FACTOR 2.0
 #endif
 
 #ifndef GC_HEAP_FREE_SLOTS_MIN_RATIO
@@ -203,7 +203,7 @@ static ruby_gc_params_t gc_params = {
     GC_HEAP_FREE_SLOTS_MAX_RATIO,
     GC_HEAP_REMEMBERED_WB_UNPROTECTED_OBJECTS_LIMIT_RATIO,
     GC_HEAP_OLDOBJECT_LIMIT_FACTOR,
-    GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR,
+    GC_HEAP_GLOBAL_GC_THRESHOLD_FACTOR,
 
     GC_MALLOC_LIMIT_MIN,
     GC_MALLOC_LIMIT_MAX,
@@ -6026,6 +6026,7 @@ gc_marks_finish(rb_objspace_t *objspace)
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace->local_gate);
     if (is_full_marking(objspace)) update_shared_object_references(objspace->local_gate);
+    if (!using_local_limits(objspace)) update_local_immune_tbl(objspace->local_gate);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
@@ -8330,8 +8331,9 @@ enum gc_stat_sym {
     gc_stat_sym_remembered_wb_unprotected_objects_limit,
     gc_stat_sym_old_objects,
     gc_stat_sym_old_objects_limit,
+    gc_stat_sym_local_immune_objects,
     gc_stat_sym_shared_objects,
-    gc_stat_sym_shared_objects_limit,
+    gc_stat_sym_global_gc_threshold,
 #if RGENGC_ESTIMATE_OLDMALLOC
     gc_stat_sym_oldmalloc_increase_bytes,
     gc_stat_sym_oldmalloc_increase_bytes_limit,
@@ -8384,8 +8386,9 @@ setup_gc_stat_symbols(void)
         S(old_objects);
         S(old_objects_limit);
 	if (rb_multi_ractor_p()) {
+	    S(local_immune_objects);
 	    S(shared_objects);
-	    S(shared_objects_limit);
+	    S(global_gc_threshold);
 	}
 #if RGENGC_ESTIMATE_OLDMALLOC
         S(oldmalloc_increase_bytes);
@@ -8430,8 +8433,9 @@ rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym)
 
     rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
     rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
+    size_t local_immune_objects_total_value = local_immune_objects_global_count();
     size_t shared_objects_total_value = objspace_coordinator->rglobalgc.shared_objects_total;
-    size_t shared_objects_limit_value = objspace_coordinator->rglobalgc.shared_objects_limit;
+    size_t global_gc_threshold_value = objspace_coordinator->rglobalgc.global_gc_threshold;
     rb_native_mutex_unlock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
 
 #define SET(name, attr) \
@@ -8471,8 +8475,9 @@ rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym)
     SET(old_objects, objspace->rgengc.old_objects);
     SET(old_objects_limit, objspace->rgengc.old_objects_limit);
     if (rb_multi_ractor_p()) {
+	SET(local_immune_objects, local_immune_objects_total_value);
 	SET(shared_objects, shared_objects_total_value);
-	SET(shared_objects_limit, shared_objects_limit_value);
+	SET(global_gc_threshold, global_gc_threshold_value);
     }
 #if RGENGC_ESTIMATE_OLDMALLOC
     SET(oldmalloc_increase_bytes, objspace->rgengc.oldmalloc_increase);
@@ -8842,7 +8847,7 @@ rb_gc_impl_set_params(void *objspace_ptr)
     get_envparam_double("RUBY_GC_HEAP_FREE_SLOTS_GOAL_RATIO", &gc_params.heap_free_slots_goal_ratio,
                         gc_params.heap_free_slots_min_ratio, gc_params.heap_free_slots_max_ratio, TRUE);
     get_envparam_double("RUBY_GC_HEAP_OLDOBJECT_LIMIT_FACTOR", &gc_params.oldobject_limit_factor, 0.0, 0.0, TRUE);
-    get_envparam_double("RUBY_GC_HEAP_SHAREDOBJECT_LIMIT_FACTOR", &gc_params.sharedobject_limit_factor, 0.0, 0.0, TRUE);
+    get_envparam_double("RUBY_GC_HEAP_GLOBAL_GC_THRESHOLD_FACTOR", &gc_params.sharedobject_limit_factor, 0.0, 0.0, TRUE);
     get_envparam_double("RUBY_GC_HEAP_REMEMBERED_WB_UNPROTECTED_OBJECTS_LIMIT_RATIO", &gc_params.uncollectible_wb_unprotected_objects_limit_ratio, 0.0, 0.0, TRUE);
 
     if (get_envparam_size("RUBY_GC_MALLOC_LIMIT", &gc_params.malloc_limit_min, 0)) {

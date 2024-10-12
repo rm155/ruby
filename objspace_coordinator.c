@@ -738,7 +738,8 @@ add_local_immune_object(VALUE obj)
     {
 	if (rb_ractor_shareable_p(obj)) {
 	    rb_native_mutex_lock(&source_gate->local_immune_tbl_lock);
-	    st_insert_no_gc(source_gate->local_immune_tbl, (st_data_t)obj, INT2FIX(0));
+	    bool new_entry = !st_insert_no_gc(source_gate->local_immune_tbl, (st_data_t)obj, INT2FIX(0));
+	    if (new_entry) source_gate->local_immune_count++;
 	    rb_native_mutex_unlock(&source_gate->local_immune_tbl_lock);
 	}
     }
@@ -751,7 +752,8 @@ remove_local_immune_object(VALUE obj)
     WITH_OBJSPACE_GATE_ENTER(obj, os_gate);
     {
 	rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-	st_delete(os_gate->local_immune_tbl, (st_data_t *) &obj, NULL);
+	bool deleted = !!st_delete(os_gate->local_immune_tbl, (st_data_t *) &obj, NULL);
+	if (deleted) os_gate->local_immune_count--;
 	rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
     }
     WITH_OBJSPACE_GATE_LEAVE(os_gate);
@@ -762,6 +764,23 @@ mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
     rb_mark_set(os_gate->local_immune_tbl);
+    rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
+}
+
+static int
+update_local_immune_tbl_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    if (rb_gc_object_marked(key)) {
+	return ST_CONTINUE;
+    }
+    return ST_DELETE;
+}
+
+void
+update_local_immune_tbl(rb_objspace_gate_t *os_gate)
+{
+    rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
+    st_foreach(os_gate->local_immune_tbl, update_local_immune_tbl_i, (st_data_t)os_gate);
     rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
 }
 
@@ -778,6 +797,19 @@ rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_n
 	ret = !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
     }
     return ret;
+}
+
+unsigned int
+local_immune_objects_global_count(void)
+{
+    rb_objspace_gate_t *local_gate = NULL;
+    unsigned int total = 0;
+    ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
+	rb_native_mutex_lock(&local_gate->local_immune_tbl_lock);
+	total += local_gate->local_immune_count;
+	rb_native_mutex_unlock(&local_gate->local_immune_tbl_lock);
+    }
+    return total;
 }
 
 static int
@@ -1860,10 +1892,12 @@ arrange_next_gc_global_status(double sharedobject_limit_factor)
     rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
     rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
 
+    int shared_plus_local_immune = objspace_coordinator->rglobalgc.shared_objects_total + local_immune_objects_global_count();
+
     if (rb_during_global_gc()) {
-	objspace_coordinator->rglobalgc.shared_objects_limit = (size_t)(objspace_coordinator->rglobalgc.shared_objects_total * sharedobject_limit_factor);
+	objspace_coordinator->rglobalgc.global_gc_threshold = (size_t)(shared_plus_local_immune * sharedobject_limit_factor);
     }
-    else if (rb_multi_ractor_p() && objspace_coordinator->rglobalgc.shared_objects_total > objspace_coordinator->rglobalgc.shared_objects_limit) {
+    else if (rb_multi_ractor_p() && shared_plus_local_immune > objspace_coordinator->rglobalgc.global_gc_threshold) {
 	objspace_coordinator->rglobalgc.need_global_gc = true;
     }
 

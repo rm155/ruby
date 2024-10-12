@@ -60,7 +60,7 @@ typedef struct rb_objspace_coordinator {
 
     struct {
         bool need_global_gc;
-	size_t shared_objects_limit;
+	size_t global_gc_threshold;
 	size_t shared_objects_total;
 	rb_nativethread_lock_t shared_tracking_lock;
     } rglobalgc;
@@ -173,6 +173,7 @@ typedef struct rb_objspace_gate {
 
     st_table *local_immune_tbl;
     rb_nativethread_lock_t local_immune_tbl_lock;
+    unsigned int local_immune_count;
 
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
@@ -281,7 +282,9 @@ bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 void add_local_immune_object(VALUE obj);
 void remove_local_immune_object(VALUE obj);
 void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
+void update_local_immune_tbl(rb_objspace_gate_t *os_gate);
 bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed);
+unsigned int local_immune_objects_global_count(void);
 
 void rb_add_zombie_thread(rb_thread_t *th);
 void mark_zombie_threads(rb_objspace_gate_t *os_gate);
