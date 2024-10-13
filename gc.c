@@ -2193,7 +2193,7 @@ ruby_stack_check(void)
     if (!RB_SPECIAL_CONST_P(obj)) { \
         rb_vm_t *vm = GET_VM(); \
 	rb_ractor_t *cr = GET_RACTOR(); \
-	void *objspace = rb_gc_get_objspace(); \
+	void *objspace = cr->local_gate->gc_target; \
         if (LIKELY(!MARK_FUNC_IN_USE(cr))) { \
             GC_ASSERT(rb_gc_impl_during_gc_p(objspace)); \
             (func)(objspace, (obj_or_ptr)); \
