@@ -277,7 +277,7 @@ bool shared_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 #endif
 
-#define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && FL_TEST_RAW(obj, FL_SHAREABLE))
+#define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && rb_ractor_shareable_p(obj))
 
 void add_local_immune_object(VALUE obj);
 void remove_local_immune_object(VALUE obj);
