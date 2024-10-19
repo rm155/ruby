@@ -260,7 +260,7 @@ class Reline::KeyActor::EmacsTest < Reline::TestCase
     assert_empty(@line_editor.instance_variable_get(:@rendered_screen).lines)
   end
 
-  def test_ed_clear_screen_with_inputed
+  def test_ed_clear_screen_with_inputted
     input_keys('abc')
     input_keys("\C-b", false)
     @line_editor.instance_variable_get(:@rendered_screen).lines = [[]]
@@ -918,6 +918,29 @@ class Reline::KeyActor::EmacsTest < Reline::TestCase
     assert_line_around_cursor('foo_bar', '')
     assert_equal(Reline::LineEditor::CompletionState::PERFECT_MATCH, @line_editor.instance_variable_get(:@completion_state))
     assert_equal('foo_bar', matched)
+  end
+
+  def test_continuous_completion_with_perfect_match
+    @line_editor.completion_proc = proc { |word|
+      word == 'f' ? ['foo'] : %w[foobar foobaz]
+    }
+    input_keys('f')
+    input_keys("\C-i", false)
+    assert_line_around_cursor('foo', '')
+    input_keys("\C-i", false)
+    assert_line_around_cursor('fooba', '')
+  end
+
+  def test_continuous_completion_disabled_with_perfect_match
+    @line_editor.completion_proc = proc { |word|
+      word == 'f' ? ['foo'] : %w[foobar foobaz]
+    }
+    @line_editor.dig_perfect_match_proc = proc {}
+    input_keys('f')
+    input_keys("\C-i", false)
+    assert_line_around_cursor('foo', '')
+    input_keys("\C-i", false)
+    assert_line_around_cursor('foo', '')
   end
 
   def test_completion_with_completion_ignore_case

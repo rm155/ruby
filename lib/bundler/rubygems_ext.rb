@@ -36,15 +36,14 @@ module Gem
       remove_method :open_file_with_flock if Gem.respond_to?(:open_file_with_flock)
 
       def open_file_with_flock(path, &block)
-        mode = IO::RDONLY | IO::APPEND | IO::CREAT | IO::BINARY
+        # read-write mode is used rather than read-only in order to support NFS
+        mode = IO::RDWR | IO::APPEND | IO::CREAT | IO::BINARY
         mode |= IO::SHARE_DELETE if IO.const_defined?(:SHARE_DELETE)
 
         File.open(path, mode) do |io|
           begin
             io.flock(File::LOCK_EX)
           rescue Errno::ENOSYS, Errno::ENOTSUP
-          rescue Errno::ENOLCK # NFS
-            raise unless Thread.main == Thread.current
           end
           yield io
         end
@@ -385,13 +384,13 @@ module Gem
       end
     end
 
-    remove_method :ignored? if new.respond_to?(:ignored?)
+    # Can be removed once RubyGems 3.5.22 support is dropped
+    unless new.respond_to?(:ignored?)
+      def ignored?
+        return @ignored unless @ignored.nil?
 
-    # Same as RubyGems, but without warnings, because Bundler prints its own warnings
-    def ignored?
-      return @ignored unless @ignored.nil?
-
-      @ignored = missing_extensions?
+        @ignored = missing_extensions?
+      end
     end
   end
 

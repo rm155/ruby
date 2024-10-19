@@ -64,12 +64,19 @@ You can change how much executable memory is allocated using [YJIT's command-lin
 ### Requirements
 
 You will need to install:
-- A C compiler such as GCC or Clang
-- GNU Make and Autoconf
-- The Rust compiler `rustc` and Cargo (if you want to build in dev/debug mode)
-  - The Rust version must be [>= 1.58.0](../../yjit/Cargo.toml).
 
-To install the Rust build toolchain, we suggest following the [recommended installation method][rust-install]. Rust also provides first class [support][editor-tools] for many source code editors.
+ - All the usual build tools for Ruby. See [Building Ruby](../contributing/building_ruby.md)
+ - The Rust compiler `rustc`
+    - The Rust version must be [>= 1.58.0](../../yjit/Cargo.toml).
+ - Optionally, only if you wish to build in dev/debug mode, Rust's `cargo`
+
+If you don't intend on making code changes to YJIT itself, we recommend
+obtaining `rustc` through your OS's package manager since that
+likely reuses the same vendor which provides the C toolchain.
+
+If you will be changing YJIT's Rust code, we suggest using the
+[first-party installation method][rust-install] for Rust. Rust also provides
+first class [support][editor-tools] for many source code editors.
 
 [rust-install]: https://www.rust-lang.org/tools/install
 [editor-tools]: https://www.rust-lang.org/tools
@@ -159,6 +166,12 @@ You can dump statistics about compilation and execution by running YJIT with the
 ./miniruby --yjit-stats myscript.rb
 ```
 
+You can see what YJIT has compiled by running YJIT with the `--yjit-log` command-line option:
+
+```sh
+./miniruby --yjit-log myscript.rb
+```
+
 The machine code generated for a given method can be printed by adding `puts RubyVM::YJIT.disasm(method(:method_name))` to a Ruby script. Note that no code will be generated if the method is not compiled.
 
 <h3 id="command-line-options">Command-Line Options</h3>
@@ -174,6 +187,8 @@ YJIT supports all command-line options supported by upstream CRuby, but also add
   compiled, lower values mean less code is compiled (default 200K)
 - `--yjit-stats`: print statistics after the execution of a program (incurs a run-time cost)
 - `--yjit-stats=quiet`: gather statistics while running a program but don't print them. Stats are accessible through `RubyVM::YJIT.runtime_stats`. (incurs a run-time cost)
+- `--yjit-log[=file|dir]`: log all compilation events to the specified file or directory. If no name is supplied, the last 1024 log entries will be printed to stderr when the application exits.
+- `--yjit-log=quiet`: gather a circular buffer of recent YJIT compilations. The compilation log entries are accessible through `RubyVM::YJIT.log` and old entries will be discarded if the buffer is not drained quickly. (incurs a run-time cost)
 - `--yjit-disable`: disable YJIT despite other `--yjit*` flags for lazily enabling it with `RubyVM::YJIT.enable`
 - `--yjit-code-gc`: enable code GC (disabled by default as of Ruby 3.3).
   It will cause all machine code to be discarded when the executable memory size limit is hit, meaning JIT compilation will then start over.

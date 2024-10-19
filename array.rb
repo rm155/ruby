@@ -45,63 +45,99 @@ class Array
   end
 
   # call-seq:
-  #    array.shuffle!(random: Random) -> array
+  #   shuffle!(random: Random) -> self
   #
-  # Shuffles the elements of +self+ in place.
-  #    a = [1, 2, 3] #=> [1, 2, 3]
-  #    a.shuffle!    #=> [2, 3, 1]
-  #    a             #=> [2, 3, 1]
+  # Shuffles all elements in +self+ into a random order,
+  # as selected by the object given by keyword argument +random+;
+  # returns +self+:
   #
-  # The optional +random+ argument will be used as the random number generator:
-  #    a.shuffle!(random: Random.new(1))  #=> [1, 3, 2]
+  #   a =             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  #   a.shuffle! # => [5, 3, 8, 7, 6, 1, 9, 4, 2, 0]
+  #   a.shuffle! # => [9, 4, 0, 6, 2, 8, 1, 5, 3, 7]
+  #
+  #   Duplicate elements are included:
+  #
+  #   a =             [0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+  #   a.shuffle! # => [1, 0, 0, 1, 1, 0, 1, 0, 0, 1]
+  #   a.shuffle! # => [0, 1, 0, 1, 1, 0, 1, 0, 1, 0]
+  #
+  # The object given with keyword argument +random+ is used as the random number generator.
+  #
+  # Related: see {Methods for Assigning}[rdoc-ref:Array@Methods+for+Assigning].
   def shuffle!(random: Random)
     Primitive.rb_ary_shuffle_bang(random)
   end
 
   # call-seq:
-  #    array.shuffle(random: Random) -> new_ary
+  #   shuffle(random: Random) -> new_array
   #
-  # Returns a new array with elements of +self+ shuffled.
-  #    a = [1, 2, 3] #=> [1, 2, 3]
-  #    a.shuffle     #=> [2, 3, 1]
-  #    a             #=> [1, 2, 3]
+  # Returns a new array containing all elements from +self+ in a random order,
+  # as selected by the object given by keyword argument +random+:
   #
-  # The optional +random+ argument will be used as the random number generator:
-  #    a.shuffle(random: Random.new(1))  #=> [1, 3, 2]
+  #   a =            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  #   a.shuffle # => [0, 8, 1, 9, 6, 3, 4, 7, 2, 5]
+  #   a.shuffle # => [8, 9, 0, 5, 1, 2, 6, 4, 7, 3]
+  #
+  # Duplicate elements are included:
+  #
+  #   a =            [0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+  #   a.shuffle # => [1, 0, 1, 1, 0, 0, 1, 0, 0, 1]
+  #   a.shuffle # => [1, 1, 0, 0, 0, 1, 1, 0, 0, 1]
+  #
+  # The object given with keyword argument +random+ is used as the random number generator.
+  #
+  # Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
   def shuffle(random: Random)
     Primitive.rb_ary_shuffle(random)
   end
 
   # call-seq:
-  #    array.sample(random: Random) -> object
-  #    array.sample(n, random: Random) -> new_ary
+  #   sample(random: Random) -> object
+  #   sample(count, random: Random) -> new_ary
   #
-  # Returns random elements from +self+.
+  # Returns random elements from +self+,
+  # as selected by the object given by keyword argument +random+.
   #
-  # When no arguments are given, returns a random element from +self+:
-  #    a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  # With no argument +count+ given, returns one random element from +self+:
+  #
+  #    a = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   #    a.sample # => 3
   #    a.sample # => 8
-  # If +self+ is empty, returns +nil+.
   #
-  # When argument +n+ is given, returns a new +Array+ containing +n+ random
-  # elements from +self+:
+  # Returns +nil+ if +self+ is empty:
+  #
+  #    [].sample # => nil
+  #
+  #
+  # With non-negative numeric argument +count+ given,
+  # returns a new array containing +count+ random elements from +self+:
+  #
   #    a.sample(3) # => [8, 9, 2]
-  #    a.sample(6) # => [9, 6, 10, 3, 1, 4]
+  #    a.sample(6) # => [9, 6, 0, 3, 1, 4]
+  #
+  # The order of the result array is unrelated to the order of +self+.
+  #
+  # Returns a new empty +Array+ if +self+ is empty:
+  #
+  #   [].sample(4) # => []
+  #
+  # May return duplicates in +self+:
+  #
+  #    a = [1, 1, 1, 2, 2, 3]
+  #    a.sample(a.size) # => [1, 1, 3, 2, 1, 2]
+  #
   # Returns no more than <tt>a.size</tt> elements
   # (because no new duplicates are introduced):
-  #    a.sample(a.size * 2) # => [6, 4, 1, 8, 5, 9, 10, 2, 3, 7]
-  # But +self+ may contain duplicates:
-  #    a = [1, 1, 1, 2, 2, 3]
-  #    a.sample(a.size * 2) # => [1, 1, 3, 2, 1, 2]
-  # The argument +n+ must be a non-negative numeric value.
-  # The order of the result array is unrelated to the order of +self+.
-  # Returns a new empty +Array+ if +self+ is empty.
   #
-  # The optional +random+ argument will be used as the random number generator:
+  #    a.sample(50) # => [6, 4, 1, 8, 5, 9, 0, 2, 3, 7]
+  #
+  # The object given with keyword argument +random+ is used as the random number generator:
+  #
   #    a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
   #    a.sample(random: Random.new(1))     #=> 6
   #    a.sample(4, random: Random.new(1))  #=> [6, 10, 9, 2]
+  #
+  # Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
   def sample(n = (ary = false), random: Random)
     if Primitive.mandatory_only?
       # Primitive.cexpr! %{ rb_ary_sample(self, rb_cRandom, Qfalse, Qfalse) }

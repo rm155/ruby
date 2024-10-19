@@ -59,10 +59,6 @@ Note: We're only listing outstanding class updates.
 
 ## Stdlib updates
 
-The following default gem is added.
-
-* win32-registry 0.0.1
-
 * Tempfile
 
     * The keyword argument `anonymous: true` is implemented for Tempfile.create.
@@ -75,13 +71,18 @@ The following default gem is added.
     * This library is now extracted from the Ruby repository to [ruby/net-http-sspi].
       [[Feature #20775]]
 
+The following default gem is added.
+
+* win32-registry 0.0.1
+
 The following default gems are updated.
 
 * RubyGems 3.6.0.dev
 * bundler 2.6.0.dev
 * erb 4.0.4
-* fiddle 1.1.3.dev
+* fiddle 1.1.4.dev
 * io-console 0.7.2
+* ipaddr 1.2.7
 * irb 1.14.1
 * json 2.7.2
 * logger 1.6.1
@@ -94,9 +95,14 @@ The following default gems are updated.
 * resolv 0.4.0
 * stringio 3.1.2.dev
 * strscan 3.1.1.dev
+* syntax_suggest 2.0.1
 * time 0.4.0
 * uri 0.13.1
 * zlib 3.1.1
+
+The following bundled gem is added.
+
+* repl_type_completor 0.1.7
 
 The following bundled gems are updated.
 
@@ -107,7 +113,7 @@ The following bundled gems are updated.
 * rexml 3.3.8
 * rss 0.3.1
 * net-ftp 0.3.8
-* net-imap 0.4.16
+* net-imap 0.4.17
 * net-smtp 0.5.0
 * rbs 3.6.1
 * typeprof 0.21.11
@@ -128,10 +134,6 @@ The following bundled gems are promoted from default gems.
 * nkf 0.2.0
 * syslog 0.1.2
 * csv 3.3.0
-
-The following bundled gem is added.
-
-* repl_type_completor 0.1.7
 
 See GitHub releases like [GitHub Releases of Logger] or changelog for
 details of the default gems or bundled gems.
