@@ -1286,6 +1286,7 @@ absorb_shared_object_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate
     rb_native_mutex_lock(&gate_to_update->local_immune_tbl_lock);
 
     absorb_table_contents(gate_to_update->local_immune_tbl, gate_to_copy_from->local_immune_tbl);
+    gate_to_update->local_immune_count += gate_to_copy_from->local_immune_count;
 
     rb_native_mutex_unlock(&gate_to_copy_from->local_immune_tbl_lock);
     rb_native_mutex_unlock(&gate_to_update->local_immune_tbl_lock);
