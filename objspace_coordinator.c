@@ -773,6 +773,8 @@ update_local_immune_tbl_i(st_data_t key, st_data_t value, st_data_t argp, int er
     if (rb_gc_object_marked(key)) {
 	return ST_CONTINUE;
     }
+    rb_objspace_gate_t *os_gate = argp;
+    os_gate->local_immune_count--;
     return ST_DELETE;
 }
 
