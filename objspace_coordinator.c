@@ -747,19 +747,6 @@ add_local_immune_object(VALUE obj)
 }
 
 void
-remove_local_immune_object(VALUE obj)
-{
-    WITH_OBJSPACE_GATE_ENTER(obj, os_gate);
-    {
-	rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-	bool deleted = !!st_delete(os_gate->local_immune_tbl, (st_data_t *) &obj, NULL);
-	if (deleted) os_gate->local_immune_count--;
-	rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
-    }
-    WITH_OBJSPACE_GATE_LEAVE(os_gate);
-}
-
-void
 mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);

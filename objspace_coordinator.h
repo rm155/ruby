@@ -280,7 +280,6 @@ bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 #define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && rb_ractor_shareable_p(obj))
 
 void add_local_immune_object(VALUE obj);
-void remove_local_immune_object(VALUE obj);
 void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
 void update_local_immune_tbl(rb_objspace_gate_t *os_gate);
 bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed);
