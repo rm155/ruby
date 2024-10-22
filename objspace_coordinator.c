@@ -1764,7 +1764,7 @@ objspace_locked(rb_objspace_gate_t *os_gate)
 void
 local_gc_running_on(rb_objspace_gate_t *local_gate)
 {
-    VM_ASSERT(local_gate == GET_RACTOR()->local_gate);
+    VM_ASSERT(local_gate->objspace == GET_RACTOR()->local_gate->gc_target);
     rb_native_mutex_lock(&local_gate->running_local_gc_lock);
     local_gate->running_local_gc = true;
     rb_native_mutex_unlock(&local_gate->running_local_gc_lock);
@@ -1773,7 +1773,7 @@ local_gc_running_on(rb_objspace_gate_t *local_gate)
 void
 local_gc_running_off(rb_objspace_gate_t *local_gate)
 {
-    VM_ASSERT(local_gate == GET_RACTOR()->local_gate);
+    VM_ASSERT(local_gate->objspace == GET_RACTOR()->local_gate->gc_target);
     rb_native_mutex_lock(&local_gate->running_local_gc_lock);
     local_gate->running_local_gc = false;
     rb_native_mutex_unlock(&local_gate->running_local_gc_lock);
