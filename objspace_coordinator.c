@@ -504,8 +504,9 @@ int
 st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value)
 {
     VALUE already_disabled = rb_gc_disable_no_rest();
-    st_insert(tab, key, value);
+    int ret = st_insert(tab, key, value);
     if (already_disabled == Qfalse) rb_gc_enable();
+    return ret;
 }
 
 static void *
