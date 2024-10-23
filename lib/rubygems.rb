@@ -801,6 +801,7 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
     file_lock = "#{path}.lock"
     open_file_with_flock(file_lock, &block)
   ensure
+    require "fileutils"
     FileUtils.rm_f file_lock
   end
 
@@ -1384,17 +1385,6 @@ begin
 
   require "rubygems/defaults/#{RUBY_ENGINE}"
 rescue LoadError
-end
-
-# TruffleRuby >= 24 defines REUSE_AS_BINARY_ON_TRUFFLERUBY in defaults/truffleruby.
-# However, TruffleRuby < 24 defines REUSE_AS_BINARY_ON_TRUFFLERUBY directly in its copy
-# of lib/rubygems/platform.rb, so it is not defined if RubyGems is updated (gem update --system).
-# Instead, we define it here in that case, similar to bundler/lib/bundler/rubygems_ext.rb.
-# We must define it here and not in platform.rb because platform.rb is loaded before defaults/truffleruby.
-class Gem::Platform
-  if RUBY_ENGINE == "truffleruby" && !defined?(REUSE_AS_BINARY_ON_TRUFFLERUBY)
-    REUSE_AS_BINARY_ON_TRUFFLERUBY = %w[libv8 libv8-node sorbet-static].freeze
-  end
 end
 
 ##
