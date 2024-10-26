@@ -617,6 +617,7 @@ typedef struct gc_function_map {
     void (*mark_and_pin)(void *objspace_ptr, VALUE obj);
     void (*mark_maybe)(void *objspace_ptr, VALUE obj);
     void (*stack_location_mark_maybe)(void *objspace_ptr, VALUE obj);
+    void (*mark_in_range)(void *objspace_ptr, VALUE obj);
     void (*mark_weak)(void *objspace_ptr, VALUE *ptr);
     void (*remove_weak)(void *objspace_ptr, VALUE parent_obj, VALUE *ptr);
     bool (*object_marked_p)(void *objspace_ptr, VALUE obj);
@@ -773,6 +774,7 @@ ruby_external_gc_init(void)
     load_external_gc_func(mark_and_pin);
     load_external_gc_func(mark_maybe);
     load_external_gc_func(stack_location_mark_maybe);
+    load_external_gc_func(mark_in_range);
     load_external_gc_func(mark_weak);
     load_external_gc_func(remove_weak);
     load_external_gc_func(object_marked_p);
@@ -865,6 +867,7 @@ ruby_external_gc_init(void)
 # define rb_gc_impl_mark_and_pin rb_gc_functions.mark_and_pin
 # define rb_gc_impl_mark_maybe rb_gc_functions.mark_maybe
 # define rb_gc_impl_stack_location_mark_maybe rb_gc_functions.stack_location_mark_maybe
+# define rb_gc_impl_mark_in_range rb_gc_functions.mark_in_range
 # define rb_gc_impl_mark_weak rb_gc_functions.mark_weak
 # define rb_gc_impl_remove_weak rb_gc_functions.remove_weak
 # define rb_gc_impl_object_marked_p rb_gc_functions.object_marked_p
@@ -2350,6 +2353,27 @@ rb_mark_set(st_table *tbl)
     if (!tbl) return;
 
     st_foreach(tbl, mark_key, (st_data_t)rb_gc_get_objspace());
+}
+
+static int
+mark_local_key_no_traversal(st_data_t key, st_data_t value, st_data_t data)
+{
+    rb_gc_impl_mark_in_range(data, key);
+
+    return ST_CONTINUE;
+}
+
+void
+rb_mark_local_set(st_table *tbl)
+{
+    if (!tbl) return;
+
+        if (LIKELY(!MARK_FUNC_IN_USE(GET_RACTOR()))) {
+	    st_foreach(tbl, mark_local_key_no_traversal, (st_data_t)rb_gc_get_objspace());
+	}
+	else {
+	    st_foreach(tbl, mark_key, (st_data_t)rb_gc_get_objspace());
+	}
 }
 
 static int

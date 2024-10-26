@@ -4946,7 +4946,7 @@ gc_grey(rb_objspace_t *objspace, VALUE obj)
 }
 
 static bool
-in_marking_range(rb_objspace_t *objspace, VALUE obj)
+in_local_marking_range(rb_objspace_t *objspace, VALUE obj)
 {
     return !FL_TEST_RAW(obj, FL_SHAREABLE) || GET_OBJSPACE_OF_VALUE(obj) == objspace;
 }
@@ -4983,7 +4983,7 @@ confirm_global_connections(rb_objspace_t *objspace, VALUE obj)
 	    }
 	}
 	else {
-	    if (!in_marking_range(objspace, obj)) {
+	    if (!in_local_marking_range(objspace, obj)) {
 		if (is_full_marking(objspace)) {
 		    check_not_tnone(obj);
 		    mark_in_external_reference_tbl(objspace->local_gate, obj);
@@ -4996,12 +4996,8 @@ confirm_global_connections(rb_objspace_t *objspace, VALUE obj)
 }
 
 static void
-gc_mark(rb_objspace_t *objspace, VALUE obj)
+gc_mark_in_range(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
-
-    GC_ASSERT(during_gc);
-    if (!confirm_global_connections(objspace, obj)) return;
     rgengc_check_relation(objspace, obj);
     if (!gc_mark_set(objspace, obj)) return; /* already marked */
 
@@ -5019,6 +5015,23 @@ gc_mark(rb_objspace_t *objspace, VALUE obj)
     check_not_tnone(obj);
     gc_aging(obj);
     gc_grey(objspace, obj);
+}
+
+static void
+gc_mark(rb_objspace_t *objspace, VALUE obj)
+{
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
+
+    GC_ASSERT(during_gc);
+    if (!confirm_global_connections(objspace, obj)) return;
+    gc_mark_in_range(objspace, obj);
+}
+
+void
+rb_gc_impl_mark_in_range(void *objspace_ptr, VALUE obj)
+{
+    rb_objspace_t *objspace = objspace_ptr;
+    gc_mark_in_range(objspace, obj);
 }
 
 static inline void

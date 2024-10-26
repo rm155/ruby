@@ -69,6 +69,7 @@ GC_IMPL_FN void rb_gc_impl_mark_and_move(void *objspace_ptr, VALUE *ptr);
 GC_IMPL_FN void rb_gc_impl_mark_and_pin(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN void rb_gc_impl_mark_maybe(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN void rb_gc_impl_stack_location_mark_maybe(void *objspace_ptr, VALUE obj);
+GC_IMPL_FN void rb_gc_impl_mark_in_range(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN void rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr);
 GC_IMPL_FN void rb_gc_impl_remove_weak(void *objspace_ptr, VALUE parent_obj, VALUE *ptr);
 GC_IMPL_FN bool rb_gc_impl_object_marked_p(void *objspace_ptr, VALUE obj);
