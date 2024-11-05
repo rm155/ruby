@@ -57,6 +57,11 @@ Note: We're only listing outstanding class updates.
       associated with the AST node. [[Feature #20624]]
     * Add RubyVM::AbstractSyntaxTree::Location class which holds location information. [[Feature #20624]]
 
+* Fiber::Scheduler
+
+    * An optional `Fiber::Scheduler#blocking_region` hook allows blocking operations to be moved out of the event loop
+      in order to reduce latency and improve multi-core processor utilization. [[Feature #20855]]
+
 ## Stdlib updates
 
 * Tempfile
@@ -79,12 +84,15 @@ The following default gems are updated.
 
 * RubyGems 3.6.0.dev
 * bundler 2.6.0.dev
+* date 3.4.0
 * erb 4.0.4
-* fiddle 1.1.4.dev
+* etc 1.4.4
+* fiddle 1.1.5.dev
+* fileutils 1.7.3
 * io-console 0.7.2
 * ipaddr 1.2.7
 * irb 1.14.1
-* json 2.7.2
+* json 2.8.0.alpha1
 * logger 1.6.1
 * net-http 0.4.1
 * optparse 0.5.0
@@ -98,6 +106,7 @@ The following default gems are updated.
 * syntax_suggest 2.0.1
 * time 0.4.0
 * uri 0.13.1
+* win32ole 1.9.0
 * zlib 3.1.1
 
 The following bundled gem is added.
@@ -110,10 +119,10 @@ The following bundled gems are updated.
 * power_assert 2.0.4
 * rake 13.2.1
 * test-unit 3.6.2
-* rexml 3.3.8
+* rexml 3.3.9
 * rss 0.3.1
 * net-ftp 0.3.8
-* net-imap 0.4.17
+* net-imap 0.5.0
 * net-smtp 0.5.0
 * rbs 3.6.1
 * typeprof 0.21.11
@@ -212,3 +221,4 @@ details of the default gems or bundled gems.
 [Feature #20497]: https://bugs.ruby-lang.org/issues/20497
 [Feature #20624]: https://bugs.ruby-lang.org/issues/20624
 [Feature #20775]: https://bugs.ruby-lang.org/issues/20775
+[Feature #20855]: https://bugs.ruby-lang.org/issues/20855

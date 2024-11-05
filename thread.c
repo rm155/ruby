@@ -1493,7 +1493,7 @@ static inline int
 blocking_region_begin(rb_thread_t *th, struct rb_blocking_region_buffer *region,
                       rb_unblock_function_t *ubf, void *arg, int fail_if_interrupted)
 {
-#ifdef RUBY_VM_CRITICAL_SECTION
+#ifdef RUBY_ASSERT_CRITICAL_SECTION
     VM_ASSERT(ruby_assert_critical_section_entered == 0);
 #endif
     VM_ASSERT(th == GET_THREAD());
@@ -1542,6 +1542,18 @@ rb_nogvl(void *(*func)(void *), void *data1,
          rb_unblock_function_t *ubf, void *data2,
          int flags)
 {
+    VALUE scheduler = rb_fiber_scheduler_current();
+    if (scheduler != Qnil) {
+        struct rb_fiber_scheduler_blocking_region_state state;
+
+        VALUE result = rb_fiber_scheduler_blocking_region(scheduler, func, data1, ubf, data2, flags, &state);
+
+        if (!UNDEF_P(result)) {
+            rb_errno_set(state.saved_errno);
+            return state.result;
+        }
+    }
+
     void *val = 0;
     rb_execution_context_t *ec = GET_EC();
     rb_thread_t *th = rb_ec_thread_ptr(ec);

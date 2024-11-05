@@ -263,13 +263,6 @@ int ruby_rgengc_debug;
 # define RGENGC_ESTIMATE_OLDMALLOC 1
 #endif
 
-/* RGENGC_FORCE_MAJOR_GC
- * Force major/full GC if this macro is not 0.
- */
-#ifndef RGENGC_FORCE_MAJOR_GC
-# define RGENGC_FORCE_MAJOR_GC 0
-#endif
-
 #ifndef GC_PROFILE_MORE_DETAIL
 # define GC_PROFILE_MORE_DETAIL 0
 #endif
@@ -5155,7 +5148,7 @@ rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr)
 
     /* If we are in a minor GC and the other object is old, then obj should
      * already be marked and cannot be reclaimed in this GC cycle so we don't
-     * need to add it to the weak refences list. */
+     * need to add it to the weak references list. */
     if (!is_full_marking(objspace) && RVALUE_OLD_P(objspace, obj)) {
         GC_ASSERT(RVALUE_MARKED(objspace, obj));
         GC_ASSERT(!objspace->flags.during_compacting);
@@ -6116,9 +6109,6 @@ gc_marks_finish(rb_objspace_t *objspace)
         }
         if (objspace->rgengc.old_objects > objspace->rgengc.old_objects_limit) {
             gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_OLDGEN;
-        }
-        if (RGENGC_FORCE_MAJOR_GC) {
-            gc_needs_major_flags = GPR_FLAG_MAJOR_BY_FORCE;
         }
 
         gc_report(1, objspace, "gc_marks_finish (marks %"PRIdSIZE" objects, "
@@ -7137,10 +7127,6 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
         reason |= gc_needs_major_flags;
         *do_full_mark = TRUE;
     }
-    else if (RGENGC_FORCE_MAJOR_GC) {
-        reason = GPR_FLAG_MAJOR_BY_FORCE;
-        *do_full_mark = TRUE;
-    }
 
     /* if major gc has been disabled, never do a full mark */
     if (!gc_config_full_mark_val) {
@@ -7164,7 +7150,7 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
     }
 
     /* Explicitly enable compaction (GC.compact) */
-    if (do_full_mark && ruby_enable_autocompact) {
+    if (*do_full_mark && ruby_enable_autocompact) {
         objspace->flags.during_compacting = TRUE;
 #if RGENGC_CHECK_MODE
         objspace->rcompactor.compare_func = ruby_autocompact_compare_func;
@@ -7985,8 +7971,7 @@ static int
 gc_ref_update(void *vstart, void *vend, size_t stride, rb_objspace_t *objspace, struct heap_page *page)
 {
     VALUE v = (VALUE)vstart;
-    asan_unlock_freelist(page);
-    asan_lock_freelist(page);
+
     page->flags.has_uncollectible_wb_unprotected_objects = FALSE;
     page->flags.has_remembered_objects = FALSE;
 

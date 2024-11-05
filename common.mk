@@ -1213,6 +1213,7 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/prelude.rb \
 		$(srcdir)/gem_prelude.rb \
 		$(srcdir)/yjit.rb \
+		$(srcdir)/yjit_hook.rb \
 		$(empty)
 BUILTIN_RB_INCS = $(BUILTIN_RB_SRCS:.rb=.rbinc)
 
@@ -1569,26 +1570,58 @@ update-bundled_gems: PHONY
 	$(GIT) -C "$(srcdir)" diff --no-ext-diff --ignore-submodules --exit-code || \
 	$(GIT) -C "$(srcdir)" commit -m "Update bundled_gems" gems/bundled_gems
 
-PRECHECK_BUNDLED_GEMS = test-bundled-gems-precheck
+PRECHECK_BUNDLED_GEMS = yes
 test-bundled-gems-precheck: $(TEST_RUNNABLE)-test-bundled-gems-precheck
-yes-test-bundled-gems-precheck: main
+yes-test-bundled-gems-precheck: $(PRECHECK_BUNDLED_GEMS:yes=main)
 no-test-bundled-gems-precheck:
+
+update-default-gemspecs: $(TEST_RUNNABLE)-update-default-gemspecs
+no-update-default-gemspecs:
+yes-update-default-gemspecs: $(PRECHECK_BUNDLED_GEMS:yes=main)
+	@$(MAKEDIRS) $(srcdir)/.bundle/specifications
+	@$(XRUBY) -W0 -C "$(srcdir)" -rrubygems \
+	    -e "destdir = ARGV.shift" \
+	    -e "ARGV.each do |basedir|" \
+	    -e   "Dir.glob(basedir+'/**/*.gemspec') do |g|" \
+	    -e     "dir, base = File.split(g)" \
+	    -e     "spec = Dir.chdir(dir) {Gem::Specification.load(base)} ||" \
+	    -e         "Gem::Specification.load(g)" \
+	    -e     "unless spec" \
+	    -e       "puts %[Ignoring #{g}]" \
+	    -e       "next" \
+	    -e     "end" \
+	    -e     "spec.files.clear" \
+	    -e     "spec.extensions.clear" \
+	    -e     "File.binwrite(File.join(destdir, spec.full_name+'.gemspec'), spec.to_ruby)" \
+	    -e   "end" \
+	    -e "end" \
+	    -- .bundle/specifications lib ext
+
+install-for-test-bundled-gems: $(TEST_RUNNABLE)-install-for-test-bundled-gems
+no-install-for-test-bundled-gems: no-update-default-gemspecs
+yes-install-for-test-bundled-gems: yes-update-default-gemspecs
+	$(XRUBY) -C "$(srcdir)" -r./tool/lib/gem_env.rb bin/gem \
+		install --no-document --conservative \
+		"hoe" "json-schema" "test-unit-rr" "simplecov" "simplecov-html" "simplecov-json"
 
 test-bundled-gems-fetch: yes-test-bundled-gems-fetch
 yes-test-bundled-gems-fetch:
-	$(ACTIONS_GROUP)
-	$(Q) $(BASERUBY) -C $(srcdir)/gems ../tool/fetch-bundled_gems.rb src bundled_gems
-	$(ACTIONS_ENDGROUP)
+	$(Q) $(BASERUBY) -C $(srcdir)/gems ../tool/fetch-bundled_gems.rb BUNDLED_GEMS="$(BUNDLED_GEMS)" src bundled_gems
 no-test-bundled-gems-fetch:
 
-test-bundled-gems-prepare: $(PRECHECK_BUNDLED_GEMS) test-bundled-gems-fetch
 test-bundled-gems-prepare: $(TEST_RUNNABLE)-test-bundled-gems-prepare
-no-test-bundled-gems-prepare: no-test-bundled-gems-precheck
-yes-test-bundled-gems-prepare: yes-test-bundled-gems-precheck
+no-test-bundled-gems-prepare: no-test-bundled-gems-precheck no-test-bundled-gems-fetch
+Preparing-test-bundled-gems:
 	$(ACTIONS_GROUP)
-	$(XRUBY) -C "$(srcdir)" bin/gem install --no-document \
-		--install-dir .bundle --conservative "hoe" "json-schema" "test-unit-rr"
+yes-test-bundled-gems-prepare: Preparing-test-bundled-gems $(DOT_WAIT)
 	$(ACTIONS_ENDGROUP)
+yes-test-bundled-gems-prepare: yes-test-bundled-gems-precheck $(DOT_WAIT)
+yes-test-bundled-gems-prepare: yes-install-for-test-bundled-gems $(DOT_WAIT)
+yes-test-bundled-gems-prepare: yes-test-bundled-gems-fetch $(DOT_WAIT)
+yes-test-bundled-gems-precheck: Preparing-test-bundled-gems
+yes-install-for-test-bundled-gems: Preparing-test-bundled-gems
+yes-test-bundled-gems-fetch: Preparing-test-bundled-gems
+
 
 PREPARE_BUNDLED_GEMS = test-bundled-gems-prepare
 test-bundled-gems: $(TEST_RUNNABLE)-test-bundled-gems $(DOT_WAIT) $(TEST_RUNNABLE)-test-bundled-gems-spec
@@ -10643,6 +10676,7 @@ miniinit.$(OBJEXT): {$(VPATH)}vm_core.h
 miniinit.$(OBJEXT): {$(VPATH)}vm_opts.h
 miniinit.$(OBJEXT): {$(VPATH)}warning.rb
 miniinit.$(OBJEXT): {$(VPATH)}yjit.rb
+miniinit.$(OBJEXT): {$(VPATH)}yjit_hook.rb
 node.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 node.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 node.$(OBJEXT): $(CCAN_DIR)/list/list.h
@@ -13001,6 +13035,7 @@ proc.$(OBJEXT): $(top_srcdir)/internal/compilers.h
 proc.$(OBJEXT): $(top_srcdir)/internal/error.h
 proc.$(OBJEXT): $(top_srcdir)/internal/eval.h
 proc.$(OBJEXT): $(top_srcdir)/internal/gc.h
+proc.$(OBJEXT): $(top_srcdir)/internal/hash.h
 proc.$(OBJEXT): $(top_srcdir)/internal/imemo.h
 proc.$(OBJEXT): $(top_srcdir)/internal/object.h
 proc.$(OBJEXT): $(top_srcdir)/internal/proc.h
@@ -16649,6 +16684,7 @@ scheduler.$(OBJEXT): {$(VPATH)}scheduler.c
 scheduler.$(OBJEXT): {$(VPATH)}shape.h
 scheduler.$(OBJEXT): {$(VPATH)}st.h
 scheduler.$(OBJEXT): {$(VPATH)}subst.h
+scheduler.$(OBJEXT): {$(VPATH)}thread.h
 scheduler.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 scheduler.$(OBJEXT): {$(VPATH)}thread_native.h
 scheduler.$(OBJEXT): {$(VPATH)}vm_core.h
@@ -20003,6 +20039,7 @@ vm.$(OBJEXT): {$(VPATH)}vm_opts.h
 vm.$(OBJEXT): {$(VPATH)}vm_sync.h
 vm.$(OBJEXT): {$(VPATH)}vmtc.inc
 vm.$(OBJEXT): {$(VPATH)}yjit.h
+vm.$(OBJEXT): {$(VPATH)}yjit_hook.rbinc
 vm_backtrace.$(OBJEXT): $(CCAN_DIR)/check_type/check_type.h
 vm_backtrace.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 vm_backtrace.$(OBJEXT): $(CCAN_DIR)/list/list.h
@@ -20289,6 +20326,7 @@ vm_dump.$(OBJEXT): {$(VPATH)}config.h
 vm_dump.$(OBJEXT): {$(VPATH)}constant.h
 vm_dump.$(OBJEXT): {$(VPATH)}defines.h
 vm_dump.$(OBJEXT): {$(VPATH)}encoding.h
+vm_dump.$(OBJEXT): {$(VPATH)}fiber/scheduler.h
 vm_dump.$(OBJEXT): {$(VPATH)}id.h
 vm_dump.$(OBJEXT): {$(VPATH)}id_table.h
 vm_dump.$(OBJEXT): {$(VPATH)}intern.h

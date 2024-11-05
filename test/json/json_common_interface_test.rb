@@ -1,4 +1,4 @@
-#frozen_string_literal: false
+# frozen_string_literal: true
 require_relative 'test_helper'
 require 'stringio'
 require 'tempfile'
@@ -52,11 +52,11 @@ class JSONCommonInterfaceTest < Test::Unit::TestCase
   end
 
   def test_generator
-    assert_match(/::Generator\z/, JSON.generator.name)
+    assert_match(/::(TruffleRuby)?Generator\z/, JSON.generator.name)
   end
 
   def test_state
-    assert_match(/::Generator::State\z/, JSON.state.name)
+    assert_match(/::(TruffleRuby)?Generator::State\z/, JSON.state.name)
   end
 
   def test_create_id
@@ -105,6 +105,25 @@ class JSONCommonInterfaceTest < Test::Unit::TestCase
     assert_equal nil, JSON.load('')
   ensure
     tempfile.close!
+  end
+
+  def test_load_with_proc
+    visited = []
+    JSON.load('{"foo": [1, 2, 3], "bar": {"baz": "plop"}}', proc { |o| visited << JSON.dump(o) })
+
+    expected = [
+      '"foo"',
+      '1',
+      '2',
+      '3',
+      '[1,2,3]',
+      '"bar"',
+      '"baz"',
+      '"plop"',
+      '{"baz":"plop"}',
+      '{"foo":[1,2,3],"bar":{"baz":"plop"}}',
+    ]
+    assert_equal expected, visited
   end
 
   def test_load_with_options

@@ -70,7 +70,30 @@
 #define RUBY_ASSERT_MUTEX_OWNED(mutex) VM_ASSERT(rb_mutex_owned_p(mutex))
 
 #if defined(RUBY_ASSERT_CRITICAL_SECTION)
-// TODO add documentation
+/*
+# Critical Section Assertions
+
+These assertions are used to ensure that context switching does not occur between two points in the code. In theory,
+such code should already be protected by a mutex, but these assertions are used to ensure that the mutex is held.
+
+The specific case where it can be useful is where a mutex is held further up the call stack, and the code in question
+may not directly hold the mutex. In this case, the critical section assertions can be used to ensure that the mutex is
+held by someone else.
+
+These assertions are only enabled when RUBY_ASSERT_CRITICAL_SECTION is defined, which is only defined if VM_CHECK_MODE
+is set.
+
+## Example Usage
+
+```c
+RUBY_ASSERT_CRITICAL_SECTION_ENTER();
+// ... some code which does not invoke rb_vm_check_ints() ...
+RUBY_ASSERT_CRITICAL_SECTION_LEAVE();
+```
+
+If `rb_vm_check_ints()` is called between the `RUBY_ASSERT_CRITICAL_SECTION_ENTER()` and
+`RUBY_ASSERT_CRITICAL_SECTION_LEAVE()`, a failed assertion will result.
+*/
 extern int ruby_assert_critical_section_entered;
 #define RUBY_ASSERT_CRITICAL_SECTION_ENTER() do{ruby_assert_critical_section_entered += 1;}while(false)
 #define RUBY_ASSERT_CRITICAL_SECTION_LEAVE() do{VM_ASSERT(ruby_assert_critical_section_entered > 0);ruby_assert_critical_section_entered -= 1;}while(false)
@@ -372,6 +395,8 @@ enum rb_builtin_attr {
     BUILTIN_ATTR_SINGLE_NOARG_LEAF = 0x02,
     // This attribute signals JIT to duplicate the iseq for each block iseq so that its `yield` will be monomorphic.
     BUILTIN_ATTR_INLINE_BLOCK = 0x04,
+    // The iseq acts like a C method in backtraces.
+    BUILTIN_ATTR_C_TRACE = 0x08,
 };
 
 typedef VALUE (*rb_jit_func_t)(struct rb_execution_context_struct *, struct rb_control_frame_struct *);
@@ -579,6 +604,12 @@ rb_iseq_check(const rb_iseq_t *iseq)
         rb_iseq_complete((rb_iseq_t *)iseq);
     }
     return iseq;
+}
+
+static inline bool
+rb_iseq_attr_p(const rb_iseq_t *iseq, enum rb_builtin_attr attr)
+{
+    return (ISEQ_BODY(iseq)->builtin_attrs & attr) == attr;
 }
 
 static inline const rb_iseq_t *
@@ -1502,22 +1533,13 @@ VM_ENV_ESCAPED_P(const VALUE *ep)
     return VM_ENV_FLAGS(ep, VM_ENV_FLAG_ESCAPED) ? 1 : 0;
 }
 
-#if VM_CHECK_MODE > 0
-static inline int
-vm_assert_env(VALUE obj)
-{
-    VM_ASSERT(imemo_type_p(obj, imemo_env));
-    return 1;
-}
-#endif
-
 RBIMPL_ATTR_NONNULL((1))
 static inline VALUE
 VM_ENV_ENVVAL(const VALUE *ep)
 {
     VALUE envval = ep[VM_ENV_DATA_INDEX_ENV];
     VM_ASSERT(VM_ENV_ESCAPED_P(ep));
-    VM_ASSERT(vm_assert_env(envval));
+    VM_ASSERT(envval == Qundef || imemo_type_p(envval, imemo_env));
     return envval;
 }
 
