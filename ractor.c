@@ -2180,8 +2180,8 @@ rb_ractor_main_alloc(void)
     r->loc = Qnil;
     r->name = Qnil;
     r->pub.self = Qnil;
-    r->newobj_cache = rb_gc_ractor_cache_alloc();
-    r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc();
+    r->newobj_cache = rb_gc_ractor_cache_alloc(r);
+    r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc(r);
     ruby_single_main_ractor = r;
 
     return r;
@@ -2304,8 +2304,8 @@ rb_ractor_main_setup(rb_vm_t *vm, rb_ractor_t *r, rb_thread_t *th)
 static void
 ractor_newobj_cache_init(rb_ractor_t *r)
 {
-    r->newobj_cache = rb_gc_ractor_cache_alloc();
-    r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc();
+    r->newobj_cache = rb_gc_ractor_cache_alloc(r);
+    r->newobj_borrowing_cache = rb_gc_ractor_cache_alloc(r);
 }
 
 static VALUE

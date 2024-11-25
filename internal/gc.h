@@ -208,7 +208,7 @@ static inline void *ruby_sized_xrealloc_inlined(void *ptr, size_t new_size, size
 static inline void *ruby_sized_xrealloc2_inlined(void *ptr, size_t new_count, size_t elemsiz, size_t old_count) RUBY_ATTR_RETURNS_NONNULL RUBY_ATTR_ALLOC_SIZE((2, 3));
 static inline void ruby_sized_xfree_inlined(void *ptr, size_t size);
 
-void *rb_gc_ractor_cache_alloc(void);
+void *rb_gc_ractor_cache_alloc(rb_ractor_t *ractor);
 void rb_gc_ractor_cache_free(void *cache);
 
 void rb_gc_register_in_mark_object_ary(VALUE obj);
@@ -230,6 +230,9 @@ void rb_gc_ref_update_table_values_only(st_table *tbl);
 void rb_gc_initial_stress_set(VALUE flag);
 
 void rb_objspace_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_ptr);
+
+void rb_gc_before_fork(void);
+void rb_gc_after_fork(rb_pid_t pid);
 
 #define rb_gc_mark_and_move_ptr(ptr) do { \
     VALUE _obj = (VALUE)*(ptr); \
