@@ -226,7 +226,6 @@ struct fast_fallback_inetsock_arg
     int *families;
     int family_size;
     int additional_flags;
-    int cancelled;
     rb_nativethread_lock_t *lock;
     struct fast_fallback_getaddrinfo_entry *getaddrinfo_entries[2];
     struct fast_fallback_getaddrinfo_shared *getaddrinfo_shared;
@@ -282,15 +281,18 @@ allocate_connection_attempt_fds(int additional_capacity)
 }
 
 static int
-reallocate_connection_attempt_fds(int *fds, int current_capacity, int additional_capacity)
+reallocate_connection_attempt_fds(int **fds, int current_capacity, int additional_capacity)
 {
     int new_capacity = current_capacity + additional_capacity;
+    int *new_fds;
 
-    if (realloc(fds, new_capacity * sizeof(int)) == NULL) {
+    new_fds = realloc(*fds, new_capacity * sizeof(int));
+    if (new_fds == NULL) {
         rb_syserr_fail(errno, "realloc(3)");
     }
+    *fds = new_fds;
 
-    for (int i = current_capacity; i < new_capacity; i++) fds[i] = -1;
+    for (int i = current_capacity; i < new_capacity; i++) (*fds)[i] = -1;
     return new_capacity;
 }
 
@@ -322,7 +324,7 @@ cancel_fast_fallback(void *ptr)
 
     rb_nativethread_lock_lock(arg->lock);
     {
-        *arg->cancelled = true;
+        arg->cancelled = true;
         char notification = SELECT_CANCELLED;
         if ((write(arg->notify, &notification, 1)) < 0) {
             rb_syserr_fail(errno, "write(2)");
@@ -572,7 +574,6 @@ init_fast_fallback_inetsock_internal(VALUE v)
     struct wait_fast_fallback_arg wait_arg;
     struct timeval *ends_at = NULL;
     struct timeval delay = (struct timeval){ -1, -1 };
-    wait_arg.nfds = 0;
     wait_arg.writefds = NULL;
     wait_arg.status = 0;
 
@@ -650,8 +651,8 @@ init_fast_fallback_inetsock_internal(VALUE v)
         arg->getaddrinfo_shared->wait = hostname_resolution_waiter;
         arg->getaddrinfo_shared->connection_attempt_fds = arg->connection_attempt_fds;
         arg->getaddrinfo_shared->connection_attempt_fds_size = arg->connection_attempt_fds_size;
-        arg->getaddrinfo_shared->cancelled = &arg->cancelled;
-        wait_arg.cancelled = &arg->cancelled;
+        arg->getaddrinfo_shared->cancelled = false;
+        wait_arg.cancelled = false;
 
         for (int i = 0; i < arg->family_size; i++) {
             arg->getaddrinfo_entries[i] = allocate_fast_fallback_getaddrinfo_entry();
@@ -847,7 +848,7 @@ init_fast_fallback_inetsock_internal(VALUE v)
                 if (errno == EINPROGRESS) {
                     if (current_capacity == arg->connection_attempt_fds_size) {
                         current_capacity = reallocate_connection_attempt_fds(
-                            arg->connection_attempt_fds,
+                            &arg->connection_attempt_fds,
                             current_capacity,
                             additional_capacity
                         );
@@ -916,6 +917,7 @@ init_fast_fallback_inetsock_internal(VALUE v)
             wait_arg.delay = NULL;
         }
 
+        wait_arg.nfds = 0;
         if (arg->connection_attempt_fds_size) {
             FD_ZERO(wait_arg.writefds);
             int n = 0;
@@ -944,7 +946,7 @@ init_fast_fallback_inetsock_internal(VALUE v)
             arg->getaddrinfo_shared
         );
         rb_thread_check_ints();
-        if (errno == EINTR || arg->cancelled) break;
+        if (errno == EINTR || arg->getaddrinfo_shared->cancelled) break;
 
         status = wait_arg.status;
         syscall = "select(2)";
@@ -995,25 +997,24 @@ init_fast_fallback_inetsock_internal(VALUE v)
             last_error.type = SYSCALL_ERROR;
             last_error.ecode = errno;
 
-            if (any_addrinfos(&resolution_store) ||
-                in_progress_fds(arg->connection_attempt_fds_size) ||
-                !resolution_store.is_all_finised) {
-                if (!in_progress_fds(arg->connection_attempt_fds_size)) {
-                    user_specified_connect_timeout_at = NULL;
+            if (!in_progress_fds(arg->connection_attempt_fds_size)) {
+                if (any_addrinfos(&resolution_store)) {
+                    connection_attempt_delay_expires_at = NULL;
+                } else if (resolution_store.is_all_finised) {
+                    if (local_status < 0) {
+                        host = arg->local.host;
+                        serv = arg->local.serv;
+                    } else {
+                        host = arg->remote.host;
+                        serv = arg->remote.serv;
+                    }
+                    if (last_error.type == RESOLUTION_ERROR) {
+                        rsock_raise_resolution_error(syscall, last_error.ecode);
+                    } else {
+                        rsock_syserr_fail_host_port(last_error.ecode, syscall, host, serv);
+                    }
                 }
-            } else {
-                if (local_status < 0) {
-                    host = arg->local.host;
-                    serv = arg->local.serv;
-                } else {
-                    host = arg->remote.host;
-                    serv = arg->remote.serv;
-                }
-                if (last_error.type == RESOLUTION_ERROR) {
-                    rsock_raise_resolution_error(syscall, last_error.ecode);
-                } else {
-                    rsock_syserr_fail_host_port(last_error.ecode, syscall, host, serv);
-                }
+                user_specified_connect_timeout_at = NULL;
             }
 
             /* check for hostname resolution */
@@ -1273,7 +1274,6 @@ rsock_init_inetsock(VALUE self, VALUE remote_host, VALUE remote_serv, VALUE loca
             fast_fallback_arg.hostp = hostp;
             fast_fallback_arg.portp = portp;
             fast_fallback_arg.additional_flags = additional_flags;
-            fast_fallback_arg.cancelled = false;
 
             int resolving_families[resolving_family_size];
             int resolving_family_index = 0;

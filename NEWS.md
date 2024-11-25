@@ -51,11 +51,24 @@ Note: We're only listing outstanding class updates.
         #=> [2022-02-24 00:00:00 UTC, 2022-02-25 00:00:00 UTC, 2022-02-26 00:00:00 UTC]
         ```
 
+* Refinement
+
+    * Removed deprecated method Refinement#refined_class. [[Feature #19714]]
+
 * RubyVM::AbstractSyntaxTree
 
     * Add RubyVM::AbstractSyntaxTree::Node#locations method which returns location objects
       associated with the AST node. [[Feature #20624]]
     * Add RubyVM::AbstractSyntaxTree::Location class which holds location information. [[Feature #20624]]
+
+* Fiber::Scheduler
+
+    * An optional `Fiber::Scheduler#blocking_operation_wait` hook allows blocking operations to be moved out of the
+      event loop in order to reduce latency and improve multi-core processor utilization. [[Feature #20876]]
+
+* IO::Buffer
+
+    * `IO::Buffer#copy` can release the GVL, allowing other threads to run while copying data. [[Feature #20902]]
 
 ## Stdlib updates
 
@@ -90,7 +103,7 @@ The following default gems are updated.
 * io-console 0.8.0.beta1
 * ipaddr 1.2.7
 * irb 1.14.1
-* json 2.8.1
+* json 2.8.2
 * logger 1.6.1
 * net-http 0.5.0
 * open-uri 0.5.0
@@ -101,7 +114,7 @@ The following default gems are updated.
 * prism 1.0.0
 * pstore 0.1.4
 * psych 5.2.0
-* rdoc 6.7.0
+* rdoc 6.8.1
 * reline 0.5.11
 * resolv 0.5.0
 * securerandom 0.3.2
@@ -109,8 +122,8 @@ The following default gems are updated.
 * singleton 0.3.0
 * stringio 3.1.2.dev
 * strscan 3.1.1.dev
-* syntax_suggest 2.0.1
-* tempfile 0.3.0
+* syntax_suggest 2.0.2
+* tempfile 0.3.1
 * time 0.4.1
 * timeout 0.4.2
 * tmpdir 0.3.0
@@ -134,6 +147,7 @@ The following bundled gems are updated.
 * net-ftp 0.3.8
 * net-imap 0.5.1
 * net-smtp 0.5.0
+* prime 0.1.3
 * rbs 3.6.1
 * typeprof 0.21.11
 * debug 1.9.2
@@ -141,7 +155,7 @@ The following bundled gems are updated.
 
 The following bundled gems are promoted from default gems.
 
-* mutex_m 0.2.0
+* mutex_m 0.3.0
 * getoptlong 0.2.1
 * base64 0.2.0
 * bigdecimal 3.1.8
@@ -231,3 +245,5 @@ details of the default gems or bundled gems.
 [Feature #20497]: https://bugs.ruby-lang.org/issues/20497
 [Feature #20624]: https://bugs.ruby-lang.org/issues/20624
 [Feature #20775]: https://bugs.ruby-lang.org/issues/20775
+[Feature #20876]: https://bugs.ruby-lang.org/issues/20876
+[Feature #20902]: https://bugs.ruby-lang.org/issues/20902

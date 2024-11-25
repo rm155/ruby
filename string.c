@@ -95,7 +95,7 @@ VALUE rb_cSymbol;
  *            The string was allocated by the `Symbol#to_s` method.
  *            It emits a deprecation warning when mutated for the first time.
  * 4:     STR_PRECOMPUTED_HASH
- *            The string is embedded and has its precomputed hascode stored
+ *            The string is embedded and has its precomputed hashcode stored
  *            after the terminator.
  * 5:     STR_SHARED_ROOT
  *            Other strings may point to the contents of this string. When this
@@ -9182,8 +9182,8 @@ literal_split_pattern(VALUE spat, split_type_t default_type)
 
 /*
  *  call-seq:
- *    split(field_sep = $;, limit = nil) -> array
- *    split(field_sep = $;, limit = nil) {|substring| ... } -> self
+ *    split(field_sep = $;, limit = 0) -> array
+ *    split(field_sep = $;, limit = 0) {|substring| ... } -> self
  *
  *  :include: doc/string/split.rdoc
  *
