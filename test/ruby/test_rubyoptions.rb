@@ -118,7 +118,7 @@ class TestRubyOptions < Test::Unit::TestCase
     assert_in_out_err(%w(-We) + ['p $-W'], "", %w(2), [])
     assert_in_out_err(%w(-w -W0 -e) + ['p $-W'], "", %w(0), [])
 
-    categories = {deprecated: 1, experimental: 0, performance: 2}
+    categories = {deprecated: 1, experimental: 0, performance: 2, strict_unused_block: 3}
     assert_equal categories.keys.sort, Warning.categories.sort
 
     categories.each do |category, level|
@@ -176,7 +176,7 @@ class TestRubyOptions < Test::Unit::TestCase
   VERSION_PATTERN_WITH_RJIT =
     case RUBY_ENGINE
     when 'ruby'
-      /^ruby #{q[RUBY_VERSION]}(?:[p ]|dev|rc).*? \+RJIT (\+MN )?(\+PRISM )?\[#{q[RUBY_PLATFORM]}\]$/
+      /^ruby #{q[RUBY_VERSION]}(?:[p ]|dev|rc).*? \+RJIT (\+MN )?(\+PRISM )?(\+GC)?(\[\w+\]\s|\s)?\[#{q[RUBY_PLATFORM]}\]$/
     else
       VERSION_PATTERN
     end
@@ -304,6 +304,16 @@ class TestRubyOptions < Test::Unit::TestCase
         end
         assert_equal([], e)
       end
+    end
+  end
+
+  def test_enabled_gc
+    omit unless /linux|darwin/ =~ RUBY_PLATFORM
+
+    if RbConfig::CONFIG['shared_gc_dir'].length > 0
+      assert_match(/\+GC/, RUBY_DESCRIPTION)
+    else
+      assert_no_match(/\+GC/, RUBY_DESCRIPTION)
     end
   end
 
@@ -876,7 +886,7 @@ class TestRubyOptions < Test::Unit::TestCase
   end
 
   def assert_segv(args, message=nil, list: SEGVTest::ExpectedStderrList, **opt, &block)
-    pend "macOS 15 beta is not working with this assertion" if macos?(15)
+    pend "macOS 15 is not working with this assertion" if macos?(15)
 
     # We want YJIT to be enabled in the subprocess if it's enabled for us
     # so that the Ruby description matches.
@@ -921,7 +931,7 @@ class TestRubyOptions < Test::Unit::TestCase
   end
 
   def assert_crash_report(path, cmd = nil, &block)
-    pend "macOS 15 beta is not working with this assertion" if macos?(15)
+    pend "macOS 15 is not working with this assertion" if macos?(15)
 
     Dir.mktmpdir("ruby_crash_report") do |dir|
       list = SEGVTest::ExpectedStderrList

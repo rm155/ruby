@@ -308,6 +308,8 @@ void rb_ractor_mark_object_ary_init(rb_ractor_t *r);
 void rb_ractor_related_objects_mark(void *ptr);
 void rb_ractor_update_references(void *ptr);
 void rb_ractor_atfork(rb_vm_t *vm, rb_thread_t *th);
+VALUE rb_ractor_require(VALUE feature);
+VALUE rb_ractor_autoload_load(VALUE space, ID id);
 
 VALUE rb_ractor_ensure_shareable(VALUE obj, VALUE name);
 

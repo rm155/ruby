@@ -811,7 +811,6 @@ typedef struct rb_vm_struct {
     struct rb_id_table *negative_cme_table;
     st_table *overloaded_cme_table; // cme -> overloaded_cme
     st_table *unused_block_warning_table;
-    bool unused_block_warning_strict;
 
     // This id table contains a mapping from ID to ICs. It does this with ID
     // keys and nested st_tables as values. The nested tables have ICs as keys
@@ -1170,6 +1169,7 @@ typedef struct rb_thread_struct {
     struct rb_unblock_callback unblock;
     VALUE locking_mutex;
     struct rb_mutex_struct *keeping_mutexes;
+    struct ccan_list_head interrupt_exec_tasks;
 
     struct rb_waiting_list *join_list;
 
@@ -1990,6 +1990,8 @@ rb_ec_vm_ptr(const rb_execution_context_t *ec)
         return NULL;
     }
 }
+
+NOINLINE(struct rb_execution_context_struct *rb_current_ec_noinline(void));
 
 static inline rb_execution_context_t *
 rb_current_execution_context(bool expect_ec)

@@ -15,6 +15,17 @@ static VALUE sym_max_nesting, sym_allow_nan, sym_allow_trailing_comma, sym_symbo
 static int binary_encindex;
 static int utf8_encindex;
 
+#ifdef HAVE_RB_CATEGORY_WARN
+# define json_deprecated(message) rb_category_warn(RB_WARN_CATEGORY_DEPRECATED, message)
+#else
+# define json_deprecated(message) rb_warn(message)
+#endif
+
+static const char deprecated_create_additions_warning[] =
+    "JSON.load implicit support for `create_additions: true` is deprecated "
+    "and will be removed in 3.0, use JSON.unsafe_load or explicitly "
+    "pass `create_additions: true`";
+
 #ifndef HAVE_RB_GC_MARK_LOCATIONS
 // For TruffleRuby
 void rb_gc_mark_locations(const VALUE *start, const VALUE *end)
@@ -381,6 +392,7 @@ typedef struct JSON_ParserStruct {
     VALUE decimal_class;
     VALUE match_string;
     FBuffer fbuffer;
+    int in_array;
     int max_nesting;
     bool allow_nan;
     bool allow_trailing_comma;
@@ -409,8 +421,7 @@ static const rb_data_type_t JSON_Parser_type;
 static char *JSON_parse_string(JSON_Parser *json, char *p, char *pe, VALUE *result);
 static char *JSON_parse_object(JSON_Parser *json, char *p, char *pe, VALUE *result, int current_nesting);
 static char *JSON_parse_value(JSON_Parser *json, char *p, char *pe, VALUE *result, int current_nesting);
-static char *JSON_parse_integer(JSON_Parser *json, char *p, char *pe, VALUE *result);
-static char *JSON_parse_float(JSON_Parser *json, char *p, char *pe, VALUE *result);
+static char *JSON_parse_number(JSON_Parser *json, char *p, char *pe, VALUE *result);
 static char *JSON_parse_array(JSON_Parser *json, char *p, char *pe, VALUE *result, int current_nesting);
 
 
@@ -554,7 +565,7 @@ static char *JSON_parse_object(JSON_Parser *json, char *p, char *pe, VALUE *resu
                 VALUE klass = rb_funcall(mJSON, i_deep_const_get, 1, klassname);
                 if (RTEST(rb_funcall(klass, i_json_creatable_p, 0))) {
                     if (json->deprecated_create_additions) {
-                        rb_warn("JSON.load implicit support for `create_additions: true` is deprecated and will be removed in 3.0, use JSON.unsafe_load or explicitly pass `create_additions: true`");
+                        json_deprecated(deprecated_create_additions_warning);
                     }
                     *result = rb_funcall(klass, i_json_create, 1, *result);
                 }
@@ -616,11 +627,7 @@ static char *JSON_parse_object(JSON_Parser *json, char *p, char *pe, VALUE *resu
                 raise_parse_error("unexpected token at '%s'", p);
             }
         }
-        np = JSON_parse_float(json, fpc, pe, result);
-        if (np != NULL) {
-            fexec np;
-        }
-        np = JSON_parse_integer(json, fpc, pe, result);
+        np = JSON_parse_number(json, fpc, pe, result);
         if (np != NULL) {
             fexec np;
         }
@@ -629,7 +636,9 @@ static char *JSON_parse_object(JSON_Parser *json, char *p, char *pe, VALUE *resu
 
     action parse_array {
         char *np;
+        json->in_array++;
         np = JSON_parse_array(json, fpc, pe, result, current_nesting + 1);
+        json->in_array--;
         if (np == NULL) { fhold; fbreak; } else fexec np;
     }
 
@@ -647,10 +656,10 @@ main := ignore* (
               Vtrue @parse_true |
               VNaN @parse_nan |
               VInfinity @parse_infinity |
-              begin_number >parse_number |
-              begin_string >parse_string |
-              begin_array >parse_array |
-              begin_object >parse_object
+              begin_number @parse_number |
+              begin_string @parse_string |
+              begin_array @parse_array |
+              begin_object @parse_object
         ) ignore* %*exit;
 }%%
 
@@ -683,24 +692,40 @@ static char *JSON_parse_value(JSON_Parser *json, char *p, char *pe, VALUE *resul
     main := '-'? ('0' | [1-9][0-9]*) (^[0-9]? @exit);
 }%%
 
-static char *JSON_parse_integer(JSON_Parser *json, char *p, char *pe, VALUE *result)
+#define MAX_FAST_INTEGER_SIZE 18
+static inline VALUE fast_parse_integer(char *p, char *pe)
 {
-    int cs = EVIL;
-
-    %% write init;
-    json->memo = p;
-    %% write exec;
-
-    if (cs >= JSON_integer_first_final) {
-        long len = p - json->memo;
-        fbuffer_clear(&json->fbuffer);
-        fbuffer_append(&json->fbuffer, json->memo, len);
-        fbuffer_append_char(&json->fbuffer, '\0');
-        *result = rb_cstr2inum(FBUFFER_PTR(&json->fbuffer), 10);
-        return p + 1;
-    } else {
-        return NULL;
+    bool negative = false;
+    if (*p == '-') {
+        negative = true;
+        p++;
     }
+
+    long long memo = 0;
+    while (p < pe) {
+        memo *= 10;
+        memo += *p - '0';
+        p++;
+    }
+
+    if (negative) {
+        memo = -memo;
+    }
+    return LL2NUM(memo);
+}
+
+static char *JSON_decode_integer(JSON_Parser *json, char *p, VALUE *result)
+{
+        long len = p - json->memo;
+        if (RB_LIKELY(len < MAX_FAST_INTEGER_SIZE)) {
+            *result = fast_parse_integer(json->memo, p);
+        } else {
+            fbuffer_clear(&json->fbuffer);
+            fbuffer_append(&json->fbuffer, json->memo, len);
+            fbuffer_append_char(&json->fbuffer, '\0');
+            *result = rb_cstr2inum(FBUFFER_PTR(&json->fbuffer), 10);
+        }
+        return p + 1;
 }
 
 %%{
@@ -710,22 +735,28 @@ static char *JSON_parse_integer(JSON_Parser *json, char *p, char *pe, VALUE *res
     write data;
 
     action exit { fhold; fbreak; }
+    action isFloat {  is_float = true; }
 
     main := '-'? (
-              (('0' | [1-9][0-9]*) '.' [0-9]+ ([Ee] [+\-]?[0-9]+)?)
-              | (('0' | [1-9][0-9]*) ([Ee] [+\-]?[0-9]+))
-             )  (^[0-9Ee.\-]? @exit );
+              (('0' | [1-9][0-9]*)
+                ((('.' [0-9]+ ([Ee] [+\-]?[0-9]+)?) |
+                 ([Ee] [+\-]?[0-9]+)) > isFloat)?
+              ) (^[0-9Ee.\-]? @exit ));
 }%%
 
-static char *JSON_parse_float(JSON_Parser *json, char *p, char *pe, VALUE *result)
+static char *JSON_parse_number(JSON_Parser *json, char *p, char *pe, VALUE *result)
 {
     int cs = EVIL;
+    bool is_float = false;
 
     %% write init;
     json->memo = p;
     %% write exec;
 
     if (cs >= JSON_float_first_final) {
+        if (!is_float) {
+            return JSON_decode_integer(json, p, result);
+        }
         VALUE mod = Qnil;
         ID method_id = 0;
         if (json->decimal_class) {
@@ -865,6 +896,26 @@ static inline VALUE build_string(const char *start, const char *end, bool intern
     return result;
 }
 
+static VALUE json_string_fastpath(JSON_Parser *json, char *string, char *stringEnd, bool is_name, bool intern, bool symbolize)
+{
+    size_t bufferSize = stringEnd - string;
+
+    if (is_name && json->in_array) {
+        VALUE cached_key;
+        if (RB_UNLIKELY(symbolize)) {
+            cached_key = rsymbol_cache_fetch(&json->name_cache, string, bufferSize);
+        } else {
+            cached_key = rstring_cache_fetch(&json->name_cache, string, bufferSize);
+        }
+
+        if (RB_LIKELY(cached_key)) {
+            return cached_key;
+        }
+    }
+
+    return build_string(string, stringEnd, intern, symbolize);
+}
+
 static VALUE json_string_unescape(JSON_Parser *json, char *string, char *stringEnd, bool is_name, bool intern, bool symbolize)
 {
     size_t bufferSize = stringEnd - string;
@@ -872,7 +923,7 @@ static VALUE json_string_unescape(JSON_Parser *json, char *string, char *stringE
     int unescape_len;
     char buf[4];
 
-    if (is_name) {
+    if (is_name && json->in_array) {
         VALUE cached_key;
         if (RB_UNLIKELY(symbolize)) {
             cached_key = rsymbol_cache_fetch(&json->name_cache, string, bufferSize);
@@ -886,7 +937,7 @@ static VALUE json_string_unescape(JSON_Parser *json, char *string, char *stringE
     }
 
     pe = memchr(p, '\\', bufferSize);
-    if (RB_LIKELY(pe == NULL)) {
+    if (RB_UNLIKELY(pe == NULL)) {
         return build_string(string, stringEnd, intern, symbolize);
     }
 
@@ -992,19 +1043,31 @@ static VALUE json_string_unescape(JSON_Parser *json, char *string, char *stringE
 
     write data;
 
-    action parse_string {
+    action parse_complex_string {
         *result = json_string_unescape(json, json->memo + 1, p, json->parsing_name, json->parsing_name || json-> freeze, json->parsing_name && json->symbolize_names);
-        if (NIL_P(*result)) {
-            fhold;
-            fbreak;
-        } else {
-            fexec p + 1;
-        }
+        fexec p + 1;
+        fhold;
+        fbreak;
     }
 
-    action exit { fhold; fbreak; }
+    action parse_simple_string {
+        *result = json_string_fastpath(json, json->memo + 1, p, json->parsing_name, json->parsing_name || json-> freeze, json->parsing_name && json->symbolize_names);
+        fexec p + 1;
+        fhold;
+        fbreak;
+    }
 
-    main := '"' ((^([\"\\] | 0..0x1f) | '\\'[\"\\/bfnrt] | '\\u'[0-9a-fA-F]{4} | '\\'^([\"\\/bfnrtu]|0..0x1f))* %parse_string) '"' @exit;
+    double_quote = '"';
+    escape = '\\';
+    control = 0..0x1f;
+    simple = any - escape - double_quote - control;
+
+    main := double_quote (
+         (simple*)(
+            (double_quote) @parse_simple_string |
+            ((^([\"\\] | control) | escape[\"\\/bfnrt] | '\\u'[0-9a-fA-F]{4} | escape^([\"\\/bfnrtu]|0..0x1f))* double_quote) @parse_complex_string
+         )
+    );
 }%%
 
 static int

@@ -43,12 +43,12 @@ VALUE rb_cArray_empty_frozen;
 
 /* Flags of RArray
  *
+ * 0:   RARRAY_SHARED_FLAG (equal to ELTS_SHARED)
+ *          The array is shared. The buffer this array points to is owned by
+ *          another array (the shared root).
  * 1:   RARRAY_EMBED_FLAG
  *          The array is embedded (its contents follow the header, rather than
  *          being on a separately allocated buffer).
- * 2:   RARRAY_SHARED_FLAG (equal to ELTS_SHARED)
- *          The array is shared. The buffer this array points to is owned by
- *          another array (the shared root).
  * 3-9: RARRAY_EMBED_LEN
  *          The length of the array when RARRAY_EMBED_FLAG is set.
  * 12:  RARRAY_SHARED_ROOT_FLAG
@@ -3749,45 +3749,108 @@ append_values_at_single(VALUE result, VALUE ary, long olen, VALUE idx)
 
 /*
  *  call-seq:
- *    array.values_at(*indexes) -> new_array
+ *    values_at(*specifiers) -> new_array
  *
- *  Returns a new +Array+ whose elements are the elements
- *  of +self+ at the given Integer or Range +indexes+.
+ *  Returns elements from +self+ in a new array; does not modify +self+.
  *
- *  For each positive +index+, returns the element at offset +index+:
+ *  The objects included in the returned array are the elements of +self+
+ *  selected by the given +specifiers+,
+ *  each of which must be a numeric index or a Range.
  *
- *    a = [:foo, 'bar', 2]
- *    a.values_at(0, 2) # => [:foo, 2]
- *    a.values_at(0..1) # => [:foo, "bar"]
+ *  In brief:
  *
- *  The given +indexes+ may be in any order, and may repeat:
+ *    a = ['a', 'b', 'c', 'd']
  *
- *    a = [:foo, 'bar', 2]
- *    a.values_at(2, 0, 1, 0, 2) # => [2, :foo, "bar", :foo, 2]
- *    a.values_at(1, 0..2) # => ["bar", :foo, "bar", 2]
+ *    # Index specifiers.
+ *    a.values_at(2, 0, 2, 0)     # => ["c", "a", "c", "a"] # May repeat.
+ *    a.values_at(-4, -3, -2, -1) # => ["a", "b", "c", "d"] # Counts backwards if negative.
+ *    a.values_at(-50, 50)        # => [nil, nil]           # Outside of self.
  *
- *  Assigns +nil+ for an +index+ that is too large:
+ *    # Range specifiers.
+ *    a.values_at(1..3)       # => ["b", "c", "d"] # From range.begin to range.end.
+ *    a.values_at(1...3)      # => ["b", "c"]      # End excluded.
+ *    a.values_at(3..1)       # => []              # No such elements.
  *
- *    a = [:foo, 'bar', 2]
- *    a.values_at(0, 3, 1, 3) # => [:foo, nil, "bar", nil]
+ *    a.values_at(-3..3)  # => ["b", "c", "d"]     # Negative range.begin counts backwards.
+ *    a.values_at(-50..3)                          # Raises RangeError.
  *
- *  Returns a new empty +Array+ if no arguments given.
+ *    a.values_at(1..-2)  # => ["b", "c"]          # Negative range.end counts backwards.
+ *    a.values_at(1..-50) # => []                  # No such elements.
  *
- *  For each negative +index+, counts backward from the end of the array:
+ *    # Mixture of specifiers.
+ *    a.values_at(2..3, 3, 0..1, 0) # => ["c", "d", "d", "a", "b", "a"]
  *
- *    a = [:foo, 'bar', 2]
- *    a.values_at(-1, -3) # => [2, :foo]
+ *  With no +specifiers+ given, returns a new empty array:
  *
- *  Assigns +nil+ for an +index+ that is too small:
+ *    a = ['a', 'b', 'c', 'd']
+ *    a.values_at # => []
  *
- *    a = [:foo, 'bar', 2]
- *    a.values_at(0, -5, 1, -6, 2) # => [:foo, nil, "bar", nil, 2]
+ *  For each numeric specifier +index+, includes an element:
  *
- *  The given +indexes+ may have a mixture of signs:
+ *  - For each non-negative numeric specifier +index+ that is in-range (less than <tt>self.size</tt>),
+ *    includes the element at offset +index+:
  *
- *    a = [:foo, 'bar', 2]
- *    a.values_at(0, -2, 1, -1) # => [:foo, "bar", "bar", 2]
+ *      a.values_at(0, 2)     # => ["a", "c"]
+ *      a.values_at(0.1, 2.9) # => ["a", "c"]
  *
+ *  - For each negative numeric +index+ that is in-range (greater than or equal to <tt>- self.size</tt>),
+ *    counts backwards from the end of +self+:
+ *
+ *      a.values_at(-1, -4) # => ["d", "a"]
+ *
+ *  The given indexes may be in any order, and may repeat:
+ *
+ *    a.values_at(2, 0, 1, 0, 2) # => ["c", "a", "b", "a", "c"]
+ *
+ *  For each +index+ that is out-of-range, includes +nil+:
+ *
+ *    a.values_at(4, -5) # => [nil, nil]
+ *
+ *  For each Range specifier +range+, includes elements
+ *  according to <tt>range.begin</tt> and <tt>range.end</tt>:
+ *
+ *  - If both <tt>range.begin</tt> and <tt>range.end</tt>
+ *    are non-negative and in-range (less than <tt>self.size</tt>),
+ *    includes elements from index <tt>range.begin</tt>
+ *    through <tt>range.end - 1</tt> (if <tt>range.exclude_end?</tt>),
+ *    or through <tt>range.end</tt> (otherwise):
+ *
+ *      a.values_at(1..2)  # => ["b", "c"]
+ *      a.values_at(1...2) # => ["b"]
+ *
+ *  - If <tt>range.begin</tt> is negative and in-range (greater than or equal to <tt>- self.size</tt>),
+ *    counts backwards from the end of +self+:
+ *
+ *      a.values_at(-2..3) # => ["c", "d"]
+ *
+ *  - If <tt>range.begin</tt> is negative and out-of-range, raises an exception:
+ *
+ *      a.values_at(-5..3) # Raises RangeError.
+ *
+ *  - If <tt>range.end</tt> is positive and out-of-range,
+ *    extends the returned array with +nil+ elements:
+ *
+ *      a.values_at(1..5) # => ["b", "c", "d", nil, nil]
+ *
+ *  - If <tt>range.end</tt> is negative and in-range,
+ *    counts backwards from the end of +self+:
+ *
+ *      a.values_at(1..-2) # => ["b", "c"]
+ *
+ *  - If <tt>range.end</tt> is negative and out-of-range,
+ *    returns an empty array:
+ *
+ *      a.values_at(1..-5) # => []
+ *
+ *  The given ranges may be in any order and may repeat:
+ *
+ *    a.values_at(2..3, 0..1, 2..3) # => ["c", "d", "a", "b", "c", "d"]
+ *
+ *  The given specifiers may be any mixture of indexes and ranges:
+ *
+ *    a.values_at(3, 1..2, 0, 2..3) # => ["d", "b", "c", "a", "c", "d"]
+ *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Array@Methods+for+Fetching].
  */
 
 static VALUE
@@ -4412,65 +4475,95 @@ take_items(VALUE obj, long n)
 
 /*
  *  call-seq:
- *    array.zip(*other_arrays) -> new_array
- *    array.zip(*other_arrays) {|other_array| ... } -> nil
+ *    zip(*other_arrays) -> new_array
+ *    zip(*other_arrays) {|other_array| ... } -> nil
  *
- *  When no block given, returns a new +Array+ +new_array+ of size <tt>self.size</tt>
- *  whose elements are Arrays.
+ *  With no block given, combines +self+ with the collection of +other_arrays+;
+ *  returns a new array of sub-arrays:
  *
- *  Each nested array <tt>new_array[n]</tt> is of size <tt>other_arrays.size+1</tt>,
- *  and contains:
+ *    [0, 1].zip(['zero', 'one'], [:zero, :one])
+ *    # => [[0, "zero", :zero], [1, "one", :one]]
  *
- *  - The _nth_ element of +self+.
- *  - The _nth_ element of each of the +other_arrays+.
+ *  Returned:
  *
- *  If all +other_arrays+ and +self+ are the same size:
+ *  - The outer array is of size <tt>self.size</tt>.
+ *  - Each sub-array is of size <tt>other_arrays.size + 1</tt>.
+ *  - The _nth_ sub-array contains (in order):
+ *
+ *    - The _nth_ element of +self+.
+ *    - The _nth_ element of each of the other arrays, as available.
+ *
+ *  Example:
+ *
+ *    a = [0, 1]
+ *    zipped = a.zip(['zero', 'one'], [:zero, :one])
+ *    # => [[0, "zero", :zero], [1, "one", :one]]
+ *    zipped.size       # => 2 # Same size as a.
+ *    zipped.first.size # => 3 # Size of other arrays plus 1.
+ *
+ *  When the other arrays are all the same size as +self+,
+ *  the returned sub-arrays are a rearrangement containing exactly elements of all the arrays
+ *  (including +self+), with no omissions or additions:
  *
  *    a = [:a0, :a1, :a2, :a3]
  *    b = [:b0, :b1, :b2, :b3]
  *    c = [:c0, :c1, :c2, :c3]
  *    d = a.zip(b, c)
- *    d # => [[:a0, :b0, :c0], [:a1, :b1, :c1], [:a2, :b2, :c2], [:a3, :b3, :c3]]
+ *    pp d
+ *    # =>
+ *    [[:a0, :b0, :c0],
+ *     [:a1, :b1, :c1],
+ *     [:a2, :b2, :c2],
+ *     [:a3, :b3, :c3]]
  *
- *  If any array in +other_arrays+ is smaller than +self+,
- *  fills to <tt>self.size</tt> with +nil+:
+ *  When one of the other arrays is smaller than +self+,
+ *  pads the corresponding sub-array with +nil+ elements:
  *
  *    a = [:a0, :a1, :a2, :a3]
  *    b = [:b0, :b1, :b2]
  *    c = [:c0, :c1]
  *    d = a.zip(b, c)
- *    d # => [[:a0, :b0, :c0], [:a1, :b1, :c1], [:a2, :b2, nil], [:a3, nil, nil]]
+ *    pp d
+ *    # =>
+ *    [[:a0, :b0, :c0],
+ *     [:a1, :b1, :c1],
+ *     [:a2, :b2, nil],
+ *     [:a3, nil, nil]]
  *
- *  If any array in +other_arrays+ is larger than +self+,
- *  its trailing elements are ignored:
+ *  When one of the other arrays is larger than +self+,
+ *  _ignores_ its trailing elements:
  *
  *    a = [:a0, :a1, :a2, :a3]
  *    b = [:b0, :b1, :b2, :b3, :b4]
  *    c = [:c0, :c1, :c2, :c3, :c4, :c5]
  *    d = a.zip(b, c)
- *    d # => [[:a0, :b0, :c0], [:a1, :b1, :c1], [:a2, :b2, :c2], [:a3, :b3, :c3]]
+ *    pp d
+ *    # =>
+ *    [[:a0, :b0, :c0],
+ *     [:a1, :b1, :c1],
+ *     [:a2, :b2, :c2],
+ *     [:a3, :b3, :c3]]
  *
- *  If an argument is not an array, it extracts the values by calling #each:
+ *  With a block given, calls the block with each of the other arrays;
+ *  returns +nil+:
  *
- *    a = [:a0, :a1, :a2, :a2]
- *    b = 1..4
- *    c = a.zip(b)
- *    c # => [[:a0, 1], [:a1, 2], [:a2, 3], [:a2, 4]]
- *
- *  When a block is given, calls the block with each of the sub-arrays (formed as above); returns +nil+:
- *
+ *    d = []
  *    a = [:a0, :a1, :a2, :a3]
  *    b = [:b0, :b1, :b2, :b3]
  *    c = [:c0, :c1, :c2, :c3]
- *    a.zip(b, c) {|sub_array| p sub_array} # => nil
+ *    a.zip(b, c) {|sub_array| d.push(sub_array.reverse) } # => nil
+ *    pp d
+ *    # =>
+ *    [[:c0, :b0, :a0],
+ *     [:c1, :b1, :a1],
+ *     [:c2, :b2, :a2],
+ *     [:c3, :b3, :a3]]
  *
- *  Output:
+ *  For an *object* in *other_arrays* that is not actually an array,
+ *  forms the the "other array" as <tt>object.to_ary</tt>, if defined,
+ *  or as <tt>object.each.to_a</tt> otherwise.
  *
- *    [:a0, :b0, :c0]
- *    [:a1, :b1, :c1]
- *    [:a2, :b2, :c2]
- *    [:a3, :b3, :c3]
- *
+ *  Related: see {Methods for Converting}[rdoc-ref:Array@Methods+for+Converting].
  */
 
 static VALUE
@@ -5663,9 +5756,9 @@ rb_ary_union_hash(VALUE hash, VALUE ary2)
 
 /*
  *  call-seq:
- *    array | other_array -> new_array
+ *    self | other_array -> new_array
  *
- *  Returns the union of +array+ and +Array+ +other_array+;
+ *  Returns the union of +self+ and +other_array+;
  *  duplicates are removed; order is preserved;
  *  items are compared using <tt>eql?</tt>:
  *
@@ -5673,7 +5766,7 @@ rb_ary_union_hash(VALUE hash, VALUE ary2)
  *    [0, 1, 1] | [2, 2, 3] # => [0, 1, 2, 3]
  *    [0, 1, 2] | [3, 2, 1, 0] # => [0, 1, 2, 3]
  *
- *  Related: Array#union.
+ *  Related: see {Methods for Combining}[rdoc-ref:Array@Methods+for+Combining].
  */
 
 static VALUE
@@ -6777,6 +6870,12 @@ ary_sample(rb_execution_context_t *ec, VALUE ary, VALUE randgen, VALUE nv, VALUE
     ARY_SET_LEN(result, n);
 
     return result;
+}
+
+static VALUE
+ary_sized_alloc(rb_execution_context_t *ec, VALUE self)
+{
+    return rb_ary_new2(RARRAY_LEN(self));
 }
 
 static VALUE
@@ -8133,43 +8232,50 @@ rb_ary_deconstruct(VALUE ary)
 }
 
 /*
- *  An +Array+ is an ordered, integer-indexed collection of objects, called _elements_.
+ *  An array is an ordered, integer-indexed collection of objects, called _elements_.
  *  Any object (even another array) may be an array element,
  *  and an array can contain objects of different types.
  *
- *  == +Array+ Indexes
+ *  == \Array Indexes
  *
- *  +Array+ indexing starts at 0, as in C or Java.
+ *  \Array indexing begins at zero, as in C or Java.
  *
- *  A positive index is an offset from the first element:
+ *  A non-negative index is an offset from the beginning of the array:
  *
- *  - Index 0 indicates the first element.
- *  - Index 1 indicates the second element.
- *  - ...
+ *    a = ['a', 'b', 'c', 'd']
+ *    a[0] # => "a"
+ *    a[1] # => "b"
  *
  *  A negative index is an offset, backwards, from the end of the array:
  *
- *  - Index -1 indicates the last element.
- *  - Index -2 indicates the next-to-last element.
- *  - ...
+ *    a[-1] # => "d"
+ *    a[-2] # => "c"
  *
- *  A non-negative index is <i>in range</i> if and only if it is smaller than
- *  the size of the array.  For a 3-element array:
+ *  === \Range of an \Array
  *
- *  - Indexes 0 through 2 are in range.
- *  - Index 3 is out of range.
+ *  A non-negative index is <i>in-range</i> if it is smaller than the size of the array,
+ *  <i>out-of-range</i> otherwise:
  *
- *  A negative index is <i>in range</i> if and only if its absolute value is
- *  not larger than the size of the array.  For a 3-element array:
+ *    a.size # => 4
+ *    a[3]   # => "d"
+ *    a[4]   # => nil
  *
- *  - Indexes -1 through -3 are in range.
- *  - Index -4 is out of range.
+ *  A negative index is <i>in-range</i> if its absolute value is
+ *  not larger than the size of the array,
+ *  <i>out-of-range</i> otherwise:
+ *
+ *    a[-4] # => "a"
+ *    a[-5] # => nil
+ *
+ *  === Effective Index
  *
  *  Although the effective index into an array is always an integer,
  *  some methods (both within and outside of class +Array+)
- *  accept one or more non-integer arguments that are
- *  {integer-convertible objects}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects].
+ *  accept non-integer arguments that are
+ *  {integer-convertible objects}[rdoc-ref:implicit_conversion.rdoc@Integer-Convertible+Objects]:
  *
+ *    a[1.9]  # => "b"
+ *    a[-1.9] # => "d"
  *
  *  == Creating Arrays
  *
@@ -8473,136 +8579,115 @@ rb_ary_deconstruct(VALUE ary)
  *
  *  === Methods for Querying
  *
- *  - #length (aliased as #size): Returns the count of elements.
- *  - #include?: Returns whether any element <tt>==</tt> a given object.
- *  - #empty?: Returns whether there are no elements.
  *  - #all?: Returns whether all elements meet a given criterion.
  *  - #any?: Returns whether any element meets a given criterion.
+ *  - #count: Returns the count of elements that meet a given criterion.
+ *  - #empty?: Returns whether there are no elements.
+ *  - #find_index (aliased as #index): Returns the index of the first element that meets a given criterion.
+ *  - #hash: Returns the integer hash code.
+ *  - #include?: Returns whether any element <tt>==</tt> a given object.
+ *  - #length (aliased as #size): Returns the count of elements.
  *  - #none?: Returns whether no element <tt>==</tt> a given object.
  *  - #one?: Returns whether exactly one element <tt>==</tt> a given object.
- *  - #count: Returns the count of elements that meet a given criterion.
- *  - #find_index (aliased as #index): Returns the index of the first element that meets a given criterion.
  *  - #rindex: Returns the index of the last element that meets a given criterion.
- *  - #hash: Returns the integer hash code.
  *
  *  === Methods for Comparing
  *
- *  - #<=>: Returns -1, 0, or 1, as +self+ is less than, equal to, or
- *    greater than a given object.
- *  - #==: Returns whether each element in +self+ is <tt>==</tt> to the corresponding element
- *    in a given object.
- *  - #eql?: Returns whether each element in +self+ is <tt>eql?</tt> to the corresponding
- *    element in a given object.
+ *  - #<=>: Returns -1, 0, or 1, as +self+ is less than, equal to, or greater than a given object.
+ *  - #==: Returns whether each element in +self+ is <tt>==</tt> to the corresponding element in a given object.
+ *  - #eql?: Returns whether each element in +self+ is <tt>eql?</tt> to the corresponding element in a given object.
 
  *  === Methods for Fetching
  *
  *  These methods do not modify +self+.
  *
  *  - #[] (aliased as #slice): Returns consecutive elements as determined by a given argument.
+ *  - #assoc: Returns the first element that is an array whose first element <tt>==</tt> a given object.
+ *  - #at: Returns the element at a given offset.
+ *  - #bsearch: Returns an element selected via a binary search as determined by a given block.
+ *  - #bsearch_index: Returns the index of an element selected via a binary search as determined by a given block.
+ *  - #compact: Returns an array containing all non-+nil+ elements.
+ *  - #dig: Returns the object in nested objects that is specified by a given index and additional arguments.
+ *  - #drop: Returns trailing elements as determined by a given index.
+ *  - #drop_while: Returns trailing elements as determined by a given block.
  *  - #fetch: Returns the element at a given offset.
  *  - #fetch_values: Returns elements at given offsets.
  *  - #first: Returns one or more leading elements.
  *  - #last: Returns one or more trailing elements.
- *  - #max: Returns one or more maximum-valued elements,
- *    as determined by <tt>#<=></tt> or a given block.
- *  - #min: Returns one or more minimum-valued elements,
- *    as determined by <tt>#<=></tt> or a given block.
- *  - #minmax: Returns the minimum-valued and maximum-valued elements,
- *    as determined by <tt>#<=></tt> or a given block.
- *  - #assoc: Returns the first element that is an array
- *    whose first element <tt>==</tt> a given object.
- *  - #rassoc: Returns the first element that is an array
- *    whose second element <tt>==</tt> a given object.
- *  - #at: Returns the element at a given offset.
- *  - #values_at: Returns the elements at given offsets.
- *  - #dig: Returns the object in nested objects
- *    that is specified by a given index and additional arguments.
- *  - #drop: Returns trailing elements as determined by a given index.
- *  - #take: Returns leading elements as determined by a given index.
- *  - #drop_while: Returns trailing elements as determined by a given block.
- *  - #take_while: Returns leading elements as determined by a given block.
- *  - #sort: Returns all elements in an order determined by <tt>#<=></tt> or a given block.
- *  - #reverse: Returns all elements in reverse order.
- *  - #compact: Returns an array containing all non-+nil+ elements.
- *  - #select (aliased as #filter): Returns an array containing elements selected by a given block.
- *  - #uniq: Returns an array containing non-duplicate elements.
- *  - #rotate: Returns all elements with some rotated from one end to the other.
- *  - #bsearch: Returns an element selected via a binary search
- *    as determined by a given block.
- *  - #bsearch_index: Returns the index of an element selected via a binary search
- *    as determined by a given block.
- *  - #sample: Returns one or more random elements.
- *  - #shuffle: Returns elements in a random order.
+ *  - #max: Returns one or more maximum-valued elements, as determined by <tt>#<=></tt> or a given block.
+ *  - #min: Returns one or more minimum-valued elements, as determined by <tt>#<=></tt> or a given block.
+ *  - #minmax: Returns the minimum-valued and maximum-valued elements, as determined by <tt>#<=></tt> or a given block.
+ *  - #rassoc: Returns the first element that is an array whose second element <tt>==</tt> a given object.
  *  - #reject: Returns an array containing elements not rejected by a given block.
+ *  - #reverse: Returns all elements in reverse order.
+ *  - #rotate: Returns all elements with some rotated from one end to the other.
+ *  - #sample: Returns one or more random elements.
+ *  - #select (aliased as #filter): Returns an array containing elements selected by a given block.
+ *  - #shuffle: Returns elements in a random order.
+ *  - #sort: Returns all elements in an order determined by <tt>#<=></tt> or a given block.
+ *  - #take: Returns leading elements as determined by a given index.
+ *  - #take_while: Returns leading elements as determined by a given block.
+ *  - #uniq: Returns an array containing non-duplicate elements.
+ *  - #values_at: Returns the elements at given offsets.
  *
  *  === Methods for Assigning
  *
  *  These methods add, replace, or reorder elements in +self+.
  *
- *  - #[]=: Assigns specified elements with a given object.
  *  - #<<: Appends an element.
- *  - #push (aliased as #append): Appends elements.
- *  - #unshift (aliased as #prepend): Prepends leading elements.
- *  - #insert: Inserts given objects at a given offset; does not replace elements.
+ *  - #[]=: Assigns specified elements with a given object.
  *  - #concat: Appends all elements from given arrays.
  *  - #fill: Replaces specified elements with specified objects.
  *  - #flatten!: Replaces each nested array in +self+ with the elements from that array.
  *  - #initialize_copy (aliased as #replace): Replaces the content of +self+ with the content of a given array.
+ *  - #insert: Inserts given objects at a given offset; does not replace elements.
+ *  - #push (aliased as #append): Appends elements.
  *  - #reverse!: Replaces +self+ with its elements reversed.
  *  - #rotate!: Replaces +self+ with its elements rotated.
  *  - #shuffle!: Replaces +self+ with its elements in random order.
- *  - #sort!: Replaces +self+ with its elements sorted,
- *    as determined by <tt>#<=></tt> or a given block.
+ *  - #sort!: Replaces +self+ with its elements sorted, as determined by <tt>#<=></tt> or a given block.
  *  - #sort_by!: Replaces +self+ with its elements sorted, as determined by a given block.
+ *  - #unshift (aliased as #prepend): Prepends leading elements.
  *
  *  === Methods for Deleting
  *
  *  Each of these methods removes elements from +self+:
  *
- *  - #pop: Removes and returns the last element.
- *  - #shift:  Removes and returns the first element.
+ *  - #clear: Removes all elements.
  *  - #compact!: Removes all +nil+ elements.
  *  - #delete: Removes elements equal to a given object.
  *  - #delete_at: Removes the element at a given offset.
  *  - #delete_if: Removes elements specified by a given block.
- *  - #clear: Removes all elements.
  *  - #keep_if: Removes elements not specified by a given block.
+ *  - #pop: Removes and returns the last element.
  *  - #reject!: Removes elements specified by a given block.
  *  - #select! (aliased as #filter!): Removes elements not specified by a given block.
+ *  - #shift:  Removes and returns the first element.
  *  - #slice!: Removes and returns a sequence of elements.
  *  - #uniq!: Removes duplicates.
  *
  *  === Methods for Combining
  *
  *  - #&: Returns an array containing elements found both in +self+ and a given array.
- *  - #intersection: Returns an array containing elements found both in +self+
- *    and in each given array.
  *  - #+: Returns an array containing all elements of +self+ followed by all elements of a given array.
  *  - #-: Returns an array containing all elements of +self+ that are not found in a given array.
- *  - #|: Returns an array containing all elements of +self+ and all elements of a given array,
- *    duplicates removed.
- *  - #union: Returns an array containing all elements of +self+ and all elements of given arrays,
- *    duplicates removed.
- *  - #difference: Returns an array containing all elements of +self+ that are not found
- *    in any of the given arrays..
+ *  - #difference: Returns an array containing all elements of +self+ that are not found in any of the given arrays..
+ *  - #intersection: Returns an array containing elements found both in +self+ and in each given array.
  *  - #product: Returns or yields all combinations of elements from +self+ and given arrays.
  *  - #reverse: Returns an array containing all elements of +self+ in reverse order.
+ *  - #union: Returns an array containing all elements of +self+ and all elements of given arrays, duplicates removed.
+ *  - #|: Returns an array containing all elements of +self+ and all elements of a given array, duplicates removed.
  *
  *  === Methods for Iterating
  *
+ *  - #combination: Calls a given block with combinations of elements of +self+; a combination does not use the same element more than once.
+ *  - #cycle: Calls a given block with each element, then does so again, for a specified number of times, or forever.
  *  - #each: Passes each element to a given block.
- *  - #reverse_each:  Passes each element, in reverse order, to a given block.
  *  - #each_index: Passes each element index to a given block.
- *  - #cycle: Calls a given block with each element, then does so again,
- *    for a specified number of times, or forever.
- *  - #combination: Calls a given block with combinations of elements of +self+;
- *    a combination does not use the same element more than once.
- *  - #permutation: Calls a given block with permutations of elements of +self+;
- *    a permutation does not use the same element more than once.
- *  - #repeated_combination: Calls a given block with combinations of elements of +self+;
- *    a combination may use the same element more than once.
- *  - #repeated_permutation: Calls a given block with permutations of elements of +self+;
- *    a permutation may use the same element more than once.
+ *  - #permutation: Calls a given block with permutations of elements of +self+; a permutation does not use the same element more than once.
+ *  - #repeated_combination: Calls a given block with combinations of elements of +self+; a combination may use the same element more than once.
+ *  - #repeated_permutation: Calls a given block with permutations of elements of +self+; a permutation may use the same element more than once.
+ *  - #reverse_each:  Passes each element, in reverse order, to a given block.
  *
  *  === Methods for Converting
  *
@@ -8615,8 +8700,7 @@ rb_ary_deconstruct(VALUE ary)
  *  - #to_ary: Returns +self+.
  *  - #to_h: Returns a new hash formed from the elements.
  *  - #transpose: Transposes +self+, which must be an array of arrays.
- *  - #zip: Returns a new array of arrays containing +self+ and given arrays;
- *    follow the link for details.
+ *  - #zip: Returns a new array of arrays containing +self+ and given arrays.
  *
  *  === Other Methods
  *

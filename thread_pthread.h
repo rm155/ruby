@@ -134,7 +134,6 @@ struct rb_objspace_gate;
 
 #ifdef RB_THREAD_LOCAL_SPECIFIER
   NOINLINE(void rb_current_ec_set(struct rb_execution_context_struct *));
-  NOINLINE(struct rb_execution_context_struct *rb_current_ec_noinline(void));
 
   NOINLINE(void rb_current_os_gate_set(struct rb_objspace_gate *));
   NOINLINE(struct rb_objspace_gate *rb_current_os_gate_noinline(void));

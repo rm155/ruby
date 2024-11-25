@@ -9310,6 +9310,8 @@ load.$(OBJEXT): {$(VPATH)}prism/version.h
 load.$(OBJEXT): {$(VPATH)}prism_compile.h
 load.$(OBJEXT): {$(VPATH)}probes.dmyh
 load.$(OBJEXT): {$(VPATH)}probes.h
+load.$(OBJEXT): {$(VPATH)}ractor.h
+load.$(OBJEXT): {$(VPATH)}ractor_core.h
 load.$(OBJEXT): {$(VPATH)}ruby_assert.h
 load.$(OBJEXT): {$(VPATH)}ruby_atomic.h
 load.$(OBJEXT): {$(VPATH)}rubyparser.h
@@ -9320,6 +9322,7 @@ load.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 load.$(OBJEXT): {$(VPATH)}thread_native.h
 load.$(OBJEXT): {$(VPATH)}util.h
 load.$(OBJEXT): {$(VPATH)}vm_core.h
+load.$(OBJEXT): {$(VPATH)}vm_debug.h
 load.$(OBJEXT): {$(VPATH)}vm_opts.h
 loadpath.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 loadpath.$(OBJEXT): $(hdrdir)/ruby/version.h
@@ -16684,7 +16687,6 @@ scheduler.$(OBJEXT): {$(VPATH)}scheduler.c
 scheduler.$(OBJEXT): {$(VPATH)}shape.h
 scheduler.$(OBJEXT): {$(VPATH)}st.h
 scheduler.$(OBJEXT): {$(VPATH)}subst.h
-scheduler.$(OBJEXT): {$(VPATH)}thread.h
 scheduler.$(OBJEXT): {$(VPATH)}thread_$(THREAD_MODEL).h
 scheduler.$(OBJEXT): {$(VPATH)}thread_native.h
 scheduler.$(OBJEXT): {$(VPATH)}vm_core.h
@@ -19554,6 +19556,7 @@ version.$(OBJEXT): $(CCAN_DIR)/str/str.h
 version.$(OBJEXT): $(hdrdir)/ruby.h
 version.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 version.$(OBJEXT): $(hdrdir)/ruby/version.h
+version.$(OBJEXT): $(top_srcdir)/gc/gc.h
 version.$(OBJEXT): $(top_srcdir)/internal/array.h
 version.$(OBJEXT): $(top_srcdir)/internal/basic_operators.h
 version.$(OBJEXT): $(top_srcdir)/internal/cmdlineopt.h

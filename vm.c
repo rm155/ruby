@@ -558,7 +558,7 @@ RB_THREAD_LOCAL_SPECIFIER rb_objspace_gate_t *ruby_current_os_gate;
 RB_THREAD_LOCAL_SPECIFIER rb_atomic_t ruby_nt_serial;
 #endif
 
-// no-inline decl on thread_pthread.h
+// no-inline decl on vm_core.h
 rb_execution_context_t *
 rb_current_ec_noinline(void)
 {
@@ -601,6 +601,14 @@ rb_current_os_gate(void)
 #else
 native_tls_key_t ruby_current_ec_key;
 native_tls_key_t ruby_current_os_gate_key;
+
+// no-inline decl on vm_core.h
+rb_execution_context_t *
+rb_current_ec_noinline(void)
+{
+    return native_tls_get(ruby_current_ec_key);
+}
+
 #endif
 
 rb_event_flag_t ruby_vm_event_flags;
@@ -3176,6 +3184,12 @@ ruby_vm_destruct(rb_vm_t *vm)
         /* after freeing objspace, you *can't* use ruby_xfree() */
         ruby_mimfree(vm);
         ruby_current_vm_ptr = NULL;
+
+#if USE_YJIT
+        if (rb_free_at_exit) {
+            rb_yjit_free_at_exit();
+        }
+#endif
     }
     RUBY_FREE_LEAVE("vm");
     return 0;
@@ -3534,6 +3548,8 @@ thread_mark(void *ptr)
 
     rb_gc_mark(th->scheduler);
 
+    rb_threadptr_interrupt_exec_task_mark(th);
+
     RUBY_MARK_LEAVE("thread");
 }
 
@@ -3691,6 +3707,8 @@ th_init(rb_thread_t *th, VALUE self, rb_vm_t *vm)
     th->name = Qnil;
     th->report_on_exception = vm->thread_report_on_exception;
     th->ext_config.ractor_safe = true;
+
+    ccan_list_head_init(&th->interrupt_exec_tasks);
 
 #if USE_RUBY_DEBUG_LOG
     static rb_atomic_t thread_serial = 1;
@@ -4330,12 +4348,6 @@ Init_BareVM(void)
     rb_native_mutex_initialize(&vm->subclass_list_lock);
     vm->subclass_list_lock_owner = NULL;
     rb_native_mutex_initialize(&vm->classpath_lock);
-
-    // TODO: remove before Ruby 3.4.0 release
-    const char *s = getenv("RUBY_TRY_UNUSED_BLOCK_WARNING_STRICT");
-    if (s && strcmp(s, "1") == 0) {
-        vm->unused_block_warning_strict = true;
-    }
 
     // setup main thread
     th->nt = ZALLOC(struct rb_native_thread);

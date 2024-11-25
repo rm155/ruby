@@ -31,23 +31,24 @@ module URI
     if Parser == RFC2396_Parser
       const_set("REGEXP", URI::RFC2396_REGEXP)
       const_set("PATTERN", URI::RFC2396_REGEXP::PATTERN)
-      Parser.new.pattern.each_pair do |sym, str|
-        unless REGEXP::PATTERN.const_defined?(sym)
-          REGEXP::PATTERN.const_set(sym, str)
-        end
-      end
     end
 
     Parser.new.regexp.each_pair do |sym, str|
-      remove_const(sym) if const_defined?(sym)
+      remove_const(sym) if const_defined?(sym, false)
       const_set(sym, str)
     end
   end
   self.parser = RFC3986_PARSER
 
   def self.const_missing(const)
-    if value = RFC2396_PARSER.regexp[const]
+    if const == :REGEXP
+      warn "URI::REGEXP is obsolete. Use URI::RFC2396_REGEXP explicitly.", uplevel: 1 if $VERBOSE
+      URI::RFC2396_REGEXP
+    elsif value = RFC2396_PARSER.regexp[const]
       warn "URI::#{const} is obsolete. Use RFC2396_PARSER.regexp[#{const.inspect}] explicitly.", uplevel: 1 if $VERBOSE
+      value
+    elsif value = RFC2396_Parser.const_get(const)
+      warn "URI::#{const} is obsolete. Use RFC2396_Parser::#{const} explicitly.", uplevel: 1 if $VERBOSE
       value
     else
       super

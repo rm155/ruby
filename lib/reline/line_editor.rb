@@ -36,7 +36,6 @@ class Reline::LineEditor
 
   module CompletionState
     NORMAL = :normal
-    COMPLETION = :completion
     MENU = :menu
     MENU_WITH_PERFECT_MATCH = :menu_with_perfect_match
     PERFECT_MATCH = :perfect_match
@@ -300,8 +299,8 @@ class Reline::LineEditor
     end
   end
 
-  private def split_by_width(str, max_width, offset: 0)
-    Reline::Unicode.split_by_width(str, max_width, encoding, offset: offset)
+  private def split_line_by_width(str, max_width, offset: 0)
+    Reline::Unicode.split_line_by_width(str, max_width, encoding, offset: offset)
   end
 
   def current_byte_pointer_cursor
@@ -391,8 +390,8 @@ class Reline::LineEditor
         if (cached = cached_wraps[[prompt, line]])
           next cached
         end
-        *wrapped_prompts, code_line_prompt = split_by_width(prompt, width).first.compact
-        wrapped_lines = split_by_width(line, width, offset: calculate_width(code_line_prompt, true)).first.compact
+        *wrapped_prompts, code_line_prompt = split_line_by_width(prompt, width)
+        wrapped_lines = split_line_by_width(line, width, offset: calculate_width(code_line_prompt, true))
         wrapped_prompts.map { |p| [p, ''] } + [[code_line_prompt, wrapped_lines.first]] + wrapped_lines.drop(1).map { |c| ['', c] }
       end
     end
@@ -440,7 +439,7 @@ class Reline::LineEditor
   def wrapped_cursor_position
     prompt_width = calculate_width(prompt_list[@line_index], true)
     line_before_cursor = whole_lines[@line_index].byteslice(0, @byte_pointer)
-    wrapped_line_before_cursor = split_by_width(' ' * prompt_width + line_before_cursor, screen_width).first.compact
+    wrapped_line_before_cursor = split_line_by_width(' ' * prompt_width + line_before_cursor, screen_width)
     wrapped_cursor_y = wrapped_prompt_and_input_lines[0...@line_index].sum(&:size) + wrapped_line_before_cursor.size - 1
     wrapped_cursor_x = calculate_width(wrapped_line_before_cursor.last)
     [wrapped_cursor_x, wrapped_cursor_y]
@@ -465,15 +464,18 @@ class Reline::LineEditor
     render_differential([], 0, 0)
     lines = @buffer_of_lines.size.times.map do |i|
       line = Reline::Unicode.strip_non_printing_start_end(prompt_list[i]) + modified_lines[i]
-      wrapped_lines, = split_by_width(line, screen_width)
+      wrapped_lines = split_line_by_width(line, screen_width)
       wrapped_lines.last.empty? ? "#{line} " : line
     end
     @output.puts lines.map { |l| "#{l}\r\n" }.join
   end
 
   def print_nomultiline_prompt
+    Reline::IOGate.disable_auto_linewrap(true) if Reline::IOGate.win?
     # Readline's test `TestRelineAsReadline#test_readline` requires first output to be prompt, not cursor reset escape sequence.
     @output.write Reline::Unicode.strip_non_printing_start_end(@prompt) if @prompt && !@is_multiline
+  ensure
+    Reline::IOGate.disable_auto_linewrap(false) if Reline::IOGate.win?
   end
 
   def render
@@ -509,6 +511,7 @@ class Reline::LineEditor
   # by calculating the difference from the previous render.
 
   private def render_differential(new_lines, new_cursor_x, new_cursor_y)
+    Reline::IOGate.disable_auto_linewrap(true) if Reline::IOGate.win?
     rendered_lines = @rendered_screen.lines
     cursor_y = @rendered_screen.cursor_y
     if new_lines != rendered_lines
@@ -539,6 +542,8 @@ class Reline::LineEditor
     Reline::IOGate.move_cursor_column new_cursor_x
     Reline::IOGate.move_cursor_down new_cursor_y - cursor_y
     @rendered_screen.cursor_y = new_cursor_y
+  ensure
+    Reline::IOGate.disable_auto_linewrap(false) if Reline::IOGate.win?
   end
 
   private def clear_rendered_screen_cache
@@ -794,105 +799,74 @@ class Reline::LineEditor
     @config.editing_mode
   end
 
-  private def menu(_target, list)
+  private def menu(list)
     @menu_info = MenuInfo.new(list)
   end
 
-  private def complete_internal_proc(list, is_menu)
-    preposing, target, postposing = retrieve_completion_block
-    candidates = list.select { |i|
-      if i and not Encoding.compatible?(target.encoding, i.encoding)
-        raise Encoding::CompatibilityError, "#{target.encoding.name} is not compatible with #{i.encoding.name}"
-      end
-      if @config.completion_ignore_case
-        i&.downcase&.start_with?(target.downcase)
-      else
-        i&.start_with?(target)
-      end
-    }.uniq
-    if is_menu
-      menu(target, candidates)
-      return nil
-    end
-    completed = candidates.inject { |memo, item|
-      begin
-        memo_mbchars = memo.unicode_normalize.grapheme_clusters
-        item_mbchars = item.unicode_normalize.grapheme_clusters
-      rescue Encoding::CompatibilityError
-        memo_mbchars = memo.grapheme_clusters
-        item_mbchars = item.grapheme_clusters
-      end
-      size = [memo_mbchars.size, item_mbchars.size].min
-      result = +''
-      size.times do |i|
-        if @config.completion_ignore_case
-          if memo_mbchars[i].casecmp?(item_mbchars[i])
-            result << memo_mbchars[i]
-          else
-            break
-          end
-        else
-          if memo_mbchars[i] == item_mbchars[i]
-            result << memo_mbchars[i]
-          else
-            break
-          end
-        end
-      end
-      result
-    }
+  private def filter_normalize_candidates(target, list)
+    target = target.downcase if @config.completion_ignore_case
+    list.select do |item|
+      next unless item
 
-    [target, preposing, completed, postposing, candidates]
+      unless Encoding.compatible?(target.encoding, item.encoding)
+        # Crash with Encoding::CompatibilityError is required by readline-ext/test/readline/test_readline.rb
+        # TODO: fix the test
+        raise Encoding::CompatibilityError, "#{target.encoding.name} is not compatible with #{item.encoding.name}"
+      end
+
+      if @config.completion_ignore_case
+        item.downcase.start_with?(target)
+      else
+        item.start_with?(target)
+      end
+    end.map do |item|
+      item.unicode_normalize
+    rescue Encoding::CompatibilityError
+      item
+    end.uniq
   end
 
-  private def perform_completion(list, just_show_list)
+  private def perform_completion(list)
+    preposing, target, postposing = retrieve_completion_block
+    candidates = filter_normalize_candidates(target, list)
+
     case @completion_state
-    when CompletionState::NORMAL
-      @completion_state = CompletionState::COMPLETION
     when CompletionState::PERFECT_MATCH
       if @dig_perfect_match_proc
-        @dig_perfect_match_proc.(@perfect_matched)
-      else
-        @completion_state = CompletionState::COMPLETION
+        @dig_perfect_match_proc.call(@perfect_matched)
+        return
       end
-    end
-    if just_show_list
-      is_menu = true
-    elsif @completion_state == CompletionState::MENU
-      is_menu = true
-    elsif @completion_state == CompletionState::MENU_WITH_PERFECT_MATCH
-      is_menu = true
-    else
-      is_menu = false
-    end
-    result = complete_internal_proc(list, is_menu)
-    if @completion_state == CompletionState::MENU_WITH_PERFECT_MATCH
+    when CompletionState::MENU
+      menu(candidates)
+      return
+    when CompletionState::MENU_WITH_PERFECT_MATCH
+      menu(candidates)
       @completion_state = CompletionState::PERFECT_MATCH
+      return
     end
-    return if result.nil?
-    target, preposing, completed, postposing, candidates = result
-    return if completed.nil?
-    if target <= completed and (@completion_state == CompletionState::COMPLETION)
-      append_character = ''
-      if candidates.include?(completed)
-        if candidates.one?
-          append_character = completion_append_character.to_s
-          @completion_state = CompletionState::PERFECT_MATCH
-        else
-          @completion_state = CompletionState::MENU_WITH_PERFECT_MATCH
-          perform_completion(candidates, true) if @config.show_all_if_ambiguous
-        end
-        @perfect_matched = completed
+
+    completed = Reline::Unicode.common_prefix(candidates, ignore_case: @config.completion_ignore_case)
+    return if completed.empty?
+
+    append_character = ''
+    if candidates.include?(completed)
+      if candidates.one?
+        append_character = completion_append_character.to_s
+        @completion_state = CompletionState::PERFECT_MATCH
+      elsif @config.show_all_if_ambiguous
+        menu(candidates)
+        @completion_state = CompletionState::PERFECT_MATCH
       else
-        @completion_state = CompletionState::MENU
-        perform_completion(candidates, true) if @config.show_all_if_ambiguous
+        @completion_state = CompletionState::MENU_WITH_PERFECT_MATCH
       end
-      unless just_show_list
-        @buffer_of_lines[@line_index] = (preposing + completed + append_character + postposing).split("\n")[@line_index] || String.new(encoding: encoding)
-        line_to_pointer = (preposing + completed + append_character).split("\n")[@line_index] || String.new(encoding: encoding)
-        @byte_pointer = line_to_pointer.bytesize
-      end
+      @perfect_matched = completed
+    else
+      @completion_state = CompletionState::MENU
+      menu(candidates) if @config.show_all_if_ambiguous
     end
+    @buffer_of_lines[@line_index] = (preposing + completed + append_character + postposing).split("\n")[@line_index] || String.new(encoding: encoding)
+    line_to_pointer = (preposing + completed + append_character).split("\n")[@line_index] || String.new(encoding: encoding)
+    @byte_pointer = line_to_pointer.bytesize
   end
 
   def dialog_proc_scope_completion_journey_data
@@ -1457,7 +1431,7 @@ class Reline::LineEditor
       result = call_completion_proc
       if result.is_a?(Array)
         @completion_occurs = true
-        perform_completion(result, false)
+        perform_completion(result)
       end
     end
   end
@@ -1576,7 +1550,7 @@ class Reline::LineEditor
   alias_method :backward_char, :ed_prev_char
 
   private def vi_first_print(key)
-    @byte_pointer, = Reline::Unicode.vi_first_print(current_line)
+    @byte_pointer = Reline::Unicode.vi_first_print(current_line)
   end
 
   private def ed_move_to_beg(key)
@@ -1923,7 +1897,9 @@ class Reline::LineEditor
     elsif !@config.autocompletion # show completed list
       result = call_completion_proc
       if result.is_a?(Array)
-        perform_completion(result, true)
+        _preposing, target = retrieve_completion_block
+        candidates = filter_normalize_candidates(target, result)
+        menu(candidates)
       end
     end
   end
@@ -1955,7 +1931,7 @@ class Reline::LineEditor
 
   private def em_next_word(key)
     if current_line.bytesize > @byte_pointer
-      byte_size, _ = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
       @byte_pointer += byte_size
     end
   end
@@ -1963,7 +1939,7 @@ class Reline::LineEditor
 
   private def ed_prev_word(key)
     if @byte_pointer > 0
-      byte_size, _ = Reline::Unicode.em_backward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.em_backward_word(current_line, @byte_pointer)
       @byte_pointer -= byte_size
     end
   end
@@ -1971,7 +1947,7 @@ class Reline::LineEditor
 
   private def em_delete_next_word(key)
     if current_line.bytesize > @byte_pointer
-      byte_size, _ = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
       line, word = byteslice!(current_line, @byte_pointer, byte_size)
       set_current_line(line)
       @kill_ring.append(word)
@@ -1981,7 +1957,7 @@ class Reline::LineEditor
 
   private def ed_delete_prev_word(key)
     if @byte_pointer > 0
-      byte_size, _ = Reline::Unicode.em_backward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.em_backward_word(current_line, @byte_pointer)
       line, word = byteslice!(current_line, @byte_pointer - byte_size, byte_size)
       set_current_line(line, @byte_pointer - byte_size)
       @kill_ring.append(word, true)
@@ -2021,7 +1997,7 @@ class Reline::LineEditor
 
   private def em_capitol_case(key)
     if current_line.bytesize > @byte_pointer
-      byte_size, _, new_str = Reline::Unicode.em_forward_word_with_capitalization(current_line, @byte_pointer)
+      byte_size, new_str = Reline::Unicode.em_forward_word_with_capitalization(current_line, @byte_pointer)
       before = current_line.byteslice(0, @byte_pointer)
       after = current_line.byteslice((@byte_pointer + byte_size)..-1)
       set_current_line(before + new_str + after, @byte_pointer + new_str.bytesize)
@@ -2031,7 +2007,7 @@ class Reline::LineEditor
 
   private def em_lower_case(key)
     if current_line.bytesize > @byte_pointer
-      byte_size, = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
       part = current_line.byteslice(@byte_pointer, byte_size).grapheme_clusters.map { |mbchar|
         mbchar =~ /[A-Z]/ ? mbchar.downcase : mbchar
       }.join
@@ -2044,7 +2020,7 @@ class Reline::LineEditor
 
   private def em_upper_case(key)
     if current_line.bytesize > @byte_pointer
-      byte_size, = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.em_forward_word(current_line, @byte_pointer)
       part = current_line.byteslice(@byte_pointer, byte_size).grapheme_clusters.map { |mbchar|
         mbchar =~ /[a-z]/ ? mbchar.upcase : mbchar
       }.join
@@ -2057,7 +2033,7 @@ class Reline::LineEditor
 
   private def em_kill_region(key)
     if @byte_pointer > 0
-      byte_size, _ = Reline::Unicode.em_big_backward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.em_big_backward_word(current_line, @byte_pointer)
       line, deleted = byteslice!(current_line, @byte_pointer - byte_size, byte_size)
       set_current_line(line, @byte_pointer - byte_size)
       @kill_ring.append(deleted, true)
@@ -2088,7 +2064,7 @@ class Reline::LineEditor
 
   private def vi_next_word(key, arg: 1)
     if current_line.bytesize > @byte_pointer
-      byte_size, _ = Reline::Unicode.vi_forward_word(current_line, @byte_pointer, @drop_terminate_spaces)
+      byte_size = Reline::Unicode.vi_forward_word(current_line, @byte_pointer, @drop_terminate_spaces)
       @byte_pointer += byte_size
     end
     arg -= 1
@@ -2097,7 +2073,7 @@ class Reline::LineEditor
 
   private def vi_prev_word(key, arg: 1)
     if @byte_pointer > 0
-      byte_size, _ = Reline::Unicode.vi_backward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.vi_backward_word(current_line, @byte_pointer)
       @byte_pointer -= byte_size
     end
     arg -= 1
@@ -2106,7 +2082,7 @@ class Reline::LineEditor
 
   private def vi_end_word(key, arg: 1, inclusive: false)
     if current_line.bytesize > @byte_pointer
-      byte_size, _ = Reline::Unicode.vi_forward_end_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.vi_forward_end_word(current_line, @byte_pointer)
       @byte_pointer += byte_size
     end
     arg -= 1
@@ -2121,7 +2097,7 @@ class Reline::LineEditor
 
   private def vi_next_big_word(key, arg: 1)
     if current_line.bytesize > @byte_pointer
-      byte_size, _ = Reline::Unicode.vi_big_forward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.vi_big_forward_word(current_line, @byte_pointer)
       @byte_pointer += byte_size
     end
     arg -= 1
@@ -2130,7 +2106,7 @@ class Reline::LineEditor
 
   private def vi_prev_big_word(key, arg: 1)
     if @byte_pointer > 0
-      byte_size, _ = Reline::Unicode.vi_big_backward_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.vi_big_backward_word(current_line, @byte_pointer)
       @byte_pointer -= byte_size
     end
     arg -= 1
@@ -2139,7 +2115,7 @@ class Reline::LineEditor
 
   private def vi_end_big_word(key, arg: 1, inclusive: false)
     if current_line.bytesize > @byte_pointer
-      byte_size, _ = Reline::Unicode.vi_big_forward_end_word(current_line, @byte_pointer)
+      byte_size = Reline::Unicode.vi_big_forward_end_word(current_line, @byte_pointer)
       @byte_pointer += byte_size
     end
     arg -= 1

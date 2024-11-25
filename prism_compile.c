@@ -1268,11 +1268,17 @@ pm_new_child_iseq(rb_iseq_t *iseq, pm_scope_node_t *node, VALUE name, const rb_i
 {
     debugs("[new_child_iseq]> ---------------------------------------\n");
     int isolated_depth = ISEQ_COMPILE_DATA(iseq)->isolated_depth;
+    int error_state;
     rb_iseq_t *ret_iseq = pm_iseq_new_with_opt(node, name,
             rb_iseq_path(iseq), rb_iseq_realpath(iseq),
             line_no, parent,
             isolated_depth ? isolated_depth + 1 : 0,
-            type, ISEQ_COMPILE_DATA(iseq)->option);
+            type, ISEQ_COMPILE_DATA(iseq)->option, &error_state);
+
+    if (error_state) {
+        RUBY_ASSERT(ret_iseq == NULL);
+        rb_jump_tag(error_state);
+    }
     debugs("[new_child_iseq]< ---------------------------------------\n");
     return ret_iseq;
 }
@@ -3376,7 +3382,7 @@ pm_compile_builtin_attr(rb_iseq_t *iseq, const pm_scope_node_t *scope_node, cons
         }
 
         VALUE symbol = pm_static_literal_value(iseq, argument, scope_node);
-        VALUE string = rb_sym_to_s(symbol);
+        VALUE string = rb_sym2str(symbol);
 
         if (strcmp(RSTRING_PTR(string), "leaf") == 0) {
             ISEQ_BODY(iseq)->builtin_attrs |= BUILTIN_ATTR_LEAF;
@@ -3479,6 +3485,7 @@ pm_compile_builtin_mandatory_only_method(rb_iseq_t *iseq, pm_scope_node_t *scope
     pm_scope_node_t next_scope_node;
     pm_scope_node_init(&def.base, &next_scope_node, scope_node);
 
+    int error_state;
     ISEQ_BODY(iseq)->mandatory_only_iseq = pm_iseq_new_with_opt(
         &next_scope_node,
         rb_iseq_base_label(iseq),
@@ -3488,8 +3495,14 @@ pm_compile_builtin_mandatory_only_method(rb_iseq_t *iseq, pm_scope_node_t *scope
         NULL,
         0,
         ISEQ_TYPE_METHOD,
-        ISEQ_COMPILE_DATA(iseq)->option
+        ISEQ_COMPILE_DATA(iseq)->option,
+        &error_state
     );
+
+    if (error_state) {
+        RUBY_ASSERT(ISEQ_BODY(iseq)->mandatory_only_iseq == NULL);
+        rb_jump_tag(error_state);
+    }
 
     pm_scope_node_destroy(&next_scope_node);
     return COMPILE_OK;
