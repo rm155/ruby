@@ -30,7 +30,7 @@ GC_IMPL_FN void rb_gc_impl_objspace_init(void *objspace_ptr, void *ractor);
 GC_IMPL_FN void rb_gc_impl_objspace_free(void *objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_attach_local_gate(void *objspace_ptr, void *local_gate_ptr);
-GC_IMPL_FN void *rb_gc_impl_ractor_cache_alloc(void *objspace_ptr);
+GC_IMPL_FN void *rb_gc_impl_ractor_cache_alloc(void *objspace_ptr, void *ractor);
 GC_IMPL_FN void rb_gc_impl_ractor_cache_free(void *objspace_ptr, void *cache);
 GC_IMPL_FN void rb_gc_impl_set_params(void *objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_init(void);
