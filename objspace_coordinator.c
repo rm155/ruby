@@ -803,6 +803,52 @@ local_immune_objects_global_count(void)
 }
 
 static int
+find_all_mutable_shareable_objs_i(void *vstart, void *vend, size_t stride, void *data)
+{
+    VALUE ary = data;
+
+    VALUE v = (VALUE)vstart;
+    for (; v != (VALUE)vend; v += stride) {
+	if (MUTABLE_SHAREABLE(v)) {
+	    rb_ary_push(ary, v);
+	}
+    }
+
+    return 0;
+}
+
+static VALUE
+find_all_mutable_shareable_objs(void)
+{
+    VALUE ary = rb_ary_new();
+    rb_objspace_each_objects(find_all_mutable_shareable_objs_i, ary);
+    return ary;
+}
+
+void
+add_reachable_objects_to_local_immune_tbl_i(VALUE obj, void *data_ptr)
+{
+    if (rb_ractor_shareable_p(obj)) {
+	add_local_immune_object(obj);
+    }
+}
+
+static void
+add_reachable_objects_to_local_immune_tbl(VALUE obj)
+{
+    rb_objspace_reachable_objects_from(obj, add_reachable_objects_to_local_immune_tbl_i, NULL);
+}
+
+void
+rb_local_immune_tbl_activate(void)
+{
+    VALUE mutable_shareable_obj_ary = find_all_mutable_shareable_objs();
+    for (long i=0; i<RARRAY_LEN(mutable_shareable_obj_ary); i++) {
+        add_reachable_objects_to_local_immune_tbl(RARRAY_AREF(mutable_shareable_obj_ary, i));
+    }
+}
+
+static int
 confirm_discovered_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
     rb_objspace_gate_t *os_gate = (rb_objspace_gate_t *)argp;

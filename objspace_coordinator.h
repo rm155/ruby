@@ -284,6 +284,7 @@ void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
 void update_local_immune_tbl(rb_objspace_gate_t *os_gate);
 bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed);
 unsigned int local_immune_objects_global_count(void);
+void rb_local_immune_tbl_activate(void);
 
 void rb_add_zombie_thread(rb_thread_t *th);
 void mark_zombie_threads(rb_objspace_gate_t *os_gate);

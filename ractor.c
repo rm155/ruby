@@ -2075,6 +2075,7 @@ cancel_single_ractor_mode_no_redirection(VALUE args) {
     VALUE was_disabled = rb_gc_enable();
 
     rb_gc_start();
+    rb_local_immune_tbl_activate();
 
     if (was_disabled) {
         rb_gc_disable();
