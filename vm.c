@@ -2287,6 +2287,7 @@ vm_init_redefined_flag(void)
     OP(NilP, NIL_P), (C(NilClass));
     OP(Cmp, CMP), (C(Integer), C(Float), C(String));
     OP(Default, DEFAULT), (C(Hash));
+    OP(IncludeP, INCLUDE_P), (C(Array));
 #undef C
 #undef OP
 }
