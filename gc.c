@@ -1056,6 +1056,7 @@ rb_gc_obj_slot_size(VALUE obj)
 static inline void
 gc_validate_pc(void) {
 #if RUBY_DEBUG
+    if (!rb_current_execution_context(false)) return;
     rb_execution_context_t *ec = GET_EC();
     const rb_control_frame_t *cfp = ec->cfp;
     if (cfp && VM_FRAME_RUBYFRAME_P(cfp) && cfp->pc) {
