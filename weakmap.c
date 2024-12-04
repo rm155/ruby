@@ -675,10 +675,8 @@ static int
 wkmap_mark_table_i(st_data_t key, st_data_t val_obj, st_data_t data)
 {
     VALUE **dead_entry = (VALUE **)data;
-    if (dead_entry != NULL) {
-	wkmap_entry_free(*dead_entry);
-        *dead_entry = NULL;
-    }
+    wkmap_entry_free(*dead_entry);
+    *dead_entry = NULL;
 
     VALUE *key_ptr = (VALUE *)key;
 
@@ -741,10 +739,8 @@ static int
 wkmap_compact_table_i(st_data_t key, st_data_t val_obj, st_data_t data, int _error)
 {
     VALUE **dead_entry = (VALUE **)data;
-    if (dead_entry != NULL) {
-	wkmap_entry_free(*dead_entry);
-        *dead_entry = NULL;
-    }
+    wkmap_entry_free(*dead_entry);
+    *dead_entry = NULL;
 
     VALUE *key_ptr = (VALUE *)key;
 

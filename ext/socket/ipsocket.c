@@ -226,7 +226,6 @@ struct fast_fallback_inetsock_arg
     int *families;
     int family_size;
     int additional_flags;
-    rb_nativethread_lock_t *lock;
     struct fast_fallback_getaddrinfo_entry *getaddrinfo_entries[2];
     struct fast_fallback_getaddrinfo_shared *getaddrinfo_shared;
     int wait;
@@ -310,7 +309,7 @@ cancel_fast_fallback(void *ptr)
 
     struct fast_fallback_getaddrinfo_shared *arg = (struct fast_fallback_getaddrinfo_shared *)ptr;
 
-    rb_nativethread_lock_lock(arg->lock);
+    rb_nativethread_lock_lock(&arg->lock);
     {
         arg->cancelled = true;
         char notification = SELECT_CANCELLED;
@@ -318,7 +317,7 @@ cancel_fast_fallback(void *ptr)
             rb_syserr_fail(errno, "write(2)");
         }
     }
-    rb_nativethread_lock_unlock(arg->lock);
+    rb_nativethread_lock_unlock(&arg->lock);
 }
 
 struct hostname_resolution_result
@@ -596,13 +595,9 @@ init_fast_fallback_inetsock_internal(VALUE v)
     arg->getaddrinfo_shared = allocate_fast_fallback_getaddrinfo_shared(arg->family_size);
     if (!arg->getaddrinfo_shared) rb_syserr_fail(errno, "calloc(3)");
 
-    arg->getaddrinfo_shared->lock = calloc(1, sizeof(rb_nativethread_lock_t));
-    if (!arg->getaddrinfo_shared->lock) rb_syserr_fail(errno, "calloc(3)");
-    rb_nativethread_lock_initialize(arg->getaddrinfo_shared->lock);
+    rb_nativethread_lock_initialize(&arg->getaddrinfo_shared->lock);
 
     arg->getaddrinfo_shared->notify = hostname_resolution_notifier;
-    arg->getaddrinfo_shared->connection_attempt_fds = arg->connection_attempt_fds;
-    arg->getaddrinfo_shared->connection_attempt_fds_size = arg->connection_attempt_fds_size;
     arg->getaddrinfo_shared->cancelled = false;
     wait_arg.cancelled = &arg->getaddrinfo_shared->cancelled;
 
@@ -620,7 +615,6 @@ init_fast_fallback_inetsock_internal(VALUE v)
     if (arg->family_size == 1) {
         arg->getaddrinfo_shared->node = NULL;
         arg->getaddrinfo_shared->service = NULL;
-        arg->getaddrinfo_shared->refcount = 1;
 
         int family = arg->families[0];
         arg->remote.res = rsock_addrinfo(
@@ -1007,9 +1001,7 @@ init_fast_fallback_inetsock_internal(VALUE v)
                 if (connected_fd >= 0) break;
 
                 if (!in_progress_fds(arg->connection_attempt_fds_size)) {
-                    if (any_addrinfos(&resolution_store)) {
-                        connection_attempt_delay_expires_at = NULL;
-                    } else if (resolution_store.is_all_finised) {
+                    if (!any_addrinfos(&resolution_store) && resolution_store.is_all_finised) {
                         if (local_status < 0) {
                             host = arg->local.host;
                             serv = arg->local.serv;
@@ -1023,6 +1015,7 @@ init_fast_fallback_inetsock_internal(VALUE v)
                             rsock_syserr_fail_host_port(last_error.ecode, syscall, host, serv);
                         }
                     }
+                    connection_attempt_delay_expires_at = NULL;
                     user_specified_connect_timeout_at = NULL;
                 }
             }
@@ -1203,7 +1196,7 @@ fast_fallback_inetsock_cleanup(VALUE v)
             int shared_need_free = 0;
             int need_free[2] = { 0, 0 };
 
-            rb_nativethread_lock_lock(getaddrinfo_shared->lock);
+            rb_nativethread_lock_lock(&getaddrinfo_shared->lock);
             {
                 for (int i = 0; i < arg->family_size; i++) {
                     if (arg->getaddrinfo_entries[i] && --(arg->getaddrinfo_entries[i]->refcount) == 0) {
@@ -1214,7 +1207,7 @@ fast_fallback_inetsock_cleanup(VALUE v)
                     shared_need_free = 1;
                 }
             }
-            rb_nativethread_lock_unlock(getaddrinfo_shared->lock);
+            rb_nativethread_lock_unlock(&getaddrinfo_shared->lock);
 
             for (int i = 0; i < arg->family_size; i++) {
                 if (need_free[i]) free_fast_fallback_getaddrinfo_entry(&arg->getaddrinfo_entries[i]);
