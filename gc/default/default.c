@@ -2726,7 +2726,7 @@ newobj_slowpath(VALUE klass, VALUE flags, rb_objspace_t *objspace, rb_ractor_new
     VALUE obj;
     unsigned int lev;
     if (RB_UNLIKELY((during_gc) || ruby_gc_stressful)) {
-	if (during_gc && !(borrowing && objspace->local_gate->waiting_for_object_graph_safety)) {
+	if (during_gc) {
 	    dont_gc_on();
 	    during_gc = 0;
 	    rb_bug("object allocation during garbage collection phase");
@@ -2806,7 +2806,7 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
           newobj_slowpath_wb_unprotected(klass, flags, objspace, cache, heap_idx, borrowing);
     }
     
-    if (borrowing && (is_incremental_marking(objspace) || objspace->local_gate->waiting_for_object_graph_safety)) {
+    if (borrowing && is_incremental_marking(objspace)) {
 	if (gc_mark_set(objspace, obj)) {
     	    gc_aging(obj);
     	    gc_grey(objspace, obj);
@@ -7279,9 +7279,6 @@ gc_start(rb_objspace_t *objspace, unsigned int reason)
 	rb_objspace_gate_t *local_gate = NULL;
 	ccan_list_for_each(&vm->objspace_set, local_gate, gate_node) {
 	    rb_objspace_t *os = local_gate->objspace;
-	    if (os->ractor && os->ractor->gc_chain_node) {
-		os->ractor->gc_chain_node->value = 0;
-	    }
 	    gc_set_flags_finish(os, reason, &do_full_mark, &immediate_mark);
 	}
 	rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);

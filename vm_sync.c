@@ -81,8 +81,6 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
     else {
 	VM_ASSERT(!!cr);
 
-	if (!no_barrier) rb_objspace_coordinator_object_graph_safety_advance(cr, OGS_FLAG_ENTERING_VM_LOCK);
-
 #if RACTOR_CHECK_MODE
         // locking ractor and acquire VM lock will cause deadlock
         VM_ASSERT(cr->sync.locked_by != rb_ractor_self(cr) || cr->sync.locking_thread != GET_THREAD());
@@ -115,8 +113,6 @@ vm_lock_enter(rb_ractor_t *cr, rb_vm_t *vm, bool locked, bool no_barrier, unsign
         VM_ASSERT(vm->ractor.sync.lock_rec == 0);
         VM_ASSERT(vm->ractor.sync.lock_owner == NULL);
         vm->ractor.sync.lock_owner = cr;
-
-	if (!no_barrier) rb_objspace_coordinator_object_graph_safety_withdraw(cr, OGS_FLAG_ENTERING_VM_LOCK);
     }
 
     vm->ractor.sync.lock_rec++;
@@ -249,9 +245,7 @@ rb_vm_barrier(void)
         VM_ASSERT(cr == GET_RACTOR());
         VM_ASSERT(rb_ractor_status_p(cr, ractor_running));
 
-	rb_objspace_coordinator_object_graph_safety_advance(cr, OGS_FLAG_BARRIER_CREATING);
         rb_ractor_sched_barrier_start(vm, cr);
-	rb_objspace_coordinator_object_graph_safety_withdraw(cr, OGS_FLAG_BARRIER_CREATING);
     }
 }
 

@@ -6,44 +6,6 @@
 typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
 struct rb_objspace_coordinator;
 
-struct rb_ractor_chain_node {
-    rb_ractor_t *ractor;
-    rb_atomic_t value;
-    struct rb_ractor_chain_node *prev_node;
-    struct rb_ractor_chain_node *next_node;
-};
-
-struct rb_ractor_chain {
-    struct rb_objspace_coordinator *coordinator;
-    struct rb_ractor_chain_node *head_node;
-    struct rb_ractor_chain_node *tail_node;
-
-    void (*node_added_callback)(struct rb_ractor_chain *, struct rb_ractor_chain_node *);
-    void (*node_removed_callback)(struct rb_ractor_chain *, struct rb_ractor_chain_node *);
-
-    rb_nativethread_lock_t lock;
-#if VM_CHECK_MODE > 0
-    rb_ractor_t *lock_owner;
-#endif
-};
-
-void rb_ractor_chain_register_ractor(rb_ractor_t *r);
-void rb_ractor_chain_unregister_ractor(rb_ractor_t *r);
-
-
-typedef enum {
-    OGS_FLAG_NONE                   = 0x000,
-    OGS_FLAG_NOT_RUNNING            = 0x001,
-    OGS_FLAG_BLOCKING               = 0x002,
-    OGS_FLAG_BARRIER_WAITING        = 0x004,
-    OGS_FLAG_BARRIER_CREATING       = 0x008,
-    OGS_FLAG_ENTERING_VM_LOCK       = 0x010,
-    OGS_FLAG_RUNNING_LOCAL_GC       = 0x020,
-    OGS_FLAG_RUNNING_GLOBAL_GC      = 0x040,
-    OGS_FLAG_ABSORBING_OBJSPACE     = 0x080,
-    OGS_FLAG_COND_AND_BARRIER       = 0x100,
-};
-
 typedef struct rb_objspace_coordinator {
     unsigned long long next_object_id;
 
@@ -66,11 +28,6 @@ typedef struct rb_objspace_coordinator {
     } rglobalgc;
 
     struct {
-	struct rb_ractor_chain ractor_chain;
-	rb_nativethread_cond_t removal_cond;
-    } object_graph_safety;
-
-    struct {
 	rb_nativethread_lock_t mode_lock;
 	rb_nativethread_cond_t mode_change_cond;
 	int objspace_readers;
@@ -83,8 +40,6 @@ struct rb_objspace *gc_current_objspace(void);
 rb_objspace_coordinator_t *rb_get_objspace_coordinator(void);
 rb_objspace_coordinator_t *rb_objspace_coordinator_init(void);
 void rb_objspace_coordinator_free(rb_objspace_coordinator_t *objspace_coordinator);
-void rb_objspace_coordinator_object_graph_safety_advance(rb_ractor_t *r, unsigned int reason);
-void rb_objspace_coordinator_object_graph_safety_withdraw(rb_ractor_t *r, unsigned int reason);
 VALUE object_id_global_search(VALUE objid);
 bool rb_nonexistent_id(VALUE objid);
 VALUE retrieve_next_obj_id(int increment);
@@ -105,7 +60,6 @@ int count_objspaces(rb_vm_t *vm); //TODO: Replace with count-tracker
 #define VM_COND_AND_BARRIER_WAIT(vm, cond, state_to_check) do { \
     ASSERT_vm_locking(); \
     rb_ractor_t *_cr = GET_RACTOR(); \
-    rb_objspace_coordinator_object_graph_safety_advance(_cr, OGS_FLAG_COND_AND_BARRIER); \
     while (BARRIER_WAITING(vm)) { \
 	rb_barrier_join_within_vm_lock(vm, _cr); \
     } \
@@ -117,14 +71,12 @@ int count_objspaces(rb_vm_t *vm); //TODO: Replace with count-tracker
 	rb_vm_cond_wait(vm, &cond); \
 	_need_repeat = !state_to_check || BARRIER_WAITING(vm); \
     } \
-    rb_objspace_coordinator_object_graph_safety_withdraw(_cr, OGS_FLAG_COND_AND_BARRIER); \
     if (!_need_repeat) break; \
 } while(true)
 
 #define COND_AND_BARRIER_WAIT(vm, lock, cond, state_to_check) do { \
     ASSERT_vm_locking(); \
     rb_ractor_t *_cr = GET_RACTOR(); \
-    rb_objspace_coordinator_object_graph_safety_advance(_cr, OGS_FLAG_COND_AND_BARRIER); \
     while (BARRIER_WAITING(vm)) { \
 	rb_native_mutex_unlock(&lock); \
 	rb_barrier_join_within_vm_lock(vm, _cr); \
@@ -138,7 +90,6 @@ int count_objspaces(rb_vm_t *vm); //TODO: Replace with count-tracker
 	rb_native_cond_wait(&cond, &lock); \
 	_need_repeat = !state_to_check || BARRIER_WAITING(vm); \
     } \
-    rb_objspace_coordinator_object_graph_safety_withdraw(_cr, OGS_FLAG_COND_AND_BARRIER); \
     if (!_need_repeat) break; \
 } while(true)
 
@@ -191,7 +142,6 @@ typedef struct rb_objspace_gate {
 
     //GC state
     bool running_global_gc;
-    bool waiting_for_object_graph_safety;
     int local_gc_level;
     struct rb_objspace *gc_target;
     struct rb_objspace *current_parent_objspace;
@@ -401,8 +351,6 @@ bool rb_ractor_safe_gc_state(void);
 
 bool global_gc_needed(void);
 void arrange_next_gc_global_status(double sharedobject_limit_factor);
-bool object_graph_safety_p(rb_objspace_coordinator_t *objspace_coordinator, rb_objspace_gate_t *os_gate);
-void wait_for_object_graph_safety(rb_objspace_gate_t *local_gate);
 bool mark_externally_modifiable_tables(rb_objspace_gate_t *os_gate);
 void global_gc_for_each_objspace(rb_vm_t *vm, rb_objspace_gate_t *runner_gate, void (gc_func)(struct rb_objspace *objspace));
 void rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm);

@@ -579,7 +579,6 @@ thread_sched_setup_running_threads(struct rb_thread_sched *sched, rb_ractor_t *c
     {
         // update running_threads
         if (del_th) {
-	    rb_objspace_coordinator_object_graph_safety_advance(cr, OGS_FLAG_NOT_RUNNING);
             VM_ASSERT(ractor_sched_running_threads_contain_p(vm, del_th));
             VM_ASSERT(del_timeslice_th != NULL ||
                       !ractor_sched_timeslice_threads_contain_p(vm, del_th));
@@ -594,7 +593,6 @@ thread_sched_setup_running_threads(struct rb_thread_sched *sched, rb_ractor_t *c
         }
 
         if (add_th) {
-	    rb_objspace_coordinator_object_graph_safety_withdraw(cr, OGS_FLAG_NOT_RUNNING);
             while (UNLIKELY(vm->ractor.sched.barrier_waiting)) {
                 RUBY_DEBUG_LOG("barrier-wait");
 
@@ -1288,7 +1286,6 @@ ractor_sched_deq(rb_vm_t *vm, rb_ractor_t *cr)
 #if SNT_KEEP_SECONDS > 0
             rb_hrtime_t abs = rb_hrtime_add(rb_hrtime_now(), RB_HRTIME_PER_SEC * SNT_KEEP_SECONDS);
             if (native_cond_timedwait(&vm->ractor.sched.cond, &vm->ractor.sched.lock, &abs) == ETIMEDOUT) {
-		rb_ractor_object_graph_safety_advance(cr, OGS_FLAG_NOT_RUNNING);
                 RUBY_DEBUG_LOG("timeout, grq_cnt:%d", (int)vm->ractor.sched.grq_cnt);
                 VM_ASSERT(r == NULL);
                 vm->ractor.sched.snt_cnt--;
@@ -1468,7 +1465,6 @@ ractor_sched_barrier_join_signal_locked(rb_vm_t *vm)
 static void
 ractor_sched_barrier_join_wait_locked(rb_vm_t *vm, rb_thread_t *th)
 {
-    rb_objspace_coordinator_object_graph_safety_advance(th->ractor, OGS_FLAG_BARRIER_WAITING);
     VM_ASSERT(vm->ractor.sched.barrier_waiting);
 
     unsigned int barrier_serial = vm->ractor.sched.barrier_serial;
@@ -1484,7 +1480,6 @@ ractor_sched_barrier_join_wait_locked(rb_vm_t *vm, rb_thread_t *th)
 
         RUBY_DEBUG_LOG("wakeup serial:%u", barrier_serial);
     }
-    rb_objspace_coordinator_object_graph_safety_withdraw(th->ractor, OGS_FLAG_BARRIER_WAITING);
 }
 
 void

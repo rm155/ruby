@@ -249,10 +249,6 @@ struct rb_ractor_struct {
 
     struct global_object_list *global_object_list;
 
-    bool registered_in_ractor_chains;
-    struct rb_ractor_chain_node *ogs_chain_node;
-    struct rb_ractor_chain_node *gc_chain_node;
-
     VALUE result_value;
 
     bool objspace_absorbed;
@@ -288,9 +284,6 @@ void rb_ractor_blocking_threads_dec(rb_ractor_t *r, const char *file, int line);
 
 void lock_ractor_set(void);
 void unlock_ractor_set(void);
-
-void rb_ractor_chains_register(rb_ractor_t *r);
-void rb_ractor_chains_unregister(rb_ractor_t *r);
 
 void rb_borrowing_sync_lock(rb_ractor_t *r);
 void rb_borrowing_sync_unlock(rb_ractor_t *r);
