@@ -184,7 +184,6 @@ typedef struct rb_objspace_gate rb_objspace_gate_t;
     if (_already_disabled == Qfalse) rb_gc_enable()
 
 /* gc.c */
-extern int ruby_disable_gc;
 RUBY_ATTR_MALLOC void *ruby_mimmalloc(size_t size);
 RUBY_ATTR_MALLOC void *ruby_mimcalloc(size_t num, size_t size);
 void ruby_mimfree(void *ptr);
@@ -284,7 +283,7 @@ void *ruby_sized_xrealloc(void *ptr, size_t new_size, size_t old_size) RUBY_ATTR
 void *ruby_sized_xrealloc2(void *ptr, size_t new_count, size_t element_size, size_t old_count) RUBY_ATTR_RETURNS_NONNULL RUBY_ATTR_ALLOC_SIZE((2, 3));
 void ruby_sized_xfree(void *x, size_t size);
 
-const char * rb_gc_active_gc_name(void);
+const char *rb_gc_active_gc_name(void);
 int rb_gc_modular_gc_loaded_p(void);
 
 #if USE_MODULAR_GC

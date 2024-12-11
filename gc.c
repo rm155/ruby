@@ -706,6 +706,7 @@ typedef struct gc_function_map {
     VALUE (*latest_gc_info)(void *objspace_ptr, VALUE key);
     VALUE (*stat)(void *objspace_ptr, VALUE hash_or_sym);
     VALUE (*stat_heap)(void *objspace_ptr, VALUE heap_name, VALUE hash_or_sym);
+    const char *(*active_gc_name)(void);
     // Miscellaneous
     void *(*ractor_of_objspace)(void *objspace_ptr);
     void *(*local_gate_of_objspace)(void *objspace_ptr);
@@ -716,8 +717,6 @@ typedef struct gc_function_map {
     bool (*garbage_object_p)(void *objspace_ptr, VALUE obj);
     void (*set_event_hook)(void *objspace_ptr, const rb_event_flag_t event);
     void (*copy_attributes)(void *objspace_ptr, VALUE dest, VALUE obj);
-    // GC Identification
-    const char *(*active_gc_name)(void);
 
     bool modular_gc_loaded_p;
 } rb_gc_function_map_t;
@@ -872,6 +871,7 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(latest_gc_info);
     load_modular_gc_func(stat);
     load_modular_gc_func(stat_heap);
+    load_modular_gc_func(active_gc_name);
     // Miscellaneous
     load_modular_gc_func(ractor_of_objspace);
     load_modular_gc_func(local_gate_of_objspace);
@@ -882,8 +882,6 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(garbage_object_p);
     load_modular_gc_func(set_event_hook);
     load_modular_gc_func(copy_attributes);
-    //GC Identification
-    load_modular_gc_func(active_gc_name);
 
 # undef load_modular_gc_func
 
@@ -970,6 +968,7 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_latest_gc_info rb_gc_functions.latest_gc_info
 # define rb_gc_impl_stat rb_gc_functions.stat
 # define rb_gc_impl_stat_heap rb_gc_functions.stat_heap
+# define rb_gc_impl_active_gc_name rb_gc_functions.active_gc_name
 // Miscellaneous
 # define rb_gc_impl_ractor_of_objspace rb_gc_functions.ractor_of_objspace
 # define rb_gc_impl_local_gate_of_objspace rb_gc_functions.local_gate_of_objspace
@@ -980,8 +979,6 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_garbage_object_p rb_gc_functions.garbage_object_p
 # define rb_gc_impl_set_event_hook rb_gc_functions.set_event_hook
 # define rb_gc_impl_copy_attributes rb_gc_functions.copy_attributes
-// GC Identification
-# define rb_gc_impl_active_gc_name rb_gc_functions.active_gc_name
 #endif
 
 static VALUE initial_stress = Qfalse;
@@ -4751,6 +4748,13 @@ rb_memerror(void)
     }
     ec->errinfo = exc;
     EC_JUMP_TAG(ec, TAG_RAISE);
+}
+
+bool
+rb_memerror_reentered(void)
+{
+    rb_execution_context_t *ec = GET_EC();
+    return (ec && rb_ec_raised_p(ec, RAISED_NOMEMORY));
 }
 
 void

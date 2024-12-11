@@ -116,6 +116,7 @@ GC_IMPL_FN size_t rb_gc_impl_gc_count(void *objspace_ptr);
 GC_IMPL_FN VALUE rb_gc_impl_latest_gc_info(void *objspace_ptr, VALUE key);
 GC_IMPL_FN VALUE rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym);
 GC_IMPL_FN VALUE rb_gc_impl_stat_heap(void *objspace_ptr, VALUE heap_name, VALUE hash_or_sym);
+GC_IMPL_FN const char *rb_gc_impl_active_gc_name(void);
 // Miscellaneous
 GC_IMPL_FN void *rb_gc_impl_ractor_of_objspace(void *objspace_ptr);
 GC_IMPL_FN void *rb_gc_impl_local_gate_of_objspace(void *objspace_ptr);
