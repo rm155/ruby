@@ -981,6 +981,14 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_copy_attributes rb_gc_functions.copy_attributes
 #endif
 
+#ifdef RUBY_ASAN_ENABLED
+static void
+asan_death_callback(void)
+{
+    rb_bug_without_die("ASAN error");
+}
+#endif
+
 static VALUE initial_stress = Qfalse;
 
 void *
@@ -1000,6 +1008,11 @@ rb_objspace_alloc(rb_ractor_t *ractor)
     rb_gc_impl_stress_set(objspace, initial_stress);
 
     rb_objspace_gc_enable(ractor->local_objspace);
+
+#ifdef RUBY_ASAN_ENABLED
+    __sanitizer_set_death_callback(asan_death_callback);
+#endif
+
     return objspace;
 }
 

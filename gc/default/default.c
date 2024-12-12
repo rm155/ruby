@@ -8986,9 +8986,9 @@ objspace_malloc_increase_body(rb_objspace_t *objspace, void *mem, size_t new_siz
     }
     else {
         size_t dec_size = old_size - new_size;
-        size_t allocated_size = objspace->malloc_params.allocated_size;
 
 #if MALLOC_ALLOCATED_SIZE_CHECK
+        size_t allocated_size = objspace->malloc_params.allocated_size;
         if (allocated_size < dec_size) {
             rb_bug("objspace_malloc_increase: underflow malloc_params.allocated_size.");
         }
@@ -10441,7 +10441,8 @@ rb_gc_impl_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_
 static VALUE
 gc_malloc_allocated_size(VALUE self)
 {
-    return UINT2NUM(rb_objspace.malloc_params.allocated_size);
+    rb_objspace_t *objspace = (rb_objspace_t *)rb_gc_get_objspace();
+    return ULL2NUM(objspace->malloc_params.allocated_size);
 }
 
 /*
@@ -10456,7 +10457,8 @@ gc_malloc_allocated_size(VALUE self)
 static VALUE
 gc_malloc_allocations(VALUE self)
 {
-    return UINT2NUM(rb_objspace.malloc_params.allocations);
+    rb_objspace_t *objspace = (rb_objspace_t *)rb_gc_get_objspace();
+    return ULL2NUM(objspace->malloc_params.allocations);
 }
 #endif
 
