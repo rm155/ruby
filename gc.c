@@ -2793,7 +2793,9 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 #endif
 
     MARK_CHECKPOINT("machine_context");
+    local_gate->marking_machine_context = true;
     mark_current_machine_context(ec);
+    local_gate->marking_machine_context = false;
 
     MARK_CHECKPOINT("finish");
 

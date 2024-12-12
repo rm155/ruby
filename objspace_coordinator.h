@@ -167,6 +167,8 @@ typedef struct rb_objspace_gate {
 
     rb_ractor_t *alloc_target_ractor;
 
+    bool marking_machine_context;
+
 } rb_objspace_gate_t;
 
 #ifdef RB_THREAD_LOCAL_SPECIFIER

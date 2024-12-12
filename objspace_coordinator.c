@@ -512,6 +512,7 @@ external_references_none_marked(rb_objspace_gate_t *local_gate)
 void
 mark_in_external_reference_tbl(rb_objspace_gate_t *os_gate, VALUE obj)
 {
+    if (os_gate->marking_machine_context) return;
     rb_native_mutex_lock(&os_gate->external_reference_tbl_lock);
     gc_reference_status_t *rs = st_lookup_or_null(os_gate->external_reference_tbl, obj);
     if (rs) {
