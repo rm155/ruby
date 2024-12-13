@@ -220,7 +220,6 @@ void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, V
 void confirm_externally_added_external_references(rb_objspace_gate_t *local_gate);
 void mark_in_external_reference_tbl(rb_objspace_gate_t *os_gate, VALUE obj);
 bool rb_external_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
-void mark_shared_reference_tbl(rb_objspace_gate_t *os_gate);
 void update_shared_object_references(rb_objspace_gate_t *os_gate);
 bool rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
 
@@ -232,7 +231,6 @@ bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 #define MUTABLE_SHAREABLE(obj) (!OBJ_FROZEN(obj) && rb_ractor_shareable_p(obj))
 
 void add_local_immune_object(VALUE obj);
-void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
 void update_local_immune_tbl(rb_objspace_gate_t *os_gate);
 bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed);
 unsigned int local_immune_objects_global_count(void);
@@ -244,7 +242,6 @@ void rb_add_to_contained_ractor_tbl(rb_ractor_t *r);
 void rb_remove_from_contained_ractor_tbl(rb_ractor_t *r);
 void mark_contained_ractor_tbl(rb_objspace_gate_t *os_gate);
 void rb_register_received_obj(rb_objspace_gate_t *os_gate, uintptr_t borrowing_id, VALUE obj);
-void rb_mark_received_received_obj_tbl(rb_objspace_gate_t *os_gate);
 void rb_register_new_external_wmap_reference(VALUE *ptr);
 void rb_remove_from_external_weak_tables(VALUE *ptr);
 void gc_update_external_weak_references(rb_objspace_gate_t *os_gate);

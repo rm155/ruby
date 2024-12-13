@@ -185,6 +185,10 @@ count_objspaces(rb_vm_t *vm) //TODO: Replace with count-tracker
   ------------------------ Objspace Gate Data ------------------------
 */
 
+static void mark_shared_reference_tbl(rb_objspace_gate_t *os_gate);
+static void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
+static void mark_received_obj_tbl(rb_objspace_gate_t *os_gate);
+
 static void
 objspace_gate_mark(void *data)
 {
@@ -197,7 +201,7 @@ objspace_gate_mark(void *data)
 
     if (rb_using_local_limits(rb_gc_get_objspace()) || !rb_during_gc()) {
 	mark_shared_reference_tbl(os_gate);
-	rb_mark_received_received_obj_tbl(os_gate);
+	mark_received_obj_tbl(os_gate);
 	mark_local_immune_tbl(os_gate);
     }
 }
@@ -557,7 +561,7 @@ shared_references_all_marked(rb_objspace_gate_t *os_gate)
     return all_marked;
 }
 
-void
+static void
 mark_shared_reference_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->shared_reference_tbl_lock);
@@ -587,7 +591,7 @@ add_local_immune_object(VALUE obj)
     WITH_OBJSPACE_GATE_LEAVE(source_gate);
 }
 
-void
+static void
 mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
@@ -899,8 +903,8 @@ mark_received_obj_list(st_data_t key, st_data_t val, st_data_t arg)
     return ST_CONTINUE;
 }
 
-void
-rb_mark_received_received_obj_tbl(rb_objspace_gate_t *os_gate)
+static void
+mark_received_obj_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
     st_foreach(os_gate->received_obj_tbl, mark_received_obj_list, NULL);
