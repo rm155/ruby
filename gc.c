@@ -402,7 +402,7 @@ void rb_vm_update_references(void *ptr);
 
 #define TYPED_UPDATE_IF_MOVED(_objspace, _type, _thing) do { \
     if (rb_gc_impl_object_moved_p((_objspace), (VALUE)(_thing))) {    \
-        *(_type *)&(_thing) = (_type)rb_gc_impl_location(_objspace, (VALUE)_thing); \
+        *(_type *)&(_thing) = (_type)gc_location_internal(_objspace, (VALUE)_thing); \
     } \
 } while (0)
 
@@ -1880,6 +1880,12 @@ rb_gc_local_gate_of_objspace(void *objspace_ptr)
     return rb_gc_impl_local_gate_of_objspace(objspace_ptr);
 }
 
+bool
+rb_gc_pointer_to_heap_p(VALUE obj)
+{
+    return rb_gc_impl_pointer_to_heap_p(rb_gc_get_objspace(), (void *)obj);
+}
+
 /*
  *  call-seq:
  *     ObjectSpace._id2ref(object_id) -> an_object
@@ -2600,6 +2606,22 @@ gc_mark_machine_stack_location_maybe(VALUE obj, void *data)
         each_location_ptr(fake_frame_start, fake_frame_end, rb_gc_impl_stack_location_mark_maybe, NULL);
     }
 #endif
+}
+
+static VALUE
+gc_location_internal(void *objspace, VALUE value)
+{
+    if (SPECIAL_CONST_P(value)) {
+        return value;
+    }
+
+    return rb_gc_impl_location(objspace, value);
+}
+
+VALUE
+rb_gc_location(VALUE value)
+{
+    return gc_location_internal(rb_gc_get_objspace(), value);
 }
 
 #if defined(__wasm__)
@@ -3392,12 +3414,6 @@ check_id_table_move(VALUE value, void *data)
     return ID_TABLE_CONTINUE;
 }
 
-VALUE
-rb_gc_location(VALUE value)
-{
-    return rb_gc_impl_location(rb_gc_get_objspace(), value);
-}
-
 void
 rb_gc_prepare_heap_process_object(VALUE obj)
 {
@@ -3436,7 +3452,7 @@ update_id_table(VALUE *value, void *data, int existing)
     void *objspace = (void *)data;
 
     if (rb_gc_impl_object_moved_p(objspace, (VALUE)*value)) {
-        *value = rb_gc_impl_location(objspace, (VALUE)*value);
+        *value = gc_location_internal(objspace, (VALUE)*value);
     }
 
     return ID_TABLE_CONTINUE;
@@ -3457,12 +3473,12 @@ update_cc_tbl_i(VALUE ccs_ptr, void *objspace)
     VM_ASSERT(vm_ccs_p(ccs));
 
     if (rb_gc_impl_object_moved_p(objspace, (VALUE)ccs->cme)) {
-        ccs->cme = (const rb_callable_method_entry_t *)rb_gc_impl_location(objspace, (VALUE)ccs->cme);
+        ccs->cme = (const rb_callable_method_entry_t *)gc_location_internal(objspace, (VALUE)ccs->cme);
     }
 
     for (int i=0; i<RUBY_ATOMIC_LOAD(ccs->len); i++) {
         if (rb_gc_impl_object_moved_p(objspace, (VALUE)ccs->entries[i].cc)) {
-            ccs->entries[i].cc = (struct rb_callcache *)rb_gc_location((VALUE)ccs->entries[i].cc);
+            ccs->entries[i].cc = (struct rb_callcache *)gc_location_internal(objspace, (VALUE)ccs->entries[i].cc);
         }
     }
 
@@ -3490,7 +3506,7 @@ update_cvc_tbl_i(VALUE cvc_entry, void *objspace)
         TYPED_UPDATE_IF_MOVED(objspace, rb_cref_t *, entry->cref);
     }
 
-    entry->class_value = rb_gc_impl_location(objspace, entry->class_value);
+    entry->class_value = gc_location_internal(objspace, entry->class_value);
 
     return ID_TABLE_CONTINUE;
 }
@@ -3510,11 +3526,11 @@ update_const_table(VALUE value, void *objspace)
     rb_const_entry_t *ce = (rb_const_entry_t *)value;
 
     if (rb_gc_impl_object_moved_p(objspace, ce->value)) {
-        ce->value = rb_gc_impl_location(objspace, ce->value);
+        ce->value = gc_location_internal(objspace, ce->value);
     }
 
     if (rb_gc_impl_object_moved_p(objspace, ce->file)) {
-        ce->file = rb_gc_impl_location(objspace, ce->file);
+        ce->file = gc_location_internal(objspace, ce->file);
     }
 
     return ID_TABLE_CONTINUE;
@@ -3707,8 +3723,8 @@ rb_gc_update_vm_references(void *objspace)
 
     GLOBAL_SYMBOLS_ENTER(global_symbols);
     {
-	global_symbols->ids = rb_gc_location(global_symbols->ids);
-	global_symbols->dsymbol_fstr_hash = rb_gc_location(global_symbols->dsymbol_fstr_hash);
+	global_symbols->ids = gc_location_internal(objspace, global_symbols->ids);
+	global_symbols->dsymbol_fstr_hash = gc_location_internal(objspace, global_symbols->dsymbol_fstr_hash);
 	gc_update_table_refs(global_symbols->str_sym);
     }
     GLOBAL_SYMBOLS_LEAVE(global_symbols);
@@ -3818,8 +3834,7 @@ rb_gc_update_object_references(void *objspace, VALUE obj)
 
                     for (size_t offset = *offset_list; offset != RUBY_REF_END; offset = *offset_list++) {
                         VALUE *ref = (VALUE *)((char *)ptr + offset);
-                        if (SPECIAL_CONST_P(*ref)) continue;
-                        *ref = rb_gc_impl_location(objspace, *ref);
+                        *ref = gc_location_internal(objspace, *ref);
                     }
                 }
                 else if (RTYPEDDATA_P(obj)) {
@@ -4445,7 +4460,7 @@ rb_raw_obj_info_buitin_type(char *const buff, const size_t buff_size, const VALU
             break;
           }
           case T_MOVED: {
-            APPEND_F("-> %p", (void*)rb_gc_impl_location(rb_gc_get_objspace(), obj));
+            APPEND_F("-> %p", (void*)gc_location_internal(rb_gc_get_objspace(), obj));
             break;
           }
           case T_HASH: {

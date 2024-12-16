@@ -13,6 +13,10 @@ Note that each entry is kept to a minimum, see links for details.
   To disable this change, you can run Ruby with the `--disable-frozen-string-literal`
   command line argument. [[Feature #20205]]
 
+    * String#+@ now duplicates when mutating the string would emit
+      a deprecation warning, offered as a replacement for the
+      `str.dup if str.frozen?` pattern.
+
 * `it` is added to reference a block parameter. [[Feature #18980]]
 
 * Keyword splatting `nil` when calling methods is now supported.
@@ -32,10 +36,20 @@ Note that each entry is kept to a minimum, see links for details.
 
 Note: We're only listing outstanding class updates.
 
+
+* Array
+
+    * Array#fetch_values was added. [[Feature #20702]]
+
 * Exception
 
     * Exception#set_backtrace now accepts arrays of Thread::Backtrace::Location.
       Kernel#raise, Thread#raise and Fiber#raise also accept this new format. [[Feature #13557]]
+
+* Fiber::Scheduler
+
+    * An optional Fiber::Scheduler#blocking_operation_wait hook allows blocking operations to be moved out of the
+      event loop in order to reduce latency and improve multi-core processor utilization. [[Feature #20876]]
 
 * GC
 
@@ -50,11 +64,6 @@ Note: We're only listing outstanding class updates.
     * Hash.new now accepts an optional `capacity:` argument, to preallocate the hash with a given capacity.
       This can improve performance when building large hashes incrementally by saving on reallocation and
       rehashing of keys. [[Feature #19236]]
-
-* Fiber::Scheduler
-
-    * An optional `Fiber::Scheduler#blocking_operation_wait` hook allows blocking operations to be moved out of the
-      event loop in order to reduce latency and improve multi-core processor utilization. [[Feature #20876]]
 
 * IO::Buffer
 
@@ -83,6 +92,9 @@ Note: We're only listing outstanding class updates.
     * Ractor.[] and Ractor.[]= are added to access the ractor local storage
       of the current Ractor. [[Feature #20715]]
 
+    * `Ractor.store_if_absent(key){ init }` is added to initialize ractor local
+      variables in thread-safty. [[Feature #20875]]
+
 * Range
 
     * Range#size now raises TypeError if the range is not iterable. [[Misc #18984]]
@@ -110,11 +122,28 @@ Note: We're only listing outstanding class updates.
       associated with the AST node. [[Feature #20624]]
     * Add RubyVM::AbstractSyntaxTree::Location class which holds location information. [[Feature #20624]]
 
+
+* String
+
+    * String#append_as_bytes was added to more easily and efficiently work with binary buffers and protocols.
+      It directly concatenate the arguments into the string without any encoding validation or conversion.
+      [[Feature #20594]]
+
+* Symbol
+
+    * The string returned by Symbol#to_s now emits a deprecation warning when mutated, and will be
+      frozen in a future version of Ruby.
+      These warnings can be enabled with `-W:deprecated` or by setting `Warning[:deprecated] = true`.
+      [[Feature #20350]]
+
 * Time
 
     * On Windows, now Time#zone encodes the system timezone name in UTF-8
       instead of the active code page, if it contains non-ASCII characters.
       [[Bug #20929]]
+
+    * Time#xmlschema, and its Time#iso8601 alias have been moved into the core Time
+      class while previously it was an extension provided by the `time` gem. [[Feature #20707]]
 
 * Warning
 
@@ -147,46 +176,46 @@ The following default gems are updated.
 * date 3.4.1
 * delegate 0.4.0
 * did_you_mean 2.0.0
-* digest 3.2.0.pre0
+* digest 3.2.0
 * erb 4.0.4
 * error_highlight 0.7.0
 * etc 1.4.5
 * fcntl 1.2.0
-* fiddle 1.1.6.dev
+* fiddle 1.1.6
 * fileutils 1.7.3
 * io-console 0.8.0
 * io-nonblock 0.3.1
 * ipaddr 1.2.7
 * irb 1.14.2
 * json 2.9.0
-* logger 1.6.2
+* logger 1.6.3
 * net-http 0.6.0
 * open-uri 0.5.0
 * optparse 0.6.0
 * ostruct 0.6.1
 * pathname 0.4.0
 * pp 0.6.2
-* prism 1.0.0
+* prism 1.2.0
 * pstore 0.1.4
 * psych 5.2.1
-* rdoc 6.8.1
-* reline 0.5.12
-* resolv 0.5.0
-* securerandom 0.4.0
+* rdoc 6.9.1
+* reline 0.6.0
+* resolv 0.6.0
+* securerandom 0.4.1
 * set 1.1.1
-* shellwords 0.2.1
+* shellwords 0.2.2
 * singleton 0.3.0
-* stringio 3.1.2.dev
-* strscan 3.1.1
+* stringio 3.1.2
+* strscan 3.1.2
 * syntax_suggest 2.0.2
 * tempfile 0.3.1
 * time 0.4.1
-* timeout 0.4.2
+* timeout 0.4.3
 * tmpdir 0.3.0
 * uri 1.0.2
 * win32ole 1.9.0
 * yaml 0.4.0
-* zlib 3.2.0
+* zlib 3.2.1
 
 The following bundled gem is added.
 
@@ -259,21 +288,24 @@ details of the default gems or bundled gems.
     * Other keys now have spaces around `=>`: `'{"user" => 1}'`, while previously they didn't: `'{"user"=>1}'`
 
 * Kernel#Float() now accepts a decimal string with decimal part omitted. [[Feature #20705]]
-  ```
+
+  ```rb
   Float("1.")    #=> 1.0 (previously, an ArgumentError was raised)
   Float("1.E-1") #=> 0.1 (previously, an ArgumentError was raised)
   ```
 
 * String#to_f now accepts a decimal string with decimal part omitted. [[Feature #20705]]
   Note that the result changes when an exponent is specified.
-  ```
+
+  ```rb
   "1.".to_f    #=> 1.0
   "1.E-1".to_f #=> 0.1 (previously, 1.0 was returned)
   ```
 
 * Object#singleton_method now returns methods in modules prepended to or included in the
   receiver's singleton class. [[Bug #20620]]
-  ```
+
+  ```rb
   o = Object.new
   o.extend(Module.new{def a = 1})
   o.singleton_method(:a).call #=> 1
@@ -288,17 +320,17 @@ details of the default gems or bundled gems.
 * Net::HTTP
 
     * Removed the following deprecated constants:
-        `Net::HTTP::ProxyMod`
-        `Net::NetPrivate::HTTPRequest`
-        `Net::HTTPInformationCode`
-        `Net::HTTPSuccessCode`
-        `Net::HTTPRedirectionCode`
-        `Net::HTTPRetriableCode`
-        `Net::HTTPClientErrorCode`
-        `Net::HTTPFatalErrorCode`
-        `Net::HTTPServerErrorCode`
-        `Net::HTTPResponseReceiver`
-        `Net::HTTPResponceReceiver`
+        * `Net::HTTP::ProxyMod`
+        * `Net::NetPrivate::HTTPRequest`
+        * `Net::HTTPInformationCode`
+        * `Net::HTTPSuccessCode`
+        * `Net::HTTPRedirectionCode`
+        * `Net::HTTPRetriableCode`
+        * `Net::HTTPClientErrorCode`
+        * `Net::HTTPFatalErrorCode`
+        * `Net::HTTPServerErrorCode`
+        * `Net::HTTPResponseReceiver`
+        * `Net::HTTPResponceReceiver`
 
       These constants were deprecated from 2012.
 
@@ -321,13 +353,12 @@ details of the default gems or bundled gems.
 * The default parser is now Prism.
   To use the conventional parser, use the command-line argument `--parser=parse.y`.
   [[Feature #20564]]
-* Happy Eyeballs version 2 (RFC8305) is used in Socket.tcp.
-  To disable it, use the keyword argument `fast_fallback: false`.
-  [[Feature #20108]]
-* Happy Eyeballs version 2 (RFC8305) is implemented in TCPSocket.new.
-  To enable it, use the keyword argument `fast_fallback: true`.
-  (This entry is temporary. It should be merged with the above entry after it becomes settled)
-  [[Feature #20782]]
+* Happy Eyeballs version 2 (RFC8305), an algorithm that ensures faster and more reliable connections
+  by attempting IPv6 and IPv4 concurrently, is used in Socket.tcp and TCPSocket.new.
+  To disable it globally, set the environment variable `RUBY_TCP_NO_FAST_FALLBACK=1` or
+  call `Socket.tcp_fast_fallback=false`.
+  Or to disable it on a per-method basis, use the keyword argument `fast_fallback: false`.
+  [[Feature #20108]] [[Feature #20782]]
 * Array#each is rewritten in Ruby for better performance [[Feature #20182]].
 
 * Alternative garbage collector (GC) implementations can be loaded dynamically
@@ -353,6 +384,8 @@ details of the default gems or bundled gems.
 
 * Passing a block to a method which doesn't use the passed block will show
   a warning on verbose mode (`-w`).
+  In connection with this, a new `strict_unused_block` warning category was introduced.
+  Turn them on with `-W:strict_unused_block` or `Warning[:strict_unused_block] = true`.
   [[Feature #15554]]
 
 * Redefining some core methods that are specially optimized by the interpreter
@@ -380,6 +413,7 @@ details of the default gems or bundled gems.
 [Feature #20265]: https://bugs.ruby-lang.org/issues/20265
 [Feature #20275]: https://bugs.ruby-lang.org/issues/20275
 [Feature #20293]: https://bugs.ruby-lang.org/issues/20293
+[Feature #20350]: https://bugs.ruby-lang.org/issues/20350
 [Feature #20351]: https://bugs.ruby-lang.org/issues/20351
 [Feature #20429]: https://bugs.ruby-lang.org/issues/20429
 [Bug #20433]:     https://bugs.ruby-lang.org/issues/20433
@@ -388,16 +422,20 @@ details of the default gems or bundled gems.
 [Feature #20497]: https://bugs.ruby-lang.org/issues/20497
 [Feature #20564]: https://bugs.ruby-lang.org/issues/20564
 [Feature #20576]: https://bugs.ruby-lang.org/issues/20576
+[Feature #20594]: https://bugs.ruby-lang.org/issues/20594
 [Bug #20620]:     https://bugs.ruby-lang.org/issues/20620
 [Feature #20624]: https://bugs.ruby-lang.org/issues/20624
 [Feature #20627]: https://bugs.ruby-lang.org/issues/20627
+[Feature #20702]: https://bugs.ruby-lang.org/issues/20702
 [Feature #20705]: https://bugs.ruby-lang.org/issues/20705
+[Feature #20707]: https://bugs.ruby-lang.org/issues/20707
 [Feature #20715]: https://bugs.ruby-lang.org/issues/20715
 [Feature #20775]: https://bugs.ruby-lang.org/issues/20775
 [Feature #20782]: https://bugs.ruby-lang.org/issues/20782
 [Bug #20795]:     https://bugs.ruby-lang.org/issues/20795
 [Feature #20811]: https://bugs.ruby-lang.org/issues/20811
 [Feature #20860]: https://bugs.ruby-lang.org/issues/20860
+[Feature #20875]: https://bugs.ruby-lang.org/issues/20875
 [Feature #20876]: https://bugs.ruby-lang.org/issues/20876
 [Feature #20884]: https://bugs.ruby-lang.org/issues/20884
 [Feature #20902]: https://bugs.ruby-lang.org/issues/20902
