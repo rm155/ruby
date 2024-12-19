@@ -1586,7 +1586,7 @@ internal_object_p(VALUE obj)
         }
     }
     if (ptr || !RBASIC(obj)->flags) {
-        asan_poison_object(obj);
+        rb_asan_poison_object(obj);
     }
     return 1;
 }
@@ -2620,6 +2620,8 @@ gc_location_internal(void *objspace, VALUE value)
     if (SPECIAL_CONST_P(value)) {
         return value;
     }
+
+    GC_ASSERT(rb_gc_impl_pointer_to_heap_p(objspace, (void *)value));
 
     return rb_gc_impl_location(objspace, value);
 }
@@ -4614,6 +4616,27 @@ rb_raw_obj_info_buitin_type(char *const buff, const size_t buff_size, const VALU
 }
 
 #undef C
+
+void
+rb_asan_poison_object(VALUE obj)
+{
+    MAYBE_UNUSED(struct RVALUE *) ptr = (void *)obj;
+    asan_poison_memory_region(ptr, rb_gc_obj_slot_size(obj));
+}
+
+void
+rb_asan_unpoison_object(VALUE obj, bool newobj_p)
+{
+    MAYBE_UNUSED(struct RVALUE *) ptr = (void *)obj;
+    asan_unpoison_memory_region(ptr, rb_gc_obj_slot_size(obj), newobj_p);
+}
+
+void *
+rb_asan_poisoned_object_p(VALUE obj)
+{
+    MAYBE_UNUSED(struct RVALUE *) ptr = (void *)obj;
+    return __asan_region_is_poisoned(ptr, rb_gc_obj_slot_size(obj));
+}
 
 #define asan_unpoisoning_object(obj) \
     for (void *poisoned = asan_unpoison_object_temporary(obj), \

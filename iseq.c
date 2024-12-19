@@ -1443,8 +1443,8 @@ remove_coverage_i(void *vstart, void *vend, size_t stride, void *data)
 {
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        void *ptr = asan_poisoned_object_p(v);
-        asan_unpoison_object(v, false);
+        void *ptr = rb_asan_poisoned_object_p(v);
+        rb_asan_unpoison_object(v, false);
 
         if (rb_obj_is_iseq(v)) {
             rb_iseq_t *iseq = (rb_iseq_t *)v;
@@ -4039,8 +4039,8 @@ clear_attr_ccs_i(void *vstart, void *vend, size_t stride, void *data)
 {
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        void *ptr = asan_poisoned_object_p(v);
-        asan_unpoison_object(v, false);
+        void *ptr = rb_asan_poisoned_object_p(v);
+        rb_asan_unpoison_object(v, false);
         clear_attr_cc(v);
         asan_poison_object_if(ptr, v);
     }
@@ -4058,8 +4058,8 @@ clear_bf_ccs_i(void *vstart, void *vend, size_t stride, void *data)
 {
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        void *ptr = asan_poisoned_object_p(v);
-        asan_unpoison_object(v, false);
+        void *ptr = rb_asan_poisoned_object_p(v);
+        rb_asan_unpoison_object(v, false);
         clear_bf_cc(v);
         asan_poison_object_if(ptr, v);
     }
@@ -4079,8 +4079,8 @@ trace_set_i(void *vstart, void *vend, size_t stride, void *data)
 
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        void *ptr = asan_poisoned_object_p(v);
-        asan_unpoison_object(v, false);
+        void *ptr = rb_asan_poisoned_object_p(v);
+        rb_asan_unpoison_object(v, false);
 
         if (rb_obj_is_iseq(v)) {
             rb_iseq_trace_set(rb_iseq_check((rb_iseq_t *)v), turnon_events);
