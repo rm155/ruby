@@ -1079,16 +1079,22 @@ gc_validate_pc(void) {
 static inline VALUE
 newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, bool wb_protected, size_t size)
 {
-    rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
-    void *objspace = allocating_ractor->local_objspace;
     void *cache;
-    bool borrowing = (objspace != rb_gc_get_objspace());
+    void *objspace;
+    bool borrowing;
 
-    if (borrowing) {
+    if (cr->local_gate->alloc_target_ractor) {
+	rb_ractor_t *allocating_ractor = cr->local_gate->alloc_target_ractor;
+	VM_ASSERT(allocating_ractor != cr);
+
+	borrowing = true;
 	cache = allocating_ractor->newobj_borrowing_cache;
+	objspace = allocating_ractor->local_objspace;
     }
     else {
+	borrowing = false;
 	cache = cr->newobj_cache;
+	objspace = cr->local_objspace;
     }
 
     VALUE obj = rb_gc_impl_new_obj(objspace, cache, klass, flags, v1, v2, v3, wb_protected, size, borrowing);
