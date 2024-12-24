@@ -797,7 +797,6 @@ static inline bool
 heap_page_in_objspace_empty_pages_pool(rb_objspace_t *objspace, struct heap_page *page)
 {
     if (page->total_slots == 0) {
-        GC_ASSERT(page->start == 0);
         GC_ASSERT(page->slot_size == 0);
         GC_ASSERT(page->heap == NULL);
         GC_ASSERT(page->free_slots == 0);
@@ -1898,6 +1897,7 @@ heap_page_body_free(struct heap_page_body *page_body)
 static void
 heap_page_free(rb_objspace_t *objspace, struct heap_page *page)
 {
+    page->start = 0;
     objspace->heap_pages.freed_pages++;
     heap_page_body_free(page->body);
     free(page);
@@ -1916,6 +1916,28 @@ update_page_list_range(rb_darray(struct heap_page *) *sorted_pages, uintptr_t *p
     GC_ASSERT(lomem >= *pages_low);
     *pages_low = lomem;
 }
+
+#if VM_CHECK_MODE > 0
+static bool
+page_list_is_sorted(rb_darray(struct heap_page *) *page_list)
+{
+    int list_length = rb_darray_size(*page_list);
+    if (list_length < 2) {
+	return true;
+    }
+
+    struct heap_page *prev = rb_darray_get(*page_list, 0);
+    for (int i = 1; i < list_length; i++) {
+        struct heap_page *p = rb_darray_get(*page_list, i);
+	if (p->start < prev->start) return false;
+    }
+    return true;
+}
+
+#define ASSERT_page_list_sorted(page_list) VM_ASSERT(page_list_is_sorted(page_list))
+#else
+#define ASSERT_page_list_sorted(page_list)
+#endif
 
 static void
 heap_pages_free_unused_pages(rb_objspace_t *objspace)
@@ -1979,6 +2001,9 @@ heap_pages_free_unused_pages(rb_objspace_t *objspace)
         GC_ASSERT(rb_darray_size(global_space->sorted) == j);
 
 	update_page_list_range(&global_space->sorted, &global_space->range[0], &global_space->range[1]);
+
+	ASSERT_page_list_sorted(&objspace->heap_pages.sorted);
+	ASSERT_page_list_sorted(&global_space->sorted);
 
 	rb_native_mutex_unlock(&global_space->global_pages_lock);
     }
@@ -2080,6 +2105,8 @@ heap_page_body_allocate(void)
 static void
 insert_into_sorted_page_list(rb_darray(struct heap_page *) *sorted_pages, uintptr_t *pages_low, uintptr_t *pages_high, struct heap_page *page)
 {
+    ASSERT_page_list_sorted(sorted_pages);
+
     struct heap_page_body *page_body = page->body;
     uintptr_t start = (uintptr_t)page_body + sizeof(struct heap_page_header);
     uintptr_t end = (uintptr_t)page_body + HEAP_PAGE_SIZE;
@@ -2106,6 +2133,13 @@ insert_into_sorted_page_list(rb_darray(struct heap_page *) *sorted_pages, uintpt
 
     if (*pages_low == 0 || *pages_low > start) *pages_low = start;
     if (*pages_high < end) *pages_high = end;
+
+#if VM_CHECK_MODE > 0
+    uintptr_t old_start = page->start;
+    page->start = start;
+    ASSERT_page_list_sorted(sorted_pages);
+    page->start = old_start;
+#endif
 }
 
 static struct heap_page *
@@ -4433,7 +4467,6 @@ gc_sweep_step(rb_objspace_t *objspace, rb_heap_t *heap)
             /* There are no living objects, so move this page to the global empty pages. */
             heap_unlink_page(objspace, heap, sweep_page);
 
-            sweep_page->start = 0;
             sweep_page->total_slots = 0;
             sweep_page->slot_size = 0;
             sweep_page->heap = NULL;
