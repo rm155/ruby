@@ -1832,10 +1832,10 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_
     VM_ASSERT(!SPECIAL_CONST_P(a));
     VM_ASSERT(!SPECIAL_CONST_P(b));
 
-    WITH_OBJSPACE_GATE_ENTER(b, b_gate);
-    {
-	struct rb_objspace *b_objspace = b_gate->objspace;
-	if (FL_TEST_RAW(b, FL_SHAREABLE)) {
+    if (FL_TEST_RAW(b, FL_SHAREABLE)) {
+	WITH_OBJSPACE_GATE_ENTER(b, b_gate);
+	{
+	    struct rb_objspace *b_objspace = b_gate->objspace;
 	    if (UNLIKELY(GET_OBJSPACE_OF_VALUE(a) != b_objspace)) {
 		WITH_OBJSPACE_GATE_ENTER(a, a_gate);
 		{
@@ -1851,12 +1851,13 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_
 		gc_writebarrier_parallel_objspace(a, b, b_gate);
 	    }
 	}
-	else {
-	    VM_ASSERT(b_objspace == current_objspace || b_objspace == rb_current_allocating_ractor()->local_objspace);
-	    VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy_or_move);
-
-	    rb_gc_writebarrier_gc_blocked(b_objspace, a, b);
-	}
+	WITH_OBJSPACE_GATE_LEAVE(b_gate);
     }
-    WITH_OBJSPACE_GATE_LEAVE(b_gate);
+    else {
+	struct rb_objspace *b_objspace = GET_OBJSPACE_OF_VALUE(b);
+	VM_ASSERT(b_objspace == current_objspace || b_objspace == rb_current_allocating_ractor()->local_objspace);
+	VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy_or_move);
+
+	rb_gc_writebarrier_gc_blocked(b_objspace, a, b);
+    }
 }
