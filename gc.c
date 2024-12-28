@@ -3112,7 +3112,7 @@ rb_gc_writebarrier(VALUE a, VALUE b)
 	rb_gc_writebarrier_gc_blocked(current_objspace, a, b);
     }
     else {
-	if (MUTABLE_SHAREABLE(a) && rb_ractor_shareable_p(b)) {
+	if (MUTABLE_SHAREABLE(a)) {
 	    add_local_immune_object(b);
 	}
 	rb_gc_writebarrier_multi_objspace(a, b, current_objspace);

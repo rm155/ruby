@@ -578,7 +578,6 @@ rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
 void
 add_local_immune_object(VALUE obj)
 {
-    VM_ASSERT(FL_TEST_RAW(obj, FL_SHAREABLE));
     WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
     {
 	if (rb_ractor_shareable_p(obj)) {
