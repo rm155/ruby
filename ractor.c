@@ -3440,14 +3440,10 @@ shareable_p_enter(VALUE obj)
     if (RB_OBJ_SHAREABLE_P(obj)) {
         return traverse_skip;
     }
-    else if (RB_TYPE_P(obj, T_CLASS)  ||
-             RB_TYPE_P(obj, T_MODULE) ||
-             RB_TYPE_P(obj, T_ICLASS)) {
-        // TODO: remove it
-	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
-        return traverse_skip;
-    }
-    else if (RB_OBJ_FROZEN_RAW(obj) &&
+
+    VM_ASSERT(!RB_TYPE_P(obj, T_CLASS) && !RB_TYPE_P(obj, T_MODULE) && !RB_TYPE_P(obj, T_ICLASS));
+
+    if (RB_OBJ_FROZEN_RAW(obj) &&
              frozen_shareable_p(obj, NULL)) {
         return traverse_cont;
     }
