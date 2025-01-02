@@ -602,7 +602,6 @@ typedef struct gc_function_map {
     void *(*objspace_alloc)(void);
     void (*objspace_init)(void *objspace_ptr, void *ractor);
     void (*objspace_free)(void *objspace_ptr);
-    void (*absorb_contents)(void *receiving_objspace_ptr, void *closing_objspace_ptr);
     void (*attach_local_gate)(void *objspace_ptr, void *local_gate_ptr);
     void *(*ractor_cache_alloc)(void *objspace_ptr, void *ractor);
     void (*ractor_cache_free)(void *objspace_ptr, void *cache);
@@ -684,6 +683,7 @@ typedef struct gc_function_map {
     void *(*local_gate_of_objspace)(void *objspace_ptr);
     void *(*objspace_of_value)(VALUE obj);
     void *(*ractor_of_value)(VALUE obj);
+    void (*absorb_contents)(void *receiving_objspace_ptr, void *closing_objspace_ptr);
     void (*permit_mutable_shareable_direct)(VALUE obj);
     void (*mutable_shareable_permission_p)(VALUE obj);
     size_t (*obj_flags)(void *objspace_ptr, VALUE obj, ID* flags, size_t max);
@@ -795,7 +795,6 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(objspace_alloc);
     load_modular_gc_func(objspace_init);
     load_modular_gc_func(objspace_free);
-    load_modular_gc_func(absorb_contents);
     load_modular_gc_func(attach_local_gate);
     load_modular_gc_func(ractor_cache_alloc);
     load_modular_gc_func(ractor_cache_free);
@@ -877,6 +876,7 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(local_gate_of_objspace);
     load_modular_gc_func(objspace_of_value);
     load_modular_gc_func(ractor_of_value);
+    load_modular_gc_func(absorb_contents);
     load_modular_gc_func(permit_mutable_shareable_direct);
     load_modular_gc_func(mutable_shareable_permission_p);
     load_modular_gc_func(obj_flags);
@@ -894,7 +894,6 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_objspace_alloc rb_gc_functions.objspace_alloc
 # define rb_gc_impl_objspace_init rb_gc_functions.objspace_init
 # define rb_gc_impl_objspace_free rb_gc_functions.objspace_free
-# define rb_gc_impl_absorb_contents rb_gc_functions.absorb_contents
 # define rb_gc_impl_attach_local_gate rb_gc_functions.attach_local_gate
 # define rb_gc_impl_ractor_cache_alloc rb_gc_functions.ractor_cache_alloc
 # define rb_gc_impl_ractor_cache_free rb_gc_functions.ractor_cache_free
@@ -976,6 +975,7 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_local_gate_of_objspace rb_gc_functions.local_gate_of_objspace
 # define rb_gc_impl_objspace_of_value rb_gc_functions.objspace_of_value
 # define rb_gc_impl_ractor_of_value rb_gc_functions.ractor_of_value
+# define rb_gc_impl_absorb_contents rb_gc_functions.absorb_contents
 # define rb_gc_impl_permit_mutable_shareable_direct rb_gc_functions.permit_mutable_shareable_direct
 # define rb_gc_impl_mutable_shareable_permission_p rb_gc_functions.mutable_shareable_permission_p
 # define rb_gc_impl_obj_flags rb_gc_functions.obj_flags
