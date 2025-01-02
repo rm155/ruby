@@ -524,8 +524,6 @@ rb_fstring(VALUE str)
         }
     }
 
-    rb_ractor_t *allocating_ractor = rb_current_allocating_ractor();
-
     if (!FL_TEST_RAW(str, FL_FREEZE | STR_NOFREE | STR_CHILLED))
         rb_str_resize(str, RSTRING_LEN(str));
 
