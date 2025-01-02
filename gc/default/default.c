@@ -5372,22 +5372,13 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
 static int
 gc_mark_stacked_objects_incremental(rb_objspace_t *objspace, size_t count)
 {
-    if (gc_mark_stacked_objects(objspace, TRUE, count) == TRUE && mark_externally_modifiable_tables(objspace->local_gate)) {
-	return TRUE;
-    }
-    else
-    {
-	return FALSE;
-    }
+    return gc_mark_stacked_objects(objspace, TRUE, count);
 }
 
 static int
 gc_mark_stacked_objects_all(rb_objspace_t *objspace)
 {
-    while (true) {
-	gc_mark_stacked_objects(objspace, FALSE, 0);
-	if (mark_externally_modifiable_tables(objspace->local_gate)) return TRUE;
-    }
+    return gc_mark_stacked_objects(objspace, FALSE, 0);
 }
 
 #if RGENGC_CHECK_MODE >= 4

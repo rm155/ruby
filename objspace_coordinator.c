@@ -539,28 +539,6 @@ rb_external_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
     return !!st_lookup(os_gate->external_reference_tbl, obj, NULL);
 }
 
-static int
-shared_references_all_marked_i(st_data_t key, st_data_t value, st_data_t arg)
-{
-    if (!rb_gc_object_marked((VALUE)key)) {
-	bool *all_marked = (bool *)arg;
-	*all_marked = false;
-	return ST_STOP;
-    }
-    return ST_CONTINUE;
-}
-
-static bool
-shared_references_all_marked(rb_objspace_gate_t *os_gate)
-{
-    bool all_marked = true;
-
-    rb_native_mutex_lock(&os_gate->shared_reference_tbl_lock);
-    st_foreach(os_gate->shared_reference_tbl, shared_references_all_marked_i, (st_data_t)&all_marked);
-    rb_native_mutex_unlock(&os_gate->shared_reference_tbl_lock);
-    return all_marked;
-}
-
 static void
 mark_shared_reference_tbl(rb_objspace_gate_t *os_gate)
 {
@@ -1790,20 +1768,6 @@ arrange_next_gc_global_status(double sharedobject_limit_factor)
     }
 
     rb_native_mutex_unlock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
-}
-
-bool
-mark_externally_modifiable_tables(rb_objspace_gate_t *os_gate)
-{
-    if (!local_limits_in_use(os_gate)) return true;
-
-    rb_objspace_gate_t *local_gate = os_gate;
-    if (!shared_references_all_marked(os_gate)) {
-	mark_shared_reference_tbl(os_gate);
-	return false;
-    }
-
-    return true;
 }
 
 void

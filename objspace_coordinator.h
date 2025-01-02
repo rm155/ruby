@@ -353,7 +353,6 @@ bool rb_ractor_safe_gc_state(void);
 
 bool global_gc_needed(void);
 void arrange_next_gc_global_status(double sharedobject_limit_factor);
-bool mark_externally_modifiable_tables(rb_objspace_gate_t *os_gate);
 void global_gc_for_each_objspace(rb_vm_t *vm, rb_objspace_gate_t *runner_gate, void (gc_func)(struct rb_objspace *objspace));
 void rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm);
 void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_objspace);
