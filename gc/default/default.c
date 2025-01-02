@@ -10662,8 +10662,18 @@ gc_shared_reference_p(VALUE _, VALUE v)
 static VALUE
 gc_local_immune_p(VALUE _, VALUE v)
 {
-    rb_objspace_t *objspace = rb_gc_get_objspace();
-    return RBOOL(rb_local_immune_tbl_contains(objspace->local_gate, v, true));
+    if (SPECIAL_CONST_P(v)) {
+	return Qfalse;
+    }
+
+    VALUE ret;
+    WITH_OBJSPACE_GATE_ENTER(v, source_gate);
+    {
+	ret = RBOOL(rb_local_immune_tbl_contains(source_gate, v, true));
+    }
+    WITH_OBJSPACE_GATE_LEAVE(source_gate);
+
+    return ret;
 }
 
 void
