@@ -292,6 +292,11 @@ void ruby_load_modular_gc_from_argv(int argc, char **argv);
 #endif
 RUBY_SYMBOL_EXPORT_END
 
+void rb_permit_mutable_shareable(VALUE obj);
+void permit_mutable_shareable_direct(VALUE obj);
+void permit_mutable_shareable_force(VALUE obj);
+bool rb_gc_mutable_shareable_permission_p(VALUE obj);
+
 int rb_ec_stack_check(struct rb_execution_context_struct *ec);
 void rb_gc_writebarrier_remember(VALUE obj);
 void rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b);

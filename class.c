@@ -23,6 +23,7 @@
 #include "internal.h"
 #include "internal/class.h"
 #include "internal/eval.h"
+#include "internal/gc.h"
 #include "internal/hash.h"
 #include "internal/object.h"
 #include "internal/string.h"
@@ -276,8 +277,10 @@ class_alloc_given_redirected_allocation(VALUE args)
     flags &= T_MASK;
     if (RGENGC_WB_PROTECTED_CLASS) flags |= FL_WB_PROTECTED;
     NEWOBJ_OF(obj, struct RClass, klass, flags, alloc_size, 0);
+    permit_mutable_shareable_direct(obj);
 
     memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
+    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
 
     /* ZALLOC
       RCLASS_CONST_TBL(obj) = 0;
@@ -292,10 +295,7 @@ class_alloc_given_redirected_allocation(VALUE args)
     RB_OBJ_WRITE(obj, &RCLASS_REFINED_CLASS(obj), Qnil);
     RCLASS_SET_ALLOCATOR((VALUE)obj, 0);
 
-    VALUE class_obj = (VALUE)obj;
-    FL_SET_RAW(class_obj, RUBY_FL_SHAREABLE);
-
-    return class_obj;
+    return obj;
 }
 
 /**

@@ -759,6 +759,7 @@ struct heap_page {
     struct ccan_list_node page_node;
 
     bits_t wb_unprotected_bits[HEAP_PAGE_BITMAP_LIMIT];
+    bits_t mutable_shareable_permission_bits[HEAP_PAGE_BITMAP_LIMIT];
     /* the following three bitmaps are cleared at the beginning of full GC */
     bits_t mark_bits[HEAP_PAGE_BITMAP_LIMIT];
     bits_t uncollectible_bits[HEAP_PAGE_BITMAP_LIMIT];
@@ -830,11 +831,12 @@ heap_page_in_objspace_empty_pages_pool(rb_objspace_t *objspace, struct heap_page
 #define CLEAR_IN_BITMAP(bits, p)     ((bits)[BITMAP_INDEX(p)] = (bits)[BITMAP_INDEX(p)] & ~BITMAP_BIT(p))
 
 /* getting bitmap */
-#define GET_HEAP_MARK_BITS(x)           (&GET_HEAP_PAGE(x)->mark_bits[0])
-#define GET_HEAP_PINNED_BITS(x)         (&GET_HEAP_PAGE(x)->pinned_bits[0])
-#define GET_HEAP_UNCOLLECTIBLE_BITS(x)  (&GET_HEAP_PAGE(x)->uncollectible_bits[0])
-#define GET_HEAP_WB_UNPROTECTED_BITS(x) (&GET_HEAP_PAGE(x)->wb_unprotected_bits[0])
-#define GET_HEAP_MARKING_BITS(x)        (&GET_HEAP_PAGE(x)->marking_bits[0])
+#define GET_HEAP_MARK_BITS(x)                         (&GET_HEAP_PAGE(x)->mark_bits[0])
+#define GET_HEAP_PINNED_BITS(x)                       (&GET_HEAP_PAGE(x)->pinned_bits[0])
+#define GET_HEAP_UNCOLLECTIBLE_BITS(x)                (&GET_HEAP_PAGE(x)->uncollectible_bits[0])
+#define GET_HEAP_WB_UNPROTECTED_BITS(x)               (&GET_HEAP_PAGE(x)->wb_unprotected_bits[0])
+#define GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(x) (&GET_HEAP_PAGE(x)->mutable_shareable_permission_bits[0])
+#define GET_HEAP_MARKING_BITS(x)                      (&GET_HEAP_PAGE(x)->marking_bits[0])
 
 #define GC_SWEEP_PAGES_FREEABLE_PER_STEP 3
 
@@ -1199,11 +1201,12 @@ tick(void)
 
 static inline VALUE check_rvalue_consistency(rb_objspace_t *objspace, const VALUE obj);
 
-#define RVALUE_MARKED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(obj), (obj))
-#define RVALUE_WB_UNPROTECTED_BITMAP(obj) MARKED_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), (obj))
-#define RVALUE_MARKING_BITMAP(obj)        MARKED_IN_BITMAP(GET_HEAP_MARKING_BITS(obj), (obj))
-#define RVALUE_UNCOLLECTIBLE_BITMAP(obj)  MARKED_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS(obj), (obj))
-#define RVALUE_PINNED_BITMAP(obj)         MARKED_IN_BITMAP(GET_HEAP_PINNED_BITS(obj), (obj))
+#define RVALUE_MARKED_BITMAP(obj)                       MARKED_IN_BITMAP(GET_HEAP_MARK_BITS(obj), (obj))
+#define RVALUE_WB_UNPROTECTED_BITMAP(obj)               MARKED_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(obj), (obj))
+#define RVALUE_MUTABLE_SHAREABLE_PERMISSION_BITMAP(obj) MARKED_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(obj), (obj))
+#define RVALUE_MARKING_BITMAP(obj)                      MARKED_IN_BITMAP(GET_HEAP_MARKING_BITS(obj), (obj))
+#define RVALUE_UNCOLLECTIBLE_BITMAP(obj)                MARKED_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS(obj), (obj))
+#define RVALUE_PINNED_BITMAP(obj)                       MARKED_IN_BITMAP(GET_HEAP_PINNED_BITS(obj), (obj))
 
 static inline int
 RVALUE_MARKED(rb_objspace_t *objspace, VALUE obj)
@@ -1224,6 +1227,28 @@ RVALUE_WB_UNPROTECTED(rb_objspace_t *objspace, VALUE obj)
 {
     check_rvalue_consistency(objspace, obj);
     return RVALUE_WB_UNPROTECTED_BITMAP(obj) != 0;
+}
+
+static inline int
+RVALUE_MUTABLE_SHAREABLE_PERMISSION(rb_objspace_t *objspace, VALUE obj)
+{
+    check_rvalue_consistency(objspace, obj);
+    return RVALUE_MUTABLE_SHAREABLE_PERMISSION_BITMAP(obj) != 0;
+}
+
+bool
+rb_gc_impl_mutable_shareable_permission_p(VALUE obj)
+{
+    return RVALUE_MUTABLE_SHAREABLE_PERMISSION_BITMAP(obj) != 0;
+}
+
+void
+rb_gc_impl_permit_mutable_shareable_direct(VALUE obj)
+{
+    //TODO enforce assertion
+    //VM_ASSERT(RVALUE_WB_UNPROTECTED_BITMAP(obj) == 0);
+
+    MARK_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(obj), obj);
 }
 
 
@@ -1280,9 +1305,10 @@ rb_gc_impl_local_gate_of_objspace(void *objspace_ptr)
     return (void *)objspace->local_gate;
 }
 
-#define RVALUE_PAGE_WB_UNPROTECTED(page, obj) MARKED_IN_BITMAP((page)->wb_unprotected_bits, (obj))
-#define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)  MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
-#define RVALUE_PAGE_MARKING(page, obj)        MARKED_IN_BITMAP((page)->marking_bits, (obj))
+#define RVALUE_PAGE_WB_UNPROTECTED(page, obj)               MARKED_IN_BITMAP((page)->wb_unprotected_bits, (obj))
+#define RVALUE_PAGE_MUTABLE_SHAREABLE_PERMISSION(page, obj) MARKED_IN_BITMAP((page)->mutable_shareable_permission_bits, (obj))
+#define RVALUE_PAGE_UNCOLLECTIBLE(page, obj)                MARKED_IN_BITMAP((page)->uncollectible_bits, (obj))
+#define RVALUE_PAGE_MARKING(page, obj)                      MARKED_IN_BITMAP((page)->marking_bits, (obj))
 
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
@@ -3344,7 +3370,9 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
         rb_ary_push(table, block);
     }
     else {
+	add_local_immune_object(block);
         table = rb_ary_new3(1, block);
+	rb_permit_mutable_shareable(table);
 	FL_SET_RAW(table, RUBY_FL_SHAREABLE); //TODO: Protect table from data races
         rb_obj_hide(table);
         st_add_direct(finalizer_table, obj, table);
@@ -4066,10 +4094,12 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 #endif
 
                 if (RVALUE_WB_UNPROTECTED(objspace, vp)) CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(vp), vp);
+                if (RVALUE_MUTABLE_SHAREABLE_PERMISSION(objspace, vp)) CLEAR_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(vp), vp);
 
 #if RGENGC_CHECK_MODE
 #define CHECK(x) if (x(objspace, vp) != FALSE) rb_bug("obj_free: " #x "(%s) != FALSE", rb_obj_info(vp))
                 CHECK(RVALUE_WB_UNPROTECTED);
+                CHECK(RVALUE_MUTABLE_SHAREABLE_PERMISSION);
                 CHECK(RVALUE_MARKED);
                 CHECK(RVALUE_MARKING);
                 CHECK(RVALUE_UNCOLLECTIBLE);
@@ -7849,6 +7879,7 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
 {
     int marked;
     int wb_unprotected;
+    int mutable_shareable_permission;
     int uncollectible;
     int age;
 
@@ -7862,6 +7893,7 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     /* Save off bits for current object. */
     marked = RVALUE_MARKED(objspace, src);
     wb_unprotected = RVALUE_WB_UNPROTECTED(objspace, src);
+    mutable_shareable_permission = RVALUE_MUTABLE_SHAREABLE_PERMISSION(objspace, src);
     uncollectible = RVALUE_UNCOLLECTIBLE(objspace, src);
     bool remembered = RVALUE_REMEMBERED(objspace, src);
     age = RVALUE_AGE_GET(src);
@@ -7922,6 +7954,13 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     }
     else {
         CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(dest), dest);
+    }
+
+    if (mutable_shareable_permission) {
+        MARK_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(dest), dest);
+    }
+    else {
+        CLEAR_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(dest), dest);
     }
 
     if (uncollectible) {

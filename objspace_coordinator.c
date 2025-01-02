@@ -580,12 +580,10 @@ add_local_immune_object(VALUE obj)
 {
     WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
     {
-	if (rb_ractor_shareable_p(obj)) {
-	    rb_native_mutex_lock(&source_gate->local_immune_tbl_lock);
-	    bool new_entry = !st_insert_no_gc(source_gate->local_immune_tbl, (st_data_t)obj, INT2FIX(0));
-	    if (new_entry) source_gate->local_immune_count++;
-	    rb_native_mutex_unlock(&source_gate->local_immune_tbl_lock);
-	}
+	rb_native_mutex_lock(&source_gate->local_immune_tbl_lock);
+	bool new_entry = !st_insert_no_gc(source_gate->local_immune_tbl, (st_data_t)obj, INT2FIX(0));
+	if (new_entry) source_gate->local_immune_count++;
+	rb_native_mutex_unlock(&source_gate->local_immune_tbl_lock);
     }
     WITH_OBJSPACE_GATE_LEAVE(source_gate);
 }
@@ -652,7 +650,7 @@ find_all_mutable_shareable_objs_i(void *vstart, void *vend, size_t stride, void 
 
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-	if (MUTABLE_SHAREABLE(v)) {
+	if (rb_gc_mutable_shareable_permission_p(v)) {
 	    rb_ary_push(ary, v);
 	}
     }
@@ -669,20 +667,6 @@ find_all_mutable_shareable_objs(void)
 }
 
 void
-add_reachable_objects_to_local_immune_tbl_i(VALUE obj, void *data_ptr)
-{
-    if (rb_ractor_shareable_p(obj)) {
-	add_local_immune_object(obj);
-    }
-}
-
-static void
-add_reachable_objects_to_local_immune_tbl(VALUE obj)
-{
-    rb_objspace_reachable_objects_from(obj, add_reachable_objects_to_local_immune_tbl_i, NULL);
-}
-
-void
 rb_local_immune_tbl_activate(void)
 {
     VALUE mutable_shareable_obj_ary = find_all_mutable_shareable_objs();
@@ -690,6 +674,38 @@ rb_local_immune_tbl_activate(void)
         add_reachable_objects_to_local_immune_tbl(RARRAY_AREF(mutable_shareable_obj_ary, i));
     }
 }
+
+static void
+add_reachable_objects_to_local_immune_tbl_i(VALUE obj, void *data_ptr)
+{
+    VALUE parent = data_ptr;
+    if (obj != RBASIC(parent)->klass) {
+	add_local_immune_object(obj);
+    }
+}
+
+void
+add_reachable_objects_to_local_immune_tbl(VALUE obj)
+{
+    rb_objspace_reachable_objects_from(obj, add_reachable_objects_to_local_immune_tbl_i, obj);
+}
+
+#if VM_CHECK_MODE > 0
+static void
+check_child_is_local_immune(VALUE obj, void *arg)
+{
+    VALUE parent = arg;
+    if (!rb_local_immune_tbl_contains(GET_RACTOR_OF_VALUE(obj)->local_gate, obj, true) && obj != RBASIC(parent)->klass) {
+	rb_bug("child object is not local-immune");
+    }
+}
+
+void
+verify_reachable_objects_in_local_immune_tbl(VALUE obj)
+{
+    rb_objspace_reachable_objects_from(obj, check_child_is_local_immune, obj);
+}
+#endif
 
 static int
 confirm_discovered_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)

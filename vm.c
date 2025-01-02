@@ -1345,6 +1345,7 @@ proc_isolate_env(VALUE self, rb_proc_t *proc, VALUE read_only_variables)
     const rb_env_t *env = env_copy(captured->ep, read_only_variables);
     *((const VALUE **)&proc->block.as.captured.ep) = env->ep;
 
+    permit_mutable_shareable_force(env);
     FL_SET_RAW(env, RUBY_FL_SHAREABLE);
 
     RB_OBJ_WRITTEN(self, Qundef, env);
@@ -1400,6 +1401,7 @@ rb_proc_isolate_bang(VALUE self)
         proc->is_isolated = TRUE;
     }
 
+    permit_mutable_shareable_force(self);
     FL_SET_RAW(self, RUBY_FL_SHAREABLE);
     return self;
 }
@@ -1438,6 +1440,7 @@ rb_proc_ractor_make_shareable(VALUE self)
         proc->is_isolated = TRUE;
     }
 
+    permit_mutable_shareable_force(self);
     FL_SET_RAW(self, RUBY_FL_SHAREABLE);
     return self;
 }

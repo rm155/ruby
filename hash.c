@@ -32,6 +32,7 @@
 #include "internal/class.h"
 #include "internal/cont.h"
 #include "internal/error.h"
+#include "internal/gc.h"
 #include "internal/hash.h"
 #include "internal/object.h"
 #include "internal/proc.h"
@@ -7370,6 +7371,7 @@ Init_Hash(void)
      */
     origenviron = environ;
     envtbl = TypedData_Wrap_Struct(rb_cObject, &env_data_type, NULL);
+    permit_mutable_shareable_direct(envtbl);
     rb_extend_object(envtbl, rb_mEnumerable);
     FL_SET_RAW(envtbl, RUBY_FL_SHAREABLE);
 

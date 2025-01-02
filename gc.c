@@ -712,6 +712,8 @@ typedef struct gc_function_map {
     void *(*local_gate_of_objspace)(void *objspace_ptr);
     void *(*objspace_of_value)(VALUE obj);
     void *(*ractor_of_value)(VALUE obj);
+    void (*permit_mutable_shareable_direct)(VALUE obj);
+    void (*mutable_shareable_permission_p)(VALUE obj);
     size_t (*obj_flags)(void *objspace_ptr, VALUE obj, ID* flags, size_t max);
     bool (*pointer_to_heap_p)(void *objspace_ptr, const void *ptr);
     bool (*garbage_object_p)(void *objspace_ptr, VALUE obj);
@@ -877,6 +879,8 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(local_gate_of_objspace);
     load_modular_gc_func(objspace_of_value);
     load_modular_gc_func(ractor_of_value);
+    load_modular_gc_func(permit_mutable_shareable_direct);
+    load_modular_gc_func(mutable_shareable_permission_p);
     load_modular_gc_func(obj_flags);
     load_modular_gc_func(pointer_to_heap_p);
     load_modular_gc_func(garbage_object_p);
@@ -974,6 +978,8 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_local_gate_of_objspace rb_gc_functions.local_gate_of_objspace
 # define rb_gc_impl_objspace_of_value rb_gc_functions.objspace_of_value
 # define rb_gc_impl_ractor_of_value rb_gc_functions.ractor_of_value
+# define rb_gc_impl_permit_mutable_shareable_direct rb_gc_functions.permit_mutable_shareable_direct
+# define rb_gc_impl_mutable_shareable_permission_p rb_gc_functions.mutable_shareable_permission_p
 # define rb_gc_impl_obj_flags rb_gc_functions.obj_flags
 # define rb_gc_impl_pointer_to_heap_p rb_gc_functions.pointer_to_heap_p
 # define rb_gc_impl_garbage_object_p rb_gc_functions.garbage_object_p
@@ -3092,6 +3098,48 @@ rb_gc_obj_optimal_size(VALUE obj)
 }
 
 void
+permit_mutable_shareable_direct(VALUE obj)
+{
+    rb_gc_impl_permit_mutable_shareable_direct(obj);
+}
+
+void
+permit_mutable_shareable_force(VALUE obj)
+{
+    add_reachable_objects_to_local_immune_tbl(obj);
+    permit_mutable_shareable_direct(obj);
+}
+
+void
+rb_permit_mutable_shareable(VALUE obj)
+{
+#if VM_CHECK_MODE > 0
+    verify_reachable_objects_in_local_immune_tbl(obj);
+#endif
+    permit_mutable_shareable_direct(obj);
+}
+
+bool
+rb_gc_mutable_shareable_permission_p(VALUE obj)
+{
+    return rb_gc_impl_mutable_shareable_permission_p((VALUE)obj);
+}
+
+void
+rb_verify_mutable_shareable_safety(struct RBasic *obj, VALUE flags)
+{
+#if VM_CHECK_MODE > 0
+    if (flags & RUBY_FL_SHAREABLE && !(RBASIC(obj)->flags & RUBY_FL_FREEZE)) {
+	if (!(obj->flags & RUBY_FL_SHAREABLE)) {
+	    if (!rb_gc_mutable_shareable_permission_p((VALUE)obj)) {
+		rb_bug("mutable object becomes shareable without mutable-shareable permission");
+	    }
+	}
+    }
+#endif
+}
+
+void
 rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b)
 {
     rb_gc_impl_writebarrier_gc_blocked(objspace_ptr, a, b);
@@ -3112,7 +3160,7 @@ rb_gc_writebarrier(VALUE a, VALUE b)
 	rb_gc_writebarrier_gc_blocked(current_objspace, a, b);
     }
     else {
-	if (MUTABLE_SHAREABLE(a)) {
+	if (rb_gc_mutable_shareable_permission_p(a)) {
 	    add_local_immune_object(b);
 	}
 	rb_gc_writebarrier_multi_objspace(a, b, current_objspace);

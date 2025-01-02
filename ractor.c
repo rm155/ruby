@@ -2157,6 +2157,7 @@ ractor_alloc(VALUE klass)
     VALUE rv = TypedData_Make_Struct(klass, rb_ractor_t, &ractor_data_type, r);
     r->pub.self = rv;
     rb_add_to_contained_ractor_tbl(r);
+    rb_permit_mutable_shareable(rv);
     FL_SET_RAW(rv, RUBY_FL_SHAREABLE);
     VM_ASSERT(ractor_status_p(r, ractor_created));
     return rv;
@@ -2289,6 +2290,7 @@ void
 rb_ractor_main_setup(rb_vm_t *vm, rb_ractor_t *r, rb_thread_t *th)
 {
     r->pub.self = TypedData_Wrap_Struct(rb_cRactor, &ractor_data_type, r);
+    rb_permit_mutable_shareable(r->pub.self);
     FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
     ractor_init(r, Qnil, Qnil);
     r->threads.main = th;

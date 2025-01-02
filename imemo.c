@@ -2,6 +2,7 @@
 #include "constant.h"
 #include "id_table.h"
 #include "internal.h"
+#include "internal/gc.h"
 #include "internal/imemo.h"
 #include "vm_callinfo.h"
 
@@ -63,6 +64,7 @@ rb_imemo_new(enum imemo_type type, VALUE v0)
     VALUE flags = T_IMEMO | FL_WB_PROTECTED | (type << FL_USHIFT);
     NEWOBJ_OF(obj, void, v0, flags, size, 0);
     if (inherently_shareable_imemo_type(type)) {
+	permit_mutable_shareable_direct(obj);
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
     }
     return obj;

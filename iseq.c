@@ -1507,6 +1507,7 @@ iseqw_new(const rb_iseq_t *iseq)
     else {
         rb_iseq_t **ptr;
         VALUE obj = TypedData_Make_Struct(rb_cISeq, rb_iseq_t *, &iseqw_data_type, ptr);
+	permit_mutable_shareable_direct(obj);
         RB_OBJ_WRITE(obj, ptr, iseq);
 
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);

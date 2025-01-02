@@ -122,6 +122,8 @@ GC_IMPL_FN void *rb_gc_impl_ractor_of_objspace(void *objspace_ptr);
 GC_IMPL_FN void *rb_gc_impl_local_gate_of_objspace(void *objspace_ptr);
 GC_IMPL_FN void *rb_gc_impl_objspace_of_value(VALUE obj);
 GC_IMPL_FN void *rb_gc_impl_ractor_of_value(VALUE obj);
+GC_IMPL_FN void rb_gc_impl_permit_mutable_shareable_direct(VALUE obj);
+GC_IMPL_FN bool rb_gc_impl_mutable_shareable_permission_p(VALUE obj);
 GC_IMPL_FN size_t rb_gc_impl_obj_flags(void *objspace_ptr, VALUE obj, ID* flags, size_t max);
 GC_IMPL_FN bool rb_gc_impl_pointer_to_heap_p(void *objspace_ptr, const void *ptr);
 GC_IMPL_FN bool rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE obj);
