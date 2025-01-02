@@ -693,7 +693,7 @@ undocumented: PHONY main srcs-doc
 	$(Q) $(RDOC) --quiet -C $(RDOCFLAGS) "$(srcdir)" | \
 	sed -n \
 	-e '/^ *# in file /{' -e 's///;N;s/\n/: /p' -e '}' \
-	-e 's/^ *\(.*[^ ]\) *# in file \(.*\)/\2: \1/p'
+	-e 's/^ *\(.*[^ ]\) *# in file \(.*\)/\2: \1/p' | sort
 
 RDOCBENCHOUT=/tmp/rdocbench
 
@@ -1020,9 +1020,17 @@ no-test-spec:
 check: $(DOT_WAIT) test-spec
 
 RUNNABLE = $(LIBRUBY_RELATIVE:no=un)-runnable
-runnable: $(RUNNABLE) prog $(tooldir)/mkrunnable.rb PHONY
+runnable: $(RUNNABLE)
+runnable-golf: golf
+runnable $(enable_shared:yes=runnable-golf): prog $(tooldir)/mkrunnable.rb PHONY
 	$(Q) $(MINIRUBY) $(tooldir)/mkrunnable.rb -v $(EXTOUT)
 yes-runnable: PHONY
+
+hello: $(TEST_RUNNABLE)-hello
+yes-hello: runnable-golf
+	./$(enable_shared:yes=bin/)$(GORUBY) -veh
+no-hello: runnable-golf
+	$(ECHO) Run ./$(enable_shared:yes=bin/)$(GORUBY) -veh
 
 encs: enc trans
 libencs: libenc libtrans
@@ -1942,9 +1950,18 @@ rewindable:
 
 HELP_EXTRA_TASKS = ""
 
+gc/Makefile:
+	$(MAKEDIRS) $(@D)
+	$(MESSAGE_BEGIN) \
+	"all:" \
+	"	@echo You must specify MODULAR_GC with the GC to build" \
+	"	@exit 1" \
+	$(MESSAGE_END) > $@
+gc/distclean gc/realclean::
+	-$(Q) $(RM) gc/Makefile
+
 modular-gc-precheck:
-modular-gc: probes.h modular-gc-precheck
-	$(Q) $(MAKEDIRS) $(modular_gc_dir)
+modular-gc: probes.h gc/Makefile
 	$(Q) $(RUNRUBY) $(srcdir)/ext/extmk.rb \
 		$(SCRIPT_ARGS) \
 		--make='$(MAKE)' --make-flags="V=$(V) MINIRUBY='$(MINIRUBY)'" \
@@ -1952,6 +1969,8 @@ modular-gc: probes.h modular-gc-precheck
 		--ext-build-dir=gc --command-output=gc/$(MODULAR_GC)/exts.mk -- \
 		configure gc/$(MODULAR_GC)
 	$(CHDIR) gc/$(MODULAR_GC) && $(exec) $(MAKE) TARGET_SO_DIR=./
+install-modular-gc: modular-gc modular-gc-precheck
+	$(Q) $(MAKEDIRS) $(modular_gc_dir)
 	$(CP) gc/$(MODULAR_GC)/librubygc.$(MODULAR_GC).$(DLEXT) $(modular_gc_dir)
 
 clean-modular-gc: gc/clean

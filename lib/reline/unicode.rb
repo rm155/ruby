@@ -28,6 +28,7 @@ class Reline::Unicode
     0x19 => '^Y',
     0x1A => '^Z', # C-z
     0x1B => '^[', # C-[ C-3
+    0x1C => '^\\', # C-\
     0x1D => '^]', # C-]
     0x1E => '^^', # C-~ C-6
     0x1F => '^_', # C-_ C-7
@@ -61,7 +62,7 @@ class Reline::Unicode
 
     # This code is essentially doing the same thing as
     # `str.encode(utf8, **replace_options).encode(encoding, **replace_options)`
-    # but also avoids unneccesary irreversible encoding conversion.
+    # but also avoids unnecessary irreversible encoding conversion.
     converted.gsub(/\X/) do |c|
       c.encode(Encoding::UTF_8)
       c

@@ -277,7 +277,12 @@ static struct fiber_pool shared_fiber_pool = {NULL, NULL, 0, 0, 0, 0};
 void
 rb_free_shared_fiber_pool(void)
 {
-    xfree(shared_fiber_pool.allocations);
+    struct fiber_pool_allocation *allocations = shared_fiber_pool.allocations;
+    while (allocations) {
+        struct fiber_pool_allocation *next = allocations->next;
+        xfree(allocations);
+        allocations = next;
+    }
 }
 
 static ID fiber_initialize_keywords[3] = {0};
@@ -2119,7 +2124,7 @@ rb_fiber_storage_set(VALUE self, VALUE value)
 static VALUE
 rb_fiber_storage_aref(VALUE class, VALUE key)
 {
-    Check_Type(key, T_SYMBOL);
+    key = rb_to_symbol(key);
 
     VALUE storage = fiber_storage_get(fiber_current(), FALSE);
     if (storage == Qnil) return Qnil;
@@ -2140,7 +2145,7 @@ rb_fiber_storage_aref(VALUE class, VALUE key)
 static VALUE
 rb_fiber_storage_aset(VALUE class, VALUE key, VALUE value)
 {
-    Check_Type(key, T_SYMBOL);
+    key = rb_to_symbol(key);
 
     VALUE storage = fiber_storage_get(fiber_current(), value != Qnil);
     if (storage == Qnil) return Qnil;
@@ -3431,6 +3436,10 @@ Init_Cont(void)
     rb_define_singleton_method(rb_cFiber, "schedule", rb_fiber_s_schedule, -1);
 
 #ifdef RB_EXPERIMENTAL_FIBER_POOL
+    /*
+     * Document-class: Fiber::Pool
+     * :nodoc: experimental
+     */
     rb_cFiberPool = rb_define_class_under(rb_cFiber, "Pool", rb_cObject);
     rb_define_alloc_func(rb_cFiberPool, fiber_pool_alloc);
     rb_define_method(rb_cFiberPool, "initialize", rb_fiber_pool_initialize, -1);

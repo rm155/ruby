@@ -875,109 +875,6 @@ pst_equal(VALUE st1, VALUE st2)
 
 /*
  *  call-seq:
- *    stat & mask -> integer
- *
- *  This method is deprecated as #to_i value is system-specific; use
- *  predicate methods like #exited? or #stopped?, or getters like #exitstatus
- *  or #stopsig.
- *
- *  Returns the logical AND of the value of #to_i with +mask+:
- *
- *    `cat /nop`
- *    stat = $?                 # => #<Process::Status: pid 1155508 exit 1>
- *    sprintf('%x', stat.to_i)  # => "100"
- *    stat & 0x00               # => 0
- *
- *  ArgumentError is raised if +mask+ is negative.
- */
-
-static VALUE
-pst_bitand(VALUE st1, VALUE st2)
-{
-    int status = PST2INT(st1);
-    int mask = NUM2INT(st2);
-
-    if (mask < 0) {
-        rb_raise(rb_eArgError, "negative mask value: %d", mask);
-    }
-#define WARN_SUGGEST(suggest) \
-    rb_warn_deprecated_to_remove_at(3.5, "Process::Status#&", suggest)
-
-    switch (mask) {
-      case 0x80:
-        WARN_SUGGEST("Process::Status#coredump?");
-        break;
-      case 0x7f:
-        WARN_SUGGEST("Process::Status#signaled? or Process::Status#termsig");
-        break;
-      case 0xff:
-        WARN_SUGGEST("Process::Status#exited?, Process::Status#stopped? or Process::Status#coredump?");
-        break;
-      case 0xff00:
-        WARN_SUGGEST("Process::Status#exitstatus or Process::Status#stopsig");
-        break;
-      default:
-        WARN_SUGGEST("other Process::Status predicates");
-        break;
-    }
-#undef WARN_SUGGEST
-    status &= mask;
-
-    return INT2NUM(status);
-}
-
-
-/*
- *  call-seq:
- *    stat >> places -> integer
- *
- *  This method is deprecated as #to_i value is system-specific; use
- *  predicate methods like #exited? or #stopped?, or getters like #exitstatus
- *  or #stopsig.
- *
- *  Returns the value of #to_i, shifted +places+ to the right:
- *
- *     `cat /nop`
- *     stat = $?                 # => #<Process::Status: pid 1155508 exit 1>
- *     stat.to_i                 # => 256
- *     stat >> 1                 # => 128
- *     stat >> 2                 # => 64
- *
- *  ArgumentError is raised if +places+ is negative.
- */
-
-static VALUE
-pst_rshift(VALUE st1, VALUE st2)
-{
-    int status = PST2INT(st1);
-    int places = NUM2INT(st2);
-
-    if (places < 0) {
-        rb_raise(rb_eArgError, "negative shift value: %d", places);
-    }
-#define WARN_SUGGEST(suggest) \
-    rb_warn_deprecated_to_remove_at(3.5, "Process::Status#>>", suggest)
-
-    switch (places) {
-      case 7:
-        WARN_SUGGEST("Process::Status#coredump?");
-        break;
-      case 8:
-        WARN_SUGGEST("Process::Status#exitstatus or Process::Status#stopsig");
-        break;
-      default:
-        WARN_SUGGEST("other Process::Status attributes");
-        break;
-    }
-#undef WARN_SUGGEST
-    status >>= places;
-
-    return INT2NUM(status);
-}
-
-
-/*
- *  call-seq:
  *    stopped? -> true or false
  *
  *  Returns +true+ if this process is stopped,
@@ -6017,7 +5914,7 @@ rb_getpwdiruid(void)
  *  The Process::Sys module contains UID and GID
  *  functions which provide direct bindings to the system calls of the
  *  same names instead of the more-portable versions of the same
- *  functionality found in the Process,
+ *  functionality found in the +Process+,
  *  Process::UID, and Process::GID modules.
  */
 
@@ -8865,10 +8762,10 @@ proc_warmup(VALUE _)
 /*
  * Document-module: Process
  *
- * \Module +Process+ represents a process in the underlying operating system.
+ * Module +Process+ represents a process in the underlying operating system.
  * Its methods support management of the current process and its child processes.
  *
- * == \Process Creation
+ * == Process Creation
  *
  * Each of the following methods executes a given command in a new process or subshell,
  * or multiple commands in new processes and/or subshells.
@@ -8881,11 +8778,11 @@ proc_warmup(VALUE _)
  *
  * In addition:
  *
- * - \Method Kernel#system executes a given command-line (string) in a subshell;
+ * - Method Kernel#system executes a given command-line (string) in a subshell;
  *   returns +true+, +false+, or +nil+.
- * - \Method Kernel#` executes a given command-line (string) in a subshell;
+ * - Method Kernel#` executes a given command-line (string) in a subshell;
  *   returns its $stdout string.
- * - \Module Open3 supports creating child processes
+ * - Module Open3 supports creating child processes
  *   with access to their $stdin, $stdout, and $stderr streams.
  *
  * === Execution Environment
@@ -9115,7 +9012,7 @@ proc_warmup(VALUE _)
  *
  *   0644
  *
- * ==== \Process Groups (+:pgroup+ and +:new_pgroup+)
+ * ==== Process Groups (+:pgroup+ and +:new_pgroup+)
  *
  * By default, the new process belongs to the same
  * {process group}[https://en.wikipedia.org/wiki/Process_group]
@@ -9249,7 +9146,7 @@ proc_warmup(VALUE _)
  * - ::waitall: Waits for all child processes to exit;
  *   returns their process IDs and statuses.
  *
- * === \Process Groups
+ * === Process Groups
  *
  * - ::getpgid: Returns the process group ID for a process.
  * - ::getpriority: Returns the scheduling priority
@@ -9346,8 +9243,6 @@ InitVM_process(void)
     rb_define_singleton_method(rb_cProcessStatus, "wait", rb_process_status_waitv, -1);
 
     rb_define_method(rb_cProcessStatus, "==", pst_equal, 1);
-    rb_define_method(rb_cProcessStatus, "&", pst_bitand, 1);
-    rb_define_method(rb_cProcessStatus, ">>", pst_rshift, 1);
     rb_define_method(rb_cProcessStatus, "to_i", pst_to_i, 0);
     rb_define_method(rb_cProcessStatus, "to_s", pst_to_s, 0);
     rb_define_method(rb_cProcessStatus, "inspect", pst_inspect, 0);

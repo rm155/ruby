@@ -5911,24 +5911,23 @@ env_to_s(VALUE _)
 static VALUE
 env_inspect(VALUE _)
 {
-    VALUE i;
     VALUE str = rb_str_buf_new2("{");
+    rb_encoding *enc = env_encoding();
 
     ENV_LOCK();
     {
         char **env = GET_ENVIRON(environ);
         while (*env) {
-            char *s = strchr(*env, '=');
+            const char *s = strchr(*env, '=');
 
             if (env != environ) {
                 rb_str_buf_cat2(str, ", ");
             }
             if (s) {
-                rb_str_buf_cat2(str, "\"");
-                rb_str_buf_cat(str, *env, s-*env);
-                rb_str_buf_cat2(str, "\"=>");
-                i = rb_inspect(rb_str_new2(s+1));
-                rb_str_buf_append(str, i);
+                rb_str_buf_append(str, rb_str_inspect(env_enc_str_new(*env, s-*env, enc)));
+                rb_str_buf_cat2(str, " => ");
+                s++;
+                rb_str_buf_append(str, rb_str_inspect(env_enc_str_new(s, strlen(s), enc)));
             }
             env++;
         }
@@ -6706,7 +6705,7 @@ static const rb_data_type_t env_data_type = {
  *
  *  You can convert certain objects to Hashes with:
  *
- *  - \Method #Hash.
+ *  - Method #Hash.
  *
  *  You can create a +Hash+ by calling method Hash.new.
  *
@@ -6972,7 +6971,7 @@ static const rb_data_type_t env_data_type = {
  *
  *  === What's Here
  *
- *  First, what's elsewhere. \Class +Hash+:
+ *  First, what's elsewhere. Class +Hash+:
  *
  *  - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
  *  - Includes {module Enumerable}[rdoc-ref:Enumerable@What-27s+Here],
@@ -6992,7 +6991,7 @@ static const rb_data_type_t env_data_type = {
  *  - {Transforming Keys and Values}[rdoc-ref:Hash@Methods+for+Transforming+Keys+and+Values]
  *  - {And more....}[rdoc-ref:Hash@Other+Methods]
  *
- *  \Class +Hash+ also includes methods from module Enumerable.
+ *  Class +Hash+ also includes methods from module Enumerable.
  *
  *  ==== Methods for Creating a +Hash+
  *
@@ -7286,7 +7285,7 @@ Init_Hash(void)
      *
      * === What's Here
      *
-     * First, what's elsewhere. \Class +ENV+:
+     * First, what's elsewhere. Class +ENV+:
      *
      * - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
      * - Extends {module Enumerable}[rdoc-ref:Enumerable@What-27s+Here],

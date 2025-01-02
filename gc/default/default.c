@@ -2155,7 +2155,7 @@ insert_into_sorted_page_list(rb_darray(struct heap_page *) *sorted_pages, uintpt
         }
     }
 
-    rb_darray_insert(sorted_pages, hi, page);
+    rb_darray_insert_without_gc(sorted_pages, hi, page);
 
     if (*pages_low == 0 || *pages_low > start) *pages_low = start;
     if (*pages_high < end) *pages_high = end;
@@ -5229,11 +5229,7 @@ rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr)
 
     rgengc_check_relation(objspace, obj);
 
-    DURING_GC_COULD_MALLOC_REGION_START();
-    {
-        rb_darray_append(&objspace->weak_references, ptr);
-    }
-    DURING_GC_COULD_MALLOC_REGION_END();
+    rb_darray_append_without_gc(&objspace->weak_references, ptr);
 
     objspace->profile.weak_references_count++;
 }
@@ -6072,11 +6068,7 @@ gc_update_weak_references(rb_objspace_t *objspace)
     objspace->profile.retained_weak_references_count = retained_weak_references_count;
 
     rb_darray_clear(objspace->weak_references);
-    DURING_GC_COULD_MALLOC_REGION_START();
-    {
-        rb_darray_resize_capa(&objspace->weak_references, retained_weak_references_count);
-    }
-    DURING_GC_COULD_MALLOC_REGION_END();
+    rb_darray_resize_capa_without_gc(&objspace->weak_references, retained_weak_references_count);
 }
 
 static void
@@ -10274,7 +10266,7 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     for (size_t i = 0; i < rb_darray_size(objspace->heap_pages.sorted); i++) {
 	if (!objspace->pages_absorbed) heap_page_free(objspace, rb_darray_get(objspace->heap_pages.sorted, i));
     }
-    rb_darray_free(objspace->heap_pages.sorted);
+    rb_darray_free_without_gc(objspace->heap_pages.sorted);
     heap_pages_lomem = 0;
     heap_pages_himem = 0;
 
@@ -10294,7 +10286,7 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
 
-    rb_darray_free(objspace->weak_references);
+    rb_darray_free_without_gc(objspace->weak_references);
 
     if (objspace == GET_VM()->objspace) global_space_free(rb_gc_get_global_space());
 
@@ -10575,8 +10567,8 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
         gc_params.heap_init_slots[i] = GC_HEAP_INIT_SLOTS;
     }
 
-    rb_darray_make(&objspace->heap_pages.sorted, 0);
-    rb_darray_make(&objspace->weak_references, 0);
+    rb_darray_make_without_gc(&objspace->heap_pages.sorted, 0);
+    rb_darray_make_without_gc(&objspace->weak_references, 0);
 
     // TODO: debug why on Windows Ruby crashes on boot when GC is on.
 #ifdef _WIN32

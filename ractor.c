@@ -1618,6 +1618,13 @@ ractor_selector_create(VALUE klass)
 
 // Ractor::Selector#add(r)
 
+/*
+ * call-seq:
+ *   add(ractor) -> ractor
+ *
+ * Adds _ractor_ to +self+.  Raises an exception if _ractor_ is already added.
+ * Returns _ractor_.
+ */
 static VALUE
 ractor_selector_add(VALUE selv, VALUE rv)
 {
@@ -1646,6 +1653,12 @@ ractor_selector_add(VALUE selv, VALUE rv)
 
 // Ractor::Selector#remove(r)
 
+/* call-seq:
+ *   remove(ractor) -> ractor
+ *
+ * Removes _ractor_ from +self+.  Raises an exception if _ractor_ is not added.
+ * Returns the removed _ractor_.
+ */
 static VALUE
 ractor_selector_remove(VALUE selv, VALUE rv)
 {
@@ -1686,6 +1699,12 @@ ractor_selector_clear_i(st_data_t key, st_data_t val, st_data_t data)
     return ST_CONTINUE;
 }
 
+/*
+ * call-seq:
+ *   clear -> self
+ *
+ * Removes all ractors from +self+.  Raises +self+.
+ */
 static VALUE
 ractor_selector_clear(VALUE selv)
 {
@@ -1696,6 +1715,12 @@ ractor_selector_clear(VALUE selv)
     return selv;
 }
 
+/*
+ * call-seq:
+ *  empty? -> true or false
+ *
+ * Returns +true+ if no ractor is added.
+ */
 static VALUE
 ractor_selector_empty_p(VALUE selv)
 {
@@ -1768,6 +1793,7 @@ ractor_selector_wait_cleaup(rb_ractor_t *cr, void *ptr)
     RACTOR_UNLOCK_SELF(cr);
 }
 
+/* :nodoc: */
 static VALUE
 ractor_selector__wait(VALUE selv, VALUE do_receivev, VALUE do_yieldv, VALUE yield_value, VALUE move)
 {
@@ -1859,7 +1885,7 @@ ractor_selector__wait(VALUE selv, VALUE do_receivev, VALUE do_yieldv, VALUE yiel
     }
     RACTOR_UNLOCK_SELF(cr);
 
-    // check the taken resutl
+    // check the taken result
     switch (taken_basket.type.e) {
       case basket_type_none:
         VM_ASSERT(do_receive || do_yield);
@@ -1897,6 +1923,12 @@ ractor_selector__wait(VALUE selv, VALUE do_receivev, VALUE do_yieldv, VALUE yiel
     return rb_ary_new_from_args(2, ret_r, ret_v);
 }
 
+/*
+ * call-seq:
+ *  wait(receive: false, yield_value: undef, move: false) -> [ractor, value]
+ *
+ * Waits until any ractor in _selector_ can be active.
+ */
 static VALUE
 ractor_selector_wait(int argc, VALUE *argv, VALUE selector)
 {
@@ -2623,13 +2655,12 @@ ractor_check_blocking(rb_ractor_t *cr, unsigned int remained_thread_cnt, const c
         cr->threads.cnt == cr->threads.blocking_cnt + 1) {
         // change ractor status: running -> blocking
         rb_vm_t *vm = GET_VM();
-        ASSERT_vm_unlocking();
 
-        RB_VM_LOCK();
+        RB_VM_LOCK_ENTER();
         {
             rb_vm_ractor_blocking_cnt_inc(vm, cr, file, line);
         }
-        RB_VM_UNLOCK();
+        RB_VM_LOCK_LEAVE();
     }
 }
 
@@ -2829,6 +2860,12 @@ RUBY_SYMBOL_EXPORT_BEGIN
 void rb_init_ractor_selector(void);
 RUBY_SYMBOL_EXPORT_END
 
+/*
+ * Document-class: Ractor::Selector
+ * :nodoc: currently
+ *
+ * Selects multiple Ractors to be activated.
+ */
 void
 rb_init_ractor_selector(void)
 {
@@ -3869,6 +3906,10 @@ move_leave(VALUE obj, struct obj_traverse_replace_data *data)
         rb_replace_generic_ivar(v, obj);
     }
 
+    if (OBJ_FROZEN(obj)) {
+        OBJ_FREEZE(v);
+    }
+
     // TODO: generic_ivar
 
     ractor_moved_bang(obj);
@@ -4208,7 +4249,7 @@ ractor_local_value_store_i(VALUE ptr)
     struct ractor_local_storage_store_data *data = (struct ractor_local_storage_store_data *)ptr;
 
     if (rb_id_table_lookup(data->tbl, data->id, &val)) {
-        // after synchronization, we found already registerred entry
+        // after synchronization, we found already registered entry
     }
     else {
         val = rb_yield(Qnil);

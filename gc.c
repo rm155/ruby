@@ -484,38 +484,10 @@ rb_malloc_grow_capa(size_t current, size_t type_size)
 }
 
 static inline struct rbimpl_size_mul_overflow_tag
-size_add_overflow(size_t x, size_t y)
-{
-    size_t z;
-    bool p;
-#if 0
-
-#elif defined(ckd_add)
-    p = ckd_add(&z, x, y);
-
-#elif __has_builtin(__builtin_add_overflow)
-    p = __builtin_add_overflow(x, y, &z);
-
-#elif defined(DSIZE_T)
-    RB_GNUC_EXTENSION DSIZE_T dx = x;
-    RB_GNUC_EXTENSION DSIZE_T dy = y;
-    RB_GNUC_EXTENSION DSIZE_T dz = dx + dy;
-    p = dz > SIZE_MAX;
-    z = (size_t)dz;
-
-#else
-    z = x + y;
-    p = z < y;
-
-#endif
-    return (struct rbimpl_size_mul_overflow_tag) { p, z, };
-}
-
-static inline struct rbimpl_size_mul_overflow_tag
 size_mul_add_overflow(size_t x, size_t y, size_t z) /* x * y + z */
 {
     struct rbimpl_size_mul_overflow_tag t = rbimpl_size_mul_overflow(x, y);
-    struct rbimpl_size_mul_overflow_tag u = size_add_overflow(t.right, z);
+    struct rbimpl_size_mul_overflow_tag u = rbimpl_size_add_overflow(t.right, z);
     return (struct rbimpl_size_mul_overflow_tag) { t.left || u.left, u.right };
 }
 
@@ -524,7 +496,7 @@ size_mul_add_mul_overflow(size_t x, size_t y, size_t z, size_t w) /* x * y + z *
 {
     struct rbimpl_size_mul_overflow_tag t = rbimpl_size_mul_overflow(x, y);
     struct rbimpl_size_mul_overflow_tag u = rbimpl_size_mul_overflow(z, w);
-    struct rbimpl_size_mul_overflow_tag v = size_add_overflow(t.right, u.right);
+    struct rbimpl_size_mul_overflow_tag v = rbimpl_size_add_overflow(t.right, u.right);
     return (struct rbimpl_size_mul_overflow_tag) { t.left || u.left || v.left, v.right };
 }
 
@@ -726,6 +698,7 @@ typedef struct gc_function_map {
 static rb_gc_function_map_t rb_gc_functions;
 
 # define RUBY_GC_LIBRARY "RUBY_GC_LIBRARY"
+# define MODULAR_GC_DIR STRINGIZE(modular_gc_dir)
 
 static void
 ruby_modular_gc_init(void)
@@ -733,7 +706,7 @@ ruby_modular_gc_init(void)
     // Assert that the directory path ends with a /
     RUBY_ASSERT_ALWAYS(MODULAR_GC_DIR[sizeof(MODULAR_GC_DIR) - 2] == '/');
 
-    char *gc_so_file = getenv(RUBY_GC_LIBRARY);
+    const char *gc_so_file = getenv(RUBY_GC_LIBRARY);
 
     rb_gc_function_map_t gc_functions = { 0 };
 
@@ -756,14 +729,39 @@ ruby_modular_gc_init(void)
         }
 
         size_t gc_so_path_size = strlen(MODULAR_GC_DIR "librubygc." DLEXT) + strlen(gc_so_file) + 1;
+#ifdef LOAD_RELATIVE
+        Dl_info dli;
+        size_t prefix_len = 0;
+        if (dladdr((void *)(uintptr_t)ruby_modular_gc_init, &dli)) {
+            const char *base = strrchr(dli.dli_fname, '/');
+            if (base) {
+                size_t tail = 0;
+# define end_with_p(lit) \
+                (prefix_len >= (tail = rb_strlen_lit(lit)) && \
+                 memcmp(base - tail, lit, tail) == 0)
+
+                prefix_len = base - dli.dli_fname;
+                if (end_with_p("/bin") || end_with_p("/lib")) {
+                    prefix_len -= tail;
+                }
+                prefix_len += MODULAR_GC_DIR[0] != '/';
+                gc_so_path_size += prefix_len;
+            }
+        }
+#endif
         gc_so_path = alloca(gc_so_path_size);
         {
             size_t gc_so_path_idx = 0;
 #define GC_SO_PATH_APPEND(str) do { \
     gc_so_path_idx += strlcpy(gc_so_path + gc_so_path_idx, str, gc_so_path_size - gc_so_path_idx); \
 } while (0)
-            GC_SO_PATH_APPEND(MODULAR_GC_DIR);
-            GC_SO_PATH_APPEND("librubygc.");
+#ifdef LOAD_RELATIVE
+            if (prefix_len > 0) {
+                memcpy(gc_so_path, dli.dli_fname, prefix_len);
+                gc_so_path_idx = prefix_len;
+            }
+#endif
+            GC_SO_PATH_APPEND(MODULAR_GC_DIR "librubygc.");
             GC_SO_PATH_APPEND(gc_so_file);
             GC_SO_PATH_APPEND(DLEXT);
             GC_ASSERT(gc_so_path_idx == gc_so_path_size - 1);
@@ -991,7 +989,9 @@ ruby_modular_gc_init(void)
 static void
 asan_death_callback(void)
 {
-    rb_bug_without_die("ASAN error");
+    if (GET_VM()) {
+        rb_bug_without_die("ASAN error");
+    }
 }
 #endif
 
@@ -1113,7 +1113,16 @@ newobj_of(rb_ractor_t *cr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v
         {
             memset((char *)obj + RVALUE_SIZE, 0, rb_gc_obj_slot_size(obj) - RVALUE_SIZE);
 
-            rb_gc_event_hook(obj, RUBY_INTERNAL_EVENT_NEWOBJ);
+            /* We must disable GC here because the callback could call xmalloc
+             * which could potentially trigger a GC, and a lot of code is unsafe
+             * to trigger a GC right after an object has been allocated because
+             * they perform initialization for the object and assume that the
+             * GC does not trigger before then. */
+            bool gc_disabled = RTEST(rb_gc_disable_no_rest());
+            {
+                rb_gc_event_hook(obj, RUBY_INTERNAL_EVENT_NEWOBJ);
+            }
+            if (!gc_disabled) rb_gc_enable();
         }
         RB_VM_LOCK_LEAVE_CR_LEV(cr, &lev);
     }
@@ -1701,6 +1710,12 @@ should_belong_to_current_objspace(VALUE obj)
 
 static VALUE
 undefine_final(VALUE os, VALUE obj)
+{
+    return rb_undefine_finalizer(obj);
+}
+
+VALUE
+rb_undefine_finalizer(VALUE obj)
 {
     should_belong_to_current_objspace(obj);
     rb_check_frozen(obj);
@@ -4842,7 +4857,8 @@ rb_memerror(void)
     VALUE exc = GET_VM()->special_exceptions[ruby_error_nomemory];
 
     if (!exc ||
-        rb_ec_raised_p(ec, RAISED_NOMEMORY)) {
+        rb_ec_raised_p(ec, RAISED_NOMEMORY) ||
+        rb_ec_vm_lock_rec(ec) != ec->tag->lock_rec) {
         fprintf(stderr, "[FATAL] failed to allocate memory\n");
         exit(EXIT_FAILURE);
     }
@@ -4905,6 +4921,14 @@ ruby_malloc_size_overflow(size_t count, size_t elsize)
     rb_raise(rb_eArgError,
              "malloc: possible integer overflow (%"PRIuSIZE"*%"PRIuSIZE")",
              count, elsize);
+}
+
+void
+ruby_malloc_add_size_overflow(size_t x, size_t y)
+{
+    rb_raise(rb_eArgError,
+             "malloc: possible integer overflow (%"PRIuSIZE"+%"PRIuSIZE")",
+             x, y);
 }
 
 static void *ruby_xmalloc2_body(size_t n, size_t size);

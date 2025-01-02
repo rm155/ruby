@@ -155,7 +155,7 @@
 # Notice that even +inspect+ (and more basic methods like <tt>__id__</tt>) is inaccessible
 # on a moved object.
 #
-# Class and Module objects are shareable so the class/module definitions are shared between ractors.
+# +Class+ and +Module+ objects are shareable so the class/module definitions are shared between ractors.
 # \Ractor objects are also shareable. All operations on shareable objects are thread-safe, so the thread-safety property
 # will be kept. We can not define mutable shareable objects in Ruby, but C extensions can introduce them.
 #
@@ -731,6 +731,7 @@ class Ractor
   end
 
   class RemoteError
+    # The Ractor an uncaught exception is raised in.
     attr_reader :ractor
   end
 
@@ -889,7 +890,7 @@ class Ractor
   end
 
   # internal method
-  def self._require feature
+  def self._require feature # :nodoc:
     if main?
       super feature
     else
@@ -901,11 +902,11 @@ class Ractor
     private
 
     # internal method that is called when the first "Ractor.new" is called
-    def _activated
+    def _activated # :nodoc:
       Kernel.prepend Module.new{|m|
         m.set_temporary_name '<RactorRequire>'
 
-        def require feature
+        def require feature # :nodoc: -- otherwise RDoc outputs it as a class method
           if Ractor.main?
             super
           else
