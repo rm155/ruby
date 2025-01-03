@@ -3163,22 +3163,19 @@ rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b)
 void
 rb_gc_writebarrier(VALUE a, VALUE b)
 {
-    void *current_objspace = rb_gc_get_objspace();
-    VM_ASSERT(current_objspace == rb_gc_get_objspace());
-
     if (RGENGC_CHECK_MODE) {
         if (SPECIAL_CONST_P(a)) rb_bug("rb_gc_writebarrier: a is special const: %"PRIxVALUE, a);
         if (SPECIAL_CONST_P(b)) rb_bug("rb_gc_writebarrier: b is special const: %"PRIxVALUE, b);
     }
 
     if (ruby_single_main_objspace) {
-	rb_gc_writebarrier_gc_blocked(current_objspace, a, b);
+	rb_gc_writebarrier_gc_blocked(ruby_single_main_objspace, a, b);
     }
     else {
 	if (rb_gc_mutable_shareable_permission_p(a)) {
 	    add_local_immune_object(b);
 	}
-	rb_gc_writebarrier_multi_objspace(a, b, current_objspace);
+	rb_gc_writebarrier_multi_objspace(a, b);
     }
 }
 

@@ -355,7 +355,7 @@ bool global_gc_needed(void);
 void arrange_next_gc_global_status(double sharedobject_limit_factor);
 void global_gc_for_each_objspace(rb_vm_t *vm, rb_objspace_gate_t *runner_gate, void (gc_func)(struct rb_objspace *objspace));
 void rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm);
-void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_objspace);
+void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b);
 
 #define WITH_MARK_FUNC_BEGIN(_mark_func, _data_ptr) do { \
     struct gc_mark_func_data_struct _mfd = { \

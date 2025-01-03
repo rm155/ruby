@@ -1807,7 +1807,7 @@ gc_writebarrier_parallel_objspace(VALUE a, VALUE b, rb_objspace_gate_t *os_gate)
 }
 
 void
-rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_objspace)
+rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 {
     VM_ASSERT(!SPECIAL_CONST_P(a));
     VM_ASSERT(!SPECIAL_CONST_P(b));
@@ -1824,7 +1824,7 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_
 		WITH_OBJSPACE_GATE_LEAVE(a_gate);
 	    }
 
-	    if (LIKELY(b_objspace == current_objspace || b_objspace == rb_current_allocating_ractor()->local_objspace)) {
+	    if (LIKELY(b_objspace == gc_current_objspace() || b_objspace == rb_current_allocating_ractor()->local_objspace)) {
 		rb_gc_writebarrier_gc_blocked(b_objspace, a, b);
 	    }
 	    else {
@@ -1835,7 +1835,7 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b, struct rb_objspace *current_
     }
     else {
 	struct rb_objspace *b_objspace = GET_OBJSPACE_OF_VALUE(b);
-	VM_ASSERT(b_objspace == current_objspace || b_objspace == rb_current_allocating_ractor()->local_objspace);
+	VM_ASSERT(b_objspace == gc_current_objspace() || b_objspace == rb_current_allocating_ractor()->local_objspace);
 	VM_ASSERT(GET_OBJSPACE_OF_VALUE(a) == b_objspace || GET_RACTOR()->during_ractor_copy_or_move);
 
 	rb_gc_writebarrier_gc_blocked(b_objspace, a, b);
