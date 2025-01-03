@@ -590,9 +590,11 @@ RBIMPL_ATTR_ARTIFICIAL()
 static inline void
 rbimpl_fl_set_raw_raw(struct RBasic *obj, VALUE flags)
 {
+#if RUBY_DEBUG
     void rb_verify_mutable_shareable_safety(struct RBasic *obj, VALUE flags);
 
     rb_verify_mutable_shareable_safety(obj, flags);
+#endif
     obj->flags |= flags;
 }
 

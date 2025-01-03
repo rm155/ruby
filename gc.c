@@ -3140,10 +3140,10 @@ rb_gc_mutable_shareable_permission_p(VALUE obj)
     return rb_gc_impl_mutable_shareable_permission_p((VALUE)obj);
 }
 
+#if RUBY_DEBUG
 void
 rb_verify_mutable_shareable_safety(struct RBasic *obj, VALUE flags)
 {
-#if VM_CHECK_MODE > 0
     if (flags & RUBY_FL_SHAREABLE && !(RBASIC(obj)->flags & RUBY_FL_FREEZE)) {
 	if (!(obj->flags & RUBY_FL_SHAREABLE)) {
 	    if (!rb_gc_mutable_shareable_permission_p((VALUE)obj)) {
@@ -3151,8 +3151,8 @@ rb_verify_mutable_shareable_safety(struct RBasic *obj, VALUE flags)
 	    }
 	}
     }
-#endif
 }
+#endif
 
 void
 rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b)
