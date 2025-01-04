@@ -1824,7 +1824,9 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 		WITH_OBJSPACE_GATE_LEAVE(a_gate);
 	    }
 
-	    if (LIKELY(b_objspace == gc_current_objspace() || b_objspace == rb_current_allocating_ractor()->local_objspace)) {
+	    rb_objspace_gate_t *local_gate = GET_OBJSPACE_GATE();
+
+	    if (LIKELY(b_gate == local_gate || b_gate->ractor == local_gate->alloc_target_ractor)) {
 		rb_gc_writebarrier_gc_blocked(b_objspace, a, b);
 	    }
 	    else {
