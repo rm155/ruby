@@ -2633,7 +2633,7 @@ heap_idx_for_size(size_t size)
 }
 
 size_t
-rb_gc_impl_heap_id_for_size(void *objspace_ptr, size_t size)
+rb_gc_impl_heap_id_for_size(size_t size)
 {
     return heap_idx_for_size(size);
 }

@@ -3505,7 +3505,7 @@ rb_gc_prepare_heap(void)
 size_t
 rb_gc_heap_id_for_size(size_t size)
 {
-    return rb_gc_impl_heap_id_for_size(rb_gc_get_objspace(), size);
+    return rb_gc_impl_heap_id_for_size(size);
 }
 
 bool
