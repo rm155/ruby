@@ -2202,20 +2202,6 @@ heap_page_allocate(rb_objspace_t *objspace)
     page->ractor = objspace->ractor;
     page->objspace = objspace;
 
-    /* setup heap_pages_sorted */
-    insert_into_sorted_page_list(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem, page);
-
-    objspace->heap_pages.allocated_pages++;
-
-
-    rb_global_space_t *global_space = rb_gc_get_global_space();
-    rb_native_mutex_lock(&global_space->global_pages_lock);
-
-    /* setup heap_pages_sorted */
-    insert_into_sorted_page_list(&global_space->sorted, &global_space->range[0], &global_space->range[1], page);
-
-    rb_native_mutex_unlock(&global_space->global_pages_lock);
-
 
     return page;
 }
@@ -2229,7 +2215,7 @@ heap_append_added_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_pag
 }
 
 static void
-heap_add_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
+heap_add_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page, bool just_allocated)
 {
     /* Adding to eden heap during incremental sweeping is forbidden */
     GC_ASSERT(!heap->sweeping_page);
@@ -2260,6 +2246,21 @@ heap_add_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page)
     page->slot_size = heap->slot_size;
     page->heap = heap;
 
+    if (just_allocated) {
+	/* setup heap_pages_sorted */
+	insert_into_sorted_page_list(&objspace->heap_pages.sorted, &heap_pages_lomem, &heap_pages_himem, page);
+
+	objspace->heap_pages.allocated_pages++;
+
+	rb_global_space_t *global_space = rb_gc_get_global_space();
+	rb_native_mutex_lock(&global_space->global_pages_lock);
+
+	/* setup heap_pages_sorted */
+	insert_into_sorted_page_list(&global_space->sorted, &global_space->range[0], &global_space->range[1], page);
+
+	rb_native_mutex_unlock(&global_space->global_pages_lock);
+    }
+
     asan_unlock_freelist(page);
     page->freelist = NULL;
     asan_unpoison_memory_region(page->body, HEAP_PAGE_SIZE, false);
@@ -2284,10 +2285,12 @@ heap_page_allocate_and_initialize(rb_objspace_t *objspace, rb_heap_t *heap)
                   rb_darray_size(objspace->heap_pages.sorted), objspace->heap_pages.allocatable_slots, heap->total_pages);
 
         struct heap_page *page = heap_page_resurrect(objspace);
+	bool new_allocation = false;
         if (page == NULL) {
             page = heap_page_allocate(objspace);
+	    new_allocation = true;
         }
-        heap_add_page(objspace, heap, page);
+        heap_add_page(objspace, heap, page, new_allocation);
         heap_add_freepage(heap, page);
 
         if (objspace->heap_pages.allocatable_slots > (size_t)page->total_slots) {
@@ -4404,7 +4407,7 @@ gc_sweep_finish_heap(rb_objspace_t *objspace, rb_heap_t *heap)
         struct heap_page *resurrected_page;
         while (swept_slots < min_free_slots &&
                 (resurrected_page = heap_page_resurrect(objspace))) {
-            heap_add_page(objspace, heap, resurrected_page);
+            heap_add_page(objspace, heap, resurrected_page, false);
             heap_add_freepage(heap, resurrected_page);
 
             swept_slots += resurrected_page->free_slots;
