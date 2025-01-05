@@ -88,7 +88,8 @@ GC_IMPL_FN bool rb_gc_impl_object_marked_p(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN bool rb_gc_impl_object_moved_p(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN VALUE rb_gc_impl_location(void *objspace_ptr, VALUE value);
 // Write barriers
-GC_IMPL_FN void rb_gc_impl_writebarrier(void *objspace_ptr, VALUE a, VALUE b);
+GC_IMPL_FN void rb_gc_impl_writebarrier_single_objspace(void *objspace_ptr, VALUE a, VALUE b);
+GC_IMPL_FN void rb_gc_impl_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b);
 GC_IMPL_FN void rb_gc_impl_writebarrier_unprotect(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN void rb_gc_impl_writebarrier_remember(void *objspace_ptr, VALUE obj);
 // Heap walking

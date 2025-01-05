@@ -650,6 +650,7 @@ typedef struct gc_function_map {
     bool (*object_moved_p)(void *objspace_ptr, VALUE obj);
     VALUE (*location)(void *objspace_ptr, VALUE value);
     // Write barriers
+    void (*writebarrier_single_objspace)(void *objspace_ptr, VALUE a, VALUE b);
     void (*writebarrier_gc_blocked)(void *objspace_ptr, VALUE a, VALUE b);
     void (*writebarrier_unprotect)(void *objspace_ptr, VALUE obj);
     void (*writebarrier_remember)(void *objspace_ptr, VALUE obj);
@@ -843,6 +844,7 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(object_moved_p);
     load_modular_gc_func(location);
     // Write barriers
+    load_modular_gc_func(writebarrier_single_objspace);
     load_modular_gc_func(writebarrier_gc_blocked);
     load_modular_gc_func(writebarrier_unprotect);
     load_modular_gc_func(writebarrier_remember);
@@ -942,6 +944,7 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_object_moved_p rb_gc_functions.object_moved_p
 # define rb_gc_impl_location rb_gc_functions.location
 // Write barriers
+# define rb_gc_impl_writebarrier_gc_blocked rb_gc_functions.writebarrier_single_objspace
 # define rb_gc_impl_writebarrier_gc_blocked rb_gc_functions.writebarrier_gc_blocked
 # define rb_gc_impl_writebarrier_unprotect rb_gc_functions.writebarrier_unprotect
 # define rb_gc_impl_writebarrier_remember rb_gc_functions.writebarrier_remember
@@ -3161,6 +3164,12 @@ rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b)
 }
 
 void
+rb_gc_writebarrier_single_objspace(void *objspace_ptr, VALUE a, VALUE b)
+{
+    rb_gc_impl_writebarrier_single_objspace(objspace_ptr, a, b);
+}
+
+void
 rb_gc_writebarrier(VALUE a, VALUE b)
 {
     if (RGENGC_CHECK_MODE) {
@@ -3169,7 +3178,7 @@ rb_gc_writebarrier(VALUE a, VALUE b)
     }
 
     if (ruby_single_main_objspace) {
-	rb_gc_writebarrier_gc_blocked(ruby_single_main_objspace, a, b);
+	rb_gc_writebarrier_single_objspace(ruby_single_main_objspace, a, b);
     }
     else {
 	if (rb_gc_mutable_shareable_permission_p(a)) {
