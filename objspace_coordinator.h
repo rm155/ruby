@@ -248,8 +248,8 @@ void rb_register_received_obj(rb_objspace_gate_t *os_gate, uintptr_t borrowing_i
 void rb_register_new_external_wmap_reference(VALUE *ptr);
 void rb_remove_from_external_weak_tables(VALUE *ptr);
 void gc_update_external_weak_references(rb_objspace_gate_t *os_gate);
-const struct rb_callcache * get_from_objspace_cc_cache_table(int index);
-void set_in_objspace_cc_cache_table(int index, const struct rb_callcache *cc);
+const struct rb_callcache * get_from_objspace_cc_cache_table(rb_execution_context_t *ec, int index);
+void set_in_objspace_cc_cache_table(rb_execution_context_t *ec, int index, const struct rb_callcache *cc);
 void mark_objspace_cc_cache_table(rb_objspace_gate_t *os_gate);
 
 void rb_objspace_read_enter(rb_objspace_coordinator_t *objspace_coordinator);

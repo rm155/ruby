@@ -960,15 +960,15 @@ gc_update_external_weak_references(rb_objspace_gate_t *os_gate)
 }
 
 const struct rb_callcache *
-get_from_objspace_cc_cache_table(int index)
+get_from_objspace_cc_cache_table(rb_execution_context_t *ec, int index)
 {
-    return GET_OBJSPACE_GATE()->objspace_cc_cache_table[index];
+    return rb_ec_ractor_ptr(ec)->local_gate->objspace_cc_cache_table[index];
 }
 
 void
-set_in_objspace_cc_cache_table(int index, const struct rb_callcache *cc)
+set_in_objspace_cc_cache_table(rb_execution_context_t *ec, int index, const struct rb_callcache *cc)
 {
-    GET_OBJSPACE_GATE()->objspace_cc_cache_table[index] = cc;
+    rb_ec_ractor_ptr(ec)->local_gate->objspace_cc_cache_table[index] = cc;
 }
 
 static void

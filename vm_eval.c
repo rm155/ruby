@@ -418,7 +418,7 @@ gccct_method_search_slowpath(rb_vm_t *vm, VALUE klass, unsigned int index, const
 
     vm_search_method_slowpath0(vm->self, &cd, klass);
 
-    set_in_objspace_cc_cache_table(index, cd.cc);
+    set_in_objspace_cc_cache_table(GET_EC(), index, cd.cc);
     return cd.cc;
 }
 
@@ -462,7 +462,7 @@ gccct_method_search(rb_execution_context_t *ec, VALUE recv, ID mid, const struct
     // search global method cache
     unsigned int index = (unsigned int)(gccct_hash(klass, mid) % VM_OBJSPACE_CC_CACHE_TABLE_SIZE);
     rb_vm_t *vm = rb_ec_vm_ptr(ec);
-    const struct rb_callcache *cc = get_from_objspace_cc_cache_table(index);
+    const struct rb_callcache *cc = get_from_objspace_cc_cache_table(ec, index);
 
     if (LIKELY(cc)) {
         if (LIKELY(vm_cc_class_check(cc, klass))) {
