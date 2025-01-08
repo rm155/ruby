@@ -1563,23 +1563,27 @@ borrowing_location_lock_release(struct rb_borrowing_location_lock *location_lock
 void
 rb_gc_safe_lock_enter(rb_gc_safe_lock_t *gs_lock)
 {
-    struct rb_ractor_struct *cr = GET_RACTOR();
-    if (gs_lock->lock_owner != cr) {
-	if (!rb_during_gc()) gs_lock->gc_previously_disabled = rb_gc_disable();
-	rb_native_mutex_lock(&gs_lock->lock);
-	gs_lock->lock_owner = cr;
+    if (!ruby_single_main_objspace) {
+	struct rb_ractor_struct *cr = GET_RACTOR();
+	if (gs_lock->lock_owner != cr) {
+	    if (!rb_during_gc()) gs_lock->gc_previously_disabled = rb_gc_disable();
+	    rb_native_mutex_lock(&gs_lock->lock);
+	    gs_lock->lock_owner = cr;
+	}
+	gs_lock->lock_lev++;
     }
-    gs_lock->lock_lev++;
 }
 
-void
+    void
 rb_gc_safe_lock_leave(rb_gc_safe_lock_t *gs_lock)
 {
-    gs_lock->lock_lev--;
-    if (gs_lock->lock_lev == 0) {
-	gs_lock->lock_owner = NULL;
-	rb_native_mutex_unlock(&gs_lock->lock);
-	if ((!rb_during_gc()) && gs_lock->gc_previously_disabled == Qfalse) rb_gc_enable();
+    if (!ruby_single_main_objspace) {
+	gs_lock->lock_lev--;
+	if (gs_lock->lock_lev == 0) {
+	    gs_lock->lock_owner = NULL;
+	    rb_native_mutex_unlock(&gs_lock->lock);
+	    if ((!rb_during_gc()) && gs_lock->gc_previously_disabled == Qfalse) rb_gc_enable();
+	}
     }
 }
 
