@@ -53,7 +53,10 @@ module Prism
       "seattlerb/heredoc_nested.txt",
 
       # https://github.com/whitequark/parser/issues/1016
-      "whitequark/unary_num_pow_precedence.txt"
+      "whitequark/unary_num_pow_precedence.txt",
+
+      # https://github.com/whitequark/parser/issues/950
+      "whitequark/dedenting_interpolating_heredoc_fake_line_continuation.txt",
     ]
 
     # These files are either failing to parse or failing to translate, so we'll
@@ -65,14 +68,11 @@ module Prism
       "seattlerb/heredoc_with_extra_carriage_returns_windows.txt",
       "seattlerb/heredoc_with_only_carriage_returns_windows.txt",
       "seattlerb/heredoc_with_only_carriage_returns.txt",
-      "seattlerb/parse_line_heredoc_hardnewline.txt",
       "seattlerb/pctW_lineno.txt",
       "seattlerb/regexp_esc_C_slash.txt",
       "unparser/corpus/literal/literal.txt",
       "unparser/corpus/semantic/dstr.txt",
-      "whitequark/dedenting_interpolating_heredoc_fake_line_continuation.txt",
       "whitequark/parser_slash_slash_n_escaping_in_literals.txt",
-      "whitequark/ruby_bug_11989.txt"
     ]
 
     # Not sure why these files are failing on JRuby, but skipping them for now.

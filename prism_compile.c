@@ -1756,6 +1756,8 @@ pm_setup_args_core(const pm_arguments_node_t *arguments_node, const pm_node_t *b
                 break;
               }
               case PM_FORWARDING_ARGUMENTS_NODE: { // not counted in argc return value
+                iseq_set_use_block(ISEQ_BODY(iseq)->local_iseq);
+
                 if (ISEQ_BODY(ISEQ_BODY(iseq)->local_iseq)->param.flags.forwardable) {
                     *flags |= VM_CALL_FORWARDING;
 
@@ -3753,7 +3755,7 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
         const pm_node_list_t *arguments = &cast->arguments;
         for (size_t idx = 0; idx < arguments->size; idx++) {
             const pm_node_t *argument = arguments->nodes[idx];
-            pm_compile_defined_expr0(iseq, argument, node_location, ret, popped, scope_node, in_condition, lfinish, explicit_receiver);
+            pm_compile_defined_expr0(iseq, argument, node_location, ret, popped, scope_node, in_condition, lfinish, false);
 
             if (!lfinish[1]) {
                 lfinish[1] = NEW_LABEL(location.line);
@@ -3776,7 +3778,7 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
         else if (PM_NODE_TYPE_P(cast->body, PM_STATEMENTS_NODE) && ((const pm_statements_node_t *) cast->body)->body.size == 1) {
             // If we have a parentheses node that is wrapping a single statement
             // then we want to recurse down to that statement and compile it.
-            pm_compile_defined_expr0(iseq, ((const pm_statements_node_t *) cast->body)->body.nodes[0], node_location, ret, popped, scope_node, in_condition, lfinish, explicit_receiver);
+            pm_compile_defined_expr0(iseq, ((const pm_statements_node_t *) cast->body)->body.nodes[0], node_location, ret, popped, scope_node, in_condition, lfinish, false);
             return;
         }
         else {
@@ -3872,7 +3874,7 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
       }
       case PM_IMPLICIT_NODE: {
         const pm_implicit_node_t *cast = (const pm_implicit_node_t *) node;
-        pm_compile_defined_expr0(iseq, cast->value, node_location, ret, popped, scope_node, in_condition, lfinish, explicit_receiver);
+        pm_compile_defined_expr0(iseq, cast->value, node_location, ret, popped, scope_node, in_condition, lfinish, false);
         return;
       }
       case PM_AND_NODE:
@@ -4016,9 +4018,8 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
         }
 
         if (cast->receiver) {
-            pm_compile_defined_expr0(iseq, cast->receiver, node_location, ret, popped, scope_node, true, lfinish, true);
-
             if (PM_NODE_TYPE_P(cast->receiver, PM_CALL_NODE) && !BLOCK_P((const pm_call_node_t *) cast->receiver)) {
+                pm_compile_defined_expr0(iseq, cast->receiver, node_location, ret, popped, scope_node, true, lfinish, true);
                 PUSH_INSNL(ret, location, branchunless, lfinish[2]);
 
                 const pm_call_node_t *receiver = (const pm_call_node_t *) cast->receiver;
@@ -4026,6 +4027,7 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
                 pm_compile_call(iseq, receiver, ret, popped, scope_node, method_id, NULL);
             }
             else {
+                pm_compile_defined_expr0(iseq, cast->receiver, node_location, ret, popped, scope_node, true, lfinish, false);
                 PUSH_INSNL(ret, location, branchunless, lfinish[1]);
                 PM_COMPILE(cast->receiver);
             }
@@ -4104,7 +4106,7 @@ pm_compile_defined_expr0(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_l
 }
 
 static void
-pm_defined_expr(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_location_t *node_location, LINK_ANCHOR *const ret, bool popped, pm_scope_node_t *scope_node, bool in_condition, LABEL **lfinish, bool explicit_receiver)
+pm_defined_expr(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_location_t *node_location, LINK_ANCHOR *const ret, bool popped, pm_scope_node_t *scope_node, bool in_condition, LABEL **lfinish)
 {
     LINK_ELEMENT *lcur = ret->last;
     pm_compile_defined_expr0(iseq, node, node_location, ret, popped, scope_node, in_condition, lfinish, false);
@@ -4145,7 +4147,7 @@ pm_compile_defined_expr(rb_iseq_t *iseq, const pm_node_t *node, const pm_node_lo
     lfinish[2] = 0;
 
     if (!popped) {
-        pm_defined_expr(iseq, node, node_location, ret, popped, scope_node, in_condition, lfinish, false);
+        pm_defined_expr(iseq, node, node_location, ret, popped, scope_node, in_condition, lfinish);
     }
 
     if (lfinish[1]) {
@@ -6484,7 +6486,7 @@ pm_compile_scope_node(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_nod
       case ISEQ_TYPE_BLOCK: {
         LABEL *start = ISEQ_COMPILE_DATA(iseq)->start_label = NEW_LABEL(0);
         LABEL *end = ISEQ_COMPILE_DATA(iseq)->end_label = NEW_LABEL(0);
-        const pm_node_location_t block_location = { .line = body->location.first_lineno, .node_id = -1 };
+        const pm_node_location_t block_location = { .line = body->location.first_lineno, .node_id = scope_node->ast_node->node_id };
 
         start->rescued = LABEL_RESCUE_BEG;
         end->rescued = LABEL_RESCUE_END;
@@ -6610,7 +6612,7 @@ pm_compile_scope_node(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_nod
     }
 
     if (!PM_NODE_TYPE_P(scope_node->ast_node, PM_ENSURE_NODE)) {
-        const pm_node_location_t location = { .line = ISEQ_COMPILE_DATA(iseq)->last_line, .node_id = -1 };
+        const pm_node_location_t location = { .line = ISEQ_COMPILE_DATA(iseq)->last_line, .node_id = scope_node->ast_node->node_id };
         PUSH_INSN(ret, location, leave);
     }
 }
@@ -8718,16 +8720,7 @@ pm_compile_node(rb_iseq_t *iseq, const pm_node_t *node, LINK_ANCHOR *const ret, 
         const pm_ensure_node_t *cast = (const pm_ensure_node_t *) node;
 
         if (cast->statements != NULL) {
-            LABEL *start = NEW_LABEL(location.line);
-            LABEL *end = NEW_LABEL(location.line);
-            PUSH_LABEL(ret, start);
-
-            LABEL *prev_end_label = ISEQ_COMPILE_DATA(iseq)->end_label;
-            ISEQ_COMPILE_DATA(iseq)->end_label = end;
-
             PM_COMPILE((const pm_node_t *) cast->statements);
-            ISEQ_COMPILE_DATA(iseq)->end_label = prev_end_label;
-            PUSH_LABEL(ret, end);
         }
 
         return;

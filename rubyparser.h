@@ -265,6 +265,9 @@ typedef struct RNode_IF {
     struct RNode *nd_cond;
     struct RNode *nd_body;
     struct RNode *nd_else;
+    rb_code_location_t if_keyword_loc;
+    rb_code_location_t then_keyword_loc;
+    rb_code_location_t end_keyword_loc;
 } rb_node_if_t;
 
 typedef struct RNode_UNLESS {
@@ -538,6 +541,9 @@ typedef struct RNode_SUPER {
     NODE node;
 
     struct RNode *nd_args;
+    rb_code_location_t keyword_loc;
+    rb_code_location_t lparen_loc;
+    rb_code_location_t rparen_loc;
 } rb_node_super_t;
 
 typedef struct RNode_ZSUPER {
@@ -587,6 +593,9 @@ typedef struct RNode_YIELD {
     NODE node;
 
     struct RNode *nd_head;
+    rb_code_location_t keyword_loc;
+    rb_code_location_t lparen_loc;
+    rb_code_location_t rparen_loc;
 } rb_node_yield_t;
 
 typedef struct RNode_LVAR {
@@ -719,6 +728,8 @@ typedef struct RNode_EVSTR {
     NODE node;
 
     struct RNode *nd_body;
+    rb_code_location_t opening_loc;
+    rb_code_location_t closing_loc;
 } rb_node_evstr_t;
 
 typedef struct RNode_REGX {     /* also RNode_MATCH */
@@ -726,6 +737,9 @@ typedef struct RNode_REGX {     /* also RNode_MATCH */
 
     struct rb_parser_string *string;
     int options;
+    rb_code_location_t opening_loc;
+    rb_code_location_t content_loc;
+    rb_code_location_t closing_loc;
 } rb_node_regx_t, rb_node_match_t;
 
 typedef rb_node_dstr_t rb_node_dregx_t;
@@ -901,6 +915,7 @@ typedef struct RNode_DOTS {
 
     struct RNode *nd_beg;
     struct RNode *nd_end;
+    rb_code_location_t operator_loc;
 } rb_node_dot2_t, rb_node_dot3_t, rb_node_flip2_t, rb_node_flip3_t;
 
 typedef struct RNode_SELF {
@@ -957,6 +972,9 @@ typedef struct RNode_LAMBDA {
     NODE node;
 
     struct RNode *nd_body;
+    rb_code_location_t operator_loc;
+    rb_code_location_t opening_loc;
+    rb_code_location_t closing_loc;
 } rb_node_lambda_t;
 
 typedef struct RNode_ARYPTN {
@@ -1215,7 +1233,6 @@ typedef struct rb_parser_config_struct {
     const char *(*id2name)(ID id);
     VALUE (*id2str)(ID id);
     VALUE (*id2sym)(ID x);
-    ID (*sym2id)(VALUE sym);
 
     /* String */
     RBIMPL_ATTR_FORMAT(RBIMPL_PRINTF_FORMAT, 2, 3)
