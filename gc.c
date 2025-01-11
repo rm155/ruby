@@ -2369,12 +2369,11 @@ ruby_stack_check(void)
 
 /* ==================== Marking ==================== */
 
-#define RB_GC_MARK_OR_TRAVERSE(func, obj_or_ptr, obj, check_obj) do { \
+#define RB_GC_MARK_OR_TRAVERSE_GIVEN_RACTOR(ractor_source, func, obj_or_ptr, obj, check_obj) do { \
     if (!RB_SPECIAL_CONST_P(obj)) { \
-        rb_vm_t *vm = GET_VM(); \
-	rb_ractor_t *cr = GET_RACTOR(); \
-	void *objspace = cr->local_gate->gc_target; \
-        if (LIKELY(!MARK_FUNC_IN_USE(cr))) { \
+	rb_ractor_t *_cr = ractor_source; \
+	void *objspace = _cr->local_gate->gc_target; \
+        if (LIKELY(!MARK_FUNC_IN_USE(_cr))) { \
             GC_ASSERT(rb_gc_impl_during_gc_p(objspace)); \
             (func)(objspace, (obj_or_ptr)); \
         } \
@@ -2384,16 +2383,24 @@ ruby_stack_check(void)
                 true) { \
 	    if (GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE)) { /* TODO: Remove condition when shareability rules are fully applied */ \
 		GC_ASSERT(!rb_gc_impl_during_gc_p(objspace)); \
-		MARK_FUNC_RUN(cr, obj); \
+		MARK_FUNC_RUN(_cr, obj); \
 	    } \
         } \
     } \
 } while (0)
 
+#define RB_GC_MARK_OR_TRAVERSE(func, obj_or_ptr, obj, check_obj) RB_GC_MARK_OR_TRAVERSE_GIVEN_RACTOR(GET_RACTOR(), func, obj_or_ptr, obj, check_obj)
+
 static inline void
 gc_mark_internal(VALUE obj)
 {
     RB_GC_MARK_OR_TRAVERSE(rb_gc_impl_mark, obj, obj, false);
+}
+
+static inline void
+gc_mark_internal_given_ractor(rb_ractor_t *cr, VALUE obj)
+{
+    RB_GC_MARK_OR_TRAVERSE_GIVEN_RACTOR(cr, rb_gc_impl_mark, obj, obj, false);
 }
 
 void
@@ -2412,6 +2419,12 @@ static inline void
 gc_mark_and_pin_internal(VALUE obj)
 {
     RB_GC_MARK_OR_TRAVERSE(rb_gc_impl_mark_and_pin, obj, obj, false);
+}
+
+static inline void
+gc_mark_and_pin_internal_given_ractor(rb_ractor_t *cr, VALUE obj)
+{
+    RB_GC_MARK_OR_TRAVERSE_GIVEN_RACTOR(cr, rb_gc_impl_mark_and_pin, obj, obj, false);
 }
 
 void
@@ -2510,7 +2523,7 @@ rb_gc_mark_vm_stack_values(long n, const VALUE *values)
 static int
 mark_key(st_data_t key, st_data_t value, st_data_t data)
 {
-    gc_mark_and_pin_internal((VALUE)key);
+    gc_mark_and_pin_internal_given_ractor(data, (VALUE)key);
 
     return ST_CONTINUE;
 }
@@ -2520,35 +2533,14 @@ rb_mark_set(st_table *tbl)
 {
     if (!tbl) return;
 
-    st_foreach(tbl, mark_key, (st_data_t)rb_gc_get_objspace());
-}
-
-static int
-mark_local_key_no_traversal(st_data_t key, st_data_t value, st_data_t data)
-{
-    rb_gc_impl_mark_in_range(data, key);
-
-    return ST_CONTINUE;
-}
-
-void
-rb_mark_local_set(st_table *tbl)
-{
-    if (!tbl) return;
-
-        if (LIKELY(!MARK_FUNC_IN_USE(GET_RACTOR()))) {
-	    st_foreach(tbl, mark_local_key_no_traversal, (st_data_t)rb_gc_get_objspace());
-	}
-	else {
-	    st_foreach(tbl, mark_key, (st_data_t)rb_gc_get_objspace());
-	}
+    st_foreach(tbl, mark_key, (st_data_t)GET_RACTOR());
 }
 
 static int
 mark_keyvalue(st_data_t key, st_data_t value, st_data_t data)
 {
-    gc_mark_internal((VALUE)key);
-    gc_mark_internal((VALUE)value);
+    gc_mark_internal_given_ractor(data, (VALUE)key);
+    gc_mark_internal_given_ractor(data, (VALUE)value);
 
     return ST_CONTINUE;
 }
@@ -2556,8 +2548,8 @@ mark_keyvalue(st_data_t key, st_data_t value, st_data_t data)
 static int
 pin_key_pin_value(st_data_t key, st_data_t value, st_data_t data)
 {
-    gc_mark_and_pin_internal((VALUE)key);
-    gc_mark_and_pin_internal((VALUE)value);
+    gc_mark_and_pin_internal_given_ractor(data, (VALUE)key);
+    gc_mark_and_pin_internal_given_ractor(data, (VALUE)value);
 
     return ST_CONTINUE;
 }
@@ -2565,8 +2557,8 @@ pin_key_pin_value(st_data_t key, st_data_t value, st_data_t data)
 static int
 pin_key_mark_value(st_data_t key, st_data_t value, st_data_t data)
 {
-    gc_mark_and_pin_internal((VALUE)key);
-    gc_mark_internal((VALUE)value);
+    gc_mark_and_pin_internal_given_ractor(data, (VALUE)key);
+    gc_mark_internal_given_ractor(data, (VALUE)value);
 
     return ST_CONTINUE;
 }
@@ -2575,10 +2567,10 @@ static void
 mark_hash(VALUE hash)
 {
     if (rb_hash_compare_by_id_p(hash)) {
-        rb_hash_stlike_foreach(hash, pin_key_mark_value, 0);
+        rb_hash_stlike_foreach(hash, pin_key_mark_value, (st_data_t)GET_RACTOR());
     }
     else {
-        rb_hash_stlike_foreach(hash, mark_keyvalue, 0);
+        rb_hash_stlike_foreach(hash, mark_keyvalue, (st_data_t)GET_RACTOR());
     }
 
     gc_mark_internal(RHASH(hash)->ifnone);
@@ -2589,7 +2581,7 @@ rb_mark_hash(st_table *tbl)
 {
     if (!tbl) return;
 
-    st_foreach(tbl, pin_key_pin_value, 0);
+    st_foreach(tbl, pin_key_pin_value, (st_data_t)GET_RACTOR());
 }
 
 static enum rb_id_table_iterator_result
@@ -2743,7 +2735,7 @@ rb_gc_mark_machine_context(const rb_execution_context_t *ec)
 static int
 rb_mark_tbl_i(st_data_t key, st_data_t value, st_data_t data)
 {
-    gc_mark_and_pin_internal((VALUE)value);
+    gc_mark_and_pin_internal_given_ractor(data, (VALUE)value);
 
     return ST_CONTINUE;
 }
@@ -2753,7 +2745,7 @@ rb_mark_tbl(st_table *tbl)
 {
     if (!tbl || tbl->num_entries == 0) return;
 
-    st_foreach(tbl, rb_mark_tbl_i, 0);
+    st_foreach(tbl, rb_mark_tbl_i, (st_data_t)GET_RACTOR());
 }
 
 static void
