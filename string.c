@@ -198,6 +198,7 @@ str_enc_fastpath(VALUE str)
     if (!FL_TEST(str, STR_FAKESTR)) { \
         RUBY_ASSERT(RSTRING_PTR(shared_str) <= RSTRING_PTR(str)); \
         RUBY_ASSERT(RSTRING_PTR(str) <= RSTRING_PTR(shared_str) + RSTRING_LEN(shared_str)); \
+	make_irregular_shareable_object(shared_str); \
         RB_OBJ_WRITE((str), &RSTRING(str)->as.heap.aux.shared, (shared_str)); \
         FL_SET((str), STR_SHARED); \
         FL_SET((shared_str), STR_SHARED_ROOT); \

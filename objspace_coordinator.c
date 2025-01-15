@@ -1847,3 +1847,12 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 	rb_gc_writebarrier_gc_blocked(b_objspace, a, b);
     }
 }
+
+//TODO Objects that use this function must be made genuinely
+//safe to share among parallel Ractors
+void
+make_irregular_shareable_object(VALUE obj)
+{
+    permit_mutable_shareable_force(obj);
+    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+}

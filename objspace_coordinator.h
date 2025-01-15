@@ -377,4 +377,6 @@ void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b);
     cr->local_gate->mark_func_data = mark_func_data; \
 } while (0)
 
+void make_irregular_shareable_object(VALUE obj);
+
 #endif

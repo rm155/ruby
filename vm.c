@@ -1292,6 +1292,10 @@ env_copy(const VALUE *src_ep, VALUE read_only_variables)
     VALUE *ep = &env_body[src_env->env_size - 2];
     const rb_env_t *copied_env = vm_env_new(ep, env_body, src_env->env_size, src_env->iseq);
 
+    if (!RB_SPECIAL_CONST_P(src_ep[VM_ENV_DATA_INDEX_ME_CREF]) && !FL_TEST_RAW(src_ep[VM_ENV_DATA_INDEX_ME_CREF], RUBY_FL_SHAREABLE)) {
+	make_irregular_shareable_object(src_ep[VM_ENV_DATA_INDEX_ME_CREF]);
+    }
+
     // Copy after allocations above, since they can move objects in src_ep.
     RB_OBJ_WRITE(copied_env, &ep[VM_ENV_DATA_INDEX_ME_CREF], src_ep[VM_ENV_DATA_INDEX_ME_CREF]);
     ep[VM_ENV_DATA_INDEX_FLAGS] = src_ep[VM_ENV_DATA_INDEX_FLAGS] | VM_ENV_FLAG_ISOLATED;
