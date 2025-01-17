@@ -138,8 +138,8 @@ struct rb_objspace_gate;
   NOINLINE(void rb_current_os_gate_set(struct rb_objspace_gate *));
   NOINLINE(struct rb_objspace_gate *rb_current_os_gate_noinline(void));
 
-  # ifdef __APPLE__
-    // on Darwin, TLS can not be accessed across .so
+  # if defined(__arm64__) || defined(__aarch64__)
+    // on Arm64, TLS can not be accessed across .so
     NOINLINE(struct rb_execution_context_struct *rb_current_ec(void));
     NOINLINE(struct rb_objspace_gate *rb_current_os_gate(void));
   # else

@@ -269,29 +269,25 @@ module IRB
       loop do
         code = readmultiline
         break unless code
-        yield build_statement(code), @line_no
+        yield parse_input(code), @line_no
         @line_no += code.count("\n")
       rescue RubyLex::TerminateLineInput
       end
     end
 
-    def build_statement(code)
+    def parse_input(code)
       if code.match?(/\A\n*\z/)
         return Statement::EmptyInput.new
       end
 
       code = code.dup.force_encoding(@context.io.encoding)
-      if (command, arg = @context.parse_command(code))
-        command_class = Command.load_command(command)
-        Statement::Command.new(code, command_class, arg)
-      else
-        is_assignment_expression = @scanner.assignment_expression?(code, local_variables: @context.local_variables)
-        Statement::Expression.new(code, is_assignment_expression)
-      end
+      is_assignment_expression = @scanner.assignment_expression?(code, local_variables: @context.local_variables)
+
+      @context.parse_input(code, is_assignment_expression)
     end
 
     def command?(code)
-      !!@context.parse_command(code)
+      parse_input(code).is_a?(Statement::Command)
     end
 
     def configure_io
@@ -430,7 +426,10 @@ module IRB
       # The "<top (required)>" in "(irb)" may be the top level of IRB so imitate the main object.
       message = message.gsub(/\(irb\):(?<num>\d+):in (?<open_quote>[`'])<(?<frame>top \(required\))>'/) { "(irb):#{$~[:num]}:in #{$~[:open_quote]}<main>'" }
       puts message
-      puts 'Maybe IRB bug!' if irb_bug
+
+      if irb_bug
+        puts "This may be an issue with IRB. If you believe this is an unexpected behavior, please report it to https://github.com/ruby/irb/issues"
+      end
     rescue Exception => handler_exc
       begin
         puts exc.inspect

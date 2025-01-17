@@ -586,7 +586,7 @@ rb_current_os_gate_set(struct rb_objspace_gate *os_gate)
 }
 
 
-#ifdef __APPLE__
+#if defined(__arm64__) || defined(__aarch64__)
 rb_execution_context_t *
 rb_current_ec(void)
 {
