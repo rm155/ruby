@@ -774,6 +774,8 @@ struct heap_page {
     rb_ractor_t *ractor;
     rb_objspace_t *objspace;
     bool unlinked;
+
+    bool added_during_incremental_sweep;
 };
 
 /*
@@ -2217,8 +2219,12 @@ heap_append_added_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_pag
 static void
 heap_add_page(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *page, bool just_allocated)
 {
-    /* Adding to eden heap during incremental sweeping is forbidden */
-    GC_ASSERT(!heap->sweeping_page);
+    if (heap->sweeping_page) {
+	/* Adding to eden heap during incremental sweeping is forbidden unless during borrowing*/
+	GC_ASSERT(GET_RACTOR() != objspace->ractor);
+	page->added_during_incremental_sweep = true;
+    }
+
     GC_ASSERT(heap_page_in_objspace_empty_pages_pool(objspace, page));
 
     /* adjust obj_limit (object number available in this page) */
@@ -4479,6 +4485,12 @@ gc_sweep_step(rb_objspace_t *objspace, rb_heap_t *heap)
 #endif
 
     do {
+	if (sweep_page->added_during_incremental_sweep) {
+	    heap->sweeping_page = ccan_list_next(&heap->pages, sweep_page, page_node);
+	    sweep_page->added_during_incremental_sweep = false;
+	    continue;
+	}
+
         RUBY_DEBUG_LOG("sweep_page:%p", (void *)sweep_page);
 
         struct gc_sweep_context ctx = {
