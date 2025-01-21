@@ -2507,16 +2507,18 @@ rb_gc_mark_locations(const VALUE *start, const VALUE *end)
 void
 rb_gc_mark_values(long n, const VALUE *values)
 {
+    rb_ractor_t *cr = GET_RACTOR();
     for (long i = 0; i < n; i++) {
-        gc_mark_internal(values[i]);
+	gc_mark_internal_given_ractor(cr, values[i]);
     }
 }
 
 void
 rb_gc_mark_vm_stack_values(long n, const VALUE *values)
 {
+    rb_ractor_t *cr = GET_RACTOR();
     for (long i = 0; i < n; i++) {
-        gc_mark_and_pin_internal(values[i]);
+	gc_mark_and_pin_internal_given_ractor(cr, values[i]);
     }
 }
 
@@ -2585,9 +2587,9 @@ rb_mark_hash(st_table *tbl)
 }
 
 static enum rb_id_table_iterator_result
-mark_method_entry_i(VALUE me, void *objspace)
+mark_method_entry_i(VALUE me, void *cr)
 {
-    gc_mark_internal(me);
+    gc_mark_internal_given_ractor(cr, me);
 
     return ID_TABLE_CONTINUE;
 }
@@ -2596,7 +2598,7 @@ static void
 mark_m_tbl(void *objspace, struct rb_id_table *tbl)
 {
     if (tbl) {
-        rb_id_table_foreach_values(tbl, mark_method_entry_i, objspace);
+        rb_id_table_foreach_values(tbl, mark_method_entry_i, GET_RACTOR());
     }
 }
 
@@ -2791,12 +2793,12 @@ gc_declarative_marking_p(const rb_data_type_t *type)
 }
 
 static enum rb_id_table_iterator_result
-mark_const_table_i(VALUE value, void *objspace)
+mark_const_table_i(VALUE value, void *cr)
 {
     const rb_const_entry_t *ce = (const rb_const_entry_t *)value;
 
-    gc_mark_internal(ce->value);
-    gc_mark_internal(ce->file);
+    gc_mark_internal_given_ractor(cr, ce->value);
+    gc_mark_internal_given_ractor(cr, ce->file);
 
     return ID_TABLE_CONTINUE;
 }
@@ -2919,7 +2921,7 @@ rb_gc_mark_children(void *objspace, VALUE obj)
 
 	if (objspace == vm->objspace || rb_during_global_gc()) {
 	    if (RCLASS_CONST_TBL(obj)) {
-		rb_id_table_foreach_values(RCLASS_CONST_TBL(obj), mark_const_table_i, objspace);
+		rb_id_table_foreach_values(RCLASS_CONST_TBL(obj), mark_const_table_i, GET_RACTOR());
 	    }
 	}
 
