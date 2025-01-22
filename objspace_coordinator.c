@@ -1853,6 +1853,17 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 void
 make_irregular_shareable_object(VALUE obj)
 {
-    permit_mutable_shareable_force(obj);
+    if (BUILTIN_TYPE(obj) == T_ARRAY && ARY_SHARED_ROOT_P(obj)) {
+	long len = RARRAY_LEN(obj);
+	const VALUE *ptr = RARRAY_CONST_PTR(obj);
+	for (long i = 0; i < len; i++) {
+	    add_local_immune_object(ptr[i]);
+	}
+	permit_mutable_shareable_direct(obj);
+    }
+    else {
+	permit_mutable_shareable_force(obj);
+    }
+
     FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
 }

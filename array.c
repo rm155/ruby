@@ -165,8 +165,8 @@ should_be_T_ARRAY(VALUE ary)
 #define FL_SET_SHARED_ROOT(ary) do { \
     RUBY_ASSERT(!OBJ_FROZEN(ary)); \
     RUBY_ASSERT(!ARY_EMBED_P(ary)); \
-    make_irregular_shareable_object(ary); \
     FL_SET((ary), RARRAY_SHARED_ROOT_FLAG); \
+    make_irregular_shareable_object(ary); \
 } while (0)
 
 static inline void
