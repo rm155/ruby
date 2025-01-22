@@ -3799,6 +3799,7 @@ rb_gc_update_vm_references(void *objspace)
 	rb_vm_update_references(vm);
 	rb_gc_update_global_tbl();
     }
+    rb_generic_ivar_update_references();
     rb_ractor_update_references(rb_gc_ractor_of_objspace(objspace));
 
     GLOBAL_SYMBOLS_ENTER(global_symbols);
@@ -3821,10 +3822,6 @@ rb_gc_update_vm_references(void *objspace)
 void
 rb_gc_update_object_references(void *objspace, VALUE obj)
 {
-    if (FL_TEST(obj, FL_EXIVAR)) {
-        rb_ref_update_generic_ivar(obj);
-    }
-
     switch (BUILTIN_TYPE(obj)) {
       case T_CLASS:
         if (FL_TEST(obj, FL_SINGLETON)) {

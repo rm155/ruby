@@ -1253,7 +1253,7 @@ srcs-ext: $(EXT_SRCS)
 realclean-srcs-ext::
 	$(Q)$(RM) $(EXT_SRCS)
 
-EXTRA_SRCS = $(srcdir)/ext/json/parser/parser.c \
+EXTRA_SRCS = \
 	     $(srcdir)/ext/date/zonetab.h \
 	     $(empty)
 
@@ -1374,11 +1374,6 @@ $(RIPPER_SRCS): $(srcdir)/ext/ripper/ripper_init.c.tmpl $(srcdir)/ext/ripper/eve
 	$(exec) $(MAKE) -f - $(mflags) \
 		Q=$(Q) ECHO=$(ECHO) RM="$(RM1)" top_srcdir=../.. srcdir=. VPATH=../.. \
 		RUBY="$(BASERUBY)" BASERUBY="$(BASERUBY)" PATH_SEPARATOR="$(PATH_SEPARATOR)" LANG=C
-
-$(srcdir)/ext/json/parser/parser.c: $(srcdir)/ext/json/parser/parser.rl $(srcdir)/ext/json/parser/prereq.mk
-	$(ECHO) generating $@
-	$(Q) $(CHDIR) $(@D) && $(exec) $(MAKE) -f prereq.mk $(mflags) \
-		Q=$(Q) ECHO=$(ECHO) top_srcdir=../../.. srcdir=. VPATH=../../.. BASERUBY="$(BASERUBY)"
 
 $(srcdir)/ext/date/zonetab.h: $(srcdir)/ext/date/zonetab.list $(srcdir)/ext/date/prereq.mk
 	$(ECHO) generating $@
