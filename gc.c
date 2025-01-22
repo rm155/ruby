@@ -3118,7 +3118,9 @@ permit_mutable_shareable_direct(VALUE obj)
 void
 permit_mutable_shareable_force(VALUE obj)
 {
-    add_reachable_objects_to_local_immune_tbl(obj);
+    if (!ruby_single_main_objspace) {
+	add_reachable_objects_to_local_immune_tbl(obj);
+    }
     permit_mutable_shareable_direct(obj);
 }
 
@@ -3126,7 +3128,9 @@ void
 rb_permit_mutable_shareable(VALUE obj)
 {
 #if VM_CHECK_MODE > 0
-    verify_reachable_objects_in_local_immune_tbl(obj);
+    if (!ruby_single_main_objspace) {
+	verify_reachable_objects_in_local_immune_tbl(obj);
+    }
 #endif
     permit_mutable_shareable_direct(obj);
 }

@@ -556,6 +556,7 @@ rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
 void
 add_local_immune_object(VALUE obj)
 {
+    VM_ASSERT(!ruby_single_main_objspace);
     WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
     {
 	rb_native_mutex_lock(&source_gate->local_immune_tbl_lock);
@@ -1853,7 +1854,7 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 void
 make_irregular_shareable_object(VALUE obj)
 {
-    if (BUILTIN_TYPE(obj) == T_ARRAY && ARY_SHARED_ROOT_P(obj)) {
+    if (!ruby_single_main_objspace && BUILTIN_TYPE(obj) == T_ARRAY && ARY_SHARED_ROOT_P(obj)) {
 	long len = RARRAY_LEN(obj);
 	const VALUE *ptr = RARRAY_CONST_PTR(obj);
 	for (long i = 0; i < len; i++) {
