@@ -2925,9 +2925,14 @@ rb_gc_mark_children(void *objspace, VALUE obj)
 	    }
 	}
 
-	rb_native_mutex_lock(&vm->classpath_lock);
-        gc_mark_internal(RCLASS_EXT(obj)->classpath);
-	rb_native_mutex_unlock(&vm->classpath_lock);
+	if (!ruby_single_main_ractor) {
+	    rb_native_mutex_lock(&vm->classpath_lock);
+	    gc_mark_internal(RCLASS_EXT(obj)->classpath);
+	    rb_native_mutex_unlock(&vm->classpath_lock);
+	}
+	else {
+	    gc_mark_internal(RCLASS_EXT(obj)->classpath);
+	}
         break;
 
       case T_ICLASS:
