@@ -2949,16 +2949,6 @@ rb_vm_update_references(void *ptr)
     if (ptr) {
         rb_vm_t *vm = ptr;
 
-	RB_CI_TABLE_ENTER();
-	{
-	    rb_gc_update_tbl_refs(vm->ci_table);
-	}
-	RB_CI_TABLE_LEAVE();
-	RB_FSTRING_TABLE_ENTER();
-	{
-	    rb_gc_update_tbl_refs(vm->fstring_table);
-	}
-	RB_FSTRING_TABLE_LEAVE();
         vm->load_path = rb_gc_location(vm->load_path);
         vm->load_path_snapshot = rb_gc_location(vm->load_path_snapshot);
 
@@ -2973,8 +2963,6 @@ rb_vm_update_references(void *ptr)
         vm->loaded_features_realpath_map = rb_gc_location(vm->loaded_features_realpath_map);
         vm->top_self = rb_gc_location(vm->top_self);
         vm->orig_progname = rb_gc_location(vm->orig_progname);
-
-        rb_gc_update_tbl_refs(vm->overloaded_cme_table);
 
         rb_gc_update_values(RUBY_NSIG, vm->trap_list.cmd);
 

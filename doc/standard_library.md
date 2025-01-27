@@ -51,8 +51,6 @@ of each.
 - PP ([GitHub][pp]): Provides a PrettyPrinter for Ruby objects
 - PrettyPrint ([GitHub][prettyprint]): Implements a pretty printing algorithm for readable structure
 - Prism ([GitHub][prism]): A portable, error-tolerant Ruby parser
-- Readline ([GitHub][readline]): Wrapper for the Readline extension and Reline
-- Reline ([GitHub][reline]): GNU Readline and Editline in a pure Ruby implementation
 - Resolv ([GitHub][resolv]): Thread-aware DNS resolver library in Ruby
 - SecureRandom ([GitHub][securerandom]): Interface for a secure random number generator
 - [Set](rdoc-ref:Set) ([GitHub][set]): Provides a class to deal with collections of unordered, unique values
@@ -82,12 +80,7 @@ of each.
 - StringIO ([GitHub][stringio]): Pseudo-I/O on String objects
 - StringScanner ([GitHub][strscan]): Provides lexical scanning operations on a String
 - TmpDir ([GitHub][tmpdir]): Extends the Dir class to manage the OS temporary file path
-- WIN32OLE ([GitHub][win32ole]): Provides an interface for OLE Automation in Ruby
 - Zlib ([GitHub][zlib]): Ruby interface for the zlib compression/decompression library
-
-## Tools
-
-- [IRB][irb-doc] ([GitHub][irb]): Interactive Ruby command-line tool for REPL (Read Eval Print Loop)
 
 # Bundled gems
 
@@ -130,8 +123,14 @@ of each.
 - [benchmark]: Provides methods to measure and report the time used to execute code
 - [logger]: Provides a simple logging utility for outputting messages
 - [pstore]: Implements a file-based persistence mechanism based on a Hash
-- [rdoc]: Documentation generator for Ruby, [RDoc documentation][rdoc-doc]
+- [win32ole]: Provides an interface for OLE Automation in Ruby
+- [reline]: GNU Readline and Editline in a pure Ruby implementation
+- [readline]: Wrapper for the Readline extension and Reline
 
+## Tools
+
+- [IRB][irb-doc] ([GitHub][irb]): Interactive Ruby command-line tool for REPL (Read Eval Print Loop)
+- [RDoc][rdoc-doc] ([GitHub][rdoc]): Documentation generator for Ruby
 
 [abbrev]: https://github.com/ruby/abbrev
 [base64]: https://github.com/ruby/base64

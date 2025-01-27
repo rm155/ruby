@@ -122,6 +122,7 @@
 #include "ruby_assert.h"
 #include "ruby_atomic.h"
 #include "symbol.h"
+#include "variable.h"
 #include "vm_core.h"
 #include "vm_sync.h"
 #include "vm_callinfo.h"
@@ -3653,33 +3654,54 @@ update_superclasses(void *objspace, VALUE obj)
 
 extern rb_symbols_t ruby_global_symbols;
 
-#if USE_MODULAR_GC
 struct global_vm_table_foreach_data {
     vm_table_foreach_callback_func callback;
     vm_table_update_callback_func update_callback;
     void *data;
+    bool weak_only;
 };
 
 static int
-vm_weak_table_foreach_key(st_data_t key, st_data_t value, st_data_t data, int error)
+vm_weak_table_foreach_weak_key(st_data_t key, st_data_t value, st_data_t data, int error)
 {
     struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
 
-    return iter_data->callback((VALUE)key, iter_data->data);
+    int ret = iter_data->callback((VALUE)key, iter_data->data);
+
+    if (!iter_data->weak_only) {
+        if (ret != ST_CONTINUE) return ret;
+
+        ret = iter_data->callback((VALUE)value, iter_data->data);
+    }
+
+    return ret;
 }
 
 static int
-vm_weak_table_foreach_update_key(st_data_t *key, st_data_t *value, st_data_t data, int existing)
+vm_weak_table_foreach_update_weak_key(st_data_t *key, st_data_t *value, st_data_t data, int existing)
 {
     struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
 
-    return iter_data->update_callback((VALUE *)key, iter_data->data);
+    int ret = iter_data->update_callback((VALUE *)key, iter_data->data);
+
+    if (!iter_data->weak_only) {
+        if (ret != ST_CONTINUE) return ret;
+
+        ret = iter_data->update_callback((VALUE *)value, iter_data->data);
+    }
+
+    return ret;
 }
 
 static int
 vm_weak_table_str_sym_foreach(st_data_t key, st_data_t value, st_data_t data, int error)
 {
     struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
+
+    if (!iter_data->weak_only) {
+        int ret = iter_data->callback((VALUE)key, iter_data->data);
+        if (ret != ST_CONTINUE) return ret;
+    }
 
     if (STATIC_SYM_P(value)) {
         return ST_CONTINUE;
@@ -3690,41 +3712,131 @@ vm_weak_table_str_sym_foreach(st_data_t key, st_data_t value, st_data_t data, in
 }
 
 static int
-vm_weak_table_foreach_update_value(st_data_t *key, st_data_t *value, st_data_t data, int existing)
+vm_weak_table_foreach_update_weak_value(st_data_t *key, st_data_t *value, st_data_t data, int existing)
 {
     struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
+
+    if (!iter_data->weak_only) {
+        int ret = iter_data->update_callback((VALUE *)key, iter_data->data);
+        if (ret != ST_CONTINUE) return ret;
+    }
 
     return iter_data->update_callback((VALUE *)value, iter_data->data);
 }
 
-static int
-vm_weak_table_gen_ivar_foreach(st_data_t key, st_data_t value, st_data_t data, int error)
+static void
+free_gen_ivtbl(VALUE obj, struct gen_ivtbl *ivtbl)
 {
-    int retval = vm_weak_table_foreach_key(key, value, data, error);
-    if (retval == ST_DELETE) {
-        FL_UNSET((VALUE)key, FL_EXIVAR);
+    if (UNLIKELY(rb_shape_obj_too_complex(obj))) {
+        st_free_table(ivtbl->as.complex.table);
     }
-    return retval;
+
+    xfree(ivtbl);
+}
+
+static int
+vm_weak_table_gen_ivar_foreach_too_complex_i(st_data_t _key, st_data_t value, st_data_t data, int error)
+{
+    struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
+
+    GC_ASSERT(!iter_data->weak_only);
+
+    return iter_data->callback((VALUE)value, iter_data->data);
+}
+
+static int
+vm_weak_table_gen_ivar_foreach_too_complex_replace_i(st_data_t *_key, st_data_t *value, st_data_t data, int existing)
+{
+    struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
+
+    GC_ASSERT(!iter_data->weak_only);
+
+    return iter_data->update_callback((VALUE *)value, iter_data->data);
+}
+
+struct st_table *rb_generic_ivtbl_get(void);
+
+static int
+vm_weak_table_gen_ivar_foreach(st_data_t key, st_data_t value, st_data_t data)
+{
+    struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
+
+    int ret = iter_data->callback((VALUE)key, iter_data->data);
+
+    switch (ret) {
+      case ST_CONTINUE:
+        break;
+
+      case ST_DELETE:
+        free_gen_ivtbl((VALUE)key, (struct gen_ivtbl *)value);
+
+        FL_UNSET((VALUE)key, FL_EXIVAR);
+        return ST_DELETE;
+
+      case ST_REPLACE: {
+        VALUE new_key = (VALUE)key;
+        ret = iter_data->update_callback(&new_key, iter_data->data);
+        if (key != new_key) ret = ST_DELETE;
+        DURING_GC_COULD_MALLOC_REGION_START();
+        {
+            st_insert(rb_generic_ivtbl_get(), (st_data_t)new_key, value);
+        }
+        DURING_GC_COULD_MALLOC_REGION_END();
+        key = (st_data_t)new_key;
+        break;
+      }
+
+      default:
+        return ret;
+    }
+
+    if (!iter_data->weak_only) {
+        struct gen_ivtbl *ivtbl = (struct gen_ivtbl *)value;
+
+        if (rb_shape_obj_too_complex((VALUE)key)) {
+            st_foreach_with_replace(
+                ivtbl->as.complex.table,
+                vm_weak_table_gen_ivar_foreach_too_complex_i,
+                vm_weak_table_gen_ivar_foreach_too_complex_replace_i,
+                data
+            );
+        }
+        else {
+            for (uint32_t i = 0; i < ivtbl->as.shape.numiv; i++) {
+                if (SPECIAL_CONST_P(ivtbl->as.shape.ivptr[i])) continue;
+
+                int ivar_ret = iter_data->callback(ivtbl->as.shape.ivptr[i], iter_data->data);
+                switch (ivar_ret) {
+                  case ST_CONTINUE:
+                    break;
+                  case ST_REPLACE:
+                    iter_data->update_callback(&ivtbl->as.shape.ivptr[i], iter_data->data);
+                    break;
+                  default:
+                    rb_bug("vm_weak_table_gen_ivar_foreach: return value %d not supported", ivar_ret);
+                }
+            }
+        }
+    }
+
+    return ret;
 }
 
 static int
 vm_weak_table_frozen_strings_foreach(st_data_t key, st_data_t value, st_data_t data, int error)
 {
-    GC_ASSERT(RB_TYPE_P((VALUE)key, T_STRING));
-
-    int retval = vm_weak_table_foreach_key(key, value, data, error);
+    int retval = vm_weak_table_foreach_weak_key(key, value, data, error);
     if (retval == ST_DELETE) {
         FL_UNSET((VALUE)key, RSTRING_FSTR);
     }
     return retval;
 }
 
-struct st_table *rb_generic_ivtbl_get(void);
-
 void
 rb_gc_vm_weak_table_foreach(vm_table_foreach_callback_func callback,
                             vm_table_update_callback_func update_callback,
                             void *data,
+                            bool weak_only,
                             enum rb_gc_vm_weak_tables table)
 {
     rb_vm_t *vm = GET_VM();
@@ -3732,71 +3844,82 @@ rb_gc_vm_weak_table_foreach(vm_table_foreach_callback_func callback,
     struct global_vm_table_foreach_data foreach_data = {
         .callback = callback,
         .update_callback = update_callback,
-        .data = data
+        .data = data,
+        .weak_only = weak_only,
     };
 
     switch (table) {
       case RB_GC_VM_CI_TABLE: {
-        if (vm->ci_table) {
-            st_foreach_with_replace(
-                vm->ci_table,
-                vm_weak_table_foreach_key,
-                vm_weak_table_foreach_update_key,
-                (st_data_t)&foreach_data
-            );
-        }
-        break;
+	RB_CI_TABLE_ENTER();
+	{
+	    if (vm->ci_table) {
+		st_foreach_with_replace(
+		    vm->ci_table,
+		    vm_weak_table_foreach_weak_key,
+		    vm_weak_table_foreach_update_weak_key,
+		    (st_data_t)&foreach_data
+		);
+	    }
+	}
+	RB_CI_TABLE_LEAVE();
+	break;
       }
       case RB_GC_VM_OVERLOADED_CME_TABLE: {
         if (vm->overloaded_cme_table) {
             st_foreach_with_replace(
                 vm->overloaded_cme_table,
-                vm_weak_table_foreach_key,
-                vm_weak_table_foreach_update_key,
+                vm_weak_table_foreach_weak_key,
+                vm_weak_table_foreach_update_weak_key,
                 (st_data_t)&foreach_data
             );
         }
         break;
       }
       case RB_GC_VM_GLOBAL_SYMBOLS_TABLE: {
-        if (global_symbols.str_sym) {
-            st_foreach_with_replace(
-                global_symbols.str_sym,
-                vm_weak_table_str_sym_foreach,
-                vm_weak_table_foreach_update_value,
-                (st_data_t)&foreach_data
-            );
-        }
+	GLOBAL_SYMBOLS_ENTER(global_symbols);
+	{
+	    if (global_symbols->str_sym) {
+		st_foreach_with_replace(
+		    global_symbols->str_sym,
+		    vm_weak_table_str_sym_foreach,
+		    vm_weak_table_foreach_update_weak_value,
+		    (st_data_t)&foreach_data
+		);
+	    }
+	}
+	GLOBAL_SYMBOLS_LEAVE(global_symbols);
         break;
       }
       case RB_GC_VM_GENERIC_IV_TABLE: {
         st_table *generic_iv_tbl = rb_generic_ivtbl_get();
         if (generic_iv_tbl) {
-            st_foreach_with_replace(
+            st_foreach(
                 generic_iv_tbl,
                 vm_weak_table_gen_ivar_foreach,
-                vm_weak_table_foreach_update_key,
                 (st_data_t)&foreach_data
             );
         }
         break;
       }
       case RB_GC_VM_FROZEN_STRINGS_TABLE: {
-        if (vm->frozen_strings) {
-            st_foreach_with_replace(
-                vm->frozen_strings,
-                vm_weak_table_frozen_strings_foreach,
-                vm_weak_table_foreach_update_key,
-                (st_data_t)&foreach_data
-            );
-        }
+	RB_FSTRING_TABLE_ENTER();
+	{
+	    if (vm->fstring_table) {
+		st_foreach_with_replace(
+		    vm->fstring_table,
+		    vm_weak_table_frozen_strings_foreach,
+		    vm_weak_table_foreach_update_weak_key,
+		    (st_data_t)&foreach_data
+		);
+	    }
+	}
+	RB_FSTRING_TABLE_LEAVE();
         break;
       }
       default:
         rb_bug("rb_gc_vm_weak_table_foreach: unknown table %d", table);
     }
 }
-#endif
 
 void
 rb_gc_update_vm_references(void *objspace)
@@ -3808,14 +3931,12 @@ rb_gc_update_vm_references(void *objspace)
 	rb_vm_update_references(vm);
 	rb_gc_update_global_tbl();
     }
-    rb_generic_ivar_update_references();
     rb_ractor_update_references(rb_gc_ractor_of_objspace(objspace));
 
     GLOBAL_SYMBOLS_ENTER(global_symbols);
     {
 	global_symbols->ids = gc_location_internal(objspace, global_symbols->ids);
 	global_symbols->dsymbol_fstr_hash = gc_location_internal(objspace, global_symbols->dsymbol_fstr_hash);
-	gc_update_table_refs(global_symbols->str_sym);
     }
     GLOBAL_SYMBOLS_LEAVE(global_symbols);
 
