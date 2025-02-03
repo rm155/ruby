@@ -3162,6 +3162,7 @@ ruby_vm_destruct(rb_vm_t *vm)
         }
         RB_ALTSTACK_FREE(vm->main_altstack);
 
+	rb_native_mutex_destroy(&vm->os_gate_count_lock);
 	rb_native_mutex_destroy(&vm->subclass_list_lock);
 	rb_native_mutex_destroy(&vm->classpath_lock);
 
@@ -4349,6 +4350,7 @@ Init_BareVM(void)
     vm->constant_cache = rb_id_table_create(0);
     vm->unused_block_warning_table = st_init_numtable();
 
+    rb_native_mutex_initialize(&vm->os_gate_count_lock);
     rb_native_mutex_initialize(&vm->subclass_list_lock);
     vm->subclass_list_lock_owner = NULL;
     rb_native_mutex_initialize(&vm->classpath_lock);

@@ -793,6 +793,10 @@ typedef struct rb_vm_struct {
 
     struct rb_objspace *objspace;
     struct rb_objspace_gate *main_os_gate;
+
+    unsigned int os_gate_count;
+    rb_nativethread_lock_t os_gate_count_lock;
+
     struct ccan_list_head objspace_set; //TODO: Remove once Ractors handle their own objspace upon ending
     struct rb_objspace_coordinator *objspace_coordinator;
     struct rb_global_space *global_space;

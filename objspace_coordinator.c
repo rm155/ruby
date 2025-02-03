@@ -6,10 +6,6 @@
 #include "vm_callinfo.h"
 
 
-/*
-  ------------------------ Global Coordinator ------------------------
-*/
-
 struct rb_objspace *
 gc_current_objspace(void)
 {
@@ -17,7 +13,7 @@ gc_current_objspace(void)
 	return ruby_single_main_objspace;
     }
 
-    rb_objspace_gate_t *os_gate = GET_OBJSPACE_GATE();
+    rb_objspace_gate_t *os_gate = GET_THREAD_LOCAL_OBJSPACE_GATE();
 #ifdef RB_THREAD_LOCAL_SPECIFIER
     VM_ASSERT(os_gate == rb_current_os_gate_noinline());
 #endif
@@ -27,6 +23,10 @@ gc_current_objspace(void)
     }
     return GET_RACTOR()->local_objspace;
 }
+
+/*
+  ------------------------ Global Coordinator ------------------------
+*/
 
 rb_objspace_coordinator_t *
 rb_get_objspace_coordinator(void)
@@ -241,7 +241,7 @@ objspace_gate_free(rb_objspace_gate_t *local_gate)
     if (!local_gate->objspace_closed && local_gate->ractor->local_gate == local_gate) {
 	local_gate->ractor = NULL;
     }
-    if (GET_OBJSPACE_GATE() == local_gate) {
+    if (GET_THREAD_LOCAL_OBJSPACE_GATE() == local_gate) {
 	rb_ractor_set_current_os_gate(NULL);
     }
     
@@ -292,6 +292,15 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
 	ruby_single_main_objspace = NULL;
 	rb_objspace_gate_t *main_gate = vm->main_os_gate;
 	main_gate->belong_to_single_main_ractor = false;
+
+	rb_native_mutex_lock(&vm->os_gate_count_lock);
+	vm->os_gate_count++;
+	stored_unitary_objspace_gate = NULL;
+	rb_native_mutex_unlock(&vm->os_gate_count_lock);
+    }
+    else {
+	vm->os_gate_count = 1;
+	stored_unitary_objspace_gate = local_gate;
     }
 
     ccan_list_head_init(&local_gate->zombie_threads);
@@ -1046,7 +1055,7 @@ objspace_read_enter(rb_objspace_coordinator_t *coordinator)
 void
 rb_objspace_read_enter(rb_objspace_coordinator_t *coordinator)
 {
-    rb_objspace_gate_t *local_gate = GET_OBJSPACE_GATE();
+    rb_objspace_gate_t *local_gate = GET_THREAD_LOCAL_OBJSPACE_GATE();
     if (local_gate && local_gate->currently_absorbing) return;
     
     objspace_read_enter(coordinator);
@@ -1069,7 +1078,7 @@ objspace_read_leave(rb_objspace_coordinator_t *coordinator)
 void
 rb_objspace_read_leave(rb_objspace_coordinator_t *coordinator)
 {
-    rb_objspace_gate_t *local_gate = GET_OBJSPACE_GATE();
+    rb_objspace_gate_t *local_gate = GET_THREAD_LOCAL_OBJSPACE_GATE();
     if (local_gate && local_gate->currently_absorbing) return;
     
     objspace_read_leave(coordinator);
@@ -1283,6 +1292,15 @@ rb_absorb_objspace_of_closing_ractor(rb_ractor_t *receiving_ractor, rb_ractor_t 
     rb_native_mutex_unlock(&coordinator->next_object_id_lock);
 
     if (already_disabled == Qfalse) rb_objspace_gc_enable(receiving_gate->objspace);
+
+    rb_vm_t *vm = GET_VM();
+    rb_native_mutex_lock(&vm->os_gate_count_lock);
+    vm->os_gate_count--;
+    if (vm->os_gate_count == 1) {
+	stored_unitary_objspace_gate = receiving_gate;
+	VM_ASSERT(stored_unitary_objspace_gate == vm->main_os_gate);
+    }
+    rb_native_mutex_unlock(&vm->os_gate_count_lock);
 }
 
 static int
@@ -1829,7 +1847,7 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 		WITH_OBJSPACE_GATE_LEAVE(a_gate);
 	    }
 
-	    rb_objspace_gate_t *local_gate = GET_OBJSPACE_GATE();
+	    rb_objspace_gate_t *local_gate = GET_THREAD_LOCAL_OBJSPACE_GATE();
 
 	    if (LIKELY(b_gate == local_gate || b_gate->ractor == local_gate->alloc_target_ractor)) {
 		rb_gc_writebarrier_gc_blocked(b_objspace, a, b);

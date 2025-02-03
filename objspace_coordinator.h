@@ -9,6 +9,9 @@ struct rb_objspace_coordinator;
 typedef struct rb_objspace_coordinator {
     unsigned long long next_object_id;
 
+    unsigned int objspace_gate_count;
+    rb_nativethread_lock_t objspace_gate_count_lock;
+
     rb_ractor_t *prev_id_assigner;
     rb_nativethread_lock_t next_object_id_lock;
 
@@ -37,6 +40,7 @@ typedef struct rb_objspace_coordinator {
 } rb_objspace_coordinator_t;
 
 struct rb_objspace *gc_current_objspace(void);
+
 rb_objspace_coordinator_t *rb_get_objspace_coordinator(void);
 rb_objspace_coordinator_t *rb_objspace_coordinator_init(void);
 void rb_objspace_coordinator_free(rb_objspace_coordinator_t *objspace_coordinator);
@@ -173,13 +177,26 @@ typedef struct rb_objspace_gate {
 
 #ifdef RB_THREAD_LOCAL_SPECIFIER
   #ifdef __APPLE__
-#define GET_OBJSPACE_GATE() rb_current_os_gate()
+#define GET_THREAD_LOCAL_OBJSPACE_GATE() rb_current_os_gate()
   #else
-#define GET_OBJSPACE_GATE() ruby_current_os_gate
+#define GET_THREAD_LOCAL_OBJSPACE_GATE() ruby_current_os_gate
   #endif
 #else
-#define GET_OBJSPACE_GATE() native_tls_get(ruby_current_os_gate_key)
+#define GET_THREAD_LOCAL_OBJSPACE_GATE() native_tls_get(ruby_current_os_gate_key)
 #endif
+
+rb_objspace_gate_t *stored_unitary_objspace_gate;
+
+static inline rb_objspace_gate_t *
+gc_current_objspace_gate()
+{
+    if (stored_unitary_objspace_gate) {
+	return stored_unitary_objspace_gate;
+    }
+    else {
+	return GET_THREAD_LOCAL_OBJSPACE_GATE();
+    }
+}
 
 #define GET_RACTOR_OF_VALUE(x)   (rb_gc_ractor_of_value(x))
 #define GET_OBJSPACE_OF_VALUE(x) (rb_gc_objspace_of_value(x))
@@ -362,19 +379,19 @@ void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b);
 	.mark_func = _mark_func, \
 	.data = _data_ptr, \
     }; \
-    struct gc_mark_func_data_struct *prev_mark_func_data = GET_RACTOR()->local_gate->mark_func_data; \
-    GET_RACTOR()->local_gate->mark_func_data = (&_mfd);
+    struct gc_mark_func_data_struct *prev_mark_func_data = gc_current_objspace_gate()->mark_func_data; \
+    gc_current_objspace_gate()->mark_func_data = (&_mfd);
 
-#define WITH_MARK_FUNC_END() GET_RACTOR()->local_gate->mark_func_data = prev_mark_func_data;} while (0)
+#define WITH_MARK_FUNC_END() gc_current_objspace_gate()->mark_func_data = prev_mark_func_data;} while (0)
 
-#define MARK_FUNC_IN_USE(cr) (cr->local_gate->mark_func_data != NULL)
+#define MARK_FUNC_IN_USE(local_gate) (local_gate->mark_func_data != NULL)
 
-#define MARK_FUNC_RUN(cr, obj) do { \
-    VM_ASSERT(MARK_FUNC_IN_USE(cr)); \
-    struct gc_mark_func_data_struct *mark_func_data = cr->local_gate->mark_func_data; \
-    cr->local_gate->mark_func_data = NULL; \
+#define MARK_FUNC_RUN(local_gate, obj) do { \
+    VM_ASSERT(MARK_FUNC_IN_USE(local_gate)); \
+    struct gc_mark_func_data_struct *mark_func_data = local_gate->mark_func_data; \
+    local_gate->mark_func_data = NULL; \
     mark_func_data->mark_func((obj), mark_func_data->data); \
-    cr->local_gate->mark_func_data = mark_func_data; \
+    local_gate->mark_func_data = mark_func_data; \
 } while (0)
 
 void make_irregular_shareable_object(VALUE obj);
