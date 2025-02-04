@@ -3188,7 +3188,12 @@ rb_gc_writebarrier(VALUE a, VALUE b)
 	if (rb_gc_mutable_shareable_permission_p(a)) {
 	    add_local_immune_object(b);
 	}
-	rb_gc_writebarrier_multi_objspace(a, b);
+	if (stored_unitary_objspace_gate) {
+	    rb_gc_writebarrier_single_objspace(stored_unitary_objspace_gate->objspace, a, b);
+	}
+	else {
+	    rb_gc_writebarrier_multi_objspace(a, b);
+	}
     }
 }
 
