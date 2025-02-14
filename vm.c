@@ -32,7 +32,6 @@
 #include "internal/sanitizers.h"
 #include "internal/variable.h"
 #include "iseq.h"
-#include "rjit.h"
 #include "symbol.h" // This includes a macro for a more performant rb_id2sym.
 #include "yjit.h"
 #include "ruby/st.h"
@@ -420,7 +419,7 @@ rb_yjit_threshold_hit(const rb_iseq_t *iseq, uint64_t entry_calls)
 #define rb_yjit_threshold_hit(iseq, entry_calls) false
 #endif
 
-#if USE_RJIT || USE_YJIT
+#if USE_YJIT
 // Generate JIT code that supports the following kinds of ISEQ entries:
 //   * The first ISEQ on vm_exec (e.g. <main>, or Ruby methods/blocks
 //     called by a C method). The current frame has VM_FRAME_FLAG_FINISH.
@@ -435,20 +434,14 @@ jit_compile(rb_execution_context_t *ec)
     const rb_iseq_t *iseq = ec->cfp->iseq;
     struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
     bool yjit_enabled = rb_yjit_enabled_p;
-    if (!(yjit_enabled || rb_rjit_call_p)) {
-        return NULL;
-    }
 
     // Increment the ISEQ's call counter and trigger JIT compilation if not compiled
-    if (body->jit_entry == NULL) {
+    if (body->jit_entry == NULL && yjit_enabled) {
         body->jit_entry_calls++;
         if (yjit_enabled) {
             if (rb_yjit_threshold_hit(iseq, body->jit_entry_calls)) {
                 rb_yjit_compile_iseq(iseq, ec, false);
             }
-        }
-        else if (body->jit_entry_calls == rb_rjit_call_threshold()) {
-            rb_rjit_compile(iseq);
         }
     }
     return body->jit_entry;
@@ -2205,7 +2198,6 @@ rb_vm_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass)
                     rb_id2name(me->called_id)
                 );
                 rb_yjit_bop_redefined(flag, (enum ruby_basic_operators)bop);
-                rb_rjit_bop_redefined(flag, (enum ruby_basic_operators)bop);
                 ruby_vm_redefined_flag[bop] |= flag;
             }
         }
@@ -3056,7 +3048,6 @@ rb_vm_mark(void *ptr)
         rb_id_table_foreach_values(vm->negative_cme_table, vm_mark_negative_cme, NULL);
         rb_mark_tbl_no_pin(vm->overloaded_cme_table);
 
-        rb_rjit_mark();
     }
 
     RUBY_MARK_LEAVE("vm");
@@ -4528,12 +4519,6 @@ void Init_builtin_yjit(void) {}
 
 // Whether YJIT is enabled or not, we load yjit_hook.rb to remove Kernel#with_yjit.
 #include "yjit_hook.rbinc"
-
-// Stub for builtin function when not building RJIT units
-#if !USE_RJIT
-void Init_builtin_rjit(void) {}
-void Init_builtin_rjit_c(void) {}
-#endif
 
 /* top self */
 

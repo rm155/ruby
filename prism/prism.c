@@ -5662,7 +5662,7 @@ pm_lambda_node_create(
  */
 static pm_local_variable_and_write_node_t *
 pm_local_variable_and_write_node_create(pm_parser_t *parser, pm_node_t *target, const pm_token_t *operator, pm_node_t *value, pm_constant_id_t name, uint32_t depth) {
-    assert(PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(target, PM_CALL_NODE));
+    assert(PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(target, PM_IT_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(target, PM_CALL_NODE));
     assert(operator->type == PM_TOKEN_AMPERSAND_AMPERSAND_EQUAL);
     pm_local_variable_and_write_node_t *node = PM_NODE_ALLOC(parser, pm_local_variable_and_write_node_t);
 
@@ -5717,7 +5717,7 @@ pm_local_variable_operator_write_node_create(pm_parser_t *parser, pm_node_t *tar
  */
 static pm_local_variable_or_write_node_t *
 pm_local_variable_or_write_node_create(pm_parser_t *parser, pm_node_t *target, const pm_token_t *operator, pm_node_t *value, pm_constant_id_t name, uint32_t depth) {
-    assert(PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(target, PM_CALL_NODE));
+    assert(PM_NODE_TYPE_P(target, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(target, PM_IT_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(target, PM_CALL_NODE));
     assert(operator->type == PM_TOKEN_PIPE_PIPE_EQUAL);
     pm_local_variable_or_write_node_t *node = PM_NODE_ALLOC(parser, pm_local_variable_or_write_node_t);
 
@@ -6169,7 +6169,10 @@ pm_numbered_reference_read_node_number(pm_parser_t *parser, const pm_token_t *to
     const uint8_t *end = token->end;
 
     ptrdiff_t diff = end - start;
-    assert(diff > 0 && ((unsigned long) diff < SIZE_MAX));
+    assert(diff > 0);
+#if PTRDIFF_MAX > SIZE_MAX
+    assert(diff < (ptrdiff_t) SIZE_MAX);
+#endif
     size_t length = (size_t) diff;
 
     char *digits = xcalloc(length + 1, sizeof(char));
@@ -13945,6 +13948,15 @@ parse_statements(pm_parser_t *parser, pm_context_t context, uint16_t depth) {
         if (PM_NODE_TYPE_P(node, PM_MISSING_NODE)) {
             parser_lex(parser);
 
+            // If we are at the end of the file, then we need to stop parsing
+            // the statements entirely at this point. Mark the parser as
+            // recovering, as we know that EOF closes the top-level context, and
+            // then break out of the loop.
+            if (match1(parser, PM_TOKEN_EOF)) {
+                parser->recovering = true;
+                break;
+            }
+
             while (accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON));
             if (context_terminator(context, &parser->current)) break;
         } else if (!accept2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_EOF)) {
@@ -21206,7 +21218,23 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     pm_node_destroy(parser, node);
                     return result;
                 }
+                case PM_IT_LOCAL_VARIABLE_READ_NODE: {
+                    pm_constant_id_t name = pm_parser_local_add_constant(parser, "it", 2);
+                    parser_lex(parser);
+
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_AMPAMPEQ, (uint16_t) (depth + 1));
+                    pm_node_t *result = (pm_node_t *) pm_local_variable_and_write_node_create(parser, node, &token, value, name, 0);
+
+                    parse_target_implicit_parameter(parser, node);
+                    pm_node_destroy(parser, node);
+                    return result;
+                }
                 case PM_LOCAL_VARIABLE_READ_NODE: {
+                    if (pm_token_is_numbered_parameter(node->location.start, node->location.end)) {
+                        PM_PARSER_ERR_FORMAT(parser, node->location.start, node->location.end, PM_ERR_PARAMETER_NUMBERED_RESERVED, node->location.start);
+                        parse_target_implicit_parameter(parser, node);
+                    }
+
                     pm_local_variable_read_node_t *cast = (pm_local_variable_read_node_t *) node;
                     parser_lex(parser);
 
@@ -21324,7 +21352,23 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     pm_node_destroy(parser, node);
                     return result;
                 }
+                case PM_IT_LOCAL_VARIABLE_READ_NODE: {
+                    pm_constant_id_t name = pm_parser_local_add_constant(parser, "it", 2);
+                    parser_lex(parser);
+
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_PIPEPIPEEQ, (uint16_t) (depth + 1));
+                    pm_node_t *result = (pm_node_t *) pm_local_variable_or_write_node_create(parser, node, &token, value, name, 0);
+
+                    parse_target_implicit_parameter(parser, node);
+                    pm_node_destroy(parser, node);
+                    return result;
+                }
                 case PM_LOCAL_VARIABLE_READ_NODE: {
+                    if (pm_token_is_numbered_parameter(node->location.start, node->location.end)) {
+                        PM_PARSER_ERR_FORMAT(parser, node->location.start, node->location.end, PM_ERR_PARAMETER_NUMBERED_RESERVED, node->location.start);
+                        parse_target_implicit_parameter(parser, node);
+                    }
+
                     pm_local_variable_read_node_t *cast = (pm_local_variable_read_node_t *) node;
                     parser_lex(parser);
 
@@ -21452,7 +21496,23 @@ parse_expression_infix(pm_parser_t *parser, pm_node_t *node, pm_binding_power_t 
                     pm_node_destroy(parser, node);
                     return result;
                 }
+                case PM_IT_LOCAL_VARIABLE_READ_NODE: {
+                    pm_constant_id_t name = pm_parser_local_add_constant(parser, "it", 2);
+                    parser_lex(parser);
+
+                    pm_node_t *value = parse_assignment_value(parser, previous_binding_power, binding_power, accepts_command_call, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR, (uint16_t) (depth + 1));
+                    pm_node_t *result = (pm_node_t *) pm_local_variable_operator_write_node_create(parser, node, &token, value, name, 0);
+
+                    parse_target_implicit_parameter(parser, node);
+                    pm_node_destroy(parser, node);
+                    return result;
+                }
                 case PM_LOCAL_VARIABLE_READ_NODE: {
+                    if (pm_token_is_numbered_parameter(node->location.start, node->location.end)) {
+                        PM_PARSER_ERR_FORMAT(parser, node->location.start, node->location.end, PM_ERR_PARAMETER_NUMBERED_RESERVED, node->location.start);
+                        parse_target_implicit_parameter(parser, node);
+                    }
+
                     pm_local_variable_read_node_t *cast = (pm_local_variable_read_node_t *) node;
                     parser_lex(parser);
 
