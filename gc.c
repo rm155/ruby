@@ -3304,6 +3304,15 @@ rb_gc_register_in_mark_object_ary(VALUE obj)
 }
 
 void
+rb_gc_register_mark_object(VALUE obj)
+{
+    if (!rb_gc_impl_pointer_to_heap_p(rb_gc_get_objspace(), (void *)obj))
+        return;
+
+    rb_vm_register_global_object(obj);
+}
+
+void
 rb_gc_register_address(VALUE *addr)
 {
     VALUE obj = *addr;
