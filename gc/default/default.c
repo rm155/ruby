@@ -3378,7 +3378,9 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
         rb_ary_push(table, block);
     }
     else {
-	add_local_immune_object(block);
+	if (!ruby_single_main_objspace) {
+	    add_local_immune_object(block);
+	}
         table = rb_ary_new3(1, block);
 	rb_permit_mutable_shareable(table);
 	FL_SET_RAW(table, RUBY_FL_SHAREABLE); //TODO: Protect table from data races
