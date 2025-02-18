@@ -6478,7 +6478,7 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
                        "objspace->rincgc.step_slots: %"PRIdSIZE", \n",
                        objspace->marked_slots, objspace->rincgc.pooled_slots, objspace->rincgc.step_slots);
         objspace->flags.during_minor_gc = FALSE;
-        if (ruby_enable_autocompact) {
+        if (!objspace->flags.during_global_gc && ruby_enable_autocompact) {
             objspace->flags.during_compacting |= TRUE;
         }
         objspace->profile.major_gc_count++;
@@ -7264,7 +7264,7 @@ gc_set_flags_finish(rb_objspace_t *objspace, unsigned int reason, unsigned int *
     }
 
     /* Explicitly enable compaction (GC.compact) */
-    if (*do_full_mark && ruby_enable_autocompact) {
+    if (*do_full_mark && !objspace->flags.during_global_gc && ruby_enable_autocompact) {
         objspace->flags.during_compacting = TRUE;
 #if RGENGC_CHECK_MODE
         objspace->rcompactor.compare_func = ruby_autocompact_compare_func;
