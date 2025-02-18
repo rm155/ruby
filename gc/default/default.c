@@ -10531,6 +10531,7 @@ rb_gc_impl_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_
 
     absorb_empty_pages(receiving_objspace, closing_objspace);
 
+    receiving_objspace->heap_pages.allocated_pages += closing_objspace->heap_pages.allocated_pages;
     receiving_objspace->heap_pages.freed_pages += closing_objspace->heap_pages.freed_pages;
     receiving_objspace->heap_pages.allocatable_slots += closing_objspace->heap_pages.allocatable_slots;
 
