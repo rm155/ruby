@@ -497,6 +497,8 @@ rb_obj_clone_setup(VALUE obj, VALUE clone, VALUE kwfreeze)
 
     init_copy(clone, obj);
 
+    if (rb_gc_mutable_shareable_permission_p(obj)) permit_mutable_shareable_direct(clone);
+
     switch (kwfreeze) {
       case Qnil:
         rb_funcall(clone, id_init_clone, 1, obj);

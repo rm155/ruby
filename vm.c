@@ -1222,6 +1222,7 @@ rb_proc_dup(VALUE self)
         break;
     }
 
+    if (rb_gc_mutable_shareable_permission_p(self)) permit_mutable_shareable_direct(procval);
     if (RB_OBJ_SHAREABLE_P(self)) FL_SET_RAW(procval, RUBY_FL_SHAREABLE);
     RB_GC_GUARD(self); /* for: body = rb_proc_dup(body) */
     return procval;
