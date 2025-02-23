@@ -61,7 +61,6 @@ range_init(VALUE range, VALUE beg, VALUE end, VALUE exclude_end)
 
     if (CLASS_OF(range) == rb_cRange) {
         rb_obj_freeze(range);
-	FL_SET_RAW(range, RUBY_FL_SHAREABLE);
     }
 }
 
