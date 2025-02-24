@@ -294,6 +294,22 @@ void permit_mutable_shareable_direct(VALUE obj);
 void permit_mutable_shareable_force(VALUE obj);
 bool rb_gc_mutable_shareable_permission_p(VALUE obj);
 
+#if VM_CHECK_MODE > 0
+
+void rb_copy_unshareable_references_status(VALUE status_receiver, VALUE original);
+void rb_permit_unshareable_references(VALUE obj);
+bool rb_gc_unshareable_references_permission_p(VALUE obj);
+
+#define COPY_UNSHAREABLE_REFERENCES_STATUS(status_receiver, original) rb_copy_unshareable_references_status(status_receiver, original)
+#define ALLOW_UNSHAREABLE_REFERENCES(obj) rb_permit_unshareable_references(obj)
+
+#else
+
+#define COPY_UNSHAREABLE_REFERENCES_STATUS(status_receiver, original) ((void)0)
+#define ALLOW_UNSHAREABLE_REFERENCES(obj) ((void)0)
+
+#endif
+
 int rb_ec_stack_check(struct rb_execution_context_struct *ec);
 void rb_gc_writebarrier_remember(VALUE obj);
 void rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b);

@@ -703,6 +703,10 @@ typedef struct gc_function_map {
     bool (*garbage_object_p)(void *objspace_ptr, VALUE obj);
     void (*set_event_hook)(void *objspace_ptr, const rb_event_flag_t event);
     void (*copy_attributes)(void *objspace_ptr, VALUE dest, VALUE obj);
+#if VM_CHECK_MODE > 0
+    void (*permit_unshareable_references)(VALUE obj);
+    void (*unshareable_references_permission_p)(VALUE obj);
+#endif
 
     bool modular_gc_loaded_p;
 } rb_gc_function_map_t;
@@ -897,6 +901,10 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(garbage_object_p);
     load_modular_gc_func(set_event_hook);
     load_modular_gc_func(copy_attributes);
+#if VM_CHECK_MODE > 0
+    load_modular_gc_func(permit_unshareable_references);
+    load_modular_gc_func(unshareable_references_permission_p);
+#endif
 
 # undef load_modular_gc_func
 
@@ -997,6 +1005,12 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_garbage_object_p rb_gc_functions.garbage_object_p
 # define rb_gc_impl_set_event_hook rb_gc_functions.set_event_hook
 # define rb_gc_impl_copy_attributes rb_gc_functions.copy_attributes
+
+#if VM_CHECK_MODE > 0
+# define rb_gc_impl_permit_unshareable_references rb_gc_functions.permit_unshareable_references
+# define rb_gc_impl_unshareable_references_permission_p rb_gc_functions.unshareable_references_permission_p
+#endif
+
 #endif
 
 #ifdef RUBY_ASAN_ENABLED
@@ -3176,6 +3190,28 @@ rb_verify_mutable_shareable_safety(struct RBasic *obj, VALUE flags)
 }
 #endif
 
+#if VM_CHECK_MODE > 0
+void
+rb_permit_unshareable_references(VALUE obj)
+{
+    rb_gc_impl_permit_unshareable_references(obj);
+}
+
+bool
+rb_gc_unshareable_references_permission_p(VALUE obj)
+{
+    return rb_gc_impl_unshareable_references_permission_p(obj);
+}
+
+void
+rb_copy_unshareable_references_status(VALUE status_receiver, VALUE original)
+{
+    if (rb_gc_unshareable_references_permission_p(original)) {
+	rb_permit_unshareable_references(status_receiver);
+    }
+}
+#endif
+
 void
 rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b)
 {
@@ -3194,6 +3230,10 @@ rb_gc_writebarrier(VALUE a, VALUE b)
     if (RGENGC_CHECK_MODE) {
         if (SPECIAL_CONST_P(a)) rb_bug("rb_gc_writebarrier: a is special const: %"PRIxVALUE, a);
         if (SPECIAL_CONST_P(b)) rb_bug("rb_gc_writebarrier: b is special const: %"PRIxVALUE, b);
+    }
+
+    if (FL_TEST_RAW(a, FL_SHAREABLE) && !FL_TEST_RAW(a, FL_SHAREABLE)) {
+	ALLOW_UNSHAREABLE_REFERENCES(a);
     }
 
     if (ruby_single_main_objspace) {

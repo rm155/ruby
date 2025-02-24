@@ -40,31 +40,27 @@ rb_imemo_name(enum imemo_type type)
  * allocation
  * ========================================================================= */
 
-static int
-inherently_shareable_imemo_type(enum imemo_type type)
-{
-    switch (type) {
-      case imemo_cref:
-      case imemo_ifunc:
-      case imemo_ment:
-      case imemo_iseq:
-      case imemo_callinfo:
-      case imemo_callcache:
-      case imemo_constcache:
-	return 1;
-      default:
-	return 0;
-    }
-}
-
 VALUE
 rb_imemo_new(enum imemo_type type, VALUE v0, size_t size)
 {
     VALUE flags = T_IMEMO | FL_WB_PROTECTED | (type << FL_USHIFT);
     NEWOBJ_OF(obj, void, v0, flags, size, 0);
-    if (inherently_shareable_imemo_type(type)) {
+    switch (type) {
+      case imemo_callinfo:
+      case imemo_callcache:
 	permit_mutable_shareable_direct(obj);
 	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	break;
+
+      case imemo_constcache:
+      case imemo_cref:
+      case imemo_iseq:
+      case imemo_ment:
+      case imemo_ifunc:
+	permit_mutable_shareable_direct(obj);
+	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	ALLOW_UNSHAREABLE_REFERENCES(obj);
+	break;
     }
     return obj;
 }

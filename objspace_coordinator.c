@@ -1884,5 +1884,6 @@ make_irregular_shareable_object(VALUE obj)
 	permit_mutable_shareable_force(obj);
     }
 
+    ALLOW_UNSHAREABLE_REFERENCES(obj);
     FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
 }

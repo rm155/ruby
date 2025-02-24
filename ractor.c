@@ -2187,6 +2187,7 @@ ractor_alloc(VALUE klass)
     rb_add_to_contained_ractor_tbl(r);
     rb_permit_mutable_shareable(rv);
     FL_SET_RAW(rv, RUBY_FL_SHAREABLE);
+    ALLOW_UNSHAREABLE_REFERENCES(rv);
     VM_ASSERT(ractor_status_p(r, ractor_created));
     return rv;
 }

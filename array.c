@@ -521,6 +521,7 @@ rb_ary_set_shared(VALUE ary, VALUE shared_root)
     rb_ary_increment_share(shared_root);
     FL_SET_SHARED(ary);
     RB_OBJ_WRITE(ary, &RARRAY(ary)->as.heap.aux.shared_root, shared_root);
+    ALLOW_UNSHAREABLE_REFERENCES(ary);
 
     RB_DEBUG_COUNTER_INC(obj_ary_shared_create);
 }

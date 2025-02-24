@@ -295,6 +295,8 @@ class_alloc_given_redirected_allocation(VALUE args)
     RB_OBJ_WRITE(obj, &RCLASS_REFINED_CLASS(obj), Qnil);
     RCLASS_SET_ALLOCATOR((VALUE)obj, 0);
 
+    ALLOW_UNSHAREABLE_REFERENCES(obj);
+
     return obj;
 }
 

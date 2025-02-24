@@ -26,6 +26,7 @@
 #include "internal/class.h"
 #include "internal/error.h"
 #include "internal/eval.h"
+#include "internal/gc.h"
 #include "internal/inits.h"
 #include "internal/numeric.h"
 #include "internal/object.h"
@@ -498,6 +499,7 @@ rb_obj_clone_setup(VALUE obj, VALUE clone, VALUE kwfreeze)
     init_copy(clone, obj);
 
     if (rb_gc_mutable_shareable_permission_p(obj)) permit_mutable_shareable_direct(clone);
+    COPY_UNSHAREABLE_REFERENCES_STATUS(clone, obj);
 
     switch (kwfreeze) {
       case Qnil:

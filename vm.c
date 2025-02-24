@@ -1223,7 +1223,10 @@ rb_proc_dup(VALUE self)
     }
 
     if (rb_gc_mutable_shareable_permission_p(self)) permit_mutable_shareable_direct(procval);
-    if (RB_OBJ_SHAREABLE_P(self)) FL_SET_RAW(procval, RUBY_FL_SHAREABLE);
+    if (RB_OBJ_SHAREABLE_P(self)) {
+	FL_SET_RAW(procval, RUBY_FL_SHAREABLE);
+	ALLOW_UNSHAREABLE_REFERENCES(procval);
+    }
     RB_GC_GUARD(self); /* for: body = rb_proc_dup(body) */
     return procval;
 }
@@ -1345,6 +1348,7 @@ proc_isolate_env(VALUE self, rb_proc_t *proc, VALUE read_only_variables)
 
     permit_mutable_shareable_force(env);
     FL_SET_RAW(env, RUBY_FL_SHAREABLE);
+    ALLOW_UNSHAREABLE_REFERENCES(env);
 
     RB_OBJ_WRITTEN(self, Qundef, env);
 }
@@ -1401,6 +1405,7 @@ rb_proc_isolate_bang(VALUE self)
 
     permit_mutable_shareable_force(self);
     FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+    ALLOW_UNSHAREABLE_REFERENCES(self);
     return self;
 }
 
@@ -1440,6 +1445,7 @@ rb_proc_ractor_make_shareable(VALUE self)
 
     permit_mutable_shareable_force(self);
     FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+    ALLOW_UNSHAREABLE_REFERENCES(self);
     return self;
 }
 
