@@ -11,6 +11,12 @@ Note that each entry is kept to a minimum, see links for details.
 
 Note: We're only listing outstanding class updates.
 
+* Binding
+
+    * `Binding#local_variables` does no longer include numbered parameters.
+      Also, `Binding#local_variable_get` and `Binding#local_variable_set` reject to handle numbered parameters.
+      [[Bug #21049]]
+
 ## Stdlib updates
 
 The following bundled gems are promoted from default gems.
@@ -41,13 +47,14 @@ The following default gems are updated.
 * json 2.10.1
 * prism 1.3.0
 * psych 5.2.3
-* stringio 3.1.3.dev
+* stringio 3.1.6.dev
 
 The following bundled gems are added.
 
 
 The following bundled gems are updated.
 
+* rexml 3.4.1
 * net-imap 0.5.6
 * net-smtp 0.5.1
 * rbs 3.8.1
@@ -65,3 +72,5 @@ The following bundled gems are updated.
 ## Implementation improvements
 
 ## JIT
+
+[Bug #21049]:     https://bugs.ruby-lang.org/issues/21049

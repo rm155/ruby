@@ -698,7 +698,7 @@ typedef struct gc_function_map {
     void (*absorb_contents)(void *receiving_objspace_ptr, void *closing_objspace_ptr);
     void (*permit_mutable_shareable_direct)(VALUE obj);
     void (*mutable_shareable_permission_p)(VALUE obj);
-    size_t (*obj_flags)(void *objspace_ptr, VALUE obj, ID* flags, size_t max);
+    struct rb_gc_object_metadata_entry *(*object_metadata)(void *objspace_ptr, VALUE obj);
     bool (*pointer_to_heap_p)(void *objspace_ptr, const void *ptr);
     bool (*garbage_object_p)(void *objspace_ptr, VALUE obj);
     void (*set_event_hook)(void *objspace_ptr, const rb_event_flag_t event);
@@ -896,7 +896,7 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(absorb_contents);
     load_modular_gc_func(permit_mutable_shareable_direct);
     load_modular_gc_func(mutable_shareable_permission_p);
-    load_modular_gc_func(obj_flags);
+    load_modular_gc_func(object_metadata);
     load_modular_gc_func(pointer_to_heap_p);
     load_modular_gc_func(garbage_object_p);
     load_modular_gc_func(set_event_hook);
@@ -1000,7 +1000,7 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_absorb_contents rb_gc_functions.absorb_contents
 # define rb_gc_impl_permit_mutable_shareable_direct rb_gc_functions.permit_mutable_shareable_direct
 # define rb_gc_impl_mutable_shareable_permission_p rb_gc_functions.mutable_shareable_permission_p
-# define rb_gc_impl_obj_flags rb_gc_functions.obj_flags
+# define rb_gc_impl_object_metadata rb_gc_functions.object_metadata
 # define rb_gc_impl_pointer_to_heap_p rb_gc_functions.pointer_to_heap_p
 # define rb_gc_impl_garbage_object_p rb_gc_functions.garbage_object_p
 # define rb_gc_impl_set_event_hook rb_gc_functions.set_event_hook
@@ -3301,11 +3301,10 @@ rb_gc_active_gc_name(void)
     return gc_name;
 }
 
-// TODO: rearchitect this function to work for a generic GC
-size_t
-rb_obj_gc_flags(VALUE obj, ID* flags, size_t max)
+struct rb_gc_object_metadata_entry *
+rb_gc_object_metadata(VALUE obj)
 {
-    return rb_gc_impl_obj_flags(rb_gc_get_objspace(), obj, flags, max);
+    return rb_gc_impl_object_metadata(rb_gc_get_objspace(), obj);
 }
 
 /* GC */
@@ -3809,6 +3808,8 @@ vm_weak_table_gen_ivar_foreach_too_complex_i(st_data_t _key, st_data_t value, st
     struct global_vm_table_foreach_data *iter_data = (struct global_vm_table_foreach_data *)data;
 
     GC_ASSERT(!iter_data->weak_only);
+
+    if (SPECIAL_CONST_P((VALUE)value)) return ST_CONTINUE;
 
     return iter_data->callback((VALUE)value, iter_data->data);
 }

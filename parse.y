@@ -478,7 +478,7 @@ typedef struct parser_string_buffer {
     parser_string_buffer_elem_t *last;
 } parser_string_buffer_t;
 
-#define AFTER_HEREDOC_WITHOUT_TERMINTOR ((rb_parser_string_t *)1)
+#define AFTER_HEREDOC_WITHOUT_TERMINATOR ((rb_parser_string_t *)1)
 
 /*
     Structure of Lexer Buffer:
@@ -3037,6 +3037,12 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
                         $$ = new_const_op_assign(p, NEW_COLON2($primary_value, $tCONSTANT, &loc), $tOP_ASGN, $rhs, $lex_ctxt, &@$);
                     /*% ripper: opassign!(const_path_field!($:1, $:3), $:4, $:6) %*/
                     }
+                | tCOLON3 tCONSTANT tOP_ASGN lex_ctxt rhs
+                    {
+                        YYLTYPE loc = code_loc_gen(&@tCOLON3, &@tCONSTANT);
+                        $$ = new_const_op_assign(p, NEW_COLON3($tCONSTANT, &loc), $tOP_ASGN, $rhs, $lex_ctxt, &@$);
+                    /*% ripper: opassign!(top_const_field!($:2), $:3, $:5) %*/
+                    }
                 | backref tOP_ASGN lex_ctxt rhs
                     {
                         VALUE MAYBE_UNUSED(e) = rb_backref_error(p, $backref);
@@ -3851,12 +3857,6 @@ reswords	: keyword__LINE__ | keyword__FILE__ | keyword__ENCODING__
 
 arg		: asgn(lhs, arg_rhs)
                 | op_asgn(arg_rhs)
-                | tCOLON3 tCONSTANT tOP_ASGN lex_ctxt arg_rhs
-                    {
-                        YYLTYPE loc = code_loc_gen(&@1, &@2);
-                        $$ = new_const_op_assign(p, NEW_COLON3($2, &loc), $3, $5, $4, &@$);
-                    /*% ripper: opassign!(top_const_field!($:2), $:3, $:5) %*/
-                    }
                 | arg tDOT2 arg
                     {
                         value_expr($1);
@@ -7686,7 +7686,7 @@ nextline(struct parser_params *p, int set_encoding)
 #endif
         p->cr_seen = FALSE;
     }
-    else if (str == AFTER_HEREDOC_WITHOUT_TERMINTOR) {
+    else if (str == AFTER_HEREDOC_WITHOUT_TERMINATOR) {
         /* after here-document without terminator */
         goto end_of_input;
     }
@@ -7716,7 +7716,7 @@ nextc0(struct parser_params *p, int set_encoding)
 {
     int c;
 
-    if (UNLIKELY(lex_eol_p(p) || p->eofp || p->lex.nextline > AFTER_HEREDOC_WITHOUT_TERMINTOR)) {
+    if (UNLIKELY(lex_eol_p(p) || p->eofp || p->lex.nextline > AFTER_HEREDOC_WITHOUT_TERMINATOR)) {
         if (nextline(p, set_encoding)) return -1;
     }
     c = (unsigned char)*p->lex.pcur++;
@@ -8816,7 +8816,7 @@ heredoc_restore(struct parser_params *p, rb_strterm_heredoc_t *here)
     p->lex.ptok = p->lex.pbeg + here->offset - here->quote;
     p->heredoc_end = p->ruby_sourceline;
     p->ruby_sourceline = (int)here->sourceline;
-    if (p->eofp) p->lex.nextline = AFTER_HEREDOC_WITHOUT_TERMINTOR;
+    if (p->eofp) p->lex.nextline = AFTER_HEREDOC_WITHOUT_TERMINATOR;
     p->eofp = 0;
     xfree(term);
 }
@@ -14228,13 +14228,7 @@ cond0(struct parser_params *p, NODE *node, enum cond_type type, const YYLTYPE *l
         break;
 
       case NODE_LINE:
-        SWITCH_BY_COND_TYPE(type, warning, "");
-        break;
-
       case NODE_ENCODING:
-        SWITCH_BY_COND_TYPE(type, warning, "");
-        break;
-
       case NODE_INTEGER:
       case NODE_FLOAT:
       case NODE_RATIONAL:

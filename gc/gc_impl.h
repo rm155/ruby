@@ -10,6 +10,14 @@
  */
 #include "ruby/ruby.h"
 
+#ifndef RB_GC_OBJECT_METADATA_ENTRY_DEFINED
+# define RB_GC_OBJECT_METADATA_ENTRY_DEFINED
+struct rb_gc_object_metadata_entry {
+    ID name;
+    VALUE val;
+};
+#endif
+
 #ifdef BUILDING_MODULAR_GC
 # define GC_IMPL_FN
 #else
@@ -125,7 +133,7 @@ GC_IMPL_FN void *rb_gc_impl_ractor_of_value(VALUE obj);
 GC_IMPL_FN void rb_gc_impl_absorb_contents(void *receiving_objspace_ptr, void *closing_objspace_ptr);
 GC_IMPL_FN void rb_gc_impl_permit_mutable_shareable_direct(VALUE obj);
 GC_IMPL_FN bool rb_gc_impl_mutable_shareable_permission_p(VALUE obj);
-GC_IMPL_FN size_t rb_gc_impl_obj_flags(void *objspace_ptr, VALUE obj, ID* flags, size_t max);
+GC_IMPL_FN struct rb_gc_object_metadata_entry *rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN bool rb_gc_impl_pointer_to_heap_p(void *objspace_ptr, const void *ptr);
 GC_IMPL_FN bool rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE obj);
 GC_IMPL_FN void rb_gc_impl_set_event_hook(void *objspace_ptr, const rb_event_flag_t event);

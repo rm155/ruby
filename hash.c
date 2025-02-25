@@ -2092,16 +2092,19 @@ rb_hash_stlike_lookup(VALUE hash, st_data_t key, st_data_t *pval)
 
 /*
  *  call-seq:
- *    hash[key] -> value
+ *    self[key] -> object
  *
- *  Returns the value associated with the given +key+, if found:
- *    h = {foo: 0, bar: 1, baz: 2}
- *    h[:foo] # => 0
+ *  Searches for a hash key equivalent to the given +key+;
+ *  see {Hash Key Equivalence}[rdoc-ref:Hash@Hash+Key+Equivalence].
  *
- *  If +key+ is not found, returns a default value
- *  (see {Hash Default}[rdoc-ref:Hash@Hash+Default]):
- *    h = {foo: 0, bar: 1, baz: 2}
- *    h[:nosuch] # => nil
+ *  If the key is found, returns its value:
+ *
+ *    {foo: 0, bar: 1, baz: 2}
+ *    h[:bar] # => 1
+ *
+ *  Otherwise, returns a default value (see {Hash Default}[rdoc-ref:Hash@Hash+Default]).
+ *
+ *  Related: #[]=; see also {Methods for Fetching}[rdoc-ref:Hash@Methods+for+Fetching].
  */
 
 VALUE
@@ -2142,21 +2145,24 @@ rb_hash_lookup(VALUE hash, VALUE key)
  *    fetch(key, default_value) -> object
  *    fetch(key) {|key| ... } -> object
  *
- *  Returns the value for the given +key+, if found.
+ *  With no block given, returns the value for the given +key+, if found;
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
- *    h.fetch(:bar) # => 1
+ *    h.fetch(:bar)  # => 1
  *
- *  If +key+ is not found and no block was given,
- *  returns +default_value+:
- *    {}.fetch(:nosuch, :default) # => :default
+ *  If the key is not found, returns +default_value+, if given,
+ *  or raises KeyError otherwise:
  *
- *  If +key+ is not found and a block was given,
- *  yields +key+ to the block and returns the block's return value:
+ *    h.fetch(:nosuch, :default) # => :default
+ *    h.fetch(:nosuch)           # Raises KeyError.
+ *
+ *  With a block given, calls the block with +key+ and returns the block's return value:
+ *
  *    {}.fetch(:nosuch) {|key| "No key #{key}"} # => "No key nosuch"
  *
- *  Raises KeyError if neither +default_value+ nor a block was given.
- *
  *  Note that this method does not use the values of either #default or #default_proc.
+ *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Hash@Methods+for+Fetching].
  */
 
 static VALUE
@@ -2402,26 +2408,33 @@ rb_hash_delete(VALUE hash, VALUE key)
  *    delete(key) -> value or nil
  *    delete(key) {|key| ... } -> object
  *
- *  Deletes the entry for the given +key+ and returns its associated value.
+ *  If an entry for the given +key+ is found,
+ *  deletes the entry and returns its associated value;
+ *  otherwise returns +nil+ or calls the given block.
  *
- *  If no block is given and +key+ is found, deletes the entry and returns the associated value:
+ *  With no block given and +key+ found, deletes the entry and returns its value:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.delete(:bar) # => 1
  *    h # => {foo: 0, baz: 2}
  *
- *  If no block given and +key+ is not found, returns +nil+.
+ *  With no block given and +key+ not found, returns +nil+.
  *
- *  If a block is given and +key+ is found, ignores the block,
- *  deletes the entry, and returns the associated value:
+ *  With a block given and +key+ found, ignores the block,
+ *  deletes the entry, and returns its value:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.delete(:baz) { |key| raise 'Will never happen'} # => 2
  *    h # => {foo: 0, bar: 1}
  *
- *  If a block is given and +key+ is not found,
+ *  With a block given and +key+ not found,
  *  calls the block and returns the block's return value:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.delete(:nosuch) { |key| "Key #{key} not found" } # => "Key nosuch not found"
  *    h # => {foo: 0, bar: 1, baz: 2}
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Hash@Methods+for+Deleting].
  */
 
 static VALUE
@@ -2535,16 +2548,16 @@ hash_enum_size(VALUE hash, VALUE args, VALUE eobj)
  *    delete_if {|key, value| ... } -> self
  *    delete_if -> new_enumerator
  *
- *  If a block given, calls the block with each key-value pair;
- *  deletes each entry for which the block returns a truthy value;
- *  returns +self+:
+ *  With a block given, calls the block with each key-value pair,
+ *  deletes each entry for which the block returns a truthy value,
+ *  and returns +self+:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.delete_if {|key, value| value > 0 } # => {foo: 0}
  *
- *  If no block given, returns a new Enumerator:
- *    h = {foo: 0, bar: 1, baz: 2}
- *    e = h.delete_if # => #<Enumerator: {foo: 0, bar: 1, baz: 2}:delete_if>
- *    e.each { |key, value| value > 0 } # => {foo: 0}
+ *  With no block given, returns a new Enumerator.
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Hash@Methods+for+Deleting].
  */
 
 VALUE
@@ -2657,13 +2670,16 @@ rb_hash_slice(int argc, VALUE *argv, VALUE hash)
 
 /*
  *  call-seq:
- *     hsh.except(*keys) -> a_hash
+ *    except(*keys) -> new_hash
  *
- *  Returns a new +Hash+ excluding entries for the given +keys+:
- *     h = { a: 100, b: 200, c: 300 }
- *     h.except(:a)          #=> {b: 200, c: 300}
+ *  Returns a copy of +self+ that excludes entries for the given +keys+;
+ *  any +keys+ that are not found are ignored:
  *
- *  Any given +keys+ that are not found are ignored.
+ *    h = {foo:0, bar: 1, baz: 2} # => {:foo=>0, :bar=>1, :baz=>2}
+ *    h.except(:baz, :foo)        # => {:bar=>1}
+ *    h.except(:bar, :nosuch)     # => {:foo=>0, :baz=>2}
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Hash@Methods+for+Deleting].
  */
 
 static VALUE
@@ -2713,19 +2729,23 @@ rb_hash_values_at(int argc, VALUE *argv, VALUE hash)
  *    fetch_values(*keys) -> new_array
  *    fetch_values(*keys) {|key| ... } -> new_array
  *
- *  Returns a new Array containing the values associated with the given keys *keys:
+ *  When all given +keys+ are found,
+ *  returns a new array containing the values associated with the given +keys+:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.fetch_values(:baz, :foo) # => [2, 0]
  *
- *  Returns a new empty Array if no arguments given.
+ *  When any given +keys+ are not found and a block is given,
+ *  calls the block with each unfound key and uses the block's return value
+ *  as the value for that key:
  *
- *  When a block is given, calls the block with each missing key,
- *  treating the block's return value as the value for that key:
- *    h = {foo: 0, bar: 1, baz: 2}
- *    values = h.fetch_values(:bar, :foo, :bad, :bam) {|key| key.to_s}
- *    values # => [1, 0, "bad", "bam"]
+ *    h.fetch_values(:bar, :foo, :bad, :bam) {|key| key.to_s}
+ *    # => [1, 0, "bad", "bam"]
  *
- *  When no block is given, raises an exception if any given key is not found.
+ *  When any given +keys+ are not found and no block is given,
+ *  raises KeyError.
+ *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Hash@Methods+for+Fetching].
  */
 
 static VALUE
@@ -2849,6 +2869,8 @@ clear_i(VALUE key, VALUE value, VALUE dummy)
  *    clear -> self
  *
  *  Removes all entries from +self+; returns emptied +self+.
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Hash@Methods+for+Deleting].
  */
 
 VALUE
@@ -2902,26 +2924,31 @@ NOINSERT_UPDATE_CALLBACK(hash_aset_str)
 
 /*
  *  call-seq:
- *    hash[key] = value -> value
- *    store(key, value)
+ *    self[key] = object -> object
  *
- *  Associates the given +value+ with the given +key+; returns +value+.
+ *  Associates the given +object+ with the given +key+; returns +object+.
  *
- *  If the given +key+ exists, replaces its value with the given +value+;
+ *  Searches for a hash key equivalent to the given +key+;
+ *  see {Hash Key Equivalence}[rdoc-ref:Hash@Hash+Key+Equivalence].
+ *
+ *  If the key is found, replaces its value with the given +object+;
  *  the ordering is not affected
  *  (see {Entry Order}[rdoc-ref:Hash@Entry+Order]):
+ *
  *    h = {foo: 0, bar: 1}
  *    h[:foo] = 2 # => 2
- *    h.store(:bar, 3) # => 3
- *    h # => {foo: 2, bar: 3}
+ *    h[:foo]     # => 2
  *
- *  If +key+ does not exist, adds the +key+ and +value+;
+ *  If +key+ is not found, creates a new entry for the given +key+ and +object+;
  *  the new entry is last in the order
  *  (see {Entry Order}[rdoc-ref:Hash@Entry+Order]):
+ *
  *    h = {foo: 0, bar: 1}
  *    h[:baz] = 2 # => 2
- *    h.store(:bat, 3) # => 3
- *    h # => {foo: 0, bar: 1, baz: 2, bat: 3}
+ *    h[:baz]     # => 2
+ *    h           # => {:foo=>0, :bar=>1, :baz=>2}
+ *
+ *  Related: #[]; see also {Methods for Assigning}[rdoc-ref:Hash@Methods+for+Assigning].
  */
 
 VALUE
@@ -3002,8 +3029,11 @@ rb_hash_size_num(VALUE hash)
  *    empty? -> true or false
  *
  *  Returns +true+ if there are no hash entries, +false+ otherwise:
+ *
  *    {}.empty? # => true
- *    {foo: 0, bar: 1, baz: 2}.empty? # => false
+ *    {foo: 0}.empty? # => false
+ *
+ *  Related: see {Methods for Querying}[rdoc-ref:Hash@Methods+for+Querying].
  */
 
 VALUE
@@ -3024,23 +3054,19 @@ each_value_i(VALUE key, VALUE value, VALUE _)
  *    each_value {|value| ... } -> self
  *    each_value -> new_enumerator
  *
- *  Calls the given block with each value; returns +self+:
+ *  With a block given, calls the block with each value; returns +self+:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.each_value {|value| puts value } # => {foo: 0, bar: 1, baz: 2}
+ *
  *  Output:
  *    0
  *    1
  *    2
  *
- *  Returns a new Enumerator if no block given:
- *    h = {foo: 0, bar: 1, baz: 2}
- *    e = h.each_value # => #<Enumerator: {foo: 0, bar: 1, baz: 2}:each_value>
- *    h1 = e.each {|value| puts value }
- *    h1 # => {foo: 0, bar: 1, baz: 2}
- *  Output:
- *    0
- *    1
- *    2
+ *  With no block given, returns a new Enumerator.
+ *
+ *  Related: see {Methods for Iterating}[rdoc-ref:Hash@Methods+for+Iterating].
  */
 
 static VALUE
@@ -3063,23 +3089,19 @@ each_key_i(VALUE key, VALUE value, VALUE _)
  *    each_key {|key| ... } -> self
  *    each_key -> new_enumerator
  *
- *  Calls the given block with each key; returns +self+:
+ *  With a block given, calls the block with each key; returns +self+:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.each_key {|key| puts key }  # => {foo: 0, bar: 1, baz: 2}
+ *
  *  Output:
  *    foo
  *    bar
  *    baz
  *
- *  Returns a new Enumerator if no block given:
- *    h = {foo: 0, bar: 1, baz: 2}
- *    e = h.each_key # => #<Enumerator: {foo: 0, bar: 1, baz: 2}:each_key>
- *    h1 = e.each {|key| puts key }
- *    h1 # => {foo: 0, bar: 1, baz: 2}
- *  Output:
- *    foo
- *    bar
- *    baz
+ *  With no block given, returns a new Enumerator.
+ *
+ *  Related: see {Methods for Iterating}[rdoc-ref:Hash@Methods+for+Iterating].
  */
 static VALUE
 rb_hash_each_key(VALUE hash)
@@ -3108,28 +3130,23 @@ each_pair_i_fast(VALUE key, VALUE value, VALUE _)
 
 /*
  *  call-seq:
- *    each {|key, value| ... } -> self
  *    each_pair {|key, value| ... } -> self
- *    each -> new_enumerator
  *    each_pair -> new_enumerator
  *
- *  Calls the given block with each key-value pair; returns +self+:
+ *  With a block given, calls the block with each key-value pair; returns +self+:
+ *
  *    h = {foo: 0, bar: 1, baz: 2}
  *    h.each_pair {|key, value| puts "#{key}: #{value}"} # => {foo: 0, bar: 1, baz: 2}
+ *
  *  Output:
+ *
  *    foo: 0
  *    bar: 1
  *    baz: 2
  *
- *  Returns a new Enumerator if no block given:
- *    h = {foo: 0, bar: 1, baz: 2}
- *    e = h.each_pair # => #<Enumerator: {foo: 0, bar: 1, baz: 2}:each_pair>
- *    h1 = e.each {|key, value| puts "#{key}: #{value}"}
- *    h1 # => {foo: 0, bar: 1, baz: 2}
- *  Output:
- *    foo: 0
- *    bar: 1
- *    baz: 2
+ *  With no block given, returns a new Enumerator.
+ *
+ *  Related: see {Methods for Iterating}[rdoc-ref:Hash@Methods+for+Iterating].
  */
 
 static VALUE
@@ -3678,11 +3695,14 @@ rb_hash_values(VALUE hash)
 /*
  *  call-seq:
  *    include?(key) -> true or false
- *    has_key?(key) -> true or false
- *    key?(key) -> true or false
- *    member?(key) -> true or false
  *
- *  Returns +true+ if +key+ is a key in +self+, otherwise +false+.
+ *  Returns whether +key+ is a key in +self+:
+ *
+ *    h = {foo: 0, bar: 1, baz: 2}
+ *    h.include?(:bar) # => true
+ *    h.include?(:BAR) # => false
+ *
+ *  Related: {Methods for Querying}[rdoc-ref:Hash@Methods+for+Querying].
  */
 
 VALUE
@@ -3841,9 +3861,10 @@ rb_hash_equal(VALUE hash1, VALUE hash2)
  *    eql?(object) -> true or false
  *
  *  Returns +true+ if all of the following are true:
- *  * +object+ is a +Hash+ object.
- *  * +hash+ and +object+ have the same keys (regardless of order).
- *  * For each key +key+, <tt>h[key].eql?(object[key])</tt>.
+ *
+ *  - The given +object+ is a +Hash+ object.
+ *  - +self+ and +object+ have the same keys (regardless of order).
+ *  - For each key +key+, <tt>self[key].eql?(object[key])</tt>.
  *
  *  Otherwise, returns +false+.
  *
@@ -3852,6 +3873,8 @@ rb_hash_equal(VALUE hash1, VALUE hash2)
  *    h1.eql? h2 # => true
  *    h3 = {baz: 2, bar: 1, foo: 0}
  *    h1.eql? h3 # => true
+ *
+ *  Related: see {Methods for Querying}[rdoc-ref:Hash@Methods+for+Querying].
  */
 
 static VALUE
@@ -3876,14 +3899,17 @@ hash_i(VALUE key, VALUE val, VALUE arg)
  *  call-seq:
  *    hash -> an_integer
  *
- *  Returns the Integer hash-code for the hash.
+ *  Returns the integer hash-code for the hash.
  *
- *  Two +Hash+ objects have the same hash-code if their content is the same
+ *  Two hashes have the same hash-code if their content is the same
  *  (regardless of order):
+ *
  *    h1 = {foo: 0, bar: 1, baz: 2}
  *    h2 = {baz: 2, bar: 1, foo: 0}
  *    h2.hash == h1.hash # => true
  *    h2.eql? h1 # => true
+ *
+ *  Related: see {Methods for Querying}[rdoc-ref:Hash@Methods+for+Querying].
  */
 
 static VALUE
@@ -4177,6 +4203,8 @@ assoc_i(VALUE key, VALUE val, VALUE arg)
  *    h.assoc(:bar) # => [:bar, 1]
  *
  *  Returns +nil+ if the key is not found.
+ *
+ *  Related: see {Methods for Fetching}[rdoc-ref:Hash@Methods+for+Fetching].
  */
 
 static VALUE
@@ -4265,33 +4293,38 @@ flatten_i(VALUE key, VALUE val, VALUE ary)
 
 /*
  *  call-seq:
- *     flatten -> new_array
- *     flatten(level) -> new_array
+ *    flatten(depth = 1) -> new_array
  *
- *  Returns a new Array object that is a 1-dimensional flattening of +self+.
+ *  With positive integer +depth+,
+ *  returns a new array that is a recursive flattening of +self+ to the given +depth+.
  *
- *  ---
+ *  At each level of recursion:
  *
- *  By default, nested Arrays are not flattened:
- *    h = {foo: 0, bar: [:bat, 3], baz: 2}
- *    h.flatten # => [:foo, 0, :bar, [:bat, 3], :baz, 2]
+ *  - Each element whose value is an array is "flattened" (that is, replaced by its individual array elements);
+ *    see Array#flatten.
+ *  - Each element whose value is not an array is unchanged.
+ *    even if the value is an object that has instance method flatten (such as a hash).
  *
- *  Takes the depth of recursive flattening from Integer argument +level+:
- *    h = {foo: 0, bar: [:bat, [:baz, [:bat, ]]]}
- *    h.flatten(1) # => [:foo, 0, :bar, [:bat, [:baz, [:bat]]]]
- *    h.flatten(2) # => [:foo, 0, :bar, :bat, [:baz, [:bat]]]
- *    h.flatten(3) # => [:foo, 0, :bar, :bat, :baz, [:bat]]
- *    h.flatten(4) # => [:foo, 0, :bar, :bat, :baz, :bat]
+ *  Examples; note that entry <tt>foo: {bar: 1, baz: 2}</tt> is never flattened.
  *
- *  When +level+ is negative, flattens all nested Arrays:
- *    h = {foo: 0, bar: [:bat, [:baz, [:bat, ]]]}
- *    h.flatten(-1) # => [:foo, 0, :bar, :bat, :baz, :bat]
- *    h.flatten(-2) # => [:foo, 0, :bar, :bat, :baz, :bat]
+ *   h = {foo: {bar: 1, baz: 2}, bat: [:bam, [:bap, [:bah]]]}
+ *   h.flatten(1) # => [:foo, {:bar=>1, :baz=>2}, :bat, [:bam, [:bap, [:bah]]]]
+ *   h.flatten(2) # => [:foo, {:bar=>1, :baz=>2}, :bat, :bam, [:bap, [:bah]]]
+ *   h.flatten(3) # => [:foo, {:bar=>1, :baz=>2}, :bat, :bam, :bap, [:bah]]
+ *   h.flatten(4) # => [:foo, {:bar=>1, :baz=>2}, :bat, :bam, :bap, :bah]
+ *   h.flatten(5) # => [:foo, {:bar=>1, :baz=>2}, :bat, :bam, :bap, :bah]
  *
- *  When +level+ is zero, returns the equivalent of #to_a :
- *    h = {foo: 0, bar: [:bat, 3], baz: 2}
- *    h.flatten(0) # => [[:foo, 0], [:bar, [:bat, 3]], [:baz, 2]]
- *    h.flatten(0) == h.to_a # => true
+ *  With negative integer +depth+,
+ *  flattens all levels:
+ *
+ *    h.flatten(-1) # => [:foo, {:bar=>1, :baz=>2}, :bat, :bam, :bap, :bah]
+ *
+ *  With +depth+ zero,
+ *  returns the equivalent of #to_a:
+ *
+ *    h.flatten(0) # => [[:foo, {:bar=>1, :baz=>2}], [:bat, [:bam, [:bap, [:bah]]]]]
+ *
+ *  Related: see {Methods for Converting}[rdoc-ref:Hash@Methods+for+Converting].
  */
 
 static VALUE
@@ -4341,9 +4374,11 @@ delete_if_nil(VALUE key, VALUE value, VALUE hash)
  *    compact -> new_hash
  *
  *  Returns a copy of +self+ with all +nil+-valued entries removed:
+ *
  *    h = {foo: 0, bar: nil, baz: 2, bat: nil}
- *    h1 = h.compact
- *    h1 # => {foo: 0, baz: 2}
+ *    h.compact # => {foo: 0, baz: 2}
+ *
+ * Related: see {Methods for Deleting}[rdoc-ref:Hash@Methods+for+Deleting].
  */
 
 static VALUE
@@ -4364,11 +4399,16 @@ rb_hash_compact(VALUE hash)
  *  call-seq:
  *    compact! -> self or nil
  *
- *  Returns +self+ with all its +nil+-valued entries removed (in place):
- *    h = {foo: 0, bar: nil, baz: 2, bat: nil}
- *    h.compact! # => {foo: 0, baz: 2}
+ *  If +self+ contains any +nil+-valued entries,
+ *  returns +self+ with all +nil+-valued entries removed;
+ *  returns +nil+ otherwise:
  *
- *  Returns +nil+ if no entries were removed.
+ *    h = {foo: 0, bar: nil, baz: 2, bat: nil}
+ *    h.compact!
+ *    h          # => {foo: 0, baz: 2}
+ *    h.compact! # => nil
+ *
+ *  Related: see {Methods for Deleting}[rdoc-ref:Hash@Methods+for+Deleting].
  */
 
 static VALUE
@@ -4389,28 +4429,26 @@ rb_hash_compact_bang(VALUE hash)
  *  call-seq:
  *    compare_by_identity -> self
  *
- *  Sets +self+ to consider only identity in comparing keys;
- *  two keys are considered the same only if they are the same object;
- *  returns +self+.
+ *  Sets +self+ to compare keys using _identity_ (rather than mere _equality_);
+ *  returns +self+:
  *
- *  By default, these two object are considered to be the same key,
- *  so +s1+ will overwrite +s0+:
- *    s0 = 'x'
- *    s1 = 'x'
+ *  By default, two keys are considered to be the same key
+ *  if and only if they are _equal_ objects (per method #==):
+ *
  *    h = {}
- *    h.compare_by_identity? # => false
- *    h[s0] = 0
- *    h[s1] = 1
+ *    h['x'] = 0
+ *    h['x'] = 1 # Overwrites.
  *    h # => {"x"=>1}
  *
- *  After calling \#compare_by_identity, the keys are considered to be different,
- *  and therefore do not overwrite each other:
- *    h = {}
- *    h.compare_by_identity # => {}
- *    h.compare_by_identity? # => true
- *    h[s0] = 0
- *    h[s1] = 1
- *    h # => {"x"=>0, "x"=>1}
+ *  When this method has been called, two keys are considered to be the same key
+ *  if and only if they are the _same_ object:
+ *
+ *    h.compare_by_identity
+ *    h['x'] = 2 # Does not overwrite.
+ *    h # => {"x"=>1, "x"=>2}
+ *
+ *  Related: #compare_by_identity?;
+ *  see also {Methods for Comparing}[rdoc-ref:Hash@Methods+for+Comparing].
  */
 
 VALUE
@@ -4457,7 +4495,15 @@ rb_hash_compare_by_id(VALUE hash)
  *  call-seq:
  *    compare_by_identity? -> true or false
  *
- *  Returns +true+ if #compare_by_identity has been called, +false+ otherwise.
+ *  Returns whether #compare_by_identity has been called:
+ *
+ *    h = {}
+ *    h.compare_by_identity? # => false
+ *    h.compare_by_identity
+ *    h.compare_by_identity? # => true
+ *
+ *  Related: #compare_by_identity;
+ *  see also {Methods for Comparing}[rdoc-ref:Hash@Methods+for+Comparing].
  */
 
 VALUE
@@ -4557,7 +4603,8 @@ any_p_i_pattern(VALUE key, VALUE value, VALUE arg)
  *  With both argument +entry+ and a block given,
  *  issues a warning and ignores the block.
  *
- *  Related: Enumerable#any? (which this method overrides).
+ *  Related: Enumerable#any? (which this method overrides);
+ *  see also {Methods for Fetching}[rdoc-ref:Hash@Methods+for+Fetching].
  */
 
 static VALUE
@@ -4593,29 +4640,35 @@ rb_hash_any_p(int argc, VALUE *argv, VALUE hash)
  *  call-seq:
  *    dig(key, *identifiers) -> object
  *
- *  Finds and returns the object in nested objects
- *  that is specified by +key+ and +identifiers+.
+ *  Finds and returns an object found in nested objects,
+ *  as specified by +key+ and +identifiers+.
+ *
  *  The nested objects may be instances of various classes.
  *  See {Dig Methods}[rdoc-ref:dig_methods.rdoc].
  *
- *  Nested Hashes:
+ *  Nested hashes:
+ *
  *    h = {foo: {bar: {baz: 2}}}
  *    h.dig(:foo) # => {bar: {baz: 2}}
  *    h.dig(:foo, :bar) # => {baz: 2}
  *    h.dig(:foo, :bar, :baz) # => 2
  *    h.dig(:foo, :bar, :BAZ) # => nil
  *
- *  Nested Hashes and Arrays:
+ *  Nested hashes and arrays:
+ *
  *    h = {foo: {bar: [:a, :b, :c]}}
  *    h.dig(:foo, :bar, 2) # => :c
  *
- *  This method will use the {hash default}[rdoc-ref:Hash@Hash+Default]
- *  for keys that are not present:
+ *  If no such object is found,
+ *  returns the {hash default}[rdoc-ref:Hash@Hash+Default]:
+ *
  *    h = {foo: {bar: [:a, :b, :c]}}
  *    h.dig(:hello) # => nil
  *    h.default_proc = -> (hash, _key) { hash }
- *    h.dig(:hello, :world) # => h
- *    h.dig(:hello, :world, :foo, :bar, 2) # => :c
+ *    h.dig(:hello, :world)
+ *    # => {:foo=>{:bar=>[:a, :b, :c]}}
+ *
+ *  Related: {Methods for Fetching}[rdoc-ref:Hash@Methods+for+Fetching].
  */
 
 static VALUE
@@ -4989,7 +5042,7 @@ env_name(volatile VALUE *s)
 static VALUE env_aset(VALUE nm, VALUE val);
 
 static void
-reset_by_modified_env(const char *nam)
+reset_by_modified_env(const char *nam, const char *val)
 {
     /*
      * ENV['TZ'] = nil has a special meaning.
@@ -4998,7 +5051,7 @@ reset_by_modified_env(const char *nam)
      * This hack might works only on Linux glibc.
      */
     if (ENVMATCH(nam, TZ_ENV)) {
-        ruby_reset_timezone();
+        ruby_reset_timezone(val);
     }
 }
 
@@ -5006,7 +5059,7 @@ static VALUE
 env_delete(VALUE name)
 {
     const char *nam = env_name(name);
-    reset_by_modified_env(nam);
+    reset_by_modified_env(nam, NULL);
     VALUE val = getenv_with_lock(nam);
 
     if (!NIL_P(val)) {
@@ -5412,7 +5465,7 @@ env_aset(VALUE nm, VALUE val)
     get_env_ptr(value, val);
 
     ruby_setenv(name, value);
-    reset_by_modified_env(name);
+    reset_by_modified_env(name, value);
     return val;
 }
 
@@ -7036,7 +7089,6 @@ static const rb_data_type_t env_data_type = {
  *  - {Iterating}[rdoc-ref:Hash@Methods+for+Iterating]
  *  - {Converting}[rdoc-ref:Hash@Methods+for+Converting]
  *  - {Transforming Keys and Values}[rdoc-ref:Hash@Methods+for+Transforming+Keys+and+Values]
- *  - {And more....}[rdoc-ref:Hash@Other+Methods]
  *
  *  Class +Hash+ also includes methods from module Enumerable.
  *
@@ -7124,6 +7176,7 @@ static const rb_data_type_t env_data_type = {
  *
  *  ==== Methods for Converting
  *
+ *  - #flatten: Returns an array that is a 1-dimensional flattening of +self+.
  *  - #inspect (aliased as #to_s): Returns a new String containing the hash entries.
  *  - #to_a: Returns a new array of 2-element arrays;
  *    each nested array contains a key-value pair from +self+.
@@ -7134,14 +7187,12 @@ static const rb_data_type_t env_data_type = {
  *
  *  ==== Methods for Transforming Keys and Values
  *
+ *  - #flatten!: Returns +self+, flattened.
+ *  - #invert: Returns a hash with the each key-value pair inverted.
  *  - #transform_keys: Returns a copy of +self+ with modified keys.
  *  - #transform_keys!: Modifies keys in +self+
  *  - #transform_values: Returns a copy of +self+ with modified values.
  *  - #transform_values!: Modifies values in +self+.
- *
- *  ==== Other Methods
- *  - #flatten: Returns an array that is a 1-dimensional flattening of +self+.
- *  - #invert: Returns a hash with the each key-value pair inverted.
  *
  */
 

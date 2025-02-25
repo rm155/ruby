@@ -433,15 +433,12 @@ jit_compile(rb_execution_context_t *ec)
 {
     const rb_iseq_t *iseq = ec->cfp->iseq;
     struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
-    bool yjit_enabled = rb_yjit_enabled_p;
 
     // Increment the ISEQ's call counter and trigger JIT compilation if not compiled
-    if (body->jit_entry == NULL && yjit_enabled) {
+    if (body->jit_entry == NULL && rb_yjit_enabled_p) {
         body->jit_entry_calls++;
-        if (yjit_enabled) {
-            if (rb_yjit_threshold_hit(iseq, body->jit_entry_calls)) {
-                rb_yjit_compile_iseq(iseq, ec, false);
-            }
+        if (rb_yjit_threshold_hit(iseq, body->jit_entry_calls)) {
+            rb_yjit_compile_iseq(iseq, ec, false);
         }
     }
     return body->jit_entry;
@@ -477,18 +474,14 @@ jit_compile_exception(rb_execution_context_t *ec)
 {
     const rb_iseq_t *iseq = ec->cfp->iseq;
     struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
-    if (!rb_yjit_enabled_p) {
-        return NULL;
-    }
 
     // Increment the ISEQ's call counter and trigger JIT compilation if not compiled
-    if (body->jit_exception == NULL) {
+    if (body->jit_exception == NULL && rb_yjit_enabled_p) {
         body->jit_exception_calls++;
         if (body->jit_exception_calls == rb_yjit_call_threshold) {
             rb_yjit_compile_iseq(iseq, ec, true);
         }
     }
-
     return body->jit_exception;
 }
 
@@ -1131,6 +1124,21 @@ rb_vm_env_local_variables(const rb_env_t *env)
     struct local_var_list vars;
     local_var_list_init(&vars);
     collect_local_variables_in_env(env, &vars);
+    return local_var_list_finish(&vars);
+}
+
+VALUE
+rb_vm_env_numbered_parameters(const rb_env_t *env)
+{
+    struct local_var_list vars;
+    local_var_list_init(&vars);
+    // if (VM_ENV_FLAGS(env->ep, VM_ENV_FLAG_ISOLATED)) break; // TODO: is this needed?
+    const rb_iseq_t *iseq = env->iseq;
+    unsigned int i;
+    if (!iseq) return 0;
+    for (i = 0; i < ISEQ_BODY(iseq)->local_table_size; i++) {
+        numparam_list_add(&vars, ISEQ_BODY(iseq)->local_table[i]);
+    }
     return local_var_list_finish(&vars);
 }
 
