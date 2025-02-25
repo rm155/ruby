@@ -5141,8 +5141,25 @@ gc_mark_in_range(rb_objspace_t *objspace, VALUE obj)
 static void
 gc_mark(rb_objspace_t *objspace, VALUE obj)
 {
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE) || !using_local_limits(objspace));
-    VM_ASSERT(!objspace->local_gate->shareable_child_expected || FL_TEST(obj, FL_SHAREABLE));
+#if VM_CHECK_MODE > 0
+    if (!FL_TEST(obj, FL_SHAREABLE)) {
+	VALUE parent = objspace->local_gate->current_marking_parent;
+	if (GET_OBJSPACE_OF_VALUE(obj) != objspace && using_local_limits(objspace)) {
+	    fprintf(stderr, "parent object:\n");
+	    rb_obj_info_dump(parent);
+	    fprintf(stderr, "marking target object:\n");
+	    rb_obj_info_dump(obj);
+	    rb_bug("try to mark object of Ractor #%d during Local GC of Ractor #%d", GET_RACTOR_OF_VALUE(obj)->pub.id, GET_RACTOR()->pub.id);
+	}
+	if (objspace->local_gate->shareable_child_expected) {
+	    fprintf(stderr, "(parent object) ");
+	    rb_obj_info_dump(parent);
+	    fprintf(stderr, "(marking target object) ");
+	    rb_obj_info_dump(obj);
+	    rb_bug("try to mark unshareable object though shareable object was expected");
+	}
+    }
+#endif
 
     GC_ASSERT(during_gc);
     if (!confirm_global_connections(objspace, obj)) return;
@@ -5329,6 +5346,7 @@ gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
 #if VM_CHECK_MODE > 0
     objspace->local_gate->current_parent_objspace = GET_OBJSPACE_OF_VALUE(obj);
     objspace->local_gate->shareable_child_expected = (FL_TEST_RAW(obj, FL_SHAREABLE) && !rb_gc_impl_unshareable_references_permission_p(obj));
+    objspace->local_gate->current_marking_parent = obj;
 #else
     if (!using_local_limits(objspace)) {
 	objspace->local_gate->current_parent_objspace = GET_OBJSPACE_OF_VALUE(obj);
@@ -5343,6 +5361,7 @@ gc_mark_reset_parent(rb_objspace_t *objspace)
     objspace->local_gate->current_parent_objspace = objspace;
 #if VM_CHECK_MODE > 0
     objspace->local_gate->shareable_child_expected = false;
+    objspace->local_gate->current_marking_parent = Qfalse;
 #endif
 }
 

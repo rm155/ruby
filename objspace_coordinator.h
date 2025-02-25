@@ -151,6 +151,7 @@ typedef struct rb_objspace_gate {
     struct rb_objspace *current_parent_objspace;
 #if VM_CHECK_MODE > 0
     bool shareable_child_expected;
+    VALUE current_marking_parent;
 #endif
     struct gc_mark_func_data_struct {
         void *data;
