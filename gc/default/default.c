@@ -4187,6 +4187,9 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
                 }
                 gc_report(3, objspace, "page_sweep: %s is added to freelist\n", rb_obj_info(vp));
                 ctx->empty_slots++;
+#if GC_ALGORITHM == 1 || VM_CHECK_MODE > 0
+                if (RVALUE_UNSHAREABLE_REF_PERMISSION(objspace, vp)) CLEAR_IN_BITMAP(GET_HEAP_UNSHAREABLE_REF_PERMISSION_BITS(vp), vp);
+#endif
                 heap_page_add_freeobj(objspace, sweep_page, vp);
                 break;
               case T_ZOMBIE:
