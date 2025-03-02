@@ -703,10 +703,8 @@ typedef struct gc_function_map {
     bool (*garbage_object_p)(void *objspace_ptr, VALUE obj);
     void (*set_event_hook)(void *objspace_ptr, const rb_event_flag_t event);
     void (*copy_attributes)(void *objspace_ptr, VALUE dest, VALUE obj);
-#if VM_CHECK_MODE > 0
     void (*permit_unshareable_references)(VALUE obj);
     void (*unshareable_references_permission_p)(VALUE obj);
-#endif
 
     bool modular_gc_loaded_p;
 } rb_gc_function_map_t;
@@ -901,10 +899,8 @@ ruby_modular_gc_init(void)
     load_modular_gc_func(garbage_object_p);
     load_modular_gc_func(set_event_hook);
     load_modular_gc_func(copy_attributes);
-#if VM_CHECK_MODE > 0
     load_modular_gc_func(permit_unshareable_references);
     load_modular_gc_func(unshareable_references_permission_p);
-#endif
 
 # undef load_modular_gc_func
 
@@ -1006,10 +1002,8 @@ ruby_modular_gc_init(void)
 # define rb_gc_impl_set_event_hook rb_gc_functions.set_event_hook
 # define rb_gc_impl_copy_attributes rb_gc_functions.copy_attributes
 
-#if VM_CHECK_MODE > 0
 # define rb_gc_impl_permit_unshareable_references rb_gc_functions.permit_unshareable_references
 # define rb_gc_impl_unshareable_references_permission_p rb_gc_functions.unshareable_references_permission_p
-#endif
 
 #endif
 
@@ -3190,7 +3184,6 @@ rb_verify_mutable_shareable_safety(struct RBasic *obj, VALUE flags)
 }
 #endif
 
-#if VM_CHECK_MODE > 0
 void
 rb_permit_unshareable_references(VALUE obj)
 {
@@ -3210,7 +3203,6 @@ rb_copy_unshareable_references_status(VALUE status_receiver, VALUE original)
 	rb_permit_unshareable_references(status_receiver);
     }
 }
-#endif
 
 void
 rb_gc_writebarrier_gc_blocked(void *objspace_ptr, VALUE a, VALUE b)

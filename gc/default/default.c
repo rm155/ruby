@@ -760,9 +760,7 @@ struct heap_page {
 
     bits_t wb_unprotected_bits[HEAP_PAGE_BITMAP_LIMIT];
     bits_t mutable_shareable_permission_bits[HEAP_PAGE_BITMAP_LIMIT];
-#if VM_CHECK_MODE > 0
     bits_t unshareable_ref_permission_bits[HEAP_PAGE_BITMAP_LIMIT];
-#endif
     /* the following three bitmaps are cleared at the beginning of full GC */
     bits_t mark_bits[HEAP_PAGE_BITMAP_LIMIT];
     bits_t uncollectible_bits[HEAP_PAGE_BITMAP_LIMIT];
@@ -1243,14 +1241,12 @@ RVALUE_MUTABLE_SHAREABLE_PERMISSION(rb_objspace_t *objspace, VALUE obj)
     return RVALUE_MUTABLE_SHAREABLE_PERMISSION_BITMAP(obj) != 0;
 }
 
-#if VM_CHECK_MODE > 0
 static inline int
 RVALUE_UNSHAREABLE_REF_PERMISSION(rb_objspace_t *objspace, VALUE obj)
 {
     check_rvalue_consistency(objspace, obj);
     return RVALUE_UNSHAREABLE_REF_PERMISSION_BITMAP(obj) != 0;
 }
-#endif
 
 bool
 rb_gc_impl_mutable_shareable_permission_p(VALUE obj)
@@ -1267,7 +1263,6 @@ rb_gc_impl_permit_mutable_shareable_direct(VALUE obj)
     MARK_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(obj), obj);
 }
 
-#if VM_CHECK_MODE > 0
 bool
 rb_gc_impl_unshareable_references_permission_p(VALUE obj)
 {
@@ -1279,7 +1274,6 @@ rb_gc_impl_permit_unshareable_references(VALUE obj)
 {
     MARK_IN_BITMAP(GET_HEAP_UNSHAREABLE_REF_PERMISSION_BITS(obj), obj);
 }
-#endif
 
 
 static inline int
@@ -1344,6 +1338,7 @@ rb_gc_impl_local_gate_of_objspace(void *objspace_ptr)
 static int rgengc_remember(rb_objspace_t *objspace, VALUE obj);
 static void rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap);
 static void rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap);
+static void unshareable_ref_set_mark(rb_objspace_t *objspace, rb_heap_t *heap);
 
 static int
 check_rvalue_consistency_force(rb_objspace_t *objspace, const VALUE obj, int terminate)
@@ -4121,12 +4116,23 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
     short slot_bits = slot_size / BASE_SLOT_SIZE;
     GC_ASSERT(slot_bits > 0);
 
+    bool local_limits = using_local_limits(objspace);
+
     do {
         VALUE vp = (VALUE)p;
         GC_ASSERT(vp % BASE_SLOT_SIZE == 0);
 
         rb_asan_unpoison_object(vp, false);
         if (bitset & 1) {
+	    if ((local_limits && FL_TEST_RAW(vp, FL_SHAREABLE))) {
+		if (RVALUE_OLD_P(objspace, vp)) {
+		    objspace->rgengc.old_objects++;
+		}
+		p += slot_size;
+		bitset >>= slot_bits;
+		continue;
+	    }
+
             switch (BUILTIN_TYPE(vp)) {
               default: /* majority case */
                 gc_report(2, objspace, "page_sweep: free %p\n", (void *)p);
@@ -4139,17 +4145,13 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 
                 if (RVALUE_WB_UNPROTECTED(objspace, vp)) CLEAR_IN_BITMAP(GET_HEAP_WB_UNPROTECTED_BITS(vp), vp);
                 if (RVALUE_MUTABLE_SHAREABLE_PERMISSION(objspace, vp)) CLEAR_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(vp), vp);
-#if VM_CHECK_MODE > 0
                 if (RVALUE_UNSHAREABLE_REF_PERMISSION(objspace, vp)) CLEAR_IN_BITMAP(GET_HEAP_UNSHAREABLE_REF_PERMISSION_BITS(vp), vp);
-#endif
 
 #if RGENGC_CHECK_MODE
 #define CHECK(x) if (x(objspace, vp) != FALSE) rb_bug("obj_free: " #x "(%s) != FALSE", rb_obj_info(vp))
                 CHECK(RVALUE_WB_UNPROTECTED);
                 CHECK(RVALUE_MUTABLE_SHAREABLE_PERMISSION);
-#if VM_CHECK_MODE > 0
                 CHECK(RVALUE_UNSHAREABLE_REF_PERMISSION);
-#endif
                 CHECK(RVALUE_MARKED);
                 CHECK(RVALUE_MARKING);
                 CHECK(RVALUE_UNCOLLECTIBLE);
@@ -5352,7 +5354,7 @@ gc_mark_set_parent(rb_objspace_t *objspace, VALUE obj)
 
 #if VM_CHECK_MODE > 0
     objspace->local_gate->current_parent_objspace = GET_OBJSPACE_OF_VALUE(obj);
-    objspace->local_gate->shareable_child_expected = (FL_TEST_RAW(obj, FL_SHAREABLE) && !rb_gc_impl_unshareable_references_permission_p(obj));
+    objspace->local_gate->shareable_child_expected = (FL_TEST_RAW(obj, FL_SHAREABLE) && !RVALUE_UNSHAREABLE_REF_PERMISSION(objspace->local_gate->current_parent_objspace, obj));
     objspace->local_gate->current_marking_parent = obj;
 #else
     if (!using_local_limits(objspace)) {
@@ -5415,6 +5417,12 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
     VALUE obj;
     size_t marked_slots_at_the_beginning = objspace->marked_slots;
     size_t popped_count = 0;
+
+    if (using_local_limits(objspace)) {
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            unshareable_ref_set_mark(objspace, &heaps[i]);
+        }
+    }
 
     while (pop_mark_stack(mstack, &obj)) {
         if (obj == Qundef) continue; /* skip */
@@ -5745,6 +5753,9 @@ check_generation_i(const VALUE child, void *ptr)
 
     bool absorption_correction_needed = data->objspace->rgengc.need_major_gc & GPR_FLAG_MAJOR_BY_ABSORB;
     if (GET_OBJSPACE_OF_VALUE(child) != data->objspace || absorption_correction_needed) return;
+
+    if (FL_TEST_RAW(parent, FL_SHAREABLE)) return;
+
     if (!RVALUE_OLD_P(data->objspace, child)) {
         if (!RVALUE_REMEMBERED(data->objspace, parent) &&
             !RVALUE_REMEMBERED(data->objspace, child) &&
@@ -5806,7 +5817,7 @@ verify_internal_consistency_i(void *page_start, void *page_end, size_t stride,
                 if (RVALUE_WB_UNPROTECTED(objspace, obj) && RVALUE_UNCOLLECTIBLE(objspace, obj)) data->remembered_shady_count++;
 
 #if VM_CHECK_MODE > 0
-		if (FL_TEST_RAW(obj, FL_SHAREABLE) && !rb_gc_impl_unshareable_references_permission_p(obj)) {
+		if (FL_TEST_RAW(obj, FL_SHAREABLE) && !RVALUE_UNSHAREABLE_REF_PERMISSION(objspace, obj)) {
                     data->parent = obj;
                     rb_objspace_reachable_objects_from(obj, check_shareability_i, (void *)data);
 		}
@@ -6258,10 +6269,17 @@ gc_marks_finish(rb_objspace_t *objspace)
                 (size_t)(objspace->rgengc.uncollectible_wb_unprotected_objects * r),
                 (size_t)(objspace->rgengc.old_objects * gc_params.uncollectible_wb_unprotected_objects_limit_ratio)
             );
-            objspace->rgengc.old_objects_limit = (size_t)(objspace->rgengc.old_objects * r);
+	    objspace->rgengc.old_objects_limit = (size_t)(objspace->rgengc.old_objects * r);
+
+	    rb_objspace_coordinator_t *coordinator = rb_get_objspace_coordinator();
+	    rb_native_mutex_lock(&coordinator->shareable_object_estimate_lock);
+	    coordinator->shareable_object_estimate += objspace->local_gate->current_shareable_object_count - objspace->local_gate->prev_shareable_object_count;
+	    rb_native_mutex_unlock(&coordinator->shareable_object_estimate_lock);
+
+	    objspace->local_gate->prev_shareable_object_count = objspace->local_gate->current_shareable_object_count;
 
 	    arrange_next_gc_global_status(gc_params.sharedobject_limit_factor);
-        }
+	}
 
         if (objspace->rgengc.uncollectible_wb_unprotected_objects > objspace->rgengc.uncollectible_wb_unprotected_objects_limit) {
             gc_needs_major_flags |= GPR_FLAG_MAJOR_BY_SHADY;
@@ -6575,6 +6593,11 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
         objspace->rgengc.last_major_gc = objspace->profile.count;
         objspace->marked_slots = 0;
 
+	objspace->local_gate->current_shareable_object_count = 0;
+        if (objspace->flags.during_global_gc) {
+	    objspace->local_gate->prev_shareable_object_count = 0;
+	}
+
         for (int i = 0; i < HEAP_COUNT; i++) {
             rb_heap_t *heap = &heaps[i];
             rgengc_mark_and_rememberset_clear(objspace, heap);
@@ -6839,6 +6862,53 @@ rgengc_rememberset_mark(rb_objspace_t *objspace, rb_heap_t *heap)
     gc_report(1, objspace, "rgengc_rememberset_mark: finished\n");
 }
 
+static inline void
+unshareable_ref_set_mark_plane(rb_objspace_t *objspace, uintptr_t p, bits_t bitset)
+{
+    if (bitset) {
+        do {
+            if (bitset & 1) {
+                VALUE obj = (VALUE)p;
+		if (!RVALUE_MARKED(objspace, obj) && is_full_marking(objspace) ) {
+		    objspace->local_gate->current_shareable_object_count++;
+		}
+		gc_mark(objspace, obj);
+            }
+            p += BASE_SLOT_SIZE;
+            bitset >>= 1;
+        } while (bitset);
+    }
+}
+
+static void
+unshareable_ref_set_mark(rb_objspace_t *objspace, rb_heap_t *heap)
+{
+    size_t j;
+    struct heap_page *page = 0;
+
+    gc_mark_reset_parent(objspace);
+
+    ccan_list_for_each(&heap->pages, page, page_node) {
+            uintptr_t p = page->start;
+            bits_t bitset, bits[HEAP_PAGE_BITMAP_LIMIT];
+            bits_t *unshareable_ref_permission_bits = page->unshareable_ref_permission_bits;
+            for (j=0; j<HEAP_PAGE_BITMAP_LIMIT; j++) {
+                bits[j] = unshareable_ref_permission_bits[j];
+            }
+
+            bitset = bits[0];
+            bitset >>= NUM_IN_PAGE(p);
+            unshareable_ref_set_mark_plane(objspace, p, bitset);
+            p += (BITS_BITLENGTH - NUM_IN_PAGE(p)) * BASE_SLOT_SIZE;
+
+            for (j=1; j < HEAP_PAGE_BITMAP_LIMIT; j++) {
+                bitset = bits[j];
+                unshareable_ref_set_mark_plane(objspace, p, bitset);
+                p += BITS_BITLENGTH * BASE_SLOT_SIZE;
+            }
+    }
+}
+
 static void
 rgengc_mark_and_rememberset_clear(rb_objspace_t *objspace, rb_heap_t *heap)
 {
@@ -6910,6 +6980,13 @@ gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t *objspace)
     VM_ASSERT(is_incremental_marking(objspace));
 
     VM_ASSERT(RB_LIKELY(GET_OBJSPACE_OF_VALUE(a) == objspace));
+
+    if (!FL_TEST_RAW(b, FL_SHAREABLE)) {
+	if (FL_TEST_RAW(a, FL_SHAREABLE)) {
+	    gc_mark_from(objspace, b, a);
+	}
+    }
+
     if (RVALUE_BLACK_P(objspace, a)) {
 	if (RVALUE_WHITE_P(objspace, b)) {
 	    if (!RVALUE_WB_UNPROTECTED(objspace, a)) {
@@ -8019,9 +8096,7 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     int marked;
     int wb_unprotected;
     int mutable_shareable_permission;
-#if VM_CHECK_MODE > 0
     int unshareable_ref_permission;
-#endif
     int uncollectible;
     int age;
 
@@ -8036,9 +8111,7 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     marked = RVALUE_MARKED(objspace, src);
     wb_unprotected = RVALUE_WB_UNPROTECTED(objspace, src);
     mutable_shareable_permission = RVALUE_MUTABLE_SHAREABLE_PERMISSION(objspace, src);
-#if VM_CHECK_MODE > 0
     unshareable_ref_permission = RVALUE_UNSHAREABLE_REF_PERMISSION(objspace, src);
-#endif
     uncollectible = RVALUE_UNCOLLECTIBLE(objspace, src);
     bool remembered = RVALUE_REMEMBERED(objspace, src);
     age = RVALUE_AGE_GET(src);
@@ -8099,14 +8172,12 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
         CLEAR_IN_BITMAP(GET_HEAP_MUTABLE_SHAREABLE_PERMISSION_BITS(dest), dest);
     }
 
-#if VM_CHECK_MODE > 0
     if (unshareable_ref_permission) {
         MARK_IN_BITMAP(GET_HEAP_UNSHAREABLE_REF_PERMISSION_BITS(dest), dest);
     }
     else {
         CLEAR_IN_BITMAP(GET_HEAP_UNSHAREABLE_REF_PERMISSION_BITS(dest), dest);
     }
-#endif
 
     if (uncollectible) {
         MARK_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS(dest), dest);
@@ -10993,4 +11064,3 @@ rb_gc_impl_init(void)
         OBJ_FREEZE(opts);
     }
 }
-

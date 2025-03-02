@@ -1,6 +1,8 @@
 #ifndef RUBY_OBJSPACE_COORDINATOR_H
 #define RUBY_OBJSPACE_COORDINATOR_H
 
+#define GC_ALGORITHM 1
+
 #include "internal/gc.h"
 
 typedef struct rb_ractor_struct rb_ractor_t; /* in vm_core.h */
@@ -36,6 +38,9 @@ typedef struct rb_objspace_coordinator {
 	int objspace_readers;
 	int absorbers;
     } absorption;
+
+    int shareable_object_estimate;
+    rb_nativethread_lock_t shareable_object_estimate_lock;
 
 } rb_objspace_coordinator_t;
 
@@ -172,6 +177,9 @@ typedef struct rb_objspace_gate {
     rb_nativethread_lock_t objspace_lock;
     rb_ractor_t *objspace_lock_owner;
     int objspace_lock_level;
+
+    int prev_shareable_object_count;
+    int current_shareable_object_count;
 
     rb_ractor_t *alloc_target_ractor;
 

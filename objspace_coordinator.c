@@ -58,6 +58,9 @@ rb_objspace_coordinator_init(void)
 
     rb_native_cond_initialize(&objspace_coordinator->global_gc_finished);
 
+    objspace_coordinator->shareable_object_estimate = 0;
+    rb_nativethread_lock_initialize(&objspace_coordinator->shareable_object_estimate_lock);
+
     rb_vm_t *vm = GET_VM();
     vm->objspace_coordinator = objspace_coordinator;
     return objspace_coordinator;
@@ -73,6 +76,8 @@ rb_objspace_coordinator_free(rb_objspace_coordinator_t *objspace_coordinator)
 
     rb_nativethread_lock_destroy(&objspace_coordinator->absorption.mode_lock);
     rb_native_cond_destroy(&objspace_coordinator->absorption.mode_change_cond);
+
+    rb_nativethread_lock_destroy(&objspace_coordinator->shareable_object_estimate_lock);
 
     rb_vm_t *vm = GET_VM();
     vm->objspace_coordinator = NULL;
@@ -333,6 +338,9 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
     rb_native_cond_initialize(&local_gate->local_gc_stop_cond);
 
     local_gate->alloc_target_ractor = NULL;
+
+    local_gate->prev_shareable_object_count = 0;
+    local_gate->current_shareable_object_count = 0;
 
     lock_ractor_set();
     ccan_list_add_tail(&vm->objspace_set, &local_gate->gate_node);
@@ -1707,6 +1715,8 @@ begin_global_gc_section(rb_objspace_coordinator_t *coordinator, rb_objspace_gate
     local_gate->running_global_gc = true;
     coordinator->global_gc_underway = true;
     rb_vm_barrier();
+
+    coordinator->shareable_object_estimate = 0;
 }
 
 void
@@ -1781,12 +1791,14 @@ arrange_next_gc_global_status(double sharedobject_limit_factor)
     rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
     rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
 
-    int shared_plus_local_immune = objspace_coordinator->rglobalgc.shared_objects_total + local_immune_objects_global_count();
+    rb_native_mutex_lock(&objspace_coordinator->shareable_object_estimate_lock);
+    int shareable_total = objspace_coordinator->shareable_object_estimate;
+    rb_native_mutex_unlock(&objspace_coordinator->shareable_object_estimate_lock);
 
     if (rb_during_global_gc()) {
-	objspace_coordinator->rglobalgc.global_gc_threshold = (size_t)(shared_plus_local_immune * sharedobject_limit_factor);
+	objspace_coordinator->rglobalgc.global_gc_threshold = (size_t)(shareable_total * sharedobject_limit_factor);
     }
-    else if (rb_multi_ractor_p() && shared_plus_local_immune > objspace_coordinator->rglobalgc.global_gc_threshold) {
+    else if (rb_multi_ractor_p() && shareable_total > objspace_coordinator->rglobalgc.global_gc_threshold) {
 	objspace_coordinator->rglobalgc.need_global_gc = true;
     }
 
