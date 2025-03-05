@@ -3402,9 +3402,6 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
         rb_ary_push(table, block);
     }
     else {
-	if (!ruby_single_main_objspace) {
-	    add_local_immune_object(block);
-	}
         table = rb_ary_new3(1, block);
 	rb_permit_mutable_shareable(table);
 	ALLOW_UNSHAREABLE_REFERENCES(table);
@@ -4125,7 +4122,8 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
         rb_asan_unpoison_object(vp, false);
         if (bitset & 1) {
 	    if ((local_limits && FL_TEST_RAW(vp, FL_SHAREABLE))) {
-		if (RVALUE_OLD_P(objspace, vp)) {
+		objspace->local_gate->shareable_object_estimate++;
+		if (is_full_marking(objspace) && RVALUE_OLD_P(objspace, vp)) {
 		    objspace->rgengc.old_objects++;
 		}
 		p += slot_size;
@@ -4510,6 +4508,10 @@ gc_sweep_finish(rb_objspace_t *objspace)
 
     rb_gc_event_hook(0, RUBY_INTERNAL_EVENT_GC_END_SWEEP);
     gc_mode_transition(objspace, gc_mode_none);
+
+    if (is_full_marking(objspace)) {
+	objspace->local_gate->prev_shareable_object_estimate = objspace->local_gate->shareable_object_estimate;
+    }
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
@@ -5101,35 +5103,20 @@ check_not_tnone(VALUE obj)
     }
 }
 
-static bool
-confirm_global_connections(rb_objspace_t *objspace, VALUE obj)
-{
-    if (!ruby_single_main_objspace) {
-	if (objspace->flags.during_global_gc) {
-	    VM_ASSERT(is_full_marking(objspace));
-	    if (objspace->local_gate->current_parent_objspace != GET_OBJSPACE_OF_VALUE(obj)) {
-		check_not_tnone(obj);
-		mark_in_external_reference_tbl(objspace->local_gate->current_parent_objspace->local_gate, obj);
-	    }
-	}
-	else {
-	    if (!in_local_marking_range(objspace, obj)) {
-		if (is_full_marking(objspace)) {
-		    check_not_tnone(obj);
-		    mark_in_external_reference_tbl(objspace->local_gate, obj);
-		}
-		return false;
-	    }
-	}
-    }
-    return true;
-}
-
 static void
 gc_mark_in_range(rb_objspace_t *objspace, VALUE obj)
 {
     rgengc_check_relation(objspace, obj);
     if (!gc_mark_set(objspace, obj)) return; /* already marked */
+
+    if (!ruby_single_main_objspace && FL_TEST_RAW(obj, FL_SHAREABLE)) {
+	if (objspace->flags.during_global_gc) {
+	    objspace->local_gate->global_shareable_object_estimate++;
+	}
+	else if (is_full_marking(objspace)){
+	    objspace->local_gate->shareable_object_estimate++;
+	}
+    }
 
     if (0) { // for debug GC marking miss
 	if (objspace->rgengc.parent_object) {
@@ -5171,7 +5158,8 @@ gc_mark(rb_objspace_t *objspace, VALUE obj)
 #endif
 
     GC_ASSERT(during_gc);
-    if (!confirm_global_connections(objspace, obj)) return;
+
+    if (using_local_limits(objspace) && !in_local_marking_range(objspace, obj)) return;
     gc_mark_in_range(objspace, obj);
 }
 
@@ -6163,7 +6151,7 @@ gc_update_weak_references(rb_objspace_t *objspace)
 
         if (RB_SPECIAL_CONST_P(obj)) continue;
 
-        if (!RVALUE_MARKED(objspace, obj)) {
+        if (!RVALUE_MARKED(objspace, obj) && !(using_local_limits(objspace) && FL_TEST_RAW(obj, FL_SHAREABLE))) {
             **ptr_ptr = Qundef;
         }
         else {
@@ -6205,8 +6193,6 @@ gc_marks_finish(rb_objspace_t *objspace)
 
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace->local_gate);
-    if (is_full_marking(objspace)) update_shared_object_references(objspace->local_gate);
-    if (!using_local_limits(objspace)) update_local_immune_tbl(objspace->local_gate);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);
@@ -6271,14 +6257,9 @@ gc_marks_finish(rb_objspace_t *objspace)
             );
 	    objspace->rgengc.old_objects_limit = (size_t)(objspace->rgengc.old_objects * r);
 
-	    rb_objspace_coordinator_t *coordinator = rb_get_objspace_coordinator();
-	    rb_native_mutex_lock(&coordinator->shareable_object_estimate_lock);
-	    coordinator->shareable_object_estimate += objspace->local_gate->current_shareable_object_count - objspace->local_gate->prev_shareable_object_count;
-	    rb_native_mutex_unlock(&coordinator->shareable_object_estimate_lock);
-
-	    objspace->local_gate->prev_shareable_object_count = objspace->local_gate->current_shareable_object_count;
-
-	    arrange_next_gc_global_status(gc_params.sharedobject_limit_factor);
+	    if (using_local_limits(objspace)) {
+		arrange_next_gc_global_status(gc_params.sharedobject_limit_factor);
+	    }
 	}
 
         if (objspace->rgengc.uncollectible_wb_unprotected_objects > objspace->rgengc.uncollectible_wb_unprotected_objects_limit) {
@@ -6572,9 +6553,6 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
     gc_report(1, objspace, "gc_marks_start: (%s)\n", full_mark ? "full" : "minor");
     gc_mode_transition(objspace, gc_mode_marking);
 
-    VM_ASSERT(count_objspaces(GET_VM()) > 1 || (shared_reference_tbl_empty(objspace->local_gate) && external_reference_tbl_empty(objspace->local_gate)));
-    confirm_externally_added_external_references(objspace->local_gate);
-
     if (full_mark) {
         size_t incremental_marking_steps = (objspace->rincgc.pooled_slots / INCREMENTAL_MARK_STEP_ALLOCATIONS) + 1;
         objspace->rincgc.step_slots = (objspace->marked_slots * 2) / incremental_marking_steps;
@@ -6593,10 +6571,8 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
         objspace->rgengc.last_major_gc = objspace->profile.count;
         objspace->marked_slots = 0;
 
-	objspace->local_gate->current_shareable_object_count = 0;
-        if (objspace->flags.during_global_gc) {
-	    objspace->local_gate->prev_shareable_object_count = 0;
-	}
+	objspace->local_gate->shareable_object_estimate = 0;
+	objspace->local_gate->global_shareable_object_estimate = 0;
 
         for (int i = 0; i < HEAP_COUNT; i++) {
             rb_heap_t *heap = &heaps[i];
@@ -6699,6 +6675,17 @@ gc_marks_global(rb_objspace_t *objspace)
 
     global_gc_for_each_objspace(vm, local_gate, gc_marks_rest_no_finish);
     global_gc_for_each_objspace(vm, local_gate, gc_marks_finish);
+    if (rb_during_global_gc()) {
+	rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
+	int shareable_total = 0;
+	lock_ractor_set();
+	rb_objspace_gate_t *local_gate = NULL;
+	ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
+	    shareable_total += local_gate->global_shareable_object_estimate;
+	}
+	unlock_ractor_set();
+	objspace_coordinator->rglobalgc.global_gc_threshold = (size_t)(shareable_total * gc_params.sharedobject_limit_factor);
+    }
 
 #if RGENGC_PROFILE > 0
     global_gc_for_each_objspace(vm, local_gate, gc_record_old_objects);
@@ -6869,9 +6856,6 @@ unshareable_ref_set_mark_plane(rb_objspace_t *objspace, uintptr_t p, bits_t bits
         do {
             if (bitset & 1) {
                 VALUE obj = (VALUE)p;
-		if (!RVALUE_MARKED(objspace, obj) && is_full_marking(objspace) ) {
-		    objspace->local_gate->current_shareable_object_count++;
-		}
 		gc_mark(objspace, obj);
             }
             p += BASE_SLOT_SIZE;
@@ -8041,12 +8025,6 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 	    if (FL_TEST_RAW(obj, FL_SHAREABLE)) {
 		return FALSE;
 	    }
-	    GC_ASSERT(!rb_local_immune_tbl_contains(objspace->local_gate, obj, false));
-	}
-	else {
-	    if (rb_local_immune_tbl_contains(objspace->local_gate, obj, false)) {
-		return FALSE;
-	    }
 	}
         GC_ASSERT(RVALUE_MARKED(objspace, obj));
         GC_ASSERT(!RVALUE_PINNED(objspace, obj));
@@ -8123,12 +8101,6 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     CLEAR_IN_BITMAP(GET_HEAP_PAGE(src)->remembered_bits, src);
 
     update_obj_id_mapping(objspace, dest, src);
-
-#if VM_CHECK_MODE > 0
-    rb_native_mutex_lock(&objspace->local_gate->shared_reference_tbl_lock);
-    VM_ASSERT(!st_lookup(objspace->local_gate->shared_reference_tbl, (st_data_t)src, NULL));
-    rb_native_mutex_unlock(&objspace->local_gate->shared_reference_tbl_lock);
-#endif
 
     /* Move the object */
     memcpy((void *)dest, (void *)src, MIN(src_slot_size, slot_size));
@@ -8661,7 +8633,6 @@ enum gc_stat_sym {
     gc_stat_sym_remembered_wb_unprotected_objects_limit,
     gc_stat_sym_old_objects,
     gc_stat_sym_old_objects_limit,
-    gc_stat_sym_local_immune_objects,
     gc_stat_sym_shared_objects,
     gc_stat_sym_global_gc_threshold,
 #if RGENGC_ESTIMATE_OLDMALLOC
@@ -8716,7 +8687,6 @@ setup_gc_stat_symbols(void)
         S(old_objects);
         S(old_objects_limit);
 	if (rb_multi_ractor_p()) {
-	    S(local_immune_objects);
 	    S(shared_objects);
 	    S(global_gc_threshold);
 	}
@@ -8763,7 +8733,6 @@ rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym)
 
     rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
     rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
-    size_t local_immune_objects_total_value = local_immune_objects_global_count();
     size_t shared_objects_total_value = objspace_coordinator->rglobalgc.shared_objects_total;
     size_t global_gc_threshold_value = objspace_coordinator->rglobalgc.global_gc_threshold;
     rb_native_mutex_unlock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
@@ -8805,7 +8774,6 @@ rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym)
     SET(old_objects, objspace->rgengc.old_objects);
     SET(old_objects_limit, objspace->rgengc.old_objects_limit);
     if (rb_multi_ractor_p()) {
-	SET(local_immune_objects, local_immune_objects_total_value);
 	SET(shared_objects, shared_objects_total_value);
 	SET(global_gc_threshold, global_gc_threshold_value);
     }
@@ -10949,37 +10917,6 @@ rb_gc_impl_objspace_init(void *objspace_ptr, void *ractor)
     objspace_setup(objspace, ractor);
 }
 
-static VALUE
-gc_external_reference_p(VALUE _, VALUE v)
-{
-    rb_objspace_t *objspace = rb_gc_get_objspace();
-    return RBOOL(rb_external_reference_tbl_contains(objspace->local_gate, v));
-}
-
-static VALUE
-gc_shared_reference_p(VALUE _, VALUE v)
-{
-    rb_objspace_t *objspace = rb_gc_get_objspace();
-    return RBOOL(rb_shared_reference_tbl_contains(objspace->local_gate, v));
-}
-
-static VALUE
-gc_local_immune_p(VALUE _, VALUE v)
-{
-    if (SPECIAL_CONST_P(v)) {
-	return Qfalse;
-    }
-
-    VALUE ret;
-    WITH_OBJSPACE_GATE_ENTER(v, source_gate);
-    {
-	ret = RBOOL(rb_local_immune_tbl_contains(source_gate, v, true));
-    }
-    WITH_OBJSPACE_GATE_LEAVE(source_gate);
-
-    return ret;
-}
-
 void
 rb_gc_impl_init(void)
 {
@@ -10999,10 +10936,6 @@ rb_gc_impl_init(void)
     OBJ_FREEZE(gc_constants);
     /* Internal constants in the garbage collector. */
     rb_define_const(rb_mGC, "INTERNAL_CONSTANTS", gc_constants);
-
-    rb_define_singleton_method(rb_mGC, "external_reference?", gc_external_reference_p, 1);
-    rb_define_singleton_method(rb_mGC, "shared_reference?", gc_shared_reference_p, 1);
-    rb_define_singleton_method(rb_mGC, "local_immune?", gc_local_immune_p, 1);
 
     if (GC_COMPACTION_SUPPORTED) {
         rb_define_singleton_method(rb_mGC, "compact", gc_compact, 0);

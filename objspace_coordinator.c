@@ -55,10 +55,10 @@ rb_objspace_coordinator_init(void)
     objspace_coordinator->absorption.absorbers = 0;
 
     objspace_coordinator->global_gc_underway = false;
+    objspace_coordinator->rglobalgc.global_gc_threshold = 0;
 
     rb_native_cond_initialize(&objspace_coordinator->global_gc_finished);
 
-    objspace_coordinator->shareable_object_estimate = 0;
     rb_nativethread_lock_initialize(&objspace_coordinator->shareable_object_estimate_lock);
 
     rb_vm_t *vm = GET_VM();
@@ -190,8 +190,6 @@ count_objspaces(rb_vm_t *vm) //TODO: Replace with count-tracker
   ------------------------ Objspace Gate Data ------------------------
 */
 
-static void mark_shared_reference_tbl(rb_objspace_gate_t *os_gate);
-static void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
 static void mark_received_obj_tbl(rb_objspace_gate_t *os_gate);
 
 static void
@@ -205,9 +203,7 @@ objspace_gate_mark(void *data)
     mark_absorbed_threads_tbl(os_gate);
 
     if (rb_using_local_limits(rb_gc_get_objspace()) || !rb_during_gc()) {
-	mark_shared_reference_tbl(os_gate);
 	mark_received_obj_tbl(os_gate);
-	mark_local_immune_tbl(os_gate);
     }
 }
 
@@ -220,18 +216,9 @@ objspace_gate_free(rb_objspace_gate_t *local_gate)
 	unlock_ractor_set();
     }
 
-    st_free_table(local_gate->shared_reference_tbl);
-    rb_nativethread_lock_destroy(&local_gate->shared_reference_tbl_lock);
-    st_free_table(local_gate->external_reference_tbl);
-    rb_nativethread_lock_destroy(&local_gate->external_reference_tbl_lock);
-    st_free_table(local_gate->local_immune_tbl);
-    rb_nativethread_lock_destroy(&local_gate->local_immune_tbl_lock);
 
     st_free_table(local_gate->received_obj_tbl);
     rb_nativethread_lock_destroy(&local_gate->received_obj_tbl_lock);
-
-    st_free_table(local_gate->wmap_referenced_obj_tbl);
-    rb_nativethread_lock_destroy(&local_gate->wmap_referenced_obj_tbl_lock);
 
     st_free_table(local_gate->contained_ractor_tbl);
     rb_nativethread_lock_destroy(&local_gate->contained_ractor_tbl_lock);
@@ -312,14 +299,6 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
 
     rb_nativethread_lock_initialize(&local_gate->zombie_threads_lock);
 
-    local_gate->shared_reference_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&local_gate->shared_reference_tbl_lock);
-    local_gate->external_reference_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&local_gate->external_reference_tbl_lock);
-    
-    local_gate->local_immune_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&local_gate->local_immune_tbl_lock);
-    
     local_gate->received_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->received_obj_tbl_lock);
 
@@ -339,8 +318,9 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
 
     local_gate->alloc_target_ractor = NULL;
 
-    local_gate->prev_shareable_object_count = 0;
-    local_gate->current_shareable_object_count = 0;
+    local_gate->shareable_object_estimate = 0;
+    local_gate->prev_shareable_object_estimate = 0;
+    local_gate->global_shareable_object_estimate = 0;
 
     lock_ractor_set();
     ccan_list_add_tail(&vm->objspace_set, &local_gate->gate_node);
@@ -390,255 +370,6 @@ st_delete_and_free_value(st_table *tbl, VALUE obj)
     free(rs);
 }
 
-static void
-add_external_reference_usage(rb_objspace_gate_t *os_gate, VALUE obj, gc_reference_status_t *rs)
-{
-    WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
-    {
-	rb_native_mutex_lock(&source_gate->shared_reference_tbl_lock);
-	gc_reference_status_t *local_rs = st_lookup_or_null(source_gate->shared_reference_tbl, obj);
-
-	if (local_rs) {
-	    ATOMIC_INC(*local_rs->refcount);
-	}
-	else {
-	    VM_ASSERT(rb_during_gc() || (rb_current_allocating_ractor() == source_gate->ractor) || (rb_current_allocating_ractor() == os_gate->ractor));
-
-	    rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
-	    *refcount = 1;
-
-	    local_rs = malloc(sizeof(gc_reference_status_t));
-	    local_rs->refcount = refcount;
-	    local_rs->status = shared_object_local;
-	    st_insert_no_gc(source_gate->shared_reference_tbl, obj, local_rs);
-
-	    rb_objspace_coordinator_t *coordinator = rb_get_objspace_coordinator();
-	    rb_native_mutex_lock(&coordinator->rglobalgc.shared_tracking_lock);
-	    coordinator->rglobalgc.shared_objects_total++;
-	    rb_native_mutex_unlock(&coordinator->rglobalgc.shared_tracking_lock);
-	}
-	rb_native_mutex_unlock(&source_gate->shared_reference_tbl_lock);
-	rs->refcount = local_rs->refcount;
-    }
-    WITH_OBJSPACE_GATE_LEAVE(source_gate);
-}
-
-static void
-drop_external_reference_usage(rb_objspace_gate_t *os_gate, VALUE obj, gc_reference_status_t *rs)
-{
-    rb_atomic_t *refcount = rs->refcount;
-    rb_atomic_t prev_count = RUBY_ATOMIC_FETCH_SUB(*refcount, 1);
-    if (prev_count == 1) {
-	WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
-	{
-	    rb_native_mutex_lock(&source_gate->shared_reference_tbl_lock);
-	    if (*refcount == 0) {
-		st_delete_and_free_value(source_gate->shared_reference_tbl, obj);
-		free(refcount);
-
-		rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
-		rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
-		objspace_coordinator->rglobalgc.shared_objects_total--;
-		rb_native_mutex_unlock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
-	    }
-	    rb_native_mutex_unlock(&source_gate->shared_reference_tbl_lock);
-	}
-	WITH_OBJSPACE_GATE_LEAVE(source_gate);
-    }
-    free(rs);
-}
-
-static void
-register_new_external_reference(rb_objspace_gate_t *receiving_gate, rb_objspace_gate_t *source_gate, VALUE obj)
-{
-    VM_ASSERT(!RB_SPECIAL_CONST_P(obj));
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == source_gate->objspace);
-    VM_ASSERT(receiving_gate != source_gate);
-
-    rb_native_mutex_lock(&receiving_gate->external_reference_tbl_lock);
-
-    gc_reference_status_t *rs = st_lookup_or_null(receiving_gate->external_reference_tbl, obj);
-    bool new_addition = !rs;
-
-    if (new_addition) {
-	gc_reference_status_t *rs = malloc(sizeof(gc_reference_status_t));
-
-	add_external_reference_usage(receiving_gate, obj, rs);
-
-	if (receiving_gate == rb_current_allocating_ractor()->local_gate) {
-	    rs->status = shared_object_unmarked;
-	}
-	else {
-	    rs->status = shared_object_added_externally;
-	}
-	st_insert_no_gc(receiving_gate->external_reference_tbl, obj, rs);
-    }
-
-    rb_native_mutex_unlock(&receiving_gate->external_reference_tbl_lock);
-}
-
-void
-rb_register_new_external_reference(rb_objspace_gate_t *receiving_gate, VALUE obj)
-{
-    if (RB_SPECIAL_CONST_P(obj)) return;
-    WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
-    {
-	if (source_gate != receiving_gate) register_new_external_reference(receiving_gate, source_gate, obj);
-    }
-    WITH_OBJSPACE_GATE_LEAVE(source_gate);
-}
-
-static void
-confirm_externally_added_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
-{
-    gc_reference_status_t *rs = (gc_reference_status_t *)value;
-    VALUE obj = (VALUE)key;
-    if (rs->status == shared_object_added_externally) {
-	rs->status = shared_object_unmarked;
-    }
-}
-
-void
-confirm_externally_added_external_references(rb_objspace_gate_t *local_gate)
-{
-    rb_native_mutex_lock(&local_gate->external_reference_tbl_lock);
-    st_foreach(local_gate->external_reference_tbl, confirm_externally_added_external_references_i, NULL);
-    rb_native_mutex_unlock(&local_gate->external_reference_tbl_lock);
-}
-
-static int
-external_references_none_marked_i(st_data_t key, st_data_t value, st_data_t arg)
-{
-    gc_reference_status_t *rs = (gc_reference_status_t *)value;
-    if (rs->status != shared_object_marked && rs->status != shared_object_discovered_and_marked) {
-	return ST_CONTINUE;
-    }
-    else {
-	bool *none_marked = (bool *)arg;
-	*none_marked = false;
-	return ST_STOP;
-    }
-}
-
-static bool
-external_references_none_marked(rb_objspace_gate_t *local_gate)
-{
-    bool none_marked = true;
-    rb_native_mutex_lock(&local_gate->external_reference_tbl_lock);
-    st_foreach(local_gate->external_reference_tbl, external_references_none_marked_i, (st_data_t)&none_marked);
-    rb_native_mutex_unlock(&local_gate->external_reference_tbl_lock);
-    return none_marked;
-}
-
-void
-mark_in_external_reference_tbl(rb_objspace_gate_t *os_gate, VALUE obj)
-{
-    if (os_gate->marking_machine_context) return;
-    rb_native_mutex_lock(&os_gate->external_reference_tbl_lock);
-    gc_reference_status_t *rs = st_lookup_or_null(os_gate->external_reference_tbl, obj);
-    if (rs) {
-	if (rs->status == shared_object_unmarked) {
-	    rs->status = shared_object_marked;
-	}
-    }
-    else {
-	rs = malloc(sizeof(gc_reference_status_t));
-	rs->refcount = NULL;
-	rs->status = shared_object_discovered_and_marked;
-	st_insert_no_gc(os_gate->external_reference_tbl, obj, rs);
-    }
-    rb_native_mutex_unlock(&os_gate->external_reference_tbl_lock);
-}
-
-bool
-rb_external_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
-{
-    return !!st_lookup(os_gate->external_reference_tbl, obj, NULL);
-}
-
-static void
-mark_shared_reference_tbl(rb_objspace_gate_t *os_gate)
-{
-    rb_native_mutex_lock(&os_gate->shared_reference_tbl_lock);
-    rb_mark_set(os_gate->shared_reference_tbl);
-    rb_native_mutex_unlock(&os_gate->shared_reference_tbl_lock);
-}
-
-bool
-rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
-{
-    return !!st_lookup(os_gate->shared_reference_tbl, obj, NULL);
-}
-
-void
-add_local_immune_object(VALUE obj)
-{
-    VM_ASSERT(!ruby_single_main_objspace);
-    WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
-    {
-	rb_native_mutex_lock(&source_gate->local_immune_tbl_lock);
-	bool new_entry = !st_insert_no_gc(source_gate->local_immune_tbl, (st_data_t)obj, INT2FIX(0));
-	if (new_entry) source_gate->local_immune_count++;
-	rb_native_mutex_unlock(&source_gate->local_immune_tbl_lock);
-    }
-    WITH_OBJSPACE_GATE_LEAVE(source_gate);
-}
-
-static void
-mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
-{
-    rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-    rb_mark_set(os_gate->local_immune_tbl);
-    rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
-}
-
-static int
-update_local_immune_tbl_i(st_data_t key, st_data_t value, st_data_t argp, int error)
-{
-    if (rb_gc_object_marked(key)) {
-	return ST_CONTINUE;
-    }
-    rb_objspace_gate_t *os_gate = argp;
-    os_gate->local_immune_count--;
-    return ST_DELETE;
-}
-
-void
-update_local_immune_tbl(rb_objspace_gate_t *os_gate)
-{
-    rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-    st_foreach(os_gate->local_immune_tbl, update_local_immune_tbl_i, (st_data_t)os_gate);
-    rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
-}
-
-bool
-rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed)
-{
-    bool ret;
-    if (lock_needed) {
-	rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-	ret = !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
-	rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
-    }
-    else {
-	ret = !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
-    }
-    return ret;
-}
-
-unsigned int
-local_immune_objects_global_count(void)
-{
-    rb_objspace_gate_t *local_gate = NULL;
-    unsigned int total = 0;
-    ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
-	rb_native_mutex_lock(&local_gate->local_immune_tbl_lock);
-	total += local_gate->local_immune_count;
-	rb_native_mutex_unlock(&local_gate->local_immune_tbl_lock);
-    }
-    return total;
-}
-
 static int
 find_all_mutable_shareable_objs_i(void *vstart, void *vend, size_t stride, void *data)
 {
@@ -662,137 +393,8 @@ find_all_mutable_shareable_objs(void)
     return ary;
 }
 
-void
-rb_local_immune_tbl_activate(void)
-{
-    VALUE mutable_shareable_obj_ary = find_all_mutable_shareable_objs();
-    for (long i=0; i<RARRAY_LEN(mutable_shareable_obj_ary); i++) {
-        add_reachable_objects_to_local_immune_tbl(RARRAY_AREF(mutable_shareable_obj_ary, i));
-    }
-}
-
-static void
-add_reachable_objects_to_local_immune_tbl_i(VALUE obj, void *data_ptr)
-{
-    VALUE parent = data_ptr;
-    if (obj != RBASIC(parent)->klass) {
-	add_local_immune_object(obj);
-    }
-}
-
-void
-add_reachable_objects_to_local_immune_tbl(VALUE obj)
-{
-    rb_objspace_reachable_objects_from(obj, add_reachable_objects_to_local_immune_tbl_i, obj);
-}
-
-#if VM_CHECK_MODE > 0
-static void
-check_child_is_local_immune(VALUE obj, void *arg)
-{
-    VALUE parent = arg;
-    if (!rb_local_immune_tbl_contains(GET_RACTOR_OF_VALUE(obj)->local_gate, obj, true) && obj != RBASIC(parent)->klass) {
-	rb_bug("child object is not local-immune");
-    }
-}
-
-void
-verify_reachable_objects_in_local_immune_tbl(VALUE obj)
-{
-    rb_objspace_reachable_objects_from(obj, check_child_is_local_immune, obj);
-}
-#endif
-
-static int
-confirm_discovered_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
-{
-    rb_objspace_gate_t *os_gate = (rb_objspace_gate_t *)argp;
-    gc_reference_status_t *rs = (gc_reference_status_t *)value;
-    VALUE obj = (VALUE)key;
-    if (rs->status == shared_object_discovered_and_marked) {
-	add_external_reference_usage(os_gate, obj, rs);
-	rs->status = shared_object_marked;
-    }
-    return ST_CONTINUE;
-}
-
-static void
-confirm_discovered_external_references(rb_objspace_gate_t *os_gate)
-{
-    rb_native_mutex_lock(&os_gate->external_reference_tbl_lock);
-    st_foreach(os_gate->external_reference_tbl, confirm_discovered_external_references_i, (st_data_t)os_gate);
-    rb_native_mutex_unlock(&os_gate->external_reference_tbl_lock);
-}
-
-
 static bool local_limits_in_use(rb_objspace_gate_t *os_gate);
 
-static int
-keep_marked_shared_object_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
-{
-    rb_objspace_gate_t *os_gate = (struct rb_objspace *)argp;
-    gc_reference_status_t *rs = (gc_reference_status_t *)value;
-    VALUE obj = (VALUE)key;
-    switch (rs->status) {
-	case shared_object_unmarked:
-	    drop_external_reference_usage(os_gate, obj, rs);
-	    return ST_DELETE;
-	case shared_object_marked:
-	    VM_ASSERT(local_limits_in_use(os_gate) || rb_gc_object_marked(obj));
-	    rs->status = shared_object_unmarked;
-	    return ST_CONTINUE;
-	case shared_object_added_externally:
-	    if (LIKELY(local_limits_in_use(os_gate) || rb_gc_object_marked(obj))) {
-		rs->status = shared_object_unmarked;
-		return ST_CONTINUE;
-	    }
-	    else {
-		drop_external_reference_usage(os_gate, obj, rs);
-		return ST_DELETE;
-	    }
-	default:
-	    rb_bug("update_shared_object_references_i: unreachable");
-    }
-}
-
-static void
-keep_marked_shared_object_references(rb_objspace_gate_t *os_gate)
-{
-    rb_native_mutex_lock(&os_gate->external_reference_tbl_lock);
-    st_foreach(os_gate->external_reference_tbl, keep_marked_shared_object_references_i, (st_data_t)os_gate);
-    rb_native_mutex_unlock(&os_gate->external_reference_tbl_lock);
-}
-
-void
-update_shared_object_references(rb_objspace_gate_t *os_gate)
-{
-    confirm_discovered_external_references(os_gate);
-    keep_marked_shared_object_references(os_gate);
-    VM_ASSERT(external_references_none_marked(os_gate));
-}
-
-#if VM_CHECK_MODE > 0
-bool
-shared_reference_tbl_empty(rb_objspace_gate_t *os_gate)
-{
-    bool empty;
-    rb_native_mutex_lock(&os_gate->shared_reference_tbl_lock);
-    empty = (st_table_size(os_gate->shared_reference_tbl) == 0);
-    rb_native_mutex_unlock(&os_gate->shared_reference_tbl_lock);
-    return empty;
-}
-
-bool
-external_reference_tbl_empty(rb_objspace_gate_t *os_gate)
-{
-    bool empty;
-    rb_native_mutex_lock(&os_gate->external_reference_tbl_lock);
-    empty = (st_table_size(os_gate->external_reference_tbl) == 0);
-    rb_native_mutex_unlock(&os_gate->external_reference_tbl_lock);
-    return empty;
-}
-
-#endif
 
 void
 rb_add_zombie_thread(rb_thread_t *th)
@@ -957,10 +559,11 @@ update_external_weak_references_i(st_data_t key, st_data_t value, st_data_t argp
 {
     VALUE *ptr = (VALUE *)key;
     VALUE obj = *ptr;
+    rb_objspace_gate_t *os_gate = argp;
     if (obj == Qundef) {
 	return ST_DELETE;
     }
-    else if (rb_gc_object_marked(obj)) {
+    else if (rb_gc_object_marked(obj) || (local_limits_in_use(os_gate) && FL_TEST_RAW(obj, FL_SHAREABLE))) {
 	return ST_CONTINUE;
     }
     else {
@@ -973,7 +576,7 @@ void
 gc_update_external_weak_references(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->wmap_referenced_obj_tbl_lock);
-    st_foreach(os_gate->wmap_referenced_obj_tbl, update_external_weak_references_i, NULL);
+    st_foreach(os_gate->wmap_referenced_obj_tbl, update_external_weak_references_i, os_gate);
     rb_native_mutex_unlock(&os_gate->wmap_referenced_obj_tbl_lock);
 }
 
@@ -1106,93 +709,6 @@ absorb_table_contents(st_table *receiving_tbl, st_table *added_tbl)
     st_foreach(added_tbl, absorb_table_row, (st_data_t)receiving_tbl);
 }
 
-static int
-insert_external_reference_row(st_data_t key, st_data_t val, st_data_t arg)
-{
-    VALUE obj = (VALUE)key;
-    gc_reference_status_t *rs = (gc_reference_status_t *)val;
-    rb_objspace_gate_t **local_gate = (rb_objspace_gate_t **)arg;
-    rb_objspace_gate_t *gate_to_update = local_gate[0];
-    rb_objspace_gate_t *gate_to_copy_from = local_gate[1];
-    st_table *target_tbl = gate_to_update->external_reference_tbl;
-
-    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) != gate_to_update->objspace);
-    bool replaced = !!st_insert(target_tbl, key, val);
-    if (replaced) {
-	ATOMIC_DEC(*rs->refcount);
-    }
-    return ST_CONTINUE;
-}
-
-static int
-prepare_for_reference_tbl_absorption_i(st_data_t key, st_data_t val, st_data_t arg)
-{
-    VALUE obj = (VALUE)key;
-    gc_reference_status_t *rs = (gc_reference_status_t *)val;
-    rb_objspace_gate_t **objspaces = (rb_objspace_gate_t **)arg;
-
-    rb_objspace_gate_t *table_owner_gate = objspaces[0];
-    rb_objspace_gate_t *comparison_os_gate = objspaces[1];
-    struct rb_objspace *source_objspace = GET_OBJSPACE_OF_VALUE(obj);
-
-    if (source_objspace == comparison_os_gate->objspace) {
-	drop_external_reference_usage(table_owner_gate, obj, rs);
-	return ST_DELETE;
-    }
-    return ST_CONTINUE;
-}
-
-static void
-prepare_for_reference_tbl_absorption(rb_objspace_gate_t *gate_to_update, rb_objspace_gate_t *gate_to_copy_from)
-{
-    rb_objspace_gate_t *objspaces[2];
-    objspaces[0] = gate_to_copy_from;
-    objspaces[1] = gate_to_update;
-    st_foreach(gate_to_copy_from->external_reference_tbl, prepare_for_reference_tbl_absorption_i, (st_data_t)objspaces);
-
-    objspaces[0] = gate_to_update;
-    objspaces[1] = gate_to_copy_from;
-    st_foreach(gate_to_update->external_reference_tbl, prepare_for_reference_tbl_absorption_i, (st_data_t)objspaces);
-}
-
-static void
-absorb_external_references(rb_objspace_gate_t *gate_to_update, rb_objspace_gate_t *gate_to_copy_from)
-{
-    rb_objspace_gate_t *local_gate[2];
-    local_gate[0] = gate_to_update;
-    local_gate[1] = gate_to_copy_from;
-    st_foreach(gate_to_copy_from->external_reference_tbl, insert_external_reference_row, (st_data_t)local_gate);
-}
-
-static void
-absorb_shared_object_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate_t *gate_to_copy_from)
-{
-    rb_native_mutex_lock(&gate_to_copy_from->external_reference_tbl_lock);
-    rb_native_mutex_lock(&gate_to_update->external_reference_tbl_lock);
-
-    prepare_for_reference_tbl_absorption(gate_to_update, gate_to_copy_from);
-    absorb_external_references(gate_to_update, gate_to_copy_from);
-
-    rb_native_mutex_unlock(&gate_to_copy_from->external_reference_tbl_lock);
-    rb_native_mutex_unlock(&gate_to_update->external_reference_tbl_lock);
-
-    rb_native_mutex_lock(&gate_to_copy_from->shared_reference_tbl_lock);
-    rb_native_mutex_lock(&gate_to_update->shared_reference_tbl_lock);
-
-    absorb_table_contents(gate_to_update->shared_reference_tbl, gate_to_copy_from->shared_reference_tbl);
-
-    rb_native_mutex_unlock(&gate_to_copy_from->shared_reference_tbl_lock);
-    rb_native_mutex_unlock(&gate_to_update->shared_reference_tbl_lock);
-
-    rb_native_mutex_lock(&gate_to_copy_from->local_immune_tbl_lock);
-    rb_native_mutex_lock(&gate_to_update->local_immune_tbl_lock);
-
-    absorb_table_contents(gate_to_update->local_immune_tbl, gate_to_copy_from->local_immune_tbl);
-    gate_to_update->local_immune_count += gate_to_copy_from->local_immune_count;
-
-    rb_native_mutex_unlock(&gate_to_copy_from->local_immune_tbl_lock);
-    rb_native_mutex_unlock(&gate_to_update->local_immune_tbl_lock);
-}
 
 static void
 absorb_objspace_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate_t *gate_to_copy_from)
@@ -1205,9 +721,6 @@ absorb_objspace_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate_t *g
 
     rb_native_mutex_unlock(&gate_to_copy_from->contained_ractor_tbl_lock);
     rb_native_mutex_unlock(&gate_to_update->contained_ractor_tbl_lock);
-
-    //Shared object tables
-    absorb_shared_object_tables(gate_to_update, gate_to_copy_from);
 
     rb_native_mutex_lock(&gate_to_copy_from->wmap_referenced_obj_tbl_lock);
     rb_native_mutex_lock(&gate_to_update->wmap_referenced_obj_tbl_lock);
@@ -1482,10 +995,6 @@ run_redirected_func(VALUE args)
     struct borrowing_data_args *borrowing_data = (struct borrowing_data_args *)args;
     VALUE result = borrowing_data->func(borrowing_data->func_args);
     rb_objspace_gate_t *borrower_gate = borrowing_data->borrower->local_gate;
-    if (!SPECIAL_CONST_P(result) && GET_OBJSPACE_OF_VALUE(result) != borrower_gate->objspace) {
-	VM_ASSERT(FL_TEST(result, FL_SHAREABLE));
-	rb_register_new_external_reference(borrower_gate, result);
-    }
     return result;
 }
 
@@ -1715,8 +1224,6 @@ begin_global_gc_section(rb_objspace_coordinator_t *coordinator, rb_objspace_gate
     local_gate->running_global_gc = true;
     coordinator->global_gc_underway = true;
     rb_vm_barrier();
-
-    coordinator->shareable_object_estimate = 0;
 }
 
 void
@@ -1791,14 +1298,15 @@ arrange_next_gc_global_status(double sharedobject_limit_factor)
     rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
     rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
 
-    rb_native_mutex_lock(&objspace_coordinator->shareable_object_estimate_lock);
-    int shareable_total = objspace_coordinator->shareable_object_estimate;
-    rb_native_mutex_unlock(&objspace_coordinator->shareable_object_estimate_lock);
-
-    if (rb_during_global_gc()) {
-	objspace_coordinator->rglobalgc.global_gc_threshold = (size_t)(shareable_total * sharedobject_limit_factor);
+    int shareable_total = 0;
+    lock_ractor_set();
+    rb_objspace_gate_t *local_gate = NULL;
+    ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
+	shareable_total += local_gate->prev_shareable_object_estimate;
     }
-    else if (rb_multi_ractor_p() && shareable_total > objspace_coordinator->rglobalgc.global_gc_threshold) {
+    unlock_ractor_set();
+
+    if (shareable_total > objspace_coordinator->rglobalgc.global_gc_threshold) {
 	objspace_coordinator->rglobalgc.need_global_gc = true;
     }
 
@@ -1851,13 +1359,6 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 	WITH_OBJSPACE_GATE_ENTER(b, b_gate);
 	{
 	    struct rb_objspace *b_objspace = b_gate->objspace;
-	    if (UNLIKELY(GET_OBJSPACE_OF_VALUE(a) != b_objspace)) {
-		WITH_OBJSPACE_GATE_ENTER(a, a_gate);
-		{
-		    if (LIKELY(a_gate != b_gate)) register_new_external_reference(a_gate, b_gate, b);
-		}
-		WITH_OBJSPACE_GATE_LEAVE(a_gate);
-	    }
 
 	    rb_objspace_gate_t *local_gate = GET_THREAD_LOCAL_OBJSPACE_GATE();
 
@@ -1887,9 +1388,6 @@ make_irregular_shareable_object(VALUE obj)
     if (!ruby_single_main_objspace && BUILTIN_TYPE(obj) == T_ARRAY && ARY_SHARED_ROOT_P(obj)) {
 	long len = RARRAY_LEN(obj);
 	const VALUE *ptr = RARRAY_CONST_PTR(obj);
-	for (long i = 0; i < len; i++) {
-	    add_local_immune_object(ptr[i]);
-	}
 	permit_mutable_shareable_direct(obj);
     }
     else {

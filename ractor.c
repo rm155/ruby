@@ -1029,7 +1029,6 @@ ractor_basket_prepare_contents(VALUE args)
         type = basket_type_ref;
         v = obj;
 	rb_ractor_t *tr = rb_current_allocating_ractor();
-	if (!rb_special_const_p(obj)) rb_register_new_external_reference(tr->local_gate, obj);
     }
     else if (!RTEST(p->move)) {
         v = ractor_copy(obj);
@@ -2098,7 +2097,6 @@ cancel_single_ractor_mode_no_redirection(VALUE args) {
     VALUE was_disabled = rb_gc_enable();
 
     rb_gc_start();
-    rb_local_immune_tbl_activate();
 
     if (was_disabled) {
         rb_gc_disable();
@@ -3916,7 +3914,6 @@ ractor_move(VALUE obj)
     cr->during_ractor_copy_or_move = true;
 #endif
 
-    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_gate, obj);
     VALUE val = rb_obj_traverse_replace(obj, move_enter, move_leave, true);
 
 #if VM_CHECK_MODE > 0
@@ -3958,7 +3955,6 @@ ractor_copy(VALUE obj)
     cr->during_ractor_copy_or_move = true;
 #endif
 
-    if (!rb_special_const_p(obj) && rb_ractor_shareable_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_gate, obj);
     VALUE val = rb_obj_traverse_replace(obj, copy_enter, copy_leave, false);
 
 #if VM_CHECK_MODE > 0

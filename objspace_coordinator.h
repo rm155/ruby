@@ -39,7 +39,6 @@ typedef struct rb_objspace_coordinator {
 	int absorbers;
     } absorption;
 
-    int shareable_object_estimate;
     rb_nativethread_lock_t shareable_object_estimate_lock;
 
 } rb_objspace_coordinator_t;
@@ -131,10 +130,6 @@ typedef struct rb_objspace_gate {
     st_table *external_reference_tbl;
     rb_nativethread_lock_t external_reference_tbl_lock;
 
-    st_table *local_immune_tbl;
-    rb_nativethread_lock_t local_immune_tbl_lock;
-    unsigned int local_immune_count;
-
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
@@ -178,8 +173,9 @@ typedef struct rb_objspace_gate {
     rb_ractor_t *objspace_lock_owner;
     int objspace_lock_level;
 
-    int prev_shareable_object_count;
-    int current_shareable_object_count;
+    int shareable_object_estimate;
+    int prev_shareable_object_estimate;
+    int global_shareable_object_estimate;
 
     rb_ractor_t *alloc_target_ractor;
 
@@ -255,17 +251,6 @@ bool rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
 #if VM_CHECK_MODE > 0
 bool shared_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
-#endif
-
-void add_local_immune_object(VALUE obj);
-void update_local_immune_tbl(rb_objspace_gate_t *os_gate);
-bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed);
-unsigned int local_immune_objects_global_count(void);
-void rb_local_immune_tbl_activate(void);
-
-void add_reachable_objects_to_local_immune_tbl(VALUE obj);
-#if VM_CHECK_MODE > 0
-void verify_reachable_objects_in_local_immune_tbl(VALUE obj);
 #endif
 
 void rb_add_zombie_thread(rb_thread_t *th);
