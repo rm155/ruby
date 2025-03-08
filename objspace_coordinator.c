@@ -1872,6 +1872,7 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 void
 make_irregular_shareable_object(VALUE obj)
 {
+    if (FL_TEST_RAW(obj, RUBY_FL_SHAREABLE)) return;
     if (!ruby_single_main_objspace && BUILTIN_TYPE(obj) == T_ARRAY && ARY_SHARED_ROOT_P(obj)) {
 	long len = RARRAY_LEN(obj);
 	const VALUE *ptr = RARRAY_CONST_PTR(obj);
