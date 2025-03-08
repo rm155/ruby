@@ -1269,9 +1269,21 @@ rb_gc_impl_unshareable_references_permission_p(VALUE obj)
     return RVALUE_UNSHAREABLE_REF_PERMISSION_BITMAP(obj) != 0;
 }
 
+static void gc_mark_reset_parent(rb_objspace_t *objspace);
+static inline int gc_mark_set(rb_objspace_t *objspace, VALUE obj);
+static void gc_grey(rb_objspace_t *objspace, VALUE obj);
+
 void
 rb_gc_impl_permit_unshareable_references(VALUE obj)
 {
+    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
+    if (is_incremental_marking(objspace)) {
+	gc_mark_reset_parent(objspace);
+	if (gc_mark_set(objspace, obj) == TRUE) {
+	    gc_grey(objspace, obj);
+	}
+    }
+
     MARK_IN_BITMAP(GET_HEAP_UNSHAREABLE_REF_PERMISSION_BITS(obj), obj);
 }
 
@@ -2862,8 +2874,6 @@ newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace
     return newobj_slowpath(klass, flags, objspace, cache, FALSE, heap_idx, borrowing);
 }
 
-static inline int gc_mark_set(rb_objspace_t *objspace, VALUE obj);
-static void gc_grey(rb_objspace_t *objspace, VALUE obj);
 static void gc_aging(VALUE obj);
 
 VALUE
