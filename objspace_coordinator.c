@@ -394,7 +394,11 @@ add_external_reference_usage(rb_objspace_gate_t *os_gate, VALUE obj, gc_referenc
 	    ATOMIC_INC(*local_rs->refcount);
 	}
 	else {
-	    VM_ASSERT(rb_during_gc() || (rb_current_allocating_ractor() == source_gate->ractor) || (rb_current_allocating_ractor() == os_gate->ractor));
+	    VM_ASSERT(rb_during_gc()
+		    || (GET_RACTOR() == source_gate->ractor)
+		    || (rb_current_allocating_ractor() == source_gate->ractor)
+		    || (GET_RACTOR() == os_gate->ractor)
+		    || (rb_current_allocating_ractor() == os_gate->ractor));
 
 	    rb_atomic_t *refcount = malloc(sizeof(rb_atomic_t));
 	    *refcount = 1;
