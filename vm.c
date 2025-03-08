@@ -1411,9 +1411,11 @@ rb_proc_isolate_bang(VALUE self)
         proc->is_isolated = TRUE;
     }
 
-    permit_mutable_shareable_force(self);
-    FL_SET_RAW(self, RUBY_FL_SHAREABLE);
-    ALLOW_UNSHAREABLE_REFERENCES(self);
+    if (!FL_TEST_RAW(self, FL_SHAREABLE)) {
+	permit_mutable_shareable_force(self);
+	FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+	ALLOW_UNSHAREABLE_REFERENCES(self);
+    }
     return self;
 }
 
@@ -1451,9 +1453,11 @@ rb_proc_ractor_make_shareable(VALUE self)
         proc->is_isolated = TRUE;
     }
 
-    permit_mutable_shareable_force(self);
-    FL_SET_RAW(self, RUBY_FL_SHAREABLE);
-    ALLOW_UNSHAREABLE_REFERENCES(self);
+    if (!FL_TEST_RAW(self, FL_SHAREABLE)) {
+	permit_mutable_shareable_force(self);
+	FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+	ALLOW_UNSHAREABLE_REFERENCES(self);
+    }
     return self;
 }
 
