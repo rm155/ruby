@@ -5416,12 +5416,6 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
     size_t marked_slots_at_the_beginning = objspace->marked_slots;
     size_t popped_count = 0;
 
-    if (using_local_limits(objspace)) {
-        for (int i = 0; i < HEAP_COUNT; i++) {
-            unshareable_ref_set_mark(objspace, &heaps[i]);
-        }
-    }
-
     while (pop_mark_stack(mstack, &obj)) {
         if (obj == Qundef) continue; /* skip */
 
@@ -6606,6 +6600,12 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
 
         for (int i = 0; i < HEAP_COUNT; i++) {
             rgengc_rememberset_mark(objspace, &heaps[i]);
+        }
+    }
+
+    if (using_local_limits(objspace)) {
+        for (int i = 0; i < HEAP_COUNT; i++) {
+            unshareable_ref_set_mark(objspace, &heaps[i]);
         }
     }
 
