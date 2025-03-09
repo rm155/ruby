@@ -266,6 +266,15 @@ objspace_gate_object_create(VALUE arg)
     return Qnil;
 }
 
+//TODO Implement in a less roundabout way
+static void
+finish_incremental_gc(void)
+{
+    VALUE already_disabled = rb_gc_disable();
+    if (already_disabled == Qfalse) rb_gc_enable();
+}
+
+
 rb_objspace_gate_t *
 rb_objspace_gate_init(struct rb_objspace *objspace)
 {
@@ -281,9 +290,12 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
 
     rb_vm_t *vm = GET_VM();
     if (objspace != vm->objspace) {
-	ruby_single_main_objspace = NULL;
-	rb_objspace_gate_t *main_gate = vm->main_os_gate;
-	main_gate->belong_to_single_main_ractor = false;
+	if (ruby_single_main_objspace) {
+	    finish_incremental_gc();
+	    ruby_single_main_objspace = NULL;
+	    rb_objspace_gate_t *main_gate = vm->main_os_gate;
+	    main_gate->belong_to_single_main_ractor = false;
+	}
 
 	rb_native_mutex_lock(&vm->os_gate_count_lock);
 	vm->os_gate_count++;
