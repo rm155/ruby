@@ -1276,14 +1276,6 @@ static void gc_grey(rb_objspace_t *objspace, VALUE obj);
 void
 rb_gc_impl_permit_unshareable_references(VALUE obj)
 {
-    rb_objspace_t *objspace = GET_OBJSPACE_OF_VALUE(obj);
-    if (is_incremental_marking(objspace)) {
-	gc_mark_reset_parent(objspace);
-	if (gc_mark_set(objspace, obj) == TRUE) {
-	    gc_grey(objspace, obj);
-	}
-    }
-
     MARK_IN_BITMAP(GET_HEAP_UNSHAREABLE_REF_PERMISSION_BITS(obj), obj);
 }
 
@@ -6195,6 +6187,12 @@ gc_marks_finish(rb_objspace_t *objspace)
         }
     }
 
+    if (using_local_limits(objspace)) {
+	for (int i = 0; i < HEAP_COUNT; i++) {
+	    unshareable_ref_set_mark(objspace, &heaps[i]);
+	}
+    }
+
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace->local_gate);
 
@@ -6603,12 +6601,6 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
         }
     }
 
-    if (using_local_limits(objspace)) {
-        for (int i = 0; i < HEAP_COUNT; i++) {
-            unshareable_ref_set_mark(objspace, &heaps[i]);
-        }
-    }
-
 }
 
 static void
@@ -6901,6 +6893,8 @@ unshareable_ref_set_mark(rb_objspace_t *objspace, rb_heap_t *heap)
                 p += BITS_BITLENGTH * BASE_SLOT_SIZE;
             }
     }
+
+    gc_mark_stacked_objects_all(objspace);
 }
 
 static void
@@ -6974,12 +6968,6 @@ gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t *objspace)
     VM_ASSERT(is_incremental_marking(objspace));
 
     VM_ASSERT(RB_LIKELY(GET_OBJSPACE_OF_VALUE(a) == objspace));
-
-    if (!FL_TEST_RAW(b, FL_SHAREABLE)) {
-	if (FL_TEST_RAW(a, FL_SHAREABLE)) {
-	    gc_mark_from(objspace, b, a);
-	}
-    }
 
     if (RVALUE_BLACK_P(objspace, a)) {
 	if (RVALUE_WHITE_P(objspace, b)) {
