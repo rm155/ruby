@@ -602,6 +602,11 @@ typedef struct rb_objspace {
         size_t step_slots;
     } rincgc;
 
+    rb_nativethread_lock_t gc_mark_lock;
+#if VM_CHECK_MODE > 0
+    rb_ractor_t *gc_mark_lock_owner;
+#endif
+
     st_table *id_to_obj_tbl;
     st_table *obj_to_id_tbl;
     rb_nativethread_lock_t obj_id_lock;
@@ -2870,6 +2875,8 @@ newobj_slowpath_wb_unprotected(VALUE klass, VALUE flags, rb_objspace_t *objspace
 static inline int gc_mark_set(rb_objspace_t *objspace, VALUE obj);
 static void gc_grey(rb_objspace_t *objspace, VALUE obj);
 static void gc_aging(VALUE obj);
+static void gc_acquire_mark_lock(rb_objspace_t *objspace);
+static void gc_release_mark_lock(rb_objspace_t *objspace);
 
 VALUE
 rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3, bool wb_protected, size_t alloc_size, bool borrowing)
@@ -2906,10 +2913,12 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
     }
     
     if (borrowing && is_incremental_marking(objspace)) {
+	gc_acquire_mark_lock(objspace);
 	if (gc_mark_set(objspace, obj)) {
-    	    gc_aging(obj);
-    	    gc_grey(objspace, obj);
+	    gc_aging(obj);
+	    gc_grey(objspace, obj);
 	}
+	gc_release_mark_lock(objspace);
     }
     if (borrowing) {
 	rb_register_received_obj(objspace->local_gate, GET_RACTOR()->borrowing_sync.borrowing_id, obj);
@@ -5014,11 +5023,32 @@ rgengc_check_relation(rb_objspace_t *objspace, VALUE obj)
     GC_ASSERT(old_parent == objspace->rgengc.parent_object);
 }
 
+static void
+gc_acquire_mark_lock(rb_objspace_t *objspace)
+{
+    rb_native_mutex_lock(&objspace->gc_mark_lock);
+#if VM_CHECK_MODE > 0
+    objspace->gc_mark_lock_owner = GET_RACTOR();
+#endif
+}
+
+static void
+gc_release_mark_lock(rb_objspace_t *objspace)
+{
+#if VM_CHECK_MODE > 0
+    objspace->gc_mark_lock_owner = NULL;
+#endif
+    rb_native_mutex_unlock(&objspace->gc_mark_lock);
+}
+
 static inline int
 gc_mark_set(rb_objspace_t *objspace, VALUE obj)
 {
     //TODO assertion needed?
     //VM_ASSERT(during_gc || objspace_locked(objspace));
+
+    VM_ASSERT(ruby_single_main_objspace || during_gc || objspace->gc_mark_lock_owner == GET_RACTOR());
+
     if (RVALUE_MARKED(objspace, obj)) return 0;
     MARK_IN_BITMAP(GET_HEAP_MARK_BITS(obj), obj);
     return 1;
@@ -5029,6 +5059,8 @@ gc_aging(VALUE obj)
 {
     struct heap_page *page = GET_HEAP_PAGE(obj);
     rb_objspace_t *objspace = page->objspace;
+
+    VM_ASSERT(ruby_single_main_objspace || during_gc || objspace->gc_mark_lock_owner == GET_RACTOR());
 
     /* Disable aging if Major GC's are disabled. This will prevent longish lived
      * objects filling up the heap at the expense of marking many more objects.
@@ -5061,6 +5093,7 @@ gc_aging(VALUE obj)
 static void
 gc_grey(rb_objspace_t *objspace, VALUE obj)
 {
+    VM_ASSERT(ruby_single_main_objspace || during_gc || objspace->gc_mark_lock_owner == GET_RACTOR());
 #if RGENGC_CHECK_MODE
     if (RVALUE_MARKED(objspace, obj) == FALSE) rb_bug("gc_grey: %s is not marked.", rb_obj_info(obj));
     if (RVALUE_MARKING(objspace, obj) == TRUE) rb_bug("gc_grey: %s is marking/remembered.", rb_obj_info(obj));
@@ -6894,9 +6927,14 @@ gc_mark_from(rb_objspace_t *objspace, VALUE obj, VALUE parent)
     VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
     gc_mark_set_parent(objspace, parent);
     rgengc_check_relation(objspace, obj);
+
+    gc_acquire_mark_lock(objspace);
+
     if (gc_mark_set(objspace, obj) == FALSE) return;
     gc_aging(obj);
     gc_grey(objspace, obj);
+
+    gc_release_mark_lock(objspace);
 }
 
 NOINLINE(static void gc_writebarrier_incremental(VALUE a, VALUE b, rb_objspace_t *objspace));
@@ -6937,10 +6975,12 @@ gc_writebarrier_incremental_remote_parent(VALUE a, VALUE b, rb_objspace_t *objsp
 
     VM_ASSERT(RB_LIKELY(GET_OBJSPACE_OF_VALUE(a) != objspace));
     if (RVALUE_WHITE_P(objspace, b)) {
+	gc_acquire_mark_lock(objspace);
 	if (gc_mark_set(objspace, b)) {
 	    gc_aging(b);
 	    gc_grey(objspace, b);
 	}
+	gc_release_mark_lock(objspace);
     }
 }
 
@@ -7011,7 +7051,9 @@ rb_gc_impl_writebarrier_unprotect(void *objspace_ptr, VALUE obj)
             if (RVALUE_OLD_P(objspace, obj)) {
                 gc_report(1, objspace, "rb_gc_writebarrier_unprotect: %s\n", rb_obj_info(obj));
                 RVALUE_DEMOTE(objspace, obj);
-                gc_mark_set(objspace, obj);
+		gc_acquire_mark_lock(objspace);
+		gc_mark_set(objspace, obj);
+		gc_release_mark_lock(objspace);
                 gc_remember_unprotected(objspace, obj);
 
 #if RGENGC_PROFILE
@@ -10465,6 +10507,8 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
 
+    rb_nativethread_lock_destroy(&objspace->gc_mark_lock);
+
     free_stack_chunks(&objspace->mark_stack);
     mark_stack_free_cache(&objspace->mark_stack);
 
@@ -10831,6 +10875,11 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
+
+    rb_nativethread_lock_initialize(&objspace->gc_mark_lock);
+#if VM_CHECK_MODE > 0
+    objspace->gc_mark_lock_owner = NULL;
+#endif
 
     for (int i = 0; i < HEAP_COUNT; i++) {
 	borrowing_location_lock_init(&objspace->location_locks[i]);
