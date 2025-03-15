@@ -5423,6 +5423,10 @@ mark_roots(rb_objspace_t *objspace, const char **categoryp)
 
     MARK_CHECKPOINT("objspace");
 
+    if (!is_incremental_marking(objspace)) {
+	rb_gc_mark(objspace->local_gate->self);
+    }
+
     if (finalizer_table != NULL) {
         st_foreach(finalizer_table, pin_value, (st_data_t)objspace);
     }
@@ -6223,6 +6227,9 @@ gc_marks_finish(rb_objspace_t *objspace)
         for (int i = 0; i < HEAP_COUNT; i++) {
             gc_marks_wb_unprotected_objects(objspace, &heaps[i]);
         }
+
+	rb_gc_mark(objspace->local_gate->self);
+	gc_mark_stacked_objects_all(objspace);
     }
 
     gc_update_weak_references(objspace);

@@ -2846,7 +2846,6 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 
     MARK_CHECKPOINT("ractor");
     rb_ractor_related_objects_mark(rb_gc_ractor_of_objspace(objspace));
-    rb_gc_mark(local_gate->self);
 
     MARK_CHECKPOINT("end_proc");
     rb_mark_end_proc(objspace);
