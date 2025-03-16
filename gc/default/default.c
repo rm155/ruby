@@ -5185,10 +5185,14 @@ gc_mark(rb_objspace_t *objspace, VALUE obj)
     if (!FL_TEST(obj, FL_SHAREABLE)) {
 	VALUE parent = objspace->local_gate->current_marking_parent;
 	if (GET_OBJSPACE_OF_VALUE(obj) != objspace && using_local_limits(objspace)) {
-	    fprintf(stderr, "parent object:\n");
-	    rb_obj_info_dump(parent);
-	    fprintf(stderr, "marking target object:\n");
-	    rb_obj_info_dump(obj);
+	    if (!SPECIAL_CONST_P(parent)) {
+		fprintf(stderr, "parent object:\n");
+		rb_obj_info_dump(parent);
+	    }
+	    if (!SPECIAL_CONST_P(obj)) {
+		fprintf(stderr, "marking target object:\n");
+		rb_obj_info_dump(obj);
+	    }
 	    rb_bug("try to mark object of Ractor #%d during Local GC of Ractor #%d", GET_RACTOR_OF_VALUE(obj)->pub.id, GET_RACTOR()->pub.id);
 	}
 	if (objspace->local_gate->shareable_child_expected) {
