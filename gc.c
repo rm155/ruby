@@ -2840,7 +2840,6 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
 
     MARK_CHECKPOINT("ractor");
     rb_ractor_related_objects_mark(rb_gc_ractor_of_objspace(objspace));
-    rb_gc_mark(local_gate->self);
 
     MARK_CHECKPOINT("end_proc");
     rb_mark_end_proc(objspace);
@@ -2865,9 +2864,7 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
     local_gate->marking_machine_context = false;
 
     MARK_CHECKPOINT("global_symbols");
-    if (objspace == vm->objspace) {
-	rb_sym_global_symbols_mark();
-    }
+    rb_sym_global_symbols_mark();
 
     MARK_CHECKPOINT("finish");
 
