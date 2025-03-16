@@ -2870,9 +2870,7 @@ rb_gc_mark_roots(void *objspace, const char **categoryp)
     local_gate->marking_machine_context = false;
 
     MARK_CHECKPOINT("global_symbols");
-    if (objspace == vm->objspace) {
-	rb_sym_global_symbols_mark();
-    }
+    rb_sym_global_symbols_mark();
 
     MARK_CHECKPOINT("finish");
 

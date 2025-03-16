@@ -103,6 +103,9 @@ Init_sym(void)
     symbols->str_sym = st_init_table_with_size(&symhash, 1000);
     symbols->ids = rb_ary_hidden_new(0);
 
+    make_irregular_shareable_object(symbols->dsymbol_fstr_hash);
+    make_irregular_shareable_object(symbols->ids);
+
     Init_op_tbl();
     Init_id();
 }
