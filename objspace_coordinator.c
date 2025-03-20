@@ -1842,13 +1842,6 @@ rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b)
 	WITH_OBJSPACE_GATE_ENTER(b, b_gate);
 	{
 	    struct rb_objspace *b_objspace = b_gate->objspace;
-	    if (UNLIKELY(GET_OBJSPACE_OF_VALUE(a) != b_objspace)) {
-		WITH_OBJSPACE_GATE_ENTER(a, a_gate);
-		{
-		    if (LIKELY(a_gate != b_gate)) register_new_external_reference(a_gate, b_gate, b);
-		}
-		WITH_OBJSPACE_GATE_LEAVE(a_gate);
-	    }
 
 	    rb_objspace_gate_t *local_gate = GET_THREAD_LOCAL_OBJSPACE_GATE();
 

@@ -262,7 +262,6 @@ RCLASS_SET_SUPER(VALUE klass, VALUE super)
 }
 
 VALUE rb_ractor_make_shareable_copy(VALUE obj);
-void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, VALUE obj);
 
 static inline void
 RCLASS_SET_CLASSPATH(VALUE klass, VALUE classpath, bool permanent)
@@ -274,11 +273,6 @@ RCLASS_SET_CLASSPATH(VALUE klass, VALUE classpath, bool permanent)
     assert(rb_gc_ractor_of_value(klass) == vm->ractor.main_ractor);
 
     classpath = rb_ractor_make_shareable_copy(classpath);
-
-    if (!rb_special_const_p(classpath)) {
-	rb_ractor_t *classpath_ractor = rb_gc_ractor_of_value(classpath);
-	if (classpath_ractor && classpath_ractor != vm->ractor.main_ractor) rb_register_new_external_reference(vm->main_os_gate, classpath);
-    }
 
     rb_native_mutex_lock(&vm->classpath_lock);
     RB_OBJ_WRITE(klass, &(RCLASS_EXT(klass)->classpath), classpath);
