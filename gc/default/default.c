@@ -1713,6 +1713,8 @@ rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE ptr)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(ptr) == objspace);
+
     bool dead = false;
 
     asan_unpoisoning_object(ptr) {
@@ -1759,7 +1761,7 @@ rb_gc_impl_object_id_to_ref(void *objspace_ptr, VALUE object_id)
     VALUE obj;
 
     if (!UNDEF_P(obj = object_id_global_search(object_id)) &&
-            !rb_gc_impl_garbage_object_p(objspace, obj)) {
+            !rb_objspace_garbage_object_p(obj)) {
         return obj;
     }
 
@@ -3123,6 +3125,8 @@ rb_gc_impl_make_zombie(void *objspace_ptr, VALUE obj, void (*dfree)(void *), voi
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     struct RZombie *zombie = RZOMBIE(obj);
     zombie->basic.flags = T_ZOMBIE | (zombie->basic.flags & ZOMBIE_OBJ_KEPT_FLAGS);
     zombie->dfree = dfree;
@@ -3390,6 +3394,9 @@ VALUE
 rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     VALUE table;
     st_data_t data;
 
@@ -3435,6 +3442,8 @@ rb_gc_impl_undefine_finalizer(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     GC_ASSERT(!OBJ_FROZEN(obj));
 
     st_data_t data = obj;
@@ -3446,6 +3455,9 @@ void
 rb_gc_impl_copy_finalizer(void *objspace_ptr, VALUE dest, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     VALUE table;
     st_data_t data;
 
@@ -5353,6 +5365,8 @@ rb_gc_impl_remove_weak(void *objspace_ptr, VALUE parent_obj, VALUE *ptr)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(*ptr) == objspace);
+
     /* If we're not incremental marking, then the state of the objects can't
      * change so we don't need to do anything. */
     if (!is_incremental_marking(objspace)) return;
@@ -7048,7 +7062,8 @@ void
 rb_gc_impl_writebarrier_unprotect(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
-    VM_ASSERT((rb_objspace_t *)objspace_ptr == GET_OBJSPACE_OF_VALUE(obj));
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
 
     if (RVALUE_WB_UNPROTECTED(objspace, obj)) {
         return;
@@ -7090,9 +7105,17 @@ rb_gc_impl_copy_attributes(void *objspace_ptr, VALUE dest, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     if (RVALUE_WB_UNPROTECTED(objspace, obj)) {
-        rb_gc_impl_writebarrier_unprotect(objspace, dest);
+	WITH_OBJSPACE_OF_VALUE_ENTER(dest, objspace);
+	{
+	    rb_gc_impl_writebarrier_unprotect(objspace, dest);
+	}
+	WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
+	objspace = objspace_ptr;
     }
+
     rb_gc_impl_copy_finalizer(objspace, dest, obj);
 }
 
@@ -7106,6 +7129,8 @@ void
 rb_gc_impl_writebarrier_remember(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
 
     gc_report(1, objspace, "rb_gc_writebarrier_remember: %s\n", rb_obj_info(obj));
 

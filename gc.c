@@ -1291,6 +1291,8 @@ make_io_zombie(void *objspace, VALUE obj)
 static bool
 rb_data_free(void *objspace, VALUE obj)
 {
+    VM_ASSERT(objspace == GET_OBJSPACE_OF_VALUE(obj));
+
     void *data = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
     if (data) {
         int free_immediately = false;
@@ -1320,7 +1322,7 @@ rb_data_free(void *objspace, VALUE obj)
                 RB_DEBUG_COUNTER_INC(obj_data_imm_free);
             }
             else {
-                rb_gc_impl_make_zombie(rb_gc_get_objspace(), obj, dfree, data);
+                rb_gc_impl_make_zombie(objspace, obj, dfree, data);
                 RB_DEBUG_COUNTER_INC(obj_data_zombie);
                 return FALSE;
             }
@@ -1378,6 +1380,8 @@ rb_gc_obj_free_vm_weak_references(VALUE obj)
 bool
 rb_gc_obj_free(void *objspace, VALUE obj)
 {
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     RB_DEBUG_COUNTER_INC(obj_free);
 
     switch (BUILTIN_TYPE(obj)) {
@@ -1587,7 +1591,7 @@ rb_gc_obj_free(void *objspace, VALUE obj)
     }
 
     if (FL_TEST(obj, FL_FINALIZE)) {
-        rb_gc_impl_make_zombie(rb_gc_get_objspace(), obj, 0, 0);
+        rb_gc_impl_make_zombie(objspace, obj, 0, 0);
         return FALSE;
     }
     else {
@@ -1775,7 +1779,11 @@ should_be_finalizable(VALUE obj)
 void
 rb_gc_copy_finalizer(VALUE dest, VALUE obj)
 {
-    rb_gc_impl_copy_finalizer(rb_gc_get_objspace(), dest, obj);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    {
+	rb_gc_impl_copy_finalizer(objspace, dest, obj);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 /*
@@ -1886,7 +1894,14 @@ rb_objspace_free_objects(void *objspace)
 int
 rb_objspace_garbage_object_p(VALUE obj)
 {
-    return rb_gc_impl_garbage_object_p(rb_gc_get_objspace(), obj);
+    void *objspace;
+    bool ret;
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    {
+	ret = rb_gc_impl_garbage_object_p(objspace, obj);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
+    return ret;
 }
 
 bool
@@ -2404,7 +2419,7 @@ ruby_stack_check(void)
         } \
         else if (check_obj ? \
                 rb_gc_impl_pointer_to_heap_p(objspace, (const void *)obj) && \
-                    !rb_gc_impl_garbage_object_p(objspace, obj) : \
+                    !rb_objspace_garbage_object_p(obj) : \
                 true) { \
 	    if (GET_OBJSPACE_OF_VALUE(obj) == objspace || FL_TEST(obj, FL_SHAREABLE)) { /* TODO: Remove condition when shareability rules are fully applied */ \
 		GC_ASSERT(!rb_gc_impl_during_gc_p(objspace)); \
@@ -2495,7 +2510,13 @@ rb_gc_mark_weak(VALUE *ptr)
 void
 rb_gc_remove_weak(VALUE parent_obj, VALUE *ptr)
 {
-    rb_gc_impl_remove_weak(rb_gc_get_objspace(), parent_obj, ptr);
+    if (RB_SPECIAL_CONST_P(*ptr)) return;
+
+    WITH_OBJSPACE_OF_VALUE_ENTER(*ptr, objspace);
+    {
+	rb_gc_impl_remove_weak(objspace, parent_obj, ptr);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS(static void each_location(register const VALUE *x, register long n, void (*cb)(VALUE, void *), void *data));
@@ -3265,13 +3286,21 @@ rb_gc_writebarrier_unprotect(VALUE obj)
 void
 rb_gc_writebarrier_remember(VALUE obj)
 {
-    rb_gc_impl_writebarrier_remember(rb_gc_get_objspace(), obj);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    {
+	rb_gc_impl_writebarrier_remember(objspace, obj);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 void
 rb_gc_copy_attributes(VALUE dest, VALUE obj)
 {
-    rb_gc_impl_copy_attributes(rb_gc_get_objspace(), dest, obj);
+    WITH_OBJSPACE_OF_VALUE_ENTER(obj, objspace);
+    {
+	rb_gc_impl_copy_attributes(objspace, dest, obj);
+    }
+    WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
 }
 
 int
