@@ -1730,7 +1730,7 @@ rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE ptr)
 
     if (dead) return true;
     return is_lazy_sweeping(objspace) && GET_HEAP_PAGE(ptr)->flags.before_sweep &&
-        !RVALUE_MARKED(objspace, ptr);
+        !RVALUE_MARKED(objspace, ptr) && (objspace == ruby_single_main_objspace || !FL_TEST_RAW(ptr, FL_SHAREABLE));
 }
 
 VALUE
