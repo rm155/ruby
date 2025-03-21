@@ -1095,6 +1095,15 @@ ractor_send_given_redirected_allocation(VALUE args)
     return p->r->pub.self;
 }
 
+static void
+share_ractor_send_args(rb_objspace_gate_t *receiving_gate, VALUE args)
+{
+    struct ractor_send_args *p = (struct ractor_send_args *)args;
+    if (!RB_SPECIAL_CONST_P(p->obj) && RB_OBJ_SHAREABLE_P(p->obj)) {
+	rb_register_new_external_reference(receiving_gate, p->obj);
+    }
+}
+
 static VALUE
 ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
 {
@@ -1107,7 +1116,7 @@ ractor_send(rb_execution_context_t *ec, rb_ractor_t *r, VALUE obj, VALUE move)
 	.success = false,
     };
 
-    VALUE ret = rb_attempt_run_with_redirected_allocation(r, ractor_send_given_redirected_allocation, (VALUE)&args, NULL);
+    VALUE ret = rb_attempt_run_with_redirected_allocation(r, ractor_send_given_redirected_allocation, share_ractor_send_args, (VALUE)&args, NULL);
     if (!args.success) {
         rb_raise(rb_eRactorClosedError, "The incoming-port is already closed");
     }
@@ -1415,6 +1424,15 @@ ractor_deq_take_basket(rb_ractor_t *cr, struct rb_ractor_queue *rs, struct rb_ra
     return found;
 }
 
+static void
+share_basket_preparation_args(rb_objspace_gate_t *receiving_gate, VALUE args)
+{
+    struct basket_preparation_args *p = (struct basket_preparation_args *)args;
+    if (!RB_SPECIAL_CONST_P(p->obj) && RB_OBJ_SHAREABLE_P(p->obj)) {
+	rb_register_new_external_reference(receiving_gate, p->obj);
+    }
+}
+
 static bool
 ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_queue *ts, volatile VALUE obj, VALUE move, bool exc, bool is_will)
 {
@@ -1448,7 +1466,7 @@ ractor_try_yield(rb_execution_context_t *ec, rb_ractor_t *cr, struct rb_ractor_q
 		    .pobj = &obj,
 		    .ptype = &type,
 		};
-		rb_run_with_redirected_allocation(tr, ractor_basket_prepare_contents, (VALUE)&args);
+		rb_run_with_redirected_allocation(tr, ractor_basket_prepare_contents, share_basket_preparation_args, (VALUE)&args);
             }
             EC_POP_TAG();
             // rescue
@@ -2110,7 +2128,7 @@ cancel_single_ractor_mode_no_redirection(VALUE args) {
 static void
 cancel_single_ractor_mode(void)
 {
-    rb_run_with_redirected_allocation(GET_VM()->ractor.main_ractor, cancel_single_ractor_mode_no_redirection, Qnil);
+    rb_run_with_redirected_allocation(GET_VM()->ractor.main_ractor, cancel_single_ractor_mode_no_redirection, NULL, Qnil);
 }
 
 static void
@@ -2248,7 +2266,7 @@ rb_ractor_mark_object_ary_init_no_redirection(VALUE ractor_arg)
 void
 rb_ractor_mark_object_ary_init(rb_ractor_t *r)
 {
-    rb_run_with_redirected_allocation(r, rb_ractor_mark_object_ary_init_no_redirection, (VALUE)r);
+    rb_run_with_redirected_allocation(r, rb_ractor_mark_object_ary_init_no_redirection, NULL, (VALUE)r);
 }
 
 static void

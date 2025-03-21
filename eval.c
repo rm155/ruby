@@ -32,6 +32,7 @@
 #include "internal/variable.h"
 #include "ruby/fiber/scheduler.h"
 #include "iseq.h"
+#include "objspace_coordinator.h"
 #include "probes.h"
 #include "probes_helper.h"
 #include "ruby/vm.h"
@@ -671,7 +672,7 @@ rb_exc_raise_no_redirection(VALUE mesg)
 {
     if (rb_redirecting_allocation()) {
 	mesg = rb_ractor_make_shareable_copy(mesg);
-	rb_run_with_redirected_allocation(NULL, rb_exc_raise_no_redirection, mesg);
+	rb_run_with_redirected_allocation(NULL, rb_exc_raise_no_redirection, rb_register_new_external_reference, mesg);
     }
     else {
 	rb_exc_exception(mesg, TAG_RAISE, Qundef);

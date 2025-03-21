@@ -1712,6 +1712,8 @@ rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE ptr)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(ptr) == objspace);
+
     bool dead = false;
 
     asan_unpoisoning_object(ptr) {
@@ -1758,7 +1760,7 @@ rb_gc_impl_object_id_to_ref(void *objspace_ptr, VALUE object_id)
     VALUE obj;
 
     if (!UNDEF_P(obj = object_id_global_search(object_id)) &&
-            !rb_gc_impl_garbage_object_p(objspace, obj)) {
+            !rb_objspace_garbage_object_p(obj)) {
         return obj;
     }
 
@@ -3120,6 +3122,8 @@ rb_gc_impl_make_zombie(void *objspace_ptr, VALUE obj, void (*dfree)(void *), voi
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     struct RZombie *zombie = RZOMBIE(obj);
     zombie->basic.flags = T_ZOMBIE | (zombie->basic.flags & ZOMBIE_OBJ_KEPT_FLAGS);
     zombie->dfree = dfree;
@@ -3387,6 +3391,9 @@ VALUE
 rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     VALUE table;
     st_data_t data;
 
@@ -3429,6 +3436,8 @@ rb_gc_impl_undefine_finalizer(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     GC_ASSERT(!OBJ_FROZEN(obj));
 
     st_data_t data = obj;
@@ -3440,6 +3449,9 @@ void
 rb_gc_impl_copy_finalizer(void *objspace_ptr, VALUE dest, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     VALUE table;
     st_data_t data;
 
@@ -5345,6 +5357,8 @@ rb_gc_impl_remove_weak(void *objspace_ptr, VALUE parent_obj, VALUE *ptr)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(*ptr) == objspace);
+
     /* If we're not incremental marking, then the state of the objects can't
      * change so we don't need to do anything. */
     if (!is_incremental_marking(objspace)) return;
@@ -7107,7 +7121,8 @@ void
 rb_gc_impl_writebarrier_unprotect(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
-    VM_ASSERT((rb_objspace_t *)objspace_ptr == GET_OBJSPACE_OF_VALUE(obj));
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
 
     if (RVALUE_WB_UNPROTECTED(objspace, obj)) {
         return;
@@ -7149,9 +7164,17 @@ rb_gc_impl_copy_attributes(void *objspace_ptr, VALUE dest, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
+
     if (RVALUE_WB_UNPROTECTED(objspace, obj)) {
-        rb_gc_impl_writebarrier_unprotect(objspace, dest);
+	WITH_OBJSPACE_OF_VALUE_ENTER(dest, objspace);
+	{
+	    rb_gc_impl_writebarrier_unprotect(objspace, dest);
+	}
+	WITH_OBJSPACE_OF_VALUE_LEAVE(objspace);
+	objspace = objspace_ptr;
     }
+
     rb_gc_impl_copy_finalizer(objspace, dest, obj);
 }
 
@@ -7165,6 +7188,8 @@ void
 rb_gc_impl_writebarrier_remember(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    VM_ASSERT(GET_OBJSPACE_OF_VALUE(obj) == objspace);
 
     gc_report(1, objspace, "rb_gc_writebarrier_remember: %s\n", rb_obj_info(obj));
 
@@ -7188,7 +7213,7 @@ rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
     size_t n = 0;
-    static ID ID_wb_protected, ID_age, ID_old, ID_uncollectible, ID_marking, ID_marked, ID_pinned;
+    static ID ID_wb_protected, ID_age, ID_old, ID_uncollectible, ID_marking, ID_marked, ID_pinned, ID_object_id;
 
     if (!ID_marked) {
 #define I(s) ID_##s = rb_intern(#s);
@@ -7199,6 +7224,7 @@ rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj)
         I(marking);
         I(marked);
         I(pinned);
+        I(object_id);
 #undef I
     }
 
@@ -7216,6 +7242,7 @@ rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj)
     if (RVALUE_MARKING(objspace, obj)) SET_ENTRY(marking, Qtrue);
     if (RVALUE_MARKED(objspace, obj)) SET_ENTRY(marked, Qtrue);
     if (RVALUE_PINNED(objspace, obj)) SET_ENTRY(pinned, Qtrue);
+    if (FL_TEST(obj, FL_SEEN_OBJ_ID)) SET_ENTRY(object_id, rb_obj_id(obj));
 
     object_metadata_entries[n].name = 0;
     object_metadata_entries[n].val = 0;
