@@ -124,12 +124,6 @@ typedef struct rb_objspace_gate {
     struct ccan_list_node gate_node;
 
     //Local data
-    st_table *shared_reference_tbl;
-    rb_nativethread_lock_t shared_reference_tbl_lock;
-
-    st_table *external_reference_tbl;
-    rb_nativethread_lock_t external_reference_tbl_lock;
-
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
