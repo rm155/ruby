@@ -1037,9 +1037,9 @@ struct RZombie {
 
 #define RZOMBIE(o) ((struct RZombie *)(o))
 
-int ruby_enable_autocompact = 0;
+static bool ruby_enable_autocompact = false;
 #if RGENGC_CHECK_MODE
-gc_compact_compare_func ruby_autocompact_compare_func;
+static gc_compact_compare_func ruby_autocompact_compare_func;
 #endif
 
 static void init_mark_stack(mark_stack_t *stack);
@@ -3474,7 +3474,7 @@ rb_gc_impl_copy_finalizer(void *objspace_ptr, VALUE dest, VALUE obj)
 static VALUE
 get_object_id_in_finalizer(rb_objspace_t *objspace, VALUE obj)
 {
-    if (FL_TEST(obj, FL_SEEN_OBJ_ID)) {
+    if (FL_TEST_RAW(obj, FL_SEEN_OBJ_ID)) {
         return rb_gc_impl_object_id(objspace, obj);
     }
     else {
@@ -3528,7 +3528,7 @@ finalize_list(rb_objspace_t *objspace, VALUE zombie)
 	OBJSPACE_LOCK_ENTER(objspace);
 	{
             GC_ASSERT(BUILTIN_TYPE(zombie) == T_ZOMBIE);
-            if (FL_TEST(zombie, FL_SEEN_OBJ_ID)) {
+            if (FL_TEST_RAW(zombie, FL_SEEN_OBJ_ID)) {
                 obj_free_object_id(objspace, zombie);
             }
 
@@ -4181,7 +4181,7 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 
                 rb_gc_event_hook(vp, RUBY_INTERNAL_EVENT_FREEOBJ);
 
-                bool has_object_id = FL_TEST(vp, FL_SEEN_OBJ_ID);
+                bool has_object_id = FL_TEST_RAW(vp, FL_SEEN_OBJ_ID);
                 rb_gc_obj_free_vm_weak_references(vp);
                 if (rb_gc_obj_free(objspace, vp)) {
                     if (has_object_id) {
@@ -8089,7 +8089,7 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
       case T_RATIONAL:
       case T_NODE:
       case T_CLASS:
-        if (FL_TEST(obj, FL_FINALIZE)) {
+        if (FL_TEST_RAW(obj, FL_FINALIZE)) {
             /* The finalizer table is a numtable. It looks up objects by address.
              * We can't mark the keys in the finalizer table because that would
              * prevent the objects from being collected.  This check prevents
@@ -8121,7 +8121,7 @@ static void
 update_obj_id_mapping(rb_objspace_t *objspace, VALUE dest, VALUE src)
 {
     rb_native_mutex_lock(&objspace->obj_id_lock);
-    if (FL_TEST((VALUE)src, FL_SEEN_OBJ_ID)) {
+    if (FL_TEST_RAW((VALUE)src, FL_SEEN_OBJ_ID)) {
         /* If the source object's object_id has been seen, we need to update
          * the object to object id mapping. */
         st_data_t srcid = (st_data_t)src, id;
