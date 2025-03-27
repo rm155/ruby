@@ -1452,10 +1452,9 @@ rb_proc_ractor_make_shareable(VALUE self)
         proc_isolate_env(self, proc, read_only_variables);
         proc->is_isolated = TRUE;
     }
-
-    if (!FL_TEST_RAW(self, FL_SHAREABLE)) {
-	permit_mutable_shareable_force(self);
-	FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+    bool already_shareable = FL_TEST_RAW(self, FL_SHAREABLE);
+    rb_obj_freeze(self);
+    if (!already_shareable) {
 	ALLOW_UNSHAREABLE_REFERENCES(self);
     }
     return self;
