@@ -35,8 +35,8 @@ The following bundled gems are promoted from default gems.
 * logger 1.7.0
 * rdoc 6.13.1
 * win32ole 1.9.1
-* irb 1.15.1
-* reline 0.6.0
+* irb 1.15.2
+* reline 0.6.1
 * readline 0.0.4
 * fiddle 1.1.6
 
@@ -66,6 +66,7 @@ The following bundled gems are added.
 The following bundled gems are updated.
 
 * minitest 5.25.5
+* test-unit 3.6.8
 * rexml 3.4.1
 * net-imap 0.5.6
 * net-smtp 0.5.1
@@ -73,7 +74,7 @@ The following bundled gems are updated.
 * bigdecimal 3.1.9
 * syslog 0.3.0
 * csv 3.3.3
-* repl_type_completor 0.1.10
+* repl_type_completor 0.1.11
 
 ## Supported platforms
 

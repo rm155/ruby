@@ -1636,7 +1636,7 @@ assert_equal "ok", %q{
 
   1_000.times { idle_worker, tmp_reporter = Ractor.select(*workers) }
   "ok"
-} if !yjit_enabled? || ENV['GITHUB_WORKFLOW'] == 'ModGC' # flaky
+} if !yjit_enabled? && ENV['GITHUB_WORKFLOW'] != 'ModGC' # flaky
 
 assert_equal "ok", %q{
   def foo(*); ->{ super }; end
@@ -2100,4 +2100,25 @@ assert_equal 'ok', %q{
   else
     :fail
   end
+}
+
+# move objects inside frozen containers
+assert_equal 'ok', %q{
+  ractor = Ractor.new { Ractor.receive }
+  obj = Array.new(10, 42)
+  original = obj.dup
+  ractor.send([obj].freeze, move: true)
+  roundtripped_obj = ractor.take[0]
+  roundtripped_obj == original ? :ok : roundtripped_obj
+}
+
+# move object with generic ivar
+assert_equal 'ok', %q{
+  ractor = Ractor.new { Ractor.receive }
+  obj = Array.new(10, 42)
+  obj.instance_variable_set(:@array, [1])
+
+  ractor.send(obj, move: true)
+  roundtripped_obj = ractor.take
+  roundtripped_obj.instance_variable_get(:@array) == [1] ? :ok : roundtripped_obj
 }
