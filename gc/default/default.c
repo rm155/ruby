@@ -1735,45 +1735,6 @@ rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE ptr)
 }
 
 VALUE
-rb_gc_impl_object_id_local_search(void *objspace_ptr, VALUE objid)
-{
-    rb_objspace_t *objspace = objspace_ptr;
-
-    VALUE orig;
-
-    rb_native_mutex_lock(&objspace->obj_id_lock);
-    int id_found = st_lookup(objspace->id_to_obj_tbl, objid, &orig);
-    rb_native_mutex_unlock(&objspace->obj_id_lock);
-    if (id_found) {
-	return orig;
-    }
-    else {
-	return Qundef;
-    }
-    return orig;
-}
-
-VALUE
-rb_gc_impl_object_id_to_ref(void *objspace_ptr, VALUE object_id)
-{
-    rb_objspace_t *objspace = objspace_ptr;
-
-    VALUE obj;
-
-    if (!UNDEF_P(obj = object_id_global_search(object_id)) &&
-            !rb_objspace_garbage_object_p(obj)) {
-        return obj;
-    }
-
-    if (rb_nonexistent_id(object_id)) {
-        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not id value", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
-    }
-    else {
-        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is recycled object", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
-    }
-}
-
-VALUE
 rb_gc_impl_object_id(void *objspace_ptr, VALUE obj)
 {
     VALUE id;
@@ -1810,6 +1771,45 @@ update_obj_id_refs(rb_objspace_t *objspace)
     gc_ref_update_table_values_only(objspace->obj_to_id_tbl);
     gc_update_table_refs(objspace->id_to_obj_tbl);
     rb_native_mutex_unlock(&objspace->obj_id_lock);
+}
+
+VALUE
+rb_gc_impl_object_id_local_search(void *objspace_ptr, VALUE objid)
+{
+    rb_objspace_t *objspace = objspace_ptr;
+
+    VALUE orig;
+
+    rb_native_mutex_lock(&objspace->obj_id_lock);
+    int id_found = st_lookup(objspace->id_to_obj_tbl, objid, &orig);
+    rb_native_mutex_unlock(&objspace->obj_id_lock);
+    if (id_found) {
+	return orig;
+    }
+    else {
+	return Qundef;
+    }
+    return orig;
+}
+
+VALUE
+rb_gc_impl_object_id_to_ref(void *objspace_ptr, VALUE object_id)
+{
+    rb_objspace_t *objspace = objspace_ptr;
+
+    VALUE obj;
+
+    if (!UNDEF_P(obj = object_id_global_search(object_id)) &&
+            !rb_objspace_garbage_object_p(obj)) {
+        return obj;
+    }
+
+    if (rb_nonexistent_id(object_id)) {
+        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not id value", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
+    }
+    else {
+        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is recycled object", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
+    }
 }
 
 static void free_stack_chunks(mark_stack_t *);
