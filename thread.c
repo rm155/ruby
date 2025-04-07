@@ -107,6 +107,7 @@
 
 static VALUE cThGroup;
 static VALUE rb_cThreadShield;
+static VALUE cThGroup;
 
 static VALUE sym_immediate;
 static VALUE sym_on_blocking;
@@ -576,6 +577,8 @@ thread_do_start_proc(rb_thread_t *th)
 
     if (th->invoke_type == thread_invoke_type_ractor_proc) {
         VALUE self = rb_ractor_self(th->ractor);
+        th->thgroup = th->ractor->thgroup_default = rb_obj_alloc(cThGroup);
+
         VM_ASSERT(FIXNUM_P(args));
         args_len = FIX2INT(args);
         args_ptr = ALLOCA_N(VALUE, args_len);

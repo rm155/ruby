@@ -274,7 +274,7 @@ class Ractor
     b = block # TODO: builtin bug
     raise ArgumentError, "must be called with a block" unless block
     if __builtin_cexpr!("RBOOL(ruby_single_main_ractor)")
-      warn("Ractor is experimental, and the behavior may change in future versions of Ruby! " \
+      Kernel.warn("Ractor is experimental, and the behavior may change in future versions of Ruby! " \
            "Also there are many implementation issues.", uplevel: 0, category: :experimental)
     end
     loc = caller_locations(1, 1).first
@@ -860,7 +860,7 @@ class Ractor
   # call-seq:
   #   Ractor.store_if_absent(key){ init_block }
   #
-  # If the correponding value is not set, yield a value with
+  # If the corresponding value is not set, yield a value with
   # init_block and store the value in thread-safe manner.
   # This method returns corresponding stored value.
   #
