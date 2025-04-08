@@ -188,6 +188,7 @@ count_objspaces(rb_vm_t *vm) //TODO: Replace with count-tracker
 static void mark_shared_reference_tbl(rb_objspace_gate_t *os_gate);
 static void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
 static void mark_received_obj_tbl(rb_objspace_gate_t *os_gate);
+static void mark_shareable_object_tbl(rb_objspace_gate_t *os_gate);
 
 static void
 objspace_gate_mark(void *data)
@@ -200,9 +201,7 @@ objspace_gate_mark(void *data)
     mark_absorbed_threads_tbl(os_gate);
 
     if (rb_using_local_limits(rb_gc_get_objspace()) || !rb_during_gc()) {
-	mark_shared_reference_tbl(os_gate);
-	mark_received_obj_tbl(os_gate);
-	mark_local_immune_tbl(os_gate);
+	mark_shareable_object_tbl(os_gate);
     }
 }
 
@@ -221,6 +220,8 @@ objspace_gate_free(rb_objspace_gate_t *local_gate)
     rb_nativethread_lock_destroy(&local_gate->external_reference_tbl_lock);
     st_free_table(local_gate->local_immune_tbl);
     rb_nativethread_lock_destroy(&local_gate->local_immune_tbl_lock);
+    st_free_table(local_gate->shareable_object_tbl);
+    rb_nativethread_lock_destroy(&local_gate->shareable_object_tbl_lock);
 
     st_free_table(local_gate->received_obj_tbl);
     rb_nativethread_lock_destroy(&local_gate->received_obj_tbl_lock);
@@ -314,6 +315,9 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
     
     local_gate->local_immune_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->local_immune_tbl_lock);
+    
+    local_gate->shareable_object_tbl = st_init_numtable();
+    rb_nativethread_lock_initialize(&local_gate->shareable_object_tbl_lock);
     
     local_gate->received_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->received_obj_tbl_lock);
@@ -574,12 +578,32 @@ add_local_immune_object(VALUE obj)
     WITH_OBJSPACE_GATE_LEAVE(source_gate);
 }
 
+void
+add_shareable_object(VALUE obj)
+{
+    WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
+    {
+	rb_native_mutex_lock(&source_gate->shareable_object_tbl_lock);
+	st_insert_no_gc(source_gate->shareable_object_tbl, (st_data_t)obj, INT2FIX(0));
+	rb_native_mutex_unlock(&source_gate->shareable_object_tbl_lock);
+    }
+    WITH_OBJSPACE_GATE_LEAVE(source_gate);
+}
+
 static void
 mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
     rb_mark_set(os_gate->local_immune_tbl);
     rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
+}
+
+static void
+mark_shareable_object_tbl(rb_objspace_gate_t *os_gate)
+{
+    rb_native_mutex_lock(&os_gate->shareable_object_tbl_lock);
+    rb_mark_set(os_gate->shareable_object_tbl);
+    rb_native_mutex_unlock(&os_gate->shareable_object_tbl_lock);
 }
 
 static int
@@ -596,9 +620,24 @@ update_local_immune_tbl_i(st_data_t key, st_data_t value, st_data_t argp, int er
 void
 update_local_immune_tbl(rb_objspace_gate_t *os_gate)
 {
-    rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-    st_foreach(os_gate->local_immune_tbl, update_local_immune_tbl_i, (st_data_t)os_gate);
-    rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
+}
+
+static int
+update_shareable_object_tbl_i(st_data_t key, st_data_t value, st_data_t argp, int error)
+{
+    if (rb_gc_object_marked(key)) {
+	return ST_CONTINUE;
+    }
+    rb_objspace_gate_t *os_gate = argp;
+    return ST_DELETE;
+}
+
+void
+update_shareable_object_tbl(rb_objspace_gate_t *os_gate)
+{
+    rb_native_mutex_lock(&os_gate->shareable_object_tbl_lock);
+    st_foreach(os_gate->shareable_object_tbl, update_shareable_object_tbl_i, (st_data_t)os_gate);
+    rb_native_mutex_unlock(&os_gate->shareable_object_tbl_lock);
 }
 
 bool
@@ -1173,6 +1212,14 @@ absorb_shared_object_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate
 
     rb_native_mutex_unlock(&gate_to_copy_from->shared_reference_tbl_lock);
     rb_native_mutex_unlock(&gate_to_update->shared_reference_tbl_lock);
+
+    rb_native_mutex_lock(&gate_to_copy_from->shareable_object_tbl_lock);
+    rb_native_mutex_lock(&gate_to_update->shareable_object_tbl_lock);
+
+    absorb_table_contents(gate_to_update->shareable_object_tbl, gate_to_copy_from->shareable_object_tbl);
+
+    rb_native_mutex_unlock(&gate_to_copy_from->shareable_object_tbl_lock);
+    rb_native_mutex_unlock(&gate_to_update->shareable_object_tbl_lock);
 
     rb_native_mutex_lock(&gate_to_copy_from->local_immune_tbl_lock);
     rb_native_mutex_lock(&gate_to_update->local_immune_tbl_lock);

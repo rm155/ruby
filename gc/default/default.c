@@ -6242,6 +6242,7 @@ gc_marks_finish(rb_objspace_t *objspace)
     gc_update_external_weak_references(objspace->local_gate);
     if (is_full_marking(objspace)) update_shared_object_references(objspace->local_gate);
     if (!using_local_limits(objspace)) update_local_immune_tbl(objspace->local_gate);
+    if (!using_local_limits(objspace)) update_shareable_object_tbl(objspace->local_gate);
 
 #if RGENGC_CHECK_MODE >= 2
     gc_verify_internal_consistency(objspace);

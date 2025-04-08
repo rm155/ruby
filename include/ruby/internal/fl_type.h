@@ -595,6 +595,12 @@ rbimpl_fl_set_raw_raw(struct RBasic *obj, VALUE flags)
 
     rb_verify_mutable_shareable_safety(obj, flags);
 #endif
+    void add_shareable_object(VALUE obj);
+
+    if ((flags & FL_SHAREABLE) && !(obj->flags & FL_SHAREABLE)) {
+	add_shareable_object((VALUE)obj);
+    }
+
     obj->flags |= flags;
 }
 

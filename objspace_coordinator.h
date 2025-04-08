@@ -130,6 +130,9 @@ typedef struct rb_objspace_gate {
     rb_nativethread_lock_t local_immune_tbl_lock;
     unsigned int local_immune_count;
 
+    st_table *shareable_object_tbl;
+    rb_nativethread_lock_t shareable_object_tbl_lock;
+
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
 
@@ -251,6 +254,7 @@ bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
 
 void add_local_immune_object(VALUE obj);
 void update_local_immune_tbl(rb_objspace_gate_t *os_gate);
+void update_shareable_object_tbl(rb_objspace_gate_t *os_gate);
 bool rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed);
 unsigned int local_immune_objects_global_count(void);
 void rb_local_immune_tbl_activate(void);
