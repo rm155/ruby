@@ -136,9 +136,6 @@ typedef struct rb_objspace_gate {
     st_table *contained_ractor_tbl;
     rb_nativethread_lock_t contained_ractor_tbl_lock;
 
-    st_table *received_obj_tbl;
-    rb_nativethread_lock_t received_obj_tbl_lock;
-
     struct ccan_list_head zombie_threads;
     rb_nativethread_lock_t zombie_threads_lock;
 
@@ -254,7 +251,6 @@ void mark_zombie_threads(rb_objspace_gate_t *os_gate);
 void rb_add_to_contained_ractor_tbl(rb_ractor_t *r);
 void rb_remove_from_contained_ractor_tbl(rb_ractor_t *r);
 void mark_contained_ractor_tbl(rb_objspace_gate_t *os_gate);
-void rb_register_received_obj(rb_objspace_gate_t *os_gate, uintptr_t borrowing_id, VALUE obj);
 void rb_register_new_external_wmap_reference(VALUE *ptr);
 void rb_remove_from_external_weak_tables(VALUE *ptr);
 void gc_update_external_weak_references(rb_objspace_gate_t *os_gate);

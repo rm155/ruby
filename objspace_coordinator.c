@@ -186,7 +186,6 @@ count_objspaces(rb_vm_t *vm) //TODO: Replace with count-tracker
 */
 
 static void mark_shared_reference_tbl(rb_objspace_gate_t *os_gate);
-static void mark_received_obj_tbl(rb_objspace_gate_t *os_gate);
 static void mark_shareable_object_tbl(rb_objspace_gate_t *os_gate);
 
 static void
@@ -219,9 +218,6 @@ objspace_gate_free(rb_objspace_gate_t *local_gate)
     rb_nativethread_lock_destroy(&local_gate->external_reference_tbl_lock);
     st_free_table(local_gate->shareable_object_tbl);
     rb_nativethread_lock_destroy(&local_gate->shareable_object_tbl_lock);
-
-    st_free_table(local_gate->received_obj_tbl);
-    rb_nativethread_lock_destroy(&local_gate->received_obj_tbl_lock);
 
     st_free_table(local_gate->wmap_referenced_obj_tbl);
     rb_nativethread_lock_destroy(&local_gate->wmap_referenced_obj_tbl_lock);
@@ -312,9 +308,6 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
     
     local_gate->shareable_object_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->shareable_object_tbl_lock);
-    
-    local_gate->received_obj_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&local_gate->received_obj_tbl_lock);
 
     local_gate->wmap_referenced_obj_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->wmap_referenced_obj_tbl_lock);
@@ -790,67 +783,6 @@ mark_contained_ractor_tbl(rb_objspace_gate_t *os_gate)
     rb_native_mutex_lock(&os_gate->contained_ractor_tbl_lock);
     rb_mark_set(os_gate->contained_ractor_tbl);
     rb_native_mutex_unlock(&os_gate->contained_ractor_tbl_lock);
-}
-
-struct received_obj_list {
-    VALUE received_obj;
-    struct received_obj_list *next;
-};
-
-void
-rb_register_received_obj(rb_objspace_gate_t *os_gate, uintptr_t borrowing_id, VALUE obj)
-{
-    rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
-    struct received_obj_list *new_item;
-    new_item = ALLOC(struct received_obj_list);
-    new_item->received_obj = obj;
-
-    st_data_t data;
-    int list_found = st_lookup(os_gate->received_obj_tbl, (st_data_t)borrowing_id, &data);
-    struct received_obj_list *lst = list_found ? (struct received_obj_list *)data : NULL;
-    new_item->next = lst;
-
-    st_insert_no_gc(os_gate->received_obj_tbl, (st_data_t)GET_RACTOR()->borrowing_sync.borrowing_id, (st_data_t)new_item);
-    rb_native_mutex_unlock(&os_gate->received_obj_tbl_lock);
-}
-
-static void
-remove_received_obj_list(rb_objspace_gate_t *os_gate, uintptr_t borrowing_id)
-{
-    rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
-    st_data_t data;
-    int list_found = st_lookup(os_gate->received_obj_tbl, (st_data_t)borrowing_id, &data);
-    if (list_found) {
-	struct received_obj_list *p = (struct received_obj_list *)data;
-	struct received_obj_list *next = NULL;
-	while (p) {
-	    next = p->next;
-	    free(p);
-	    p = next;
-	}
-    }
-
-    st_delete(os_gate->received_obj_tbl, &borrowing_id, NULL);
-    rb_native_mutex_unlock(&os_gate->received_obj_tbl_lock);
-}
-
-static int
-mark_received_obj_list(st_data_t key, st_data_t val, st_data_t arg)
-{
-    struct received_obj_list *p = (struct received_obj_list *)val;
-    while (p) {
-	rb_gc_mark(p->received_obj);
-	p = p->next;
-    }
-    return ST_CONTINUE;
-}
-
-static void
-mark_received_obj_tbl(rb_objspace_gate_t *os_gate)
-{
-    rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
-    st_foreach(os_gate->received_obj_tbl, mark_received_obj_list, NULL);
-    rb_native_mutex_unlock(&os_gate->received_obj_tbl_lock);
 }
 
 void
@@ -1394,11 +1326,6 @@ borrowing_exit(VALUE args)
 	if (borrowing_data->sharing_func) {
 	    borrowing_data->sharing_func(finished_target->local_gate, borrowing_data->func_args);
 	}
-	rb_borrowing_sync_lock(finished_target);
-	if (LIKELY(!finished_target->borrowing_sync.borrowing_closed)) {
-	    remove_received_obj_list(finished_target->local_gate, finished_borrowing_id);
-	}
-	rb_borrowing_sync_unlock(finished_target);
 	borrowing_count_decrement(finished_target);
 #if VM_CHECK_MODE > 0
 	rb_ractor_t *popped_target = borrowing_alloc_target_pop(borrower);
