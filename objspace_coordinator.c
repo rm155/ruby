@@ -584,7 +584,8 @@ add_shareable_object(VALUE obj)
     WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
     {
 	rb_native_mutex_lock(&source_gate->shareable_object_tbl_lock);
-	st_insert_no_gc(source_gate->shareable_object_tbl, (st_data_t)obj, INT2FIX(0));
+	bool new_entry = !st_insert_no_gc(source_gate->shareable_object_tbl, (st_data_t)obj, INT2FIX(0));
+	if (new_entry) source_gate->shareable_object_count++;
 	rb_native_mutex_unlock(&source_gate->shareable_object_tbl_lock);
     }
     WITH_OBJSPACE_GATE_LEAVE(source_gate);
@@ -629,6 +630,7 @@ update_shareable_object_tbl_i(st_data_t key, st_data_t value, st_data_t argp, in
 	return ST_CONTINUE;
     }
     rb_objspace_gate_t *os_gate = argp;
+    os_gate->shareable_object_count--;
     return ST_DELETE;
 }
 
@@ -664,6 +666,19 @@ local_immune_objects_global_count(void)
 	rb_native_mutex_lock(&local_gate->local_immune_tbl_lock);
 	total += local_gate->local_immune_count;
 	rb_native_mutex_unlock(&local_gate->local_immune_tbl_lock);
+    }
+    return total;
+}
+
+unsigned int
+shareable_objects_global_count(void)
+{
+    rb_objspace_gate_t *local_gate = NULL;
+    unsigned int total = 0;
+    ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
+	rb_native_mutex_lock(&local_gate->shareable_object_tbl_lock);
+	total += local_gate->shareable_object_count;
+	rb_native_mutex_unlock(&local_gate->shareable_object_tbl_lock);
     }
     return total;
 }
@@ -1217,6 +1232,7 @@ absorb_shared_object_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate
     rb_native_mutex_lock(&gate_to_update->shareable_object_tbl_lock);
 
     absorb_table_contents(gate_to_update->shareable_object_tbl, gate_to_copy_from->shareable_object_tbl);
+    gate_to_update->shareable_object_count += gate_to_copy_from->shareable_object_count;
 
     rb_native_mutex_unlock(&gate_to_copy_from->shareable_object_tbl_lock);
     rb_native_mutex_unlock(&gate_to_update->shareable_object_tbl_lock);
@@ -1832,12 +1848,12 @@ arrange_next_gc_global_status(double sharedobject_limit_factor)
     rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
     rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
 
-    int shared_plus_local_immune = objspace_coordinator->rglobalgc.shared_objects_total + local_immune_objects_global_count();
+    int total_shareable_count = shareable_objects_global_count();
 
     if (rb_during_global_gc()) {
-	objspace_coordinator->rglobalgc.global_gc_threshold = (size_t)(shared_plus_local_immune * sharedobject_limit_factor);
+	objspace_coordinator->rglobalgc.global_gc_threshold = (size_t)(total_shareable_count * sharedobject_limit_factor);
     }
-    else if (rb_multi_ractor_p() && shared_plus_local_immune > objspace_coordinator->rglobalgc.global_gc_threshold) {
+    else if (rb_multi_ractor_p() && total_shareable_count > objspace_coordinator->rglobalgc.global_gc_threshold) {
 	objspace_coordinator->rglobalgc.need_global_gc = true;
     }
 

@@ -132,6 +132,7 @@ typedef struct rb_objspace_gate {
 
     st_table *shareable_object_tbl;
     rb_nativethread_lock_t shareable_object_tbl_lock;
+    unsigned int shareable_object_count;
 
     st_table *wmap_referenced_obj_tbl;
     rb_nativethread_lock_t wmap_referenced_obj_tbl_lock;
