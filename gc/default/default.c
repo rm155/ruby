@@ -3417,9 +3417,6 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
         rb_ary_push(table, block);
     }
     else {
-	if (!ruby_single_main_objspace) {
-	    add_local_immune_object(block);
-	}
         table = rb_ary_new3(1, block);
 	rb_permit_mutable_shareable(table);
 	ALLOW_UNSHAREABLE_REFERENCES(table);
@@ -6241,7 +6238,6 @@ gc_marks_finish(rb_objspace_t *objspace)
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace->local_gate);
     if (is_full_marking(objspace)) update_shared_object_references(objspace->local_gate);
-    if (!using_local_limits(objspace)) update_local_immune_tbl(objspace->local_gate);
     if (!using_local_limits(objspace)) update_shareable_object_tbl(objspace->local_gate);
 
 #if RGENGC_CHECK_MODE >= 2
@@ -8035,16 +8031,8 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 
             return FALSE;
         }
-	if (rb_multi_ractor_p()) {
-	    if (FL_TEST_RAW(obj, FL_SHAREABLE)) {
-		return FALSE;
-	    }
-	    GC_ASSERT(!rb_local_immune_tbl_contains(objspace->local_gate, obj, false));
-	}
-	else {
-	    if (rb_local_immune_tbl_contains(objspace->local_gate, obj, false)) {
-		return FALSE;
-	    }
+	if (FL_TEST_RAW(obj, FL_SHAREABLE)) {
+	    return FALSE;
 	}
         GC_ASSERT(RVALUE_MARKED(objspace, obj));
         GC_ASSERT(!RVALUE_PINNED(objspace, obj));
@@ -8665,7 +8653,6 @@ enum gc_stat_sym {
     gc_stat_sym_remembered_wb_unprotected_objects_limit,
     gc_stat_sym_old_objects,
     gc_stat_sym_old_objects_limit,
-    gc_stat_sym_local_immune_objects,
     gc_stat_sym_shared_objects,
     gc_stat_sym_global_gc_threshold,
 #if RGENGC_ESTIMATE_OLDMALLOC
@@ -8720,7 +8707,6 @@ setup_gc_stat_symbols(void)
         S(old_objects);
         S(old_objects_limit);
 	if (rb_multi_ractor_p()) {
-	    S(local_immune_objects);
 	    S(shared_objects);
 	    S(global_gc_threshold);
 	}
@@ -8767,7 +8753,6 @@ rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym)
 
     rb_objspace_coordinator_t *objspace_coordinator = rb_get_objspace_coordinator();
     rb_native_mutex_lock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
-    size_t local_immune_objects_total_value = local_immune_objects_global_count();
     size_t shared_objects_total_value = objspace_coordinator->rglobalgc.shared_objects_total;
     size_t global_gc_threshold_value = objspace_coordinator->rglobalgc.global_gc_threshold;
     rb_native_mutex_unlock(&objspace_coordinator->rglobalgc.shared_tracking_lock);
@@ -8809,7 +8794,6 @@ rb_gc_impl_stat(void *objspace_ptr, VALUE hash_or_sym)
     SET(old_objects, objspace->rgengc.old_objects);
     SET(old_objects_limit, objspace->rgengc.old_objects_limit);
     if (rb_multi_ractor_p()) {
-	SET(local_immune_objects, local_immune_objects_total_value);
 	SET(shared_objects, shared_objects_total_value);
 	SET(global_gc_threshold, global_gc_threshold_value);
     }
@@ -10974,23 +10958,6 @@ gc_shared_reference_p(VALUE _, VALUE v)
     return RBOOL(rb_shared_reference_tbl_contains(objspace->local_gate, v));
 }
 
-static VALUE
-gc_local_immune_p(VALUE _, VALUE v)
-{
-    if (SPECIAL_CONST_P(v)) {
-	return Qfalse;
-    }
-
-    VALUE ret;
-    WITH_OBJSPACE_GATE_ENTER(v, source_gate);
-    {
-	ret = RBOOL(rb_local_immune_tbl_contains(source_gate, v, true));
-    }
-    WITH_OBJSPACE_GATE_LEAVE(source_gate);
-
-    return ret;
-}
-
 void
 rb_gc_impl_init(void)
 {
@@ -11013,7 +10980,6 @@ rb_gc_impl_init(void)
 
     rb_define_singleton_method(rb_mGC, "external_reference?", gc_external_reference_p, 1);
     rb_define_singleton_method(rb_mGC, "shared_reference?", gc_shared_reference_p, 1);
-    rb_define_singleton_method(rb_mGC, "local_immune?", gc_local_immune_p, 1);
 
     if (GC_COMPACTION_SUPPORTED) {
         rb_define_singleton_method(rb_mGC, "compact", gc_compact, 0);

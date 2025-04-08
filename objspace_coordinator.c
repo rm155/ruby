@@ -186,7 +186,6 @@ count_objspaces(rb_vm_t *vm) //TODO: Replace with count-tracker
 */
 
 static void mark_shared_reference_tbl(rb_objspace_gate_t *os_gate);
-static void mark_local_immune_tbl(rb_objspace_gate_t *os_gate);
 static void mark_received_obj_tbl(rb_objspace_gate_t *os_gate);
 static void mark_shareable_object_tbl(rb_objspace_gate_t *os_gate);
 
@@ -218,8 +217,6 @@ objspace_gate_free(rb_objspace_gate_t *local_gate)
     rb_nativethread_lock_destroy(&local_gate->shared_reference_tbl_lock);
     st_free_table(local_gate->external_reference_tbl);
     rb_nativethread_lock_destroy(&local_gate->external_reference_tbl_lock);
-    st_free_table(local_gate->local_immune_tbl);
-    rb_nativethread_lock_destroy(&local_gate->local_immune_tbl_lock);
     st_free_table(local_gate->shareable_object_tbl);
     rb_nativethread_lock_destroy(&local_gate->shareable_object_tbl_lock);
 
@@ -312,9 +309,6 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
     rb_nativethread_lock_initialize(&local_gate->shared_reference_tbl_lock);
     local_gate->external_reference_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->external_reference_tbl_lock);
-    
-    local_gate->local_immune_tbl = st_init_numtable();
-    rb_nativethread_lock_initialize(&local_gate->local_immune_tbl_lock);
     
     local_gate->shareable_object_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&local_gate->shareable_object_tbl_lock);
@@ -565,20 +559,6 @@ rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj)
 }
 
 void
-add_local_immune_object(VALUE obj)
-{
-    VM_ASSERT(!ruby_single_main_objspace);
-    WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
-    {
-	rb_native_mutex_lock(&source_gate->local_immune_tbl_lock);
-	bool new_entry = !st_insert_no_gc(source_gate->local_immune_tbl, (st_data_t)obj, INT2FIX(0));
-	if (new_entry) source_gate->local_immune_count++;
-	rb_native_mutex_unlock(&source_gate->local_immune_tbl_lock);
-    }
-    WITH_OBJSPACE_GATE_LEAVE(source_gate);
-}
-
-void
 add_shareable_object(VALUE obj)
 {
     WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
@@ -592,35 +572,11 @@ add_shareable_object(VALUE obj)
 }
 
 static void
-mark_local_immune_tbl(rb_objspace_gate_t *os_gate)
-{
-    rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-    rb_mark_set(os_gate->local_immune_tbl);
-    rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
-}
-
-static void
 mark_shareable_object_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->shareable_object_tbl_lock);
     rb_mark_set(os_gate->shareable_object_tbl);
     rb_native_mutex_unlock(&os_gate->shareable_object_tbl_lock);
-}
-
-static int
-update_local_immune_tbl_i(st_data_t key, st_data_t value, st_data_t argp, int error)
-{
-    if (rb_gc_object_marked(key)) {
-	return ST_CONTINUE;
-    }
-    rb_objspace_gate_t *os_gate = argp;
-    os_gate->local_immune_count--;
-    return ST_DELETE;
-}
-
-void
-update_local_immune_tbl(rb_objspace_gate_t *os_gate)
-{
 }
 
 static int
@@ -640,34 +596,6 @@ update_shareable_object_tbl(rb_objspace_gate_t *os_gate)
     rb_native_mutex_lock(&os_gate->shareable_object_tbl_lock);
     st_foreach(os_gate->shareable_object_tbl, update_shareable_object_tbl_i, (st_data_t)os_gate);
     rb_native_mutex_unlock(&os_gate->shareable_object_tbl_lock);
-}
-
-bool
-rb_local_immune_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj, bool lock_needed)
-{
-    bool ret;
-    if (lock_needed) {
-	rb_native_mutex_lock(&os_gate->local_immune_tbl_lock);
-	ret = !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
-	rb_native_mutex_unlock(&os_gate->local_immune_tbl_lock);
-    }
-    else {
-	ret = !!st_lookup(os_gate->local_immune_tbl, obj, NULL);
-    }
-    return ret;
-}
-
-unsigned int
-local_immune_objects_global_count(void)
-{
-    rb_objspace_gate_t *local_gate = NULL;
-    unsigned int total = 0;
-    ccan_list_for_each(&GET_VM()->objspace_set, local_gate, gate_node) {
-	rb_native_mutex_lock(&local_gate->local_immune_tbl_lock);
-	total += local_gate->local_immune_count;
-	rb_native_mutex_unlock(&local_gate->local_immune_tbl_lock);
-    }
-    return total;
 }
 
 unsigned int
@@ -705,47 +633,6 @@ find_all_mutable_shareable_objs(void)
     rb_objspace_each_objects(find_all_mutable_shareable_objs_i, ary);
     return ary;
 }
-
-void
-rb_local_immune_tbl_activate(void)
-{
-    VALUE mutable_shareable_obj_ary = find_all_mutable_shareable_objs();
-    for (long i=0; i<RARRAY_LEN(mutable_shareable_obj_ary); i++) {
-        add_reachable_objects_to_local_immune_tbl(RARRAY_AREF(mutable_shareable_obj_ary, i));
-    }
-}
-
-static void
-add_reachable_objects_to_local_immune_tbl_i(VALUE obj, void *data_ptr)
-{
-    VALUE parent = data_ptr;
-    if (obj != RBASIC(parent)->klass) {
-	add_local_immune_object(obj);
-    }
-}
-
-void
-add_reachable_objects_to_local_immune_tbl(VALUE obj)
-{
-    rb_objspace_reachable_objects_from(obj, add_reachable_objects_to_local_immune_tbl_i, obj);
-}
-
-#if VM_CHECK_MODE > 0
-static void
-check_child_is_local_immune(VALUE obj, void *arg)
-{
-    VALUE parent = arg;
-    if (!rb_local_immune_tbl_contains(GET_RACTOR_OF_VALUE(obj)->local_gate, obj, true) && obj != RBASIC(parent)->klass) {
-	rb_bug("child object is not local-immune");
-    }
-}
-
-void
-verify_reachable_objects_in_local_immune_tbl(VALUE obj)
-{
-    rb_objspace_reachable_objects_from(obj, check_child_is_local_immune, obj);
-}
-#endif
 
 static int
 confirm_discovered_external_references_i(st_data_t key, st_data_t value, st_data_t argp, int error)
@@ -1236,15 +1123,6 @@ absorb_shared_object_tables(rb_objspace_gate_t *gate_to_update, rb_objspace_gate
 
     rb_native_mutex_unlock(&gate_to_copy_from->shareable_object_tbl_lock);
     rb_native_mutex_unlock(&gate_to_update->shareable_object_tbl_lock);
-
-    rb_native_mutex_lock(&gate_to_copy_from->local_immune_tbl_lock);
-    rb_native_mutex_lock(&gate_to_update->local_immune_tbl_lock);
-
-    absorb_table_contents(gate_to_update->local_immune_tbl, gate_to_copy_from->local_immune_tbl);
-    gate_to_update->local_immune_count += gate_to_copy_from->local_immune_count;
-
-    rb_native_mutex_unlock(&gate_to_copy_from->local_immune_tbl_lock);
-    rb_native_mutex_unlock(&gate_to_update->local_immune_tbl_lock);
 }
 
 static void
@@ -1933,17 +1811,7 @@ void
 make_irregular_shareable_object(VALUE obj)
 {
     if (FL_TEST_RAW(obj, RUBY_FL_SHAREABLE)) return;
-    if (!ruby_single_main_objspace && BUILTIN_TYPE(obj) == T_ARRAY && ARY_SHARED_ROOT_P(obj)) {
-	long len = RARRAY_LEN(obj);
-	const VALUE *ptr = RARRAY_CONST_PTR(obj);
-	for (long i = 0; i < len; i++) {
-	    add_local_immune_object(ptr[i]);
-	}
-	permit_mutable_shareable_direct(obj);
-    }
-    else {
-	permit_mutable_shareable_force(obj);
-    }
+    permit_mutable_shareable_force(obj);
 
     ALLOW_UNSHAREABLE_REFERENCES(obj);
     FL_SET_RAW(obj, RUBY_FL_SHAREABLE);

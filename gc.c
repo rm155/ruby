@@ -3171,20 +3171,12 @@ permit_mutable_shareable_direct(VALUE obj)
 void
 permit_mutable_shareable_force(VALUE obj)
 {
-    if (!ruby_single_main_objspace) {
-	add_reachable_objects_to_local_immune_tbl(obj);
-    }
     permit_mutable_shareable_direct(obj);
 }
 
 void
 rb_permit_mutable_shareable(VALUE obj)
 {
-#if VM_CHECK_MODE > 0
-    if (!ruby_single_main_objspace) {
-	verify_reachable_objects_in_local_immune_tbl(obj);
-    }
-#endif
     permit_mutable_shareable_direct(obj);
 }
 
@@ -3258,9 +3250,6 @@ rb_gc_writebarrier(VALUE a, VALUE b)
 	rb_gc_writebarrier_single_objspace(ruby_single_main_objspace, a, b);
     }
     else {
-	if (rb_gc_mutable_shareable_permission_p(a)) {
-	    add_local_immune_object(b);
-	}
 	if (stored_unitary_objspace_gate) {
 	    rb_gc_writebarrier_single_objspace(stored_unitary_objspace_gate->objspace, a, b);
 	}

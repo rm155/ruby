@@ -2114,8 +2114,6 @@ cancel_single_ractor_mode_no_redirection(VALUE args) {
     // enable multi-ractor mode
     RUBY_DEBUG_LOG("enable multi-ractor mode");
 
-    rb_local_immune_tbl_activate();
-
     ruby_single_main_ractor = NULL;
     rb_funcall(rb_cRactor, rb_intern("_activated"), 0);
     return Qnil;
