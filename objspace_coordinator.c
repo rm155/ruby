@@ -332,7 +332,7 @@ rb_objspace_gate_init(struct rb_objspace *objspace)
 	objspace_gate_object_create(local_gate);
     }
     else {
-	rb_run_with_redirected_allocation(local_gate->ractor, objspace_gate_object_create, NULL, local_gate);
+	rb_run_with_redirected_allocation(local_gate->ractor, objspace_gate_object_create, local_gate);
     }
     return local_gate;
 }
@@ -1268,7 +1268,6 @@ struct borrowing_data_args {
     rb_ractor_t *target_ractor;
     rb_ractor_t *old_target;
     VALUE (*func)(VALUE);
-    void (*sharing_func)(rb_objspace_gate_t *, VALUE);
     VALUE func_args;
     uintptr_t old_borrowing_id;
 };
@@ -1323,9 +1322,6 @@ borrowing_exit(VALUE args)
     borrower->borrowing_sync.borrowing_id = (uintptr_t)borrowing_data->old_borrowing_id;
 
     if (!!finished_target) {
-	if (borrowing_data->sharing_func) {
-	    borrowing_data->sharing_func(finished_target->local_gate, borrowing_data->func_args);
-	}
 	borrowing_count_decrement(finished_target);
 #if VM_CHECK_MODE > 0
 	rb_ractor_t *popped_target = borrowing_alloc_target_pop(borrower);
@@ -1352,14 +1348,13 @@ run_redirected_func(VALUE args)
 }
 
 VALUE
-rb_attempt_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), void (*sharing_func)(rb_objspace_gate_t *, VALUE), VALUE func_args, bool *borrowing_success)
+rb_attempt_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args, bool *borrowing_success)
 {
     struct borrowing_data_args borrowing_data = {
 	.borrower = GET_RACTOR(),
 	.target_ractor = target_ractor,
 	.old_target = NULL,
 	.func = func,
-	.sharing_func = sharing_func,
 	.func_args = func_args,
 	.old_borrowing_id = 0,
     };
@@ -1377,10 +1372,10 @@ rb_attempt_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*fu
 }
 
 VALUE
-rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), void (*sharing_func)(rb_objspace_gate_t *, VALUE), VALUE func_args)
+rb_run_with_redirected_allocation(rb_ractor_t *target_ractor, VALUE (*func)(VALUE), VALUE func_args)
 {
     bool success;
-    VALUE ret = rb_attempt_run_with_redirected_allocation(target_ractor, func, sharing_func, func_args, &success);
+    VALUE ret = rb_attempt_run_with_redirected_allocation(target_ractor, func, func_args, &success);
     if (LIKELY(success)) {
 	return ret;
     }

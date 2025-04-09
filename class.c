@@ -28,7 +28,6 @@
 #include "internal/object.h"
 #include "internal/string.h"
 #include "internal/variable.h"
-#include "objspace_coordinator.h"
 #include "ractor_core.h"
 #include "ruby/st.h"
 #include "vm_core.h"
@@ -301,13 +300,6 @@ class_alloc_given_redirected_allocation(VALUE args)
     return obj;
 }
 
-static void
-share_class_allocation_args(rb_objspace_gate_t *receiving_gate, VALUE args)
-{
-    struct class_allocation_args *p = (struct class_allocation_args *)args;
-    rb_register_new_external_reference(receiving_gate, p->klass);
-}
-
 /**
  * Allocates a struct RClass for a new class.
  *
@@ -331,7 +323,7 @@ class_alloc(VALUE flags, VALUE klass)
 	.klass = klass,
     };
 
-    return rb_run_with_redirected_allocation(alloc_ractor, class_alloc_given_redirected_allocation, share_class_allocation_args, (VALUE)&args);
+    return rb_run_with_redirected_allocation(alloc_ractor, class_alloc_given_redirected_allocation, (VALUE)&args);
 }
 
 static void

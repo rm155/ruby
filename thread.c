@@ -1011,14 +1011,6 @@ thread_create_ractor_given_redirected_allocation(VALUE args)
     return Qnil;
 }
 
-static void
-share_thread_create_params(rb_objspace_gate_t *receiving_gate, VALUE args)
-{
-    struct thread_create_params *p = (struct thread_create_params *)args;
-    rb_register_new_external_reference(receiving_gate, p->args);
-    rb_register_new_external_reference(receiving_gate, p->proc);
-}
-
 void
 rb_thread_create_ractor(rb_ractor_t *r, VALUE args, VALUE proc)
 {
@@ -1029,7 +1021,7 @@ rb_thread_create_ractor(rb_ractor_t *r, VALUE args, VALUE proc)
         .proc = proc,
     };
 
-    rb_run_with_redirected_allocation(r, thread_create_ractor_given_redirected_allocation, share_thread_create_params, (VALUE)&params);
+    rb_run_with_redirected_allocation(r, thread_create_ractor_given_redirected_allocation, (VALUE)&params);
 }
 
 
