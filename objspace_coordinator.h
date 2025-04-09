@@ -120,12 +120,6 @@ typedef struct rb_objspace_gate {
     struct ccan_list_node gate_node;
 
     //Local data
-    st_table *shared_reference_tbl;
-    rb_nativethread_lock_t shared_reference_tbl_lock;
-
-    st_table *external_reference_tbl;
-    rb_nativethread_lock_t external_reference_tbl_lock;
-
     st_table *shareable_object_tbl;
     rb_nativethread_lock_t shareable_object_tbl_lock;
     unsigned int shareable_object_count;
@@ -235,16 +229,6 @@ rb_objspace_gate_t *rb_objspace_gate_init(struct rb_objspace *objspace);
 bool rb_obj_is_main_os_gate(VALUE obj);
 int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, VALUE obj);
-void confirm_externally_added_external_references(rb_objspace_gate_t *local_gate);
-void mark_in_external_reference_tbl(rb_objspace_gate_t *os_gate, VALUE obj);
-bool rb_external_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
-void update_shared_object_references(rb_objspace_gate_t *os_gate);
-bool rb_shared_reference_tbl_contains(rb_objspace_gate_t *os_gate, VALUE obj);
-
-#if VM_CHECK_MODE > 0
-bool shared_reference_tbl_empty(rb_objspace_gate_t *os_gate);
-bool external_reference_tbl_empty(rb_objspace_gate_t *os_gate);
-#endif
 
 void rb_add_zombie_thread(rb_thread_t *th);
 void mark_zombie_threads(rb_objspace_gate_t *os_gate);

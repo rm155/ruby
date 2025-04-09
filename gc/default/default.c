@@ -2917,7 +2917,6 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
 	gc_release_mark_lock(objspace);
     }
     if (borrowing) {
-	rb_register_received_obj(objspace->local_gate, GET_RACTOR()->borrowing_sync.borrowing_id, obj);
 	rb_borrowing_sync_unlock(objspace->ractor);
     }
 
@@ -5132,22 +5131,9 @@ check_not_tnone(VALUE obj)
 static bool
 confirm_global_connections(rb_objspace_t *objspace, VALUE obj)
 {
-    if (!ruby_single_main_objspace) {
-	if (objspace->flags.during_global_gc) {
-	    VM_ASSERT(is_full_marking(objspace));
-	    if (objspace->local_gate->current_parent_objspace != GET_OBJSPACE_OF_VALUE(obj)) {
-		check_not_tnone(obj);
-		mark_in_external_reference_tbl(objspace->local_gate->current_parent_objspace->local_gate, obj);
-	    }
-	}
-	else {
-	    if (!in_local_marking_range(objspace, obj)) {
-		if (is_full_marking(objspace)) {
-		    check_not_tnone(obj);
-		    mark_in_external_reference_tbl(objspace->local_gate, obj);
-		}
-		return false;
-	    }
+    if (using_local_limits(objspace)) {
+	if (!in_local_marking_range(objspace, obj)) {
+	    return false;
 	}
     }
     return true;
@@ -6237,7 +6223,6 @@ gc_marks_finish(rb_objspace_t *objspace)
 
     gc_update_weak_references(objspace);
     gc_update_external_weak_references(objspace->local_gate);
-    if (is_full_marking(objspace)) update_shared_object_references(objspace->local_gate);
     if (!using_local_limits(objspace)) update_shareable_object_tbl(objspace->local_gate);
 
 #if RGENGC_CHECK_MODE >= 2
@@ -6600,9 +6585,6 @@ gc_marks_prepare(rb_objspace_t *objspace, int full_mark)
     /* start marking */
     gc_report(1, objspace, "gc_marks_start: (%s)\n", full_mark ? "full" : "minor");
     gc_mode_transition(objspace, gc_mode_marking);
-
-    VM_ASSERT(count_objspaces(GET_VM()) > 1 || (shared_reference_tbl_empty(objspace->local_gate) && external_reference_tbl_empty(objspace->local_gate)));
-    confirm_externally_added_external_references(objspace->local_gate);
 
     if (full_mark) {
         size_t incremental_marking_steps = (objspace->rincgc.pooled_slots / INCREMENTAL_MARK_STEP_ALLOCATIONS) + 1;
@@ -10944,20 +10926,6 @@ rb_gc_impl_objspace_init(void *objspace_ptr, void *ractor)
     objspace_setup(objspace, ractor);
 }
 
-static VALUE
-gc_external_reference_p(VALUE _, VALUE v)
-{
-    rb_objspace_t *objspace = rb_gc_get_objspace();
-    return RBOOL(rb_external_reference_tbl_contains(objspace->local_gate, v));
-}
-
-static VALUE
-gc_shared_reference_p(VALUE _, VALUE v)
-{
-    rb_objspace_t *objspace = rb_gc_get_objspace();
-    return RBOOL(rb_shared_reference_tbl_contains(objspace->local_gate, v));
-}
-
 void
 rb_gc_impl_init(void)
 {
@@ -10977,9 +10945,6 @@ rb_gc_impl_init(void)
     OBJ_FREEZE(gc_constants);
     /* Internal constants in the garbage collector. */
     rb_define_const(rb_mGC, "INTERNAL_CONSTANTS", gc_constants);
-
-    rb_define_singleton_method(rb_mGC, "external_reference?", gc_external_reference_p, 1);
-    rb_define_singleton_method(rb_mGC, "shared_reference?", gc_shared_reference_p, 1);
 
     if (GC_COMPACTION_SUPPORTED) {
         rb_define_singleton_method(rb_mGC, "compact", gc_compact, 0);
