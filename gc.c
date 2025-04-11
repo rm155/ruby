@@ -1907,7 +1907,7 @@ rb_objspace_garbage_object_p(VALUE obj)
 bool
 rb_gc_object_marked(VALUE obj)
 {
-    return rb_gc_impl_object_marked_p(rb_gc_get_objspace(), obj);
+    return rb_gc_impl_object_marked_p(NULL, obj);
 }
 
 void *
