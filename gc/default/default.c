@@ -1219,9 +1219,8 @@ static inline VALUE check_rvalue_consistency(rb_objspace_t *objspace, const VALU
 #define RVALUE_PINNED_BITMAP(obj)                       MARKED_IN_BITMAP(GET_HEAP_PINNED_BITS(obj), (obj))
 
 static inline int
-RVALUE_MARKED(rb_objspace_t *objspace, VALUE obj)
+RVALUE_MARKED(VALUE obj)
 {
-    check_rvalue_consistency(objspace, obj);
     return RVALUE_MARKED_BITMAP(obj) != 0;
 }
 
@@ -1309,7 +1308,7 @@ RVALUE_UNCOLLECTIBLE(rb_objspace_t *objspace, VALUE obj)
 bool
 rb_gc_impl_object_marked_p(void *objspace_ptr, VALUE obj)
 {
-    return RVALUE_MARKED(rb_gc_get_objspace(), obj);
+    return RVALUE_MARKED(obj);
 }
 
 void *
@@ -1567,7 +1566,7 @@ RVALUE_DEMOTE(rb_objspace_t *objspace, VALUE obj)
     CLEAR_IN_BITMAP(GET_HEAP_UNCOLLECTIBLE_BITS(obj), obj);
     RVALUE_AGE_RESET(obj);
 
-    if (RVALUE_MARKED(objspace, obj)) {
+    if (RVALUE_MARKED(obj)) {
         objspace->rgengc.old_objects--;
     }
 
@@ -1577,13 +1576,13 @@ RVALUE_DEMOTE(rb_objspace_t *objspace, VALUE obj)
 static inline int
 RVALUE_BLACK_P(rb_objspace_t *objspace, VALUE obj)
 {
-    return RVALUE_MARKED(objspace, obj) && !RVALUE_MARKING(objspace, obj);
+    return RVALUE_MARKED(obj) && !RVALUE_MARKING(objspace, obj);
 }
 
 static inline int
 RVALUE_WHITE_P(rb_objspace_t *objspace, VALUE obj)
 {
-    return !RVALUE_MARKED(objspace, obj);
+    return !RVALUE_MARKED(obj);
 }
 
 bool
@@ -1729,7 +1728,7 @@ rb_gc_impl_garbage_object_p(void *objspace_ptr, VALUE ptr)
 
     if (dead) return true;
     return is_lazy_sweeping(objspace) && GET_HEAP_PAGE(ptr)->flags.before_sweep &&
-        !RVALUE_MARKED(objspace, ptr);
+        !RVALUE_MARKED(ptr);
 }
 
 VALUE
@@ -2503,7 +2502,7 @@ newobj_init(VALUE klass, VALUE flags, int wb_protected, rb_objspace_t *objspace,
     {
         check_rvalue_consistency(objspace, obj);
 
-        GC_ASSERT(RVALUE_MARKED(objspace, obj) == FALSE);
+        GC_ASSERT(RVALUE_MARKED(obj) == FALSE);
         GC_ASSERT(RVALUE_MARKING(objspace, obj) == FALSE);
         GC_ASSERT(RVALUE_OLD_P(objspace, obj) == FALSE);
         GC_ASSERT(RVALUE_WB_UNPROTECTED(objspace, obj) == FALSE);
@@ -3863,7 +3862,7 @@ try_move(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *free_page, 
     /* We should return true if either src is successfully moved, or src is
      * unmoveable. A false return will cause the sweeping cursor to be
      * incremented to the next page, and src will attempt to move again */
-    GC_ASSERT(RVALUE_MARKED(objspace, src));
+    GC_ASSERT(RVALUE_MARKED(src));
 
     asan_unlock_freelist(free_page);
     VALUE dest = (VALUE)free_page->freelist;
@@ -4682,7 +4681,7 @@ invalidate_moved_plane(rb_objspace_t *objspace, struct heap_page *page, uintptr_
 
                 if (BUILTIN_TYPE(forwarding_object) == T_MOVED) {
                     GC_ASSERT(RVALUE_PINNED(objspace, forwarding_object));
-                    GC_ASSERT(!RVALUE_MARKED(objspace, forwarding_object));
+                    GC_ASSERT(!RVALUE_MARKED(forwarding_object));
 
                     CLEAR_IN_BITMAP(GET_HEAP_PINNED_BITS(forwarding_object), forwarding_object);
 
@@ -4705,7 +4704,7 @@ invalidate_moved_plane(rb_objspace_t *objspace, struct heap_page *page, uintptr_
                     orig_page->free_slots++;
                     heap_page_add_freeobj(objspace, orig_page, object);
 
-                    GC_ASSERT(RVALUE_MARKED(objspace, forwarding_object));
+                    GC_ASSERT(RVALUE_MARKED(forwarding_object));
                     GC_ASSERT(BUILTIN_TYPE(forwarding_object) != T_MOVED);
                     GC_ASSERT(BUILTIN_TYPE(forwarding_object) != T_NONE);
                 }
@@ -5049,7 +5048,7 @@ gc_mark_set(rb_objspace_t *objspace, VALUE obj)
 
     VM_ASSERT(ruby_single_main_objspace || during_gc || objspace->gc_mark_lock_owner == GET_RACTOR());
 
-    if (RVALUE_MARKED(objspace, obj)) return 0;
+    if (RVALUE_MARKED(obj)) return 0;
     MARK_IN_BITMAP(GET_HEAP_MARK_BITS(obj), obj);
     return 1;
 }
@@ -5095,7 +5094,7 @@ gc_grey(rb_objspace_t *objspace, VALUE obj)
 {
     VM_ASSERT(ruby_single_main_objspace || during_gc || objspace->gc_mark_lock_owner == GET_RACTOR());
 #if RGENGC_CHECK_MODE
-    if (RVALUE_MARKED(objspace, obj) == FALSE) rb_bug("gc_grey: %s is not marked.", rb_obj_info(obj));
+    if (RVALUE_MARKED(obj) == FALSE) rb_bug("gc_grey: %s is not marked.", rb_obj_info(obj));
     if (RVALUE_MARKING(objspace, obj) == TRUE) rb_bug("gc_grey: %s is marking/remembered.", rb_obj_info(obj));
 #endif
 
@@ -5335,7 +5334,7 @@ rb_gc_impl_mark_weak(void *objspace_ptr, VALUE *ptr)
      * already be marked and cannot be reclaimed in this GC cycle so we don't
      * need to add it to the weak references list. */
     if (!is_full_marking(objspace) && RVALUE_OLD_P(objspace, obj)) {
-        GC_ASSERT(RVALUE_MARKED(objspace, obj));
+        GC_ASSERT(RVALUE_MARKED(obj));
         GC_ASSERT(!objspace->flags.during_compacting);
 
         return;
@@ -5360,7 +5359,7 @@ rb_gc_impl_remove_weak(void *objspace_ptr, VALUE parent_obj, VALUE *ptr)
     if (!is_incremental_marking(objspace)) return;
     /* If parent_obj has not been marked, then ptr has not yet been marked
      * weak, so we don't need to do anything. */
-    if (!RVALUE_MARKED(objspace, parent_obj)) return;
+    if (!RVALUE_MARKED(parent_obj)) return;
 
     VALUE **ptr_ptr;
     rb_darray_foreach(objspace->weak_references, i, ptr_ptr) {
@@ -5462,7 +5461,7 @@ gc_mark_stacked_objects(rb_objspace_t *objspace, int incremental, size_t count)
     while (pop_mark_stack(mstack, &obj)) {
         if (obj == Qundef) continue; /* skip */
 
-        if (RGENGC_CHECK_MODE && !RVALUE_MARKED(objspace, obj)) {
+        if (RGENGC_CHECK_MODE && !RVALUE_MARKED(obj)) {
             rb_bug("gc_mark_stacked_objects: %s is not marked.", rb_obj_info(obj));
         }
         gc_mark_children(objspace, obj);
@@ -5703,7 +5702,7 @@ gc_check_after_marks_i(st_data_t k, st_data_t v, st_data_t ptr)
     rb_objspace_t *objspace = (rb_objspace_t *)ptr;
 
     /* object should be marked or oldgen */
-    if (!RVALUE_MARKED(objspace, obj)) {
+    if (!RVALUE_MARKED(obj)) {
         fprintf(stderr, "gc_check_after_marks_i: %s is not marked and not oldgen.\n", rb_obj_info(obj));
         fprintf(stderr, "gc_check_after_marks_i: %p is referred from ", (void *)obj);
         reflist_dump(refs);
@@ -6147,7 +6146,7 @@ gc_marks_wb_unprotected_objects_plane(rb_objspace_t *objspace, uintptr_t p, bits
             if (bits & 1) {
                 gc_report(2, objspace, "gc_marks_wb_unprotected_objects: marked shady: %s\n", rb_obj_info((VALUE)p));
                 GC_ASSERT(RVALUE_WB_UNPROTECTED(objspace, (VALUE)p));
-                GC_ASSERT(RVALUE_MARKED(objspace, (VALUE)p));
+                GC_ASSERT(RVALUE_MARKED((VALUE)p));
                 gc_mark_children(objspace, (VALUE)p);
             }
             p += BASE_SLOT_SIZE;
@@ -6195,7 +6194,7 @@ gc_update_weak_references(rb_objspace_t *objspace)
 
         if (RB_SPECIAL_CONST_P(obj)) continue;
 
-        if (!RVALUE_MARKED(objspace, obj)) {
+        if (!RVALUE_MARKED(obj)) {
             **ptr_ptr = Qundef;
         }
         else {
@@ -7173,7 +7172,7 @@ rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj)
     if (RVALUE_OLD_P(objspace, obj)) SET_ENTRY(old, Qtrue);
     if (RVALUE_UNCOLLECTIBLE(objspace, obj)) SET_ENTRY(uncollectible, Qtrue);
     if (RVALUE_MARKING(objspace, obj)) SET_ENTRY(marking, Qtrue);
-    if (RVALUE_MARKED(objspace, obj)) SET_ENTRY(marked, Qtrue);
+    if (RVALUE_MARKED(obj)) SET_ENTRY(marked, Qtrue);
     if (RVALUE_PINNED(objspace, obj)) SET_ENTRY(pinned, Qtrue);
     if (FL_TEST(obj, FL_SEEN_OBJ_ID)) SET_ENTRY(object_id, rb_obj_id(obj));
 
@@ -8045,7 +8044,7 @@ gc_is_moveable_obj(rb_objspace_t *objspace, VALUE obj)
 		return FALSE;
 	    }
 	}
-        GC_ASSERT(RVALUE_MARKED(objspace, obj));
+        GC_ASSERT(RVALUE_MARKED(obj));
         GC_ASSERT(!RVALUE_PINNED(objspace, obj));
 
         return TRUE;
@@ -8107,7 +8106,7 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
     GC_ASSERT(!RVALUE_MARKING(objspace, src));
 
     /* Save off bits for current object. */
-    marked = RVALUE_MARKED(objspace, src);
+    marked = RVALUE_MARKED(src);
     wb_unprotected = RVALUE_WB_UNPROTECTED(objspace, src);
     mutable_shareable_permission = RVALUE_MUTABLE_SHAREABLE_PERMISSION(objspace, src);
 #if VM_CHECK_MODE > 0
@@ -8295,7 +8294,7 @@ gc_ref_update(void *vstart, void *vend, size_t stride, rb_objspace_t *objspace, 
                     page->flags.has_remembered_objects = TRUE;
                 }
                 if (page->flags.before_sweep) {
-                    if (RVALUE_MARKED(objspace, v)) {
+                    if (RVALUE_MARKED(v)) {
                         rb_gc_update_object_references(objspace, v);
                     }
                 }
