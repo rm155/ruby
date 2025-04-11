@@ -28,6 +28,7 @@
 #include "internal/object.h"
 #include "internal/string.h"
 #include "internal/variable.h"
+#include "objspace_coordinator.h"
 #include "ractor_core.h"
 #include "ruby/st.h"
 #include "vm_core.h"
@@ -280,7 +281,7 @@ class_alloc_given_redirected_allocation(VALUE args)
     permit_mutable_shareable_direct(obj);
 
     memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
-    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+    add_shareable_object(obj);
 
     /* ZALLOC
       RCLASS_CONST_TBL(obj) = 0;

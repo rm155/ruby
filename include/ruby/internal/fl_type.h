@@ -592,14 +592,16 @@ rbimpl_fl_set_raw_raw(struct RBasic *obj, VALUE flags)
 {
 #if RUBY_DEBUG
     void rb_verify_mutable_shareable_safety(struct RBasic *obj, VALUE flags);
+    bool is_registered_shareable(VALUE obj);
 
     rb_verify_mutable_shareable_safety(obj, flags);
-#endif
-    void add_shareable_object(VALUE obj);
 
     if ((flags & FL_SHAREABLE) && !(obj->flags & FL_SHAREABLE)) {
-	add_shareable_object((VALUE)obj);
+	if (!is_registered_shareable((VALUE)obj)) {
+		rb_bug("Object is not in shareable list");
+	}
     }
+#endif
 
     obj->flags |= flags;
 }

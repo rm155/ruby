@@ -3419,7 +3419,7 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
         table = rb_ary_new3(1, block);
 	rb_permit_mutable_shareable(table);
 	ALLOW_UNSHAREABLE_REFERENCES(table);
-	FL_SET_RAW(table, RUBY_FL_SHAREABLE); //TODO: Protect table from data races
+	add_shareable_object(table); //TODO: Protect table from data races
         rb_obj_hide(table);
         st_add_direct(finalizer_table, obj, table);
     }

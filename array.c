@@ -24,6 +24,7 @@
 #include "internal/proc.h"
 #include "internal/rational.h"
 #include "internal/vm.h"
+#include "objspace_coordinator.h"
 #include "probes.h"
 #include "ractor_core.h"
 #include "ruby/encoding.h"
@@ -515,7 +516,7 @@ rb_ary_set_shared(VALUE ary, VALUE shared_root)
 
     
     if (FL_TEST_RAW(ary, FL_SHAREABLE)) {
-	FL_SET_RAW(shared_root, RUBY_FL_SHAREABLE);
+	add_shareable_object(shared_root);
     }
 
     rb_ary_increment_share(shared_root);

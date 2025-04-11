@@ -472,7 +472,8 @@ set_id_entry(rb_symbols_t *symbols, rb_id_serial_t num, VALUE str, VALUE sym)
     if (idx >= (size_t)RARRAY_LEN(ids) || NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
         ary = rb_ary_hidden_new(ID_ENTRY_UNIT * ID_ENTRY_SIZE);
 	rb_permit_mutable_shareable(ary);
-	FL_SET_RAW(ary, RUBY_FL_SHAREABLE);
+	void add_shareable_object(VALUE obj);
+	add_shareable_object(ary);
         rb_ary_store(ids, (long)idx, ary);
     }
     idx = (num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
@@ -595,7 +596,8 @@ register_sym(rb_symbols_t *symbols, VALUE str, VALUE sym)
 {
     ASSERT_global_symbols_locking(symbols);
 
-    if (DYNAMIC_SYM_P(sym)) FL_SET_RAW(sym, RUBY_FL_SHAREABLE);
+	void add_shareable_object(VALUE obj);
+    if (DYNAMIC_SYM_P(sym)) add_shareable_object(sym);
 
     if (SYMBOL_DEBUG) {
         st_update(symbols->str_sym, (st_data_t)str,

@@ -34,6 +34,7 @@
 #include "iseq.h"
 #include "symbol.h" // This includes a macro for a more performant rb_id2sym.
 #include "yjit.h"
+#include "objspace_coordinator.h"
 #include "ruby/st.h"
 #include "ruby/vm.h"
 #include "vm_core.h"
@@ -1232,7 +1233,7 @@ rb_proc_dup(VALUE self)
 
     if (rb_gc_mutable_shareable_permission_p(self)) permit_mutable_shareable_direct(procval);
     if (RB_OBJ_SHAREABLE_P(self)) {
-	FL_SET_RAW(procval, RUBY_FL_SHAREABLE);
+	add_shareable_object(procval);
 	ALLOW_UNSHAREABLE_REFERENCES(procval);
     }
     RB_GC_GUARD(self); /* for: body = rb_proc_dup(body) */
@@ -1355,7 +1356,7 @@ proc_isolate_env(VALUE self, rb_proc_t *proc, VALUE read_only_variables)
     *((const VALUE **)&proc->block.as.captured.ep) = env->ep;
 
     permit_mutable_shareable_force(env);
-    FL_SET_RAW(env, RUBY_FL_SHAREABLE);
+    add_shareable_object(env);
     ALLOW_UNSHAREABLE_REFERENCES(env);
 
     RB_OBJ_WRITTEN(self, Qundef, env);
@@ -1413,7 +1414,7 @@ rb_proc_isolate_bang(VALUE self)
 
     if (!FL_TEST_RAW(self, FL_SHAREABLE)) {
 	permit_mutable_shareable_force(self);
-	FL_SET_RAW(self, RUBY_FL_SHAREABLE);
+	add_shareable_object(self);
 	ALLOW_UNSHAREABLE_REFERENCES(self);
     }
     return self;
@@ -3078,8 +3079,8 @@ rb_vm_register_special_exception_str(enum ruby_special_exceptions sp, VALUE cls,
     rb_vm_t *vm = GET_VM();
     VALUE exc = rb_exc_new3(cls, rb_obj_freeze(mesg));
     OBJ_FREEZE(exc);
-    FL_SET_RAW(mesg, FL_SHAREABLE);
-    FL_SET_RAW(exc, FL_SHAREABLE);
+    add_shareable_object(mesg);
+    add_shareable_object(exc);
     ((VALUE *)vm->special_exceptions)[sp] = exc;
     rb_vm_register_global_object(exc);
 }

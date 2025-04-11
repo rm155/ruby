@@ -39,6 +39,7 @@
 #include "internal/sanitizers.h"
 #include "internal/string.h"
 #include "internal/transcode.h"
+#include "objspace_coordinator.h"
 #include "probes.h"
 #include "ractor_core.h"
 #include "ruby/encoding.h"
@@ -523,13 +524,13 @@ rb_fstring(VALUE str)
     if (!bare) {
         if (STR_EMBED_P(str)) {
             OBJ_FREEZE(str);
-	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
+	    add_shareable_object(str);
             return str;
         }
 
         if (FL_TEST_RAW(str, STR_SHARED_ROOT | STR_SHARED) == STR_SHARED_ROOT) {
             RUBY_ASSERT(OBJ_FROZEN(str));
-	    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
+	    add_shareable_object(str);
             return str;
         }
     }
@@ -542,7 +543,7 @@ rb_fstring(VALUE str)
     if (!bare) {
         str_replace_shared_without_enc(str, fstr);
         OBJ_FREEZE(str);
-	FL_SET_RAW(str, RUBY_FL_SHAREABLE);
+	add_shareable_object(str);
         return str;
     }
     return fstr;
@@ -579,7 +580,7 @@ register_fstring(VALUE str, bool copy, bool force_precompute_hash)
     RUBY_ASSERT(!FL_TEST_RAW(args.fstr, FL_EXIVAR));
     RUBY_ASSERT(RBASIC_CLASS(args.fstr) == rb_cString);
 
-    FL_SET_RAW(args.fstr, RUBY_FL_SHAREABLE);
+    add_shareable_object(args.fstr);
 
     return args.fstr;
 }
@@ -622,7 +623,7 @@ rb_fstring_new(const char *ptr, long len)
 {
     struct RString fake_str;
     VALUE str = register_fstring(setup_fake_str(&fake_str, ptr, len, ENCINDEX_US_ASCII), false, false);
-    FL_SET_RAW(str, RUBY_FL_SHAREABLE);
+    add_shareable_object(str);
     return str;
 }
 

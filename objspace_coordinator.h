@@ -230,6 +230,8 @@ bool rb_obj_is_main_os_gate(VALUE obj);
 int st_insert_no_gc(st_table *tab, st_data_t key, st_data_t value);
 void rb_register_new_external_reference(rb_objspace_gate_t *receiving_os_gate, VALUE obj);
 
+void add_shareable_object(VALUE obj);
+
 void rb_add_zombie_thread(rb_thread_t *th);
 void mark_zombie_threads(rb_objspace_gate_t *os_gate);
 void rb_add_to_contained_ractor_tbl(rb_ractor_t *r);

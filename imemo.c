@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "internal/gc.h"
 #include "internal/imemo.h"
+#include "objspace_coordinator.h"
 #include "vm_callinfo.h"
 
 size_t rb_iseq_memsize(const rb_iseq_t *iseq);
@@ -49,7 +50,7 @@ rb_imemo_new(enum imemo_type type, VALUE v0, size_t size)
       case imemo_callinfo:
       case imemo_callcache:
 	permit_mutable_shareable_direct(obj);
-	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	add_shareable_object(obj);
 	break;
 
       case imemo_constcache:
@@ -58,7 +59,7 @@ rb_imemo_new(enum imemo_type type, VALUE v0, size_t size)
       case imemo_ment:
       case imemo_ifunc:
 	permit_mutable_shareable_direct(obj);
-	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	add_shareable_object(obj);
 	ALLOW_UNSHAREABLE_REFERENCES(obj);
 	break;
     }

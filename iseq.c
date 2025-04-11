@@ -35,6 +35,7 @@
 #include "internal/thread.h"
 #include "internal/variable.h"
 #include "iseq.h"
+#include "objspace_coordinator.h"
 #include "ractor_core.h"
 #include "ruby/util.h"
 #include "vm_core.h"
@@ -536,7 +537,7 @@ rb_iseq_pathobj_new(VALUE path, VALUE realpath)
         if (!NIL_P(realpath)) realpath = rb_fstring(realpath);
         pathobj = rb_ary_new_from_args(2, rb_fstring(path), realpath);
         rb_ary_freeze(pathobj);
-	FL_SET_RAW(pathobj, RUBY_FL_SHAREABLE);
+	add_shareable_object(pathobj);
     }
     return pathobj;
 }
@@ -1530,7 +1531,7 @@ iseqw_new(const rb_iseq_t *iseq)
 	permit_mutable_shareable_direct(obj);
         RB_OBJ_WRITE(obj, ptr, iseq);
 
-	FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+	add_shareable_object(obj);
 
         /* cache a wrapper object */
         RB_OBJ_WRITE((VALUE)iseq, &iseq->wrapper, obj);

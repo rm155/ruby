@@ -2177,7 +2177,7 @@ ractor_alloc(VALUE klass)
     r->pub.self = rv;
     rb_add_to_contained_ractor_tbl(r);
     rb_permit_mutable_shareable(rv);
-    FL_SET_RAW(rv, RUBY_FL_SHAREABLE);
+    add_shareable_object(rv);
     ALLOW_UNSHAREABLE_REFERENCES(rv);
     VM_ASSERT(ractor_status_p(r, ractor_created));
     return rv;
@@ -2303,7 +2303,7 @@ ractor_init(rb_ractor_t *r, VALUE name, VALUE loc)
     r->reached_insertion = false;
 #endif
 
-    FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
+    add_shareable_object(r->pub.self);
 }
 
 void
@@ -2311,7 +2311,7 @@ rb_ractor_main_setup(rb_vm_t *vm, rb_ractor_t *r, rb_thread_t *th)
 {
     r->pub.self = TypedData_Wrap_Struct(rb_cRactor, &ractor_data_type, r);
     rb_permit_mutable_shareable(r->pub.self);
-    FL_SET_RAW(r->pub.self, RUBY_FL_SHAREABLE);
+    add_shareable_object(r->pub.self);
     ractor_init(r, Qnil, Qnil);
     r->threads.main = th;
     rb_ractor_living_threads_insert(r, th);
@@ -3379,7 +3379,7 @@ make_shareable_check_shareable(VALUE obj)
 static enum obj_traverse_iterator_result
 mark_shareable_in_traversal(VALUE obj)
 {
-    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+    add_shareable_object(obj);
     return traverse_cont;
 }
 

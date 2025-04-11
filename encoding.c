@@ -23,6 +23,7 @@
 #include "internal/object.h"
 #include "internal/string.h"
 #include "internal/vm.h"
+#include "objspace_coordinator.h"
 #include "ractor_core.h"
 #include "regenc.h"
 #include "ruby/encoding.h"
@@ -138,7 +139,7 @@ enc_new(rb_encoding *encoding)
 {
     VALUE enc = TypedData_Wrap_Struct(rb_cEncoding, &encoding_data_type, (void *)encoding);
     rb_obj_freeze(enc);
-    FL_SET_RAW(enc, RUBY_FL_SHAREABLE);
+    add_shareable_object(enc);
     return enc;
 }
 

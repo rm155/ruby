@@ -41,6 +41,7 @@
 #include "internal/thread.h"
 #include "internal/time.h"
 #include "internal/vm.h"
+#include "objspace_coordinator.h"
 #include "probes.h"
 #include "ractor_core.h"
 #include "ruby/st.h"
@@ -7637,7 +7638,7 @@ Init_Hash(void)
     envtbl = TypedData_Wrap_Struct(rb_cObject, &env_data_type, NULL);
     permit_mutable_shareable_direct(envtbl);
     rb_extend_object(envtbl, rb_mEnumerable);
-    FL_SET_RAW(envtbl, RUBY_FL_SHAREABLE);
+    add_shareable_object(envtbl);
 
 
     rb_define_singleton_method(envtbl, "[]", rb_f_getenv, 1);

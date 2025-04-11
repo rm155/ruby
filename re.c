@@ -24,6 +24,7 @@
 #include "internal/object.h"
 #include "internal/ractor.h"
 #include "internal/variable.h"
+#include "objspace_coordinator.h"
 #include "regint.h"
 #include "ruby/encoding.h"
 #include "ruby/re.h"
@@ -3456,7 +3457,7 @@ rb_reg_new_ary(VALUE ary, int opt)
 {
     VALUE re = rb_reg_new_str(rb_reg_preprocess_dregexp(ary, opt), opt);
     rb_obj_freeze(re);
-    FL_SET_RAW(re, FL_SHAREABLE);
+    add_shareable_object(re);
     return re;
 }
 
@@ -3492,7 +3493,7 @@ rb_reg_compile(VALUE str, int options, const char *sourcefile, int sourceline)
         return Qnil;
     }
     rb_obj_freeze(re);
-    FL_SET_RAW(re, FL_SHAREABLE);
+    add_shareable_object(re);
     return re;
 }
 

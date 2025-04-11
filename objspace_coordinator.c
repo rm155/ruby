@@ -366,6 +366,9 @@ st_delete_and_free_value(st_table *tbl, VALUE obj)
 void
 add_shareable_object(VALUE obj)
 {
+    if (FL_TEST_RAW(obj, FL_SHAREABLE)) {
+	return;
+    }
     WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
     {
 	rb_native_mutex_lock(&source_gate->shareable_object_tbl_lock);
@@ -374,6 +377,21 @@ add_shareable_object(VALUE obj)
 	rb_native_mutex_unlock(&source_gate->shareable_object_tbl_lock);
     }
     WITH_OBJSPACE_GATE_LEAVE(source_gate);
+    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+}
+
+bool
+is_registered_shareable(VALUE obj)
+{
+    bool ret;
+    WITH_OBJSPACE_GATE_ENTER(obj, source_gate);
+    {
+	rb_native_mutex_lock(&source_gate->shareable_object_tbl_lock);
+	ret = !!st_lookup(source_gate->shareable_object_tbl, (st_data_t)obj, NULL);
+	rb_native_mutex_unlock(&source_gate->shareable_object_tbl_lock);
+    }
+    WITH_OBJSPACE_GATE_LEAVE(source_gate);
+    return ret;
 }
 
 static void
@@ -1380,5 +1398,6 @@ make_irregular_shareable_object(VALUE obj)
     permit_mutable_shareable_force(obj);
 
     ALLOW_UNSHAREABLE_REFERENCES(obj);
-    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+    void add_shareable_object(VALUE obj);
+    add_shareable_object(obj);
 }
