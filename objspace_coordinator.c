@@ -1722,6 +1722,69 @@ end_global_gc_section(rb_objspace_coordinator_t *coordinator, rb_objspace_gate_t
     RB_VM_LOCK_LEAVE_LEV(lev);
 }
 
+static struct gc_based_function_setup_params {
+    rb_objspace_gate_t *local_gate;
+    bool disable_needed;
+    bool reenable_needed;
+    struct gc_mark_func_data_struct *prev_mark_func_data;
+    int old_objspace_lock_level;
+    bool objspace_lock_suspended;
+    struct gc_mark_func_data_struct *mfd;
+};
+
+static VALUE
+gc_based_function_setup(VALUE args)
+{
+    struct gc_based_function_setup_params *params = args;
+    gc_current_objspace_gate()->mark_func_data = params->mfd;
+    rb_objspace_gate_t *local_gate = params->local_gate;
+    if (local_gate->objspace_lock_owner == GET_RACTOR()) {
+	params->objspace_lock_suspended = true;
+	params->old_objspace_lock_level = local_gate->objspace_lock_level;
+	local_gate->objspace_lock_owner = NULL;
+	local_gate->objspace_lock_level = 0;
+	rb_native_mutex_unlock(&local_gate->objspace_lock);
+    }
+    begin_local_gc_section(local_gate, GET_RACTOR());
+    if (params->disable_needed) {
+	params->reenable_needed = (rb_gc_disable_no_rest() == Qfalse);
+    }
+}
+
+static VALUE
+gc_based_function_cleanup(VALUE args)
+{
+    struct gc_based_function_setup_params *params = args;
+    if (params->reenable_needed) rb_gc_enable();
+    end_local_gc_section(params->local_gate, GET_RACTOR());
+    if (params->objspace_lock_suspended) {
+	rb_native_mutex_lock(&params->local_gate->objspace_lock);
+	params->local_gate->objspace_lock_owner = GET_RACTOR();
+	params->local_gate->objspace_lock_level = params->old_objspace_lock_level;
+    }
+    gc_current_objspace_gate()->mark_func_data = params->prev_mark_func_data;
+    return Qnil;
+}
+
+void
+run_gc_based_function(void *objspace, VALUE (*func)(VALUE), VALUE args, bool disable_gc, void (mark_func)(VALUE, void *), void *mark_data) {
+    struct gc_mark_func_data_struct mfd = {
+	.mark_func = mark_func,
+	.data = mark_data,
+    };
+    struct gc_based_function_setup_params params = {
+	.local_gate = rb_gc_local_gate_of_objspace(objspace),
+	.disable_needed = disable_gc,
+	.reenable_needed = false,
+	.prev_mark_func_data = gc_current_objspace_gate()->mark_func_data,
+	.old_objspace_lock_level = 0,
+	.objspace_lock_suspended = false,
+	.mfd = &mfd,
+    };
+    gc_based_function_setup(&params);
+    rb_ensure(func, args, gc_based_function_cleanup, (VALUE)&params);
+}
+
 bool
 gc_deactivated(rb_objspace_coordinator_t *coordinator)
 {

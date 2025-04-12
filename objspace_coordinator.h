@@ -340,6 +340,8 @@ void end_local_gc_section(rb_objspace_gate_t *local_gate, rb_ractor_t *cr);
 void begin_global_gc_section(rb_objspace_coordinator_t *coordinator, rb_objspace_gate_t *local_gate, unsigned int *lev);
 void end_global_gc_section(rb_objspace_coordinator_t *coordinator, rb_objspace_gate_t *local_gate, unsigned int *lev);
 
+void run_gc_based_function(void *objspace, VALUE (*func)(VALUE), VALUE args, bool disable_gc, void (mark_func)(VALUE, void *), void *mark_data);
+
 #define LOCAL_GC_BEGIN(objspace) \
 { \
     SUSPEND_OBJSPACE_LOCK_BEGIN(objspace); \
@@ -377,16 +379,6 @@ void arrange_next_gc_global_status(double sharedobject_limit_factor);
 void global_gc_for_each_objspace(rb_vm_t *vm, rb_objspace_gate_t *runner_gate, void (gc_func)(struct rb_objspace *objspace));
 void rb_objspace_call_finalizer_for_each_ractor(rb_vm_t *vm);
 void rb_gc_writebarrier_multi_objspace(VALUE a, VALUE b);
-
-#define WITH_MARK_FUNC_BEGIN(_mark_func, _data_ptr) do { \
-    struct gc_mark_func_data_struct _mfd = { \
-	.mark_func = _mark_func, \
-	.data = _data_ptr, \
-    }; \
-    struct gc_mark_func_data_struct *prev_mark_func_data = gc_current_objspace_gate()->mark_func_data; \
-    gc_current_objspace_gate()->mark_func_data = (&_mfd);
-
-#define WITH_MARK_FUNC_END() gc_current_objspace_gate()->mark_func_data = prev_mark_func_data;} while (0)
 
 #define MARK_FUNC_IN_USE(local_gate) (local_gate->mark_func_data != NULL)
 

@@ -5629,6 +5629,19 @@ allrefs_roots_i(VALUE obj, void *ptr)
     }
 }
 
+static struct mark_roots_for_allrefs_params {
+    rb_objspace_t *objspace;
+    const char **category;
+}
+
+static VALUE
+mark_roots_for_allrefs(VALUE args)
+{
+    struct mark_roots_for_allrefs_params *p = args;
+    mark_roots(p->objspace, p->category);
+    return Qnil;
+}
+
 static st_table *
 objspace_allrefs(rb_objspace_t *objspace)
 {
@@ -5642,11 +5655,11 @@ objspace_allrefs(rb_objspace_t *objspace)
     init_mark_stack(&data.mark_stack);
 
     /* traverse root objects */
-    WITH_MARK_FUNC_BEGIN(allrefs_roots_i, &data);
-    {
-	mark_roots(objspace, &data.category);
-    }
-    WITH_MARK_FUNC_END();
+    struct mark_roots_for_allrefs_params p = {
+	.objspace = objspace,
+	.category = &data.category,
+    };
+    run_gc_based_function(objspace, mark_roots_for_allrefs, &p, true, allrefs_roots_i, &data);
 
     /* traverse rest objects reachable from root objects */
     while (pop_mark_stack(&data.mark_stack, &obj)) {

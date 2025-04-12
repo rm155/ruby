@@ -4483,24 +4483,31 @@ ruby_gc_set_params(void)
     rb_gc_impl_set_params(rb_gc_get_objspace());
 }
 
+static struct mark_children_of_object_params {
+    void *objspace;
+    VALUE object;
+};
+
+static VALUE
+mark_children_of_object(VALUE args)
+{
+    struct mark_children_of_object_params *p = args;
+    rb_gc_mark_children(p->objspace, p->object);
+    return Qnil;
+}
+
 void
 rb_objspace_reachable_objects_from(VALUE obj, void (func)(VALUE, void *), void *data)
 {
     if (rb_gc_impl_during_gc_p(rb_gc_get_objspace())) rb_bug("rb_objspace_reachable_objects_from() is not supported while during GC");
 
     if (!RB_SPECIAL_CONST_P(obj)) {
-	WITH_MARK_FUNC_BEGIN(func, data);
-	{
-	    void *objspace = rb_gc_get_objspace();
-	    LOCAL_GC_BEGIN(objspace);
-	    {
-		VALUE already_disabled = rb_gc_disable_no_rest();
-		rb_gc_mark_children(objspace, obj);
-		if (already_disabled == Qfalse) rb_gc_enable();
-	    }
-	    LOCAL_GC_END(objspace);
-	}
-	WITH_MARK_FUNC_END();
+	void *objspace = rb_gc_get_objspace();
+	struct mark_children_of_object_params p = {
+	    .objspace = objspace,
+	    .object = obj,
+	};
+	run_gc_based_function(objspace, mark_children_of_object, &p, true, func, data);
     }
 }
 
@@ -4517,6 +4524,20 @@ root_objects_from(VALUE obj, void *ptr)
     (*data->func)(data->category, obj, data->data);
 }
 
+static struct mark_root_objects_params {
+    void *objspace;
+    const char **category;
+};
+
+static VALUE
+mark_root_objects(VALUE args)
+{
+    struct mark_root_objects_params *p = args;
+    rb_gc_save_machine_context();
+    rb_gc_mark_roots(p->objspace, p->category);
+    return Qnil;
+}
+
 void
 rb_objspace_reachable_objects_from_root(void (func)(const char *category, VALUE, void *), void *passing_data)
 {
@@ -4529,19 +4550,12 @@ rb_objspace_reachable_objects_from_root(void (func)(const char *category, VALUE,
         .data = passing_data,
     };
 
-    WITH_MARK_FUNC_BEGIN(root_objects_from, &data);
-    {
-	void *objspace = rb_gc_get_objspace();
-	LOCAL_GC_BEGIN(objspace);
-	{
-	    VALUE already_disabled = rb_gc_disable_no_rest();
-	    rb_gc_save_machine_context();
-	    rb_gc_mark_roots(objspace, &data.category);
-	    if (already_disabled == Qfalse) rb_gc_enable();
-	}
-	LOCAL_GC_END(objspace);
-    }
-    WITH_MARK_FUNC_END();
+    void *objspace = rb_gc_get_objspace();
+    struct mark_root_objects_params p = {
+	.objspace = objspace,
+	.category = &data.category,
+    };
+    run_gc_based_function(objspace, mark_root_objects, &p, true, root_objects_from, &data);
 }
 
 /*
