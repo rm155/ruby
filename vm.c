@@ -1232,6 +1232,9 @@ rb_proc_dup(VALUE self)
 
     if (rb_gc_mutable_shareable_permission_p(self)) permit_mutable_shareable_direct(procval);
     if (RB_OBJ_SHAREABLE_P(self)) {
+	if (RB_OBJ_FROZEN(self)) {
+	    OBJ_FREEZE(procval);
+	}
 	FL_SET_RAW(procval, RUBY_FL_SHAREABLE);
 	ALLOW_UNSHAREABLE_REFERENCES(procval);
     }
