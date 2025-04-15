@@ -1964,11 +1964,6 @@ rb_thread_call_with_gvl(void *(*func)(void *), void *data1)
 
 /*
  * ruby_thread_has_gvl_p - check if current native thread has GVL.
- *
- ***
- *** This API is EXPERIMENTAL!
- *** We do not guarantee that this API remains in ruby 1.9.2 or later.
- ***
  */
 
 int
@@ -5689,6 +5684,7 @@ update_line_coverage(VALUE data, const rb_trace_arg_t *trace_arg)
         VALUE lines = RARRAY_AREF(coverage, COVERAGE_INDEX_LINES);
         if (lines) {
             long line = rb_sourceline() - 1;
+            VM_ASSERT(line >= 0);
             long count;
             VALUE num;
             void rb_iseq_clear_event_flags(const rb_iseq_t *iseq, size_t pos, rb_event_flag_t reset);

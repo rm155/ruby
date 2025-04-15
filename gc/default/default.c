@@ -1752,7 +1752,9 @@ rb_gc_impl_object_id(void *objspace_ptr, VALUE obj)
 	id = retrieve_next_obj_id(OBJ_ID_INCREMENT);
 
 	st_insert_no_gc(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
-	st_insert_no_gc(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
+	if (RB_UNLIKELY(objspace->id_to_obj_tbl)) {
+	    st_insert_no_gc(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
+	}
 	FL_SET(obj, FL_SEEN_OBJ_ID);
     }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
@@ -1766,14 +1768,29 @@ update_obj_id_refs(rb_objspace_t *objspace)
 {
     rb_native_mutex_lock(&objspace->obj_id_lock);
     gc_ref_update_table_values_only(objspace->obj_to_id_tbl);
-    gc_update_table_refs(objspace->id_to_obj_tbl);
+    if (RB_UNLIKELY(objspace->id_to_obj_tbl)) {
+	gc_update_table_refs(objspace->id_to_obj_tbl);
+    }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
+}
+
+static int
+build_id_to_obj_i(st_data_t key, st_data_t value, st_data_t data)
+{
+    st_table *id_to_obj_tbl = (st_table *)data;
+    st_insert(id_to_obj_tbl, value, key);
+    return ST_CONTINUE;
 }
 
 VALUE
 rb_gc_impl_object_id_local_search(void *objspace_ptr, VALUE objid)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    if (!objspace->id_to_obj_tbl) {
+        objspace->id_to_obj_tbl = st_init_table_with_size(&object_id_hash_type, st_table_size(objspace->obj_to_id_tbl));
+        st_foreach(objspace->obj_to_id_tbl, build_id_to_obj_i, (st_data_t)objspace->id_to_obj_tbl);
+    }
 
     VALUE orig;
 
@@ -1794,18 +1811,22 @@ rb_gc_impl_object_id_to_ref(void *objspace_ptr, VALUE object_id)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
-    VALUE obj;
+    unsigned int lev = rb_gc_vm_lock();
 
-    if (!UNDEF_P(obj = object_id_global_search(object_id)) &&
-            !rb_objspace_garbage_object_p(obj)) {
+    VALUE obj;
+    bool found = (!UNDEF_P(obj = object_id_global_search(object_id)) && !rb_objspace_garbage_object_p(obj));
+
+    rb_gc_vm_unlock(lev);
+
+    if (found) {
         return obj;
     }
 
     if (rb_nonexistent_id(object_id)) {
-        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not id value", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
+        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not an id value", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
     }
     else {
-        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is recycled object", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
+        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is a recycled object", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
     }
 }
 
@@ -3145,7 +3166,9 @@ delete_from_obj_id_tables(VALUE obj, st_data_t *o, st_data_t *id)
 	deletion_success = st_delete(objspace->obj_to_id_tbl, o, id);
 	if (deletion_success) {
 	    VM_ASSERT(*id);
-	    st_delete(objspace->id_to_obj_tbl, id, NULL);
+	    if (RB_UNLIKELY(objspace->id_to_obj_tbl)) {
+		st_delete(objspace->id_to_obj_tbl, id, NULL);
+	    }
 	}
 	rb_native_mutex_unlock(&objspace->obj_id_lock);
     }
@@ -10547,7 +10570,10 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
 	borrowing_location_lock_release(&objspace->location_locks[i]);
     }
 
-    st_free_table(objspace->id_to_obj_tbl);
+
+    if (objspace->id_to_obj_tbl) {
+        st_free_table(objspace->id_to_obj_tbl);
+    }
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
 
@@ -10697,7 +10723,13 @@ absorb_obj_id_tbls(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to
     rb_native_mutex_lock(&objspace_to_update->obj_id_lock);
 
     absorb_table_contents(objspace_to_update->obj_to_id_tbl, objspace_to_copy_from->obj_to_id_tbl);
-    absorb_table_contents(objspace_to_update->id_to_obj_tbl, objspace_to_copy_from->id_to_obj_tbl);
+    if (RB_UNLIKELY(objspace_to_update->id_to_obj_tbl)) {
+	if (!objspace_to_copy_from->id_to_obj_tbl) {
+	    objspace_to_copy_from->id_to_obj_tbl = st_init_table_with_size(&object_id_hash_type, st_table_size(objspace_to_copy_from->obj_to_id_tbl));
+	    st_foreach(objspace_to_copy_from->obj_to_id_tbl, build_id_to_obj_i, (st_data_t)objspace_to_copy_from->id_to_obj_tbl);
+	}
+	absorb_table_contents(objspace_to_update->id_to_obj_tbl, objspace_to_copy_from->id_to_obj_tbl);
+    }
 
     rb_native_mutex_unlock(&objspace_to_copy_from->obj_id_lock);
     rb_native_mutex_unlock(&objspace_to_update->obj_id_lock);
@@ -10900,7 +10932,6 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     /* Need to determine if we can use mmap at runtime. */
     heap_page_alloc_use_mmap = INIT_HEAP_PAGE_ALLOC_USE_MMAP;
 #endif
-
 #if RGENGC_ESTIMATE_OLDMALLOC
     objspace->rgengc.oldmalloc_increase_limit = gc_params.oldmalloc_limit_min;
 #endif
@@ -10916,7 +10947,7 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
 
-    objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
+    objspace->id_to_obj_tbl = NULL;
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
 
