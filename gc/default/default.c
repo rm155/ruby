@@ -1782,14 +1782,20 @@ build_id_to_obj_i(st_data_t key, st_data_t value, st_data_t data)
     return ST_CONTINUE;
 }
 
+static void
+build_id_to_obj(rb_objspace_t *objspace)
+{
+    objspace->id_to_obj_tbl = st_init_table_with_size(&object_id_hash_type, st_table_size(objspace->obj_to_id_tbl));
+    st_foreach(objspace->obj_to_id_tbl, build_id_to_obj_i, (st_data_t)objspace->id_to_obj_tbl);
+}
+
 VALUE
 rb_gc_impl_object_id_local_search(void *objspace_ptr, VALUE objid)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
     if (!objspace->id_to_obj_tbl) {
-        objspace->id_to_obj_tbl = st_init_table_with_size(&object_id_hash_type, st_table_size(objspace->obj_to_id_tbl));
-        st_foreach(objspace->obj_to_id_tbl, build_id_to_obj_i, (st_data_t)objspace->id_to_obj_tbl);
+	build_id_to_obj(objspace);
     }
 
     VALUE orig;
@@ -10725,8 +10731,7 @@ absorb_obj_id_tbls(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to
     absorb_table_contents(objspace_to_update->obj_to_id_tbl, objspace_to_copy_from->obj_to_id_tbl);
     if (RB_UNLIKELY(objspace_to_update->id_to_obj_tbl)) {
 	if (!objspace_to_copy_from->id_to_obj_tbl) {
-	    objspace_to_copy_from->id_to_obj_tbl = st_init_table_with_size(&object_id_hash_type, st_table_size(objspace_to_copy_from->obj_to_id_tbl));
-	    st_foreach(objspace_to_copy_from->obj_to_id_tbl, build_id_to_obj_i, (st_data_t)objspace_to_copy_from->id_to_obj_tbl);
+	    build_id_to_obj(objspace_to_copy_from);
 	}
 	absorb_table_contents(objspace_to_update->id_to_obj_tbl, objspace_to_copy_from->id_to_obj_tbl);
     }
