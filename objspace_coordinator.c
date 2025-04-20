@@ -204,6 +204,9 @@ objspace_gate_mark(void *data)
 	mark_received_obj_tbl(os_gate);
 	mark_local_immune_tbl(os_gate);
     }
+    else if (rb_during_global_gc()) {
+	st_clear(os_gate->received_obj_tbl);
+    }
 }
 
 static void
@@ -851,64 +854,36 @@ mark_contained_ractor_tbl(rb_objspace_gate_t *os_gate)
     rb_native_mutex_unlock(&os_gate->contained_ractor_tbl_lock);
 }
 
-struct received_obj_list {
-    VALUE received_obj;
-    struct received_obj_list *next;
-};
-
 void
 rb_register_received_obj(rb_objspace_gate_t *os_gate, uintptr_t borrowing_id, VALUE obj)
 {
     rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
-    struct received_obj_list *new_item;
-    new_item = ALLOC(struct received_obj_list);
-    new_item->received_obj = obj;
-
-    st_data_t data;
-    int list_found = st_lookup(os_gate->received_obj_tbl, (st_data_t)borrowing_id, &data);
-    struct received_obj_list *lst = list_found ? (struct received_obj_list *)data : NULL;
-    new_item->next = lst;
-
-    st_insert_no_gc(os_gate->received_obj_tbl, (st_data_t)GET_RACTOR()->borrowing_sync.borrowing_id, (st_data_t)new_item);
-    rb_native_mutex_unlock(&os_gate->received_obj_tbl_lock);
-}
-
-static void
-remove_received_obj_list(rb_objspace_gate_t *os_gate, uintptr_t borrowing_id)
-{
-    rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
-    st_data_t data;
-    int list_found = st_lookup(os_gate->received_obj_tbl, (st_data_t)borrowing_id, &data);
-    if (list_found) {
-	struct received_obj_list *p = (struct received_obj_list *)data;
-	struct received_obj_list *next = NULL;
-	while (p) {
-	    next = p->next;
-	    free(p);
-	    p = next;
-	}
-    }
-
-    st_delete(os_gate->received_obj_tbl, &borrowing_id, NULL);
+    st_insert_no_gc(os_gate->received_obj_tbl, obj, (st_data_t)GET_RACTOR()->borrowing_sync.borrowing_id);
     rb_native_mutex_unlock(&os_gate->received_obj_tbl_lock);
 }
 
 static int
-mark_received_obj_list(st_data_t key, st_data_t val, st_data_t arg)
+update_received_obj_table_at_borrowing_end_i(st_data_t key, st_data_t value, st_data_t argp, int error)
 {
-    struct received_obj_list *p = (struct received_obj_list *)val;
-    while (p) {
-	rb_gc_mark(p->received_obj);
-	p = p->next;
+    if (value == argp && !FL_TEST_RAW(key, FL_SHAREABLE)) {
+	return ST_DELETE;
     }
     return ST_CONTINUE;
+}
+
+static void
+update_received_obj_table_at_borrowing_end(rb_objspace_gate_t *os_gate, uintptr_t borrowing_id)
+{
+    rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
+    st_foreach(os_gate->received_obj_tbl, update_received_obj_table_at_borrowing_end_i, borrowing_id);
+    rb_native_mutex_unlock(&os_gate->received_obj_tbl_lock);
 }
 
 static void
 mark_received_obj_tbl(rb_objspace_gate_t *os_gate)
 {
     rb_native_mutex_lock(&os_gate->received_obj_tbl_lock);
-    st_foreach(os_gate->received_obj_tbl, mark_received_obj_list, NULL);
+    rb_mark_set(os_gate->received_obj_tbl);
     rb_native_mutex_unlock(&os_gate->received_obj_tbl_lock);
 }
 
@@ -1455,7 +1430,7 @@ borrowing_exit(VALUE args)
 	}
 	rb_borrowing_sync_lock(finished_target);
 	if (LIKELY(!finished_target->borrowing_sync.borrowing_closed)) {
-	    remove_received_obj_list(finished_target->local_gate, finished_borrowing_id);
+	    update_received_obj_table_at_borrowing_end(finished_target->local_gate, finished_borrowing_id);
 	}
 	rb_borrowing_sync_unlock(finished_target);
 	borrowing_count_decrement(finished_target);
