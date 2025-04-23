@@ -422,7 +422,9 @@ struct fstr_update_arg {
     bool force_precompute_hash;
 };
 
-static VALUE build_fstring(VALUE str, struct fstr_update_arg *arg) {
+static VALUE
+build_fstring(VALUE str, struct fstr_update_arg *arg)
+{
     // Unless the string is empty or binary, its coderange has been precomputed.
     int coderange = ENC_CODERANGE(str);
 
@@ -542,18 +544,27 @@ struct fstring_table_struct {
     rb_atomic_t count; // TODO: pad to own cache line?
 };
 
-static void fstring_table_free(void *ptr) {
+static void
+fstring_table_free(void *ptr)
+{
     struct fstring_table_struct *table = ptr;
     xfree(table->entries);
 }
 
+static size_t
+fstring_table_size(const void *ptr)
+{
+    const struct fstring_table_struct *table = ptr;
+    return sizeof(struct fstring_table_struct) + sizeof(struct fstring_table_entry) * table->capacity;
+}
+
 // We declare a type for the table so that we can lean on Ruby's GC for deferred reclamation
 static const rb_data_type_t fstring_table_type = {
-    .wrap_struct_name = "fstring_table",
+    .wrap_struct_name = "VM/fstring_table",
     .function = {
         .dmark = NULL,
         .dfree = fstring_table_free,
-        .dsize = NULL,
+        .dsize = fstring_table_size,
     },
     .flags = RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
@@ -562,7 +573,8 @@ static const rb_data_type_t fstring_table_type = {
 static VALUE fstring_table_obj;
 
 static VALUE
-new_fstring_table(int capacity) {
+new_fstring_table(int capacity)
+{
     VALUE obj;
     struct fstring_table_struct *table;
     obj = TypedData_Make_Struct(0, struct fstring_table_struct, &fstring_table_type, table);
@@ -572,7 +584,9 @@ new_fstring_table(int capacity) {
     return obj;
 }
 
-void Init_fstring_table(void) {
+void
+Init_fstring_table(void)
+{
     fstring_table_obj = new_fstring_table(8192);
     rb_gc_register_address(&fstring_table_obj);
 }
@@ -585,14 +599,18 @@ struct fstring_table_probe {
     int mask;
 };
 
-static int fstring_table_probe_start(struct fstring_table_probe *probe, struct fstring_table_struct *table, VALUE hash_code) {
+static int
+fstring_table_probe_start(struct fstring_table_probe *probe, struct fstring_table_struct *table, VALUE hash_code)
+{
     RUBY_ASSERT((table->capacity & (table->capacity - 1)) == 0);
     probe->mask = table->capacity - 1;
     probe->idx = hash_code & probe->mask;
     return probe->idx;
 }
 
-static int fstring_table_probe_next(struct fstring_table_probe *probe) {
+static int
+fstring_table_probe_next(struct fstring_table_probe *probe)
+{
     probe->idx = (probe->idx + 1) & probe->mask;
     return probe->idx;
 }
@@ -607,7 +625,9 @@ struct fstring_table_probe {
     int mask;
 };
 
-static int fstring_table_probe_start(struct fstring_table_probe *probe, struct fstring_table_struct *table, VALUE hash_code) {
+static int
+fstring_table_probe_start(struct fstring_table_probe *probe, struct fstring_table_struct *table, VALUE hash_code)
+{
     RUBY_ASSERT((table->capacity & (table->capacity - 1)) == 0);
     probe->d = 0;
     probe->mask = table->capacity - 1;
@@ -615,7 +635,9 @@ static int fstring_table_probe_start(struct fstring_table_probe *probe, struct f
     return probe->idx;
 }
 
-static int fstring_table_probe_next(struct fstring_table_probe *probe) {
+static int
+fstring_table_probe_next(struct fstring_table_probe *probe)
+{
     probe->d++;
     probe->idx = (probe->idx + probe->d) & probe->mask;
     return probe->idx;
@@ -624,7 +646,9 @@ static int fstring_table_probe_next(struct fstring_table_probe *probe) {
 
 #define RUBY_ATOMIC_VALUE_LOAD(x) (VALUE)(RUBY_ATOMIC_PTR_LOAD(x))
 
-static void fstring_insert_on_resize(struct fstring_table_struct *table, VALUE hash_code, VALUE value) {
+static void
+fstring_insert_on_resize(struct fstring_table_struct *table, VALUE hash_code, VALUE value)
+{
     struct fstring_table_probe probe;
     int idx = fstring_table_probe_start(&probe, table, hash_code);
 
@@ -651,7 +675,9 @@ static void fstring_insert_on_resize(struct fstring_table_struct *table, VALUE h
 }
 
 // Rebuilds the table
-static void fstring_try_resize(VALUE old_table_obj) {
+static void
+fstring_try_resize(VALUE old_table_obj)
+{
     RB_VM_LOCK_ENTER();
 
     // Check if another thread has already resized
@@ -708,7 +734,9 @@ end:
     RB_VM_LOCK_LEAVE();
 }
 
-static VALUE fstring_find_or_insert(VALUE hash_code, VALUE value, struct fstr_update_arg *arg) {
+static VALUE
+fstring_find_or_insert(VALUE hash_code, VALUE value, struct fstr_update_arg *arg)
+{
     struct fstring_table_probe probe;
     bool inserting = false;
     int idx;
@@ -750,22 +778,26 @@ static VALUE fstring_find_or_insert(VALUE hash_code, VALUE value, struct fstr_up
 
                 RB_GC_GUARD(table_obj);
                 return value;
-            } else {
+            }
+            else {
                 // Nothing was inserted
                 RUBY_ATOMIC_DEC(table->count); // we didn't end up inserting
 
                 // Another thread won the race, try again at the same location
                 continue;
             }
-        } else if (candidate == FSTRING_TABLE_TOMBSTONE) {
+        }
+        else if (candidate == FSTRING_TABLE_TOMBSTONE) {
             // Deleted entry, continue searching
-        } else if (candidate == FSTRING_TABLE_MOVED) {
+        }
+        else if (candidate == FSTRING_TABLE_MOVED) {
             // Wait
             RB_VM_LOCK_ENTER();
             RB_VM_LOCK_LEAVE();
 
             goto retry;
-        } else {
+        }
+        else {
             VALUE candidate_hash = RUBY_ATOMIC_VALUE_LOAD(entry->hash);
             if ((candidate_hash == hash_code || candidate_hash == 0) && !fstring_cmp(candidate, value)) {
                 // We've found a match
@@ -775,7 +807,8 @@ static VALUE fstring_find_or_insert(VALUE hash_code, VALUE value, struct fstr_up
                     RUBY_ATOMIC_VALUE_CAS(entry->str, candidate, FSTRING_TABLE_TOMBSTONE);
 
                     // Fall through and continue our search
-                } else {
+                }
+                else {
                     RB_GC_GUARD(table_obj);
                     return candidate;
                 }
@@ -788,7 +821,9 @@ static VALUE fstring_find_or_insert(VALUE hash_code, VALUE value, struct fstr_up
 
 
 // Removes an fstring from the table. Compares by identity
-static void fstring_delete(VALUE hash_code, VALUE value) {
+static void
+fstring_delete(VALUE hash_code, VALUE value)
+{
     // Delete is never called concurrently, so atomic operations are unnecessary
     VALUE table_obj = RUBY_ATOMIC_VALUE_LOAD(fstring_table_obj);
     RUBY_ASSERT_ALWAYS(table_obj);
@@ -807,7 +842,8 @@ static void fstring_delete(VALUE hash_code, VALUE value) {
         if (candidate == FSTRING_TABLE_EMPTY) {
             // We didn't find our string to delete
             return;
-        } else if (candidate == value) {
+        }
+        else if (candidate == value) {
             // We found our string, replace it with a tombstone and increment the count
             entry->str = FSTRING_TABLE_TOMBSTONE;
             table->deleted_entries++;
@@ -847,7 +883,9 @@ register_fstring(VALUE str, bool copy, bool force_precompute_hash)
     return result;
 }
 
-void rb_fstring_foreach_with_replace(st_foreach_check_callback_func *func, st_update_callback_func *replace, st_data_t arg) {
+void
+rb_fstring_foreach_with_replace(st_foreach_check_callback_func *func, st_update_callback_func *replace, st_data_t arg)
+{
     // Assume locking and barrier (which there is no assert for)
     ASSERT_vm_locking();
 
@@ -886,13 +924,17 @@ void rb_fstring_foreach_with_replace(st_foreach_check_callback_func *func, st_up
     }
 }
 
-bool rb_obj_is_fstring_table(VALUE obj) {
+bool
+rb_obj_is_fstring_table(VALUE obj)
+{
     ASSERT_vm_locking();
 
     return obj == fstring_table_obj;
 }
 
-void rb_gc_free_fstring(VALUE obj) {
+void
+rb_gc_free_fstring(VALUE obj)
+{
     // Assume locking and barrier (which there is no assert for)
     ASSERT_vm_locking();
 

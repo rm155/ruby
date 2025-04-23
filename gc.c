@@ -1099,7 +1099,8 @@ rb_gc_obj_slot_size(VALUE obj)
 }
 
 static inline void
-gc_validate_pc(void) {
+gc_validate_pc(void)
+{
 #if RUBY_DEBUG
     if (!rb_current_execution_context(false)) return;
     rb_execution_context_t *ec = GET_EC();
@@ -1282,11 +1283,17 @@ cvar_table_free_i(VALUE value, void *ctx)
     return ID_TABLE_CONTINUE;
 }
 
+static void
+io_fptr_finalize(void *fptr)
+{
+    rb_io_fptr_finalize((struct rb_io *)fptr);
+}
+
 static inline void
 make_io_zombie(void *objspace, VALUE obj)
 {
     rb_io_t *fptr = RFILE(obj)->fptr;
-    rb_gc_impl_make_zombie(objspace, obj, rb_io_fptr_finalize_internal, fptr);
+    rb_gc_impl_make_zombie(objspace, obj, io_fptr_finalize, fptr);
 }
 
 static bool
