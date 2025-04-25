@@ -139,21 +139,6 @@ rb_leave_ci_lock(rb_vm_t *vm)
 #define RB_CI_TABLE_ENTER() { rb_vm_t *_vm = GET_VM(); rb_enter_ci_lock(_vm);
 #define RB_CI_TABLE_LEAVE() rb_leave_ci_lock(_vm); }
 
-static inline void
-rb_enter_fstring_lock(rb_vm_t *vm)
-{
-    rb_gc_safe_lock_enter(&vm->fstring_table_lock);
-}
-
-static inline void
-rb_leave_fstring_lock(rb_vm_t *vm)
-{
-    rb_gc_safe_lock_leave(&vm->fstring_table_lock);
-}
-
-#define RB_FSTRING_TABLE_ENTER() { rb_vm_t *_vm = GET_VM(); rb_enter_fstring_lock(_vm);
-#define RB_FSTRING_TABLE_LEAVE() rb_leave_fstring_lock(_vm); }
-
 #if RUBY_DEBUG > 0
 void RUBY_ASSERT_vm_locking(void);
 void RUBY_ASSERT_vm_unlocking(void);

@@ -3237,7 +3237,8 @@ vm_callee_setup_arg(rb_execution_context_t *ec, struct rb_calling_info *calling,
                         vm_ci_flag(ci),
                         vm_ci_argc(ci),
                         vm_ci_kwarg(ci));
-            } else {
+            }
+            else {
                 ci = forward_cd->caller_ci;
             }
             can_fastpath = false;
@@ -5577,7 +5578,8 @@ vm_concat_array(VALUE ary1, VALUE ary2st)
 
     if (NIL_P(tmp2)) {
         return rb_ary_push(tmp1, ary2);
-    } else {
+    }
+    else {
         return rb_ary_concat(tmp1, tmp2);
     }
 }
@@ -5594,7 +5596,8 @@ vm_concat_to_array(VALUE ary1, VALUE ary2st)
 
     if (NIL_P(tmp2)) {
         return rb_ary_push(ary1, ary2);
-    } else {
+    }
+    else {
         return rb_ary_concat(ary1, tmp2);
     }
 }
@@ -5760,26 +5763,29 @@ vm_check_if_module(ID id, VALUE mod)
 }
 
 static VALUE
+declare_under(ID id, VALUE cbase, VALUE c)
+{
+    rb_set_class_path_string(c, cbase, rb_id2str(id));
+    rb_const_set(cbase, id, c);
+    return c;
+}
+
+static VALUE
 vm_declare_class(ID id, rb_num_t flags, VALUE cbase, VALUE super)
 {
     /* new class declaration */
     VALUE s = VM_DEFINECLASS_HAS_SUPERCLASS_P(flags) ? super : rb_cObject;
-    VALUE c = rb_define_class_id(id, s);
+    VALUE c = declare_under(id, cbase, rb_define_class_id(id, s));
     rb_define_alloc_func(c, rb_get_alloc_func(c));
-    rb_set_class_path_string(c, cbase, rb_id2str(id));
-    rb_const_set_raw(cbase, id, c);
     rb_class_inherited(s, c);
-    rb_const_added(cbase, id);
     return c;
 }
 
 static VALUE
 vm_declare_module(ID id, VALUE cbase)
 {
-    VALUE m = rb_module_new();
-    rb_set_class_path_string(m, cbase, rb_id2str(id));
-    rb_const_set(cbase, id, m);
-    return m;
+    /* new module declaration */
+    return declare_under(id, cbase, rb_module_new());
 }
 
 NORETURN(static void unmatched_redefinition(const char *type, VALUE cbase, ID id, VALUE old));

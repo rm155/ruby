@@ -75,6 +75,7 @@ rb_call_inits(void)
     CALL(ast);
     CALL(shape);
     CALL(Prism);
+    CALL(unicode_version);
 
     // enable builtin loading
     CALL(builtin);
@@ -103,6 +104,7 @@ rb_call_builtin_inits(void)
     BUILTIN(thread_sync);
     BUILTIN(nilclass);
     BUILTIN(marshal);
+    BUILTIN(zjit);
     Init_builtin_prelude();
 }
 #undef CALL

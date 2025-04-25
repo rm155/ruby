@@ -20,9 +20,14 @@ Note: We're only listing outstanding class updates.
       Also, `Binding#local_variable_get` and `Binding#local_variable_set` reject to handle numbered parameters.
       [[Bug #21049]]
 
+* IO
+
+    * `IO.select` accepts +Float::INFINITY+ as a timeout argument.
+      [[Feature #20610]]
+
 * String
 
-    * Update Unicode to Version 15.1.0 and Emoji Version 15.1. [[Feature #19908]]
+    * Update Unicode to Version 16.0.0 and Emoji Version 16.0. [[Feature #19908]][[Feature #20724]]
         (also applies to Regexp)
 
 ## Stdlib updates
@@ -34,7 +39,7 @@ The following bundled gems are promoted from default gems.
 * benchmark 0.4.0
 * logger 1.7.0
 * rdoc 6.13.1
-* win32ole 1.9.1
+* win32ole 1.9.2
 * irb 1.15.2
 * reline 0.6.1
 * readline 0.0.4
@@ -57,7 +62,8 @@ The following default gems are updated.
 * optparse 0.7.0.dev.2
 * prism 1.4.0
 * psych 5.2.3
-* stringio 3.1.6
+* stringio 3.1.8.dev
+* strscan 3.1.4.dev
 * uri 1.0.3
 
 The following bundled gems are added.
@@ -68,12 +74,12 @@ The following bundled gems are updated.
 * minitest 5.25.5
 * test-unit 3.6.8
 * rexml 3.4.1
-* net-imap 0.5.6
+* net-imap 0.5.7
 * net-smtp 0.5.1
 * rbs 3.9.2
 * bigdecimal 3.1.9
 * syslog 0.3.0
-* csv 3.3.3
+* csv 3.3.4
 * repl_type_completor 0.1.11
 
 ## Supported platforms
@@ -89,5 +95,6 @@ The following bundled gems are updated.
 ## JIT
 
 [Feature #19908]: https://bugs.ruby-lang.org/issues/19908
+[Feature #20724]: https://bugs.ruby-lang.org/issues/20724
 [Feature #21047]: https://bugs.ruby-lang.org/issues/21047
 [Bug #21049]:     https://bugs.ruby-lang.org/issues/21049

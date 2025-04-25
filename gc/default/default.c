@@ -1752,7 +1752,9 @@ rb_gc_impl_object_id(void *objspace_ptr, VALUE obj)
 	id = retrieve_next_obj_id(OBJ_ID_INCREMENT);
 
 	st_insert_no_gc(objspace->obj_to_id_tbl, (st_data_t)obj, (st_data_t)id);
-	st_insert_no_gc(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
+	if (RB_UNLIKELY(objspace->id_to_obj_tbl)) {
+	    st_insert_no_gc(objspace->id_to_obj_tbl, (st_data_t)id, (st_data_t)obj);
+	}
 	FL_SET(obj, FL_SEEN_OBJ_ID);
     }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
@@ -1766,14 +1768,35 @@ update_obj_id_refs(rb_objspace_t *objspace)
 {
     rb_native_mutex_lock(&objspace->obj_id_lock);
     gc_ref_update_table_values_only(objspace->obj_to_id_tbl);
-    gc_update_table_refs(objspace->id_to_obj_tbl);
+    if (RB_UNLIKELY(objspace->id_to_obj_tbl)) {
+	gc_update_table_refs(objspace->id_to_obj_tbl);
+    }
     rb_native_mutex_unlock(&objspace->obj_id_lock);
+}
+
+static int
+build_id_to_obj_i(st_data_t key, st_data_t value, st_data_t data)
+{
+    st_table *id_to_obj_tbl = (st_table *)data;
+    st_insert(id_to_obj_tbl, value, key);
+    return ST_CONTINUE;
+}
+
+static void
+build_id_to_obj(rb_objspace_t *objspace)
+{
+    objspace->id_to_obj_tbl = st_init_table_with_size(&object_id_hash_type, st_table_size(objspace->obj_to_id_tbl));
+    st_foreach(objspace->obj_to_id_tbl, build_id_to_obj_i, (st_data_t)objspace->id_to_obj_tbl);
 }
 
 VALUE
 rb_gc_impl_object_id_local_search(void *objspace_ptr, VALUE objid)
 {
     rb_objspace_t *objspace = objspace_ptr;
+
+    if (!objspace->id_to_obj_tbl) {
+	build_id_to_obj(objspace);
+    }
 
     VALUE orig;
 
@@ -1794,18 +1817,22 @@ rb_gc_impl_object_id_to_ref(void *objspace_ptr, VALUE object_id)
 {
     rb_objspace_t *objspace = objspace_ptr;
 
-    VALUE obj;
+    unsigned int lev = rb_gc_vm_lock();
 
-    if (!UNDEF_P(obj = object_id_global_search(object_id)) &&
-            !rb_objspace_garbage_object_p(obj)) {
+    VALUE obj;
+    bool found = (!UNDEF_P(obj = object_id_global_search(object_id)) && !rb_objspace_garbage_object_p(obj));
+
+    rb_gc_vm_unlock(lev);
+
+    if (found) {
         return obj;
     }
 
     if (rb_nonexistent_id(object_id)) {
-        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not id value", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
+        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not an id value", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
     }
     else {
-        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is recycled object", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
+        rb_raise(rb_eRangeError, "%+"PRIsVALUE" is a recycled object", rb_funcall(object_id, rb_intern("to_s"), 1, INT2FIX(10)));
     }
 }
 
@@ -3110,7 +3137,7 @@ rb_gc_impl_pointer_to_heap_p(void *objspace_ptr, const void *ptr)
     return is_pointer_to_heap(objspace_ptr, ptr);
 }
 
-#define ZOMBIE_OBJ_KEPT_FLAGS (FL_SEEN_OBJ_ID | FL_FINALIZE)
+#define ZOMBIE_OBJ_KEPT_FLAGS (FL_FINALIZE)
 
 void
 rb_gc_impl_make_zombie(void *objspace_ptr, VALUE obj, void (*dfree)(void *), void *data)
@@ -3144,7 +3171,9 @@ delete_from_obj_id_tables(VALUE obj, st_data_t *o, st_data_t *id)
 	deletion_success = st_delete(objspace->obj_to_id_tbl, o, id);
 	if (deletion_success) {
 	    VM_ASSERT(*id);
-	    st_delete(objspace->id_to_obj_tbl, id, NULL);
+	    if (RB_UNLIKELY(objspace->id_to_obj_tbl)) {
+		st_delete(objspace->id_to_obj_tbl, id, NULL);
+	    }
 	}
 	rb_native_mutex_unlock(&objspace->obj_id_lock);
     }
@@ -3396,6 +3425,8 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
 
     RBASIC(obj)->flags |= FL_FINALIZE;
 
+    int lev = rb_gc_vm_lock();
+
     if (st_lookup(finalizer_table, obj, &data)) {
         table = (VALUE)data;
 
@@ -3407,6 +3438,7 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
             for (i = 0; i < len; i++) {
                 VALUE recv = RARRAY_AREF(table, i);
                 if (rb_equal(recv, block)) {
+                    rb_gc_vm_unlock(lev);
                     return recv;
                 }
             }
@@ -3415,13 +3447,15 @@ rb_gc_impl_define_finalizer(void *objspace_ptr, VALUE obj, VALUE block)
         rb_ary_push(table, block);
     }
     else {
-        table = rb_ary_new3(1, block);
+        table = rb_ary_new3(2, rb_gc_impl_object_id(objspace, obj), block);
 	rb_permit_mutable_shareable(table);
 	ALLOW_UNSHAREABLE_REFERENCES(table);
 	add_shareable_object(table); //TODO: Protect table from data races
         rb_obj_hide(table);
         st_add_direct(finalizer_table, obj, table);
     }
+
+    rb_gc_vm_unlock(lev);
 
     return block;
 }
@@ -3467,22 +3501,11 @@ rb_gc_impl_copy_finalizer(void *objspace_ptr, VALUE dest, VALUE obj)
 }
 
 static VALUE
-get_object_id_in_finalizer(rb_objspace_t *objspace, VALUE obj)
-{
-    if (FL_TEST_RAW(obj, FL_SEEN_OBJ_ID)) {
-        return rb_gc_impl_object_id(objspace, obj);
-    }
-    else {
-	return retrieve_next_obj_id(OBJ_ID_INCREMENT);
-    }
-}
-
-static VALUE
 get_final(long i, void *data)
 {
     VALUE table = (VALUE)data;
 
-    return RARRAY_AREF(table, i);
+    return RARRAY_AREF(table, i + 1);
 }
 
 static void
@@ -3497,7 +3520,7 @@ run_final(rb_objspace_t *objspace, VALUE zombie)
         FL_UNSET(zombie, FL_FINALIZE);
         st_data_t table;
         if (st_delete(finalizer_table, &key, &table)) {
-            rb_gc_run_obj_finalizer(get_object_id_in_finalizer(objspace, zombie), RARRAY_LEN(table), get_final, (void *)table);
+            rb_gc_run_obj_finalizer(RARRAY_AREF(table, 0), RARRAY_LEN(table) - 1, get_final, (void *)table);
         }
         else {
             rb_bug("FL_FINALIZE flag is set, but finalizers are not found");
@@ -3523,10 +3546,6 @@ finalize_list(rb_objspace_t *objspace, VALUE zombie)
 	OBJSPACE_LOCK_ENTER(objspace);
 	{
             GC_ASSERT(BUILTIN_TYPE(zombie) == T_ZOMBIE);
-            if (FL_TEST_RAW(zombie, FL_SEEN_OBJ_ID)) {
-                obj_free_object_id(objspace, zombie);
-            }
-
             GC_ASSERT(page->heap->final_slots_count > 0);
             GC_ASSERT(page->final_slots > 0);
 
@@ -3651,16 +3670,15 @@ rb_gc_impl_shutdown_free_objects(void *objspace_ptr)
 }
 
 static int
-rb_gc_impl_shutdown_call_finalizer_i(st_data_t key, st_data_t val, st_data_t data)
+rb_gc_impl_shutdown_call_finalizer_i(st_data_t key, st_data_t val, st_data_t _data)
 {
-    rb_objspace_t *objspace = (rb_objspace_t *)data;
     VALUE obj = (VALUE)key;
     VALUE table = (VALUE)val;
 
     GC_ASSERT(RB_FL_TEST(obj, FL_FINALIZE));
     GC_ASSERT(RB_BUILTIN_TYPE(val) == T_ARRAY);
 
-    rb_gc_run_obj_finalizer(rb_gc_impl_object_id(objspace, obj), RARRAY_LEN(table), get_final, (void *)table);
+    rb_gc_run_obj_finalizer(RARRAY_AREF(table, 0), RARRAY_LEN(table) - 1, get_final, (void *)table);
 
     FL_UNSET(obj, FL_FINALIZE);
 
@@ -3687,7 +3705,7 @@ rb_gc_impl_shutdown_call_finalizer(void *objspace_ptr)
     }
 
     while (finalizer_table->num_entries) {
-        st_foreach(finalizer_table, rb_gc_impl_shutdown_call_finalizer_i, (st_data_t)objspace);
+        st_foreach(finalizer_table, rb_gc_impl_shutdown_call_finalizer_i, 0);
     }
 
     /* run finalizers */
@@ -4168,12 +4186,11 @@ gc_sweep_plane(rb_objspace_t *objspace, rb_heap_t *heap, uintptr_t p, bits_t bit
 
                 rb_gc_event_hook(vp, RUBY_INTERNAL_EVENT_FREEOBJ);
 
-                bool has_object_id = FL_TEST_RAW(vp, FL_SEEN_OBJ_ID);
+                if (FL_TEST_RAW(vp, FL_SEEN_OBJ_ID)) {
+                    obj_free_object_id(objspace, vp);
+                }
                 rb_gc_obj_free_vm_weak_references(vp);
                 if (rb_gc_obj_free(objspace, vp)) {
-                    if (has_object_id) {
-                        obj_free_object_id(objspace, vp);
-                    }
                     // always add free slots back to the swept pages freelist,
                     // so that if we're compacting, we can re-use the slots
                     (void)VALGRIND_MAKE_MEM_UNDEFINED((void*)p, BASE_SLOT_SIZE);
@@ -10514,7 +10531,10 @@ rb_gc_impl_objspace_free(void *objspace_ptr)
 	borrowing_location_lock_release(&objspace->location_locks[i]);
     }
 
-    st_free_table(objspace->id_to_obj_tbl);
+
+    if (objspace->id_to_obj_tbl) {
+        st_free_table(objspace->id_to_obj_tbl);
+    }
     st_free_table(objspace->obj_to_id_tbl);
     rb_nativethread_lock_destroy(&objspace->obj_id_lock);
 
@@ -10664,7 +10684,12 @@ absorb_obj_id_tbls(rb_objspace_t *objspace_to_update, rb_objspace_t *objspace_to
     rb_native_mutex_lock(&objspace_to_update->obj_id_lock);
 
     absorb_table_contents(objspace_to_update->obj_to_id_tbl, objspace_to_copy_from->obj_to_id_tbl);
-    absorb_table_contents(objspace_to_update->id_to_obj_tbl, objspace_to_copy_from->id_to_obj_tbl);
+    if (RB_UNLIKELY(objspace_to_update->id_to_obj_tbl)) {
+	if (!objspace_to_copy_from->id_to_obj_tbl) {
+	    build_id_to_obj(objspace_to_copy_from);
+	}
+	absorb_table_contents(objspace_to_update->id_to_obj_tbl, objspace_to_copy_from->id_to_obj_tbl);
+    }
 
     rb_native_mutex_unlock(&objspace_to_copy_from->obj_id_lock);
     rb_native_mutex_unlock(&objspace_to_update->obj_id_lock);
@@ -10867,7 +10892,6 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     /* Need to determine if we can use mmap at runtime. */
     heap_page_alloc_use_mmap = INIT_HEAP_PAGE_ALLOC_USE_MMAP;
 #endif
-
 #if RGENGC_ESTIMATE_OLDMALLOC
     objspace->rgengc.oldmalloc_increase_limit = gc_params.oldmalloc_limit_min;
 #endif
@@ -10883,7 +10907,7 @@ objspace_setup(rb_objspace_t *objspace, rb_ractor_t *ractor)
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
 
-    objspace->id_to_obj_tbl = st_init_table(&object_id_hash_type);
+    objspace->id_to_obj_tbl = NULL;
     objspace->obj_to_id_tbl = st_init_numtable();
     rb_nativethread_lock_initialize(&objspace->obj_id_lock);
 

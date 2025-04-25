@@ -3897,6 +3897,7 @@ static enum obj_traverse_iterator_result
 copy_enter(VALUE obj, struct obj_traverse_replace_data *data)
 {
     if (rb_ractor_shareable_p(obj)) {
+	if (!rb_special_const_p(obj)) rb_register_new_external_reference(rb_current_allocating_ractor()->local_gate, obj);
         data->replacement = obj;
         return traverse_skip;
     }

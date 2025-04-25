@@ -2625,11 +2625,11 @@ io_blocking_fchmod(void *ptr)
 }
 
 static int
-rb_fchmod(int fd, mode_t mode)
+rb_fchmod(struct rb_io* io, mode_t mode)
 {
     (void)rb_chmod; /* suppress unused-function warning when HAVE_FCHMOD */
-    struct nogvl_fchmod_data data = {.fd = fd, .mode = mode};
-    return (int)rb_thread_io_blocking_region(io_blocking_fchmod, &data, fd);
+    struct nogvl_fchmod_data data = {.fd = io->fd, .mode = mode};
+    return (int)rb_thread_io_blocking_region(io, io_blocking_fchmod, &data);
 }
 #endif
 
@@ -2659,7 +2659,7 @@ rb_file_chmod(VALUE obj, VALUE vmode)
 
     GetOpenFile(obj, fptr);
 #ifdef HAVE_FCHMOD
-    if (rb_fchmod(fptr->fd, mode) == -1) {
+    if (rb_fchmod(fptr, mode) == -1) {
         if (HAVE_FCHMOD || errno != ENOSYS)
             rb_sys_fail_path(fptr->pathv);
     }
@@ -4574,12 +4574,16 @@ rb_check_realpath_internal(VALUE basedir, VALUE path, rb_encoding *origenc, enum
     if (origenc) unresolved_path = TO_OSPATH(unresolved_path);
 
     if ((resolved_ptr = realpath(RSTRING_PTR(unresolved_path), resolved_buffer)) == NULL) {
-        /* glibc realpath(3) does not allow /path/to/file.rb/../other_file.rb,
+        /*
+           wasi-libc 22 and later support realpath(3) but return ENOTSUP
+           when the underlying host syscall returns it.
+           glibc realpath(3) does not allow /path/to/file.rb/../other_file.rb,
            returning ENOTDIR in that case.
            glibc realpath(3) can also return ENOENT for paths that exist,
            such as /dev/fd/5.
            Fallback to the emulated approach in either of those cases. */
-        if (errno == ENOTDIR ||
+        if (errno == ENOTSUP ||
+            errno == ENOTDIR ||
             (errno == ENOENT && rb_file_exist_p(0, unresolved_path))) {
             return rb_check_realpath_emulate(basedir, path, origenc, mode);
 

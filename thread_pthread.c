@@ -431,7 +431,8 @@ ASSERT_thread_sched_locked(struct rb_thread_sched *sched, rb_thread_t *th)
 
 RBIMPL_ATTR_MAYBE_UNUSED()
 static unsigned int
-rb_ractor_serial(const rb_ractor_t *r) {
+rb_ractor_serial(const rb_ractor_t *r)
+{
     if (r) {
         return rb_ractor_id(r);
     }
@@ -3153,8 +3154,12 @@ ruby_stack_overflowed_p(const rb_thread_t *th, const void *addr)
     const size_t water_mark = 1024 * 1024;
     STACK_GROW_DIR_DETECTION;
 
+    if (th) {
+        size = th->ec->machine.stack_maxsize;
+        base = (char *)th->ec->machine.stack_start - STACK_DIR_UPPER(0, size);
+    }
 #ifdef STACKADDR_AVAILABLE
-    if (get_stack(&base, &size) == 0) {
+    else if (get_stack(&base, &size) == 0) {
 # ifdef __APPLE__
         if (pthread_equal(th->nt->thread_id, native_main_thread.id)) {
             struct rlimit rlim;
@@ -3165,15 +3170,11 @@ ruby_stack_overflowed_p(const rb_thread_t *th, const void *addr)
 # endif
         base = (char *)base + STACK_DIR_UPPER(+size, -size);
     }
-    else
 #endif
-    if (th) {
-        size = th->ec->machine.stack_maxsize;
-        base = (char *)th->ec->machine.stack_start - STACK_DIR_UPPER(0, size);
-    }
     else {
         return 0;
     }
+
     size /= RUBY_STACK_SPACE_RATIO;
     if (size > water_mark) size = water_mark;
     if (IS_STACK_DIR_UPPER()) {

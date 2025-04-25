@@ -45,6 +45,8 @@
 #include "ractor_core.h"
 #include "vm_sync.h"
 #include "shape.h"
+#include "insns.inc"
+#include "zjit.h"
 
 #include "builtin.h"
 
@@ -420,7 +422,7 @@ rb_yjit_threshold_hit(const rb_iseq_t *iseq, uint64_t entry_calls)
 #define rb_yjit_threshold_hit(iseq, entry_calls) false
 #endif
 
-#if USE_YJIT
+#if USE_YJIT || USE_ZJIT
 // Generate JIT code that supports the following kinds of ISEQ entries:
 //   * The first ISEQ on vm_exec (e.g. <main>, or Ruby methods/blocks
 //     called by a C method). The current frame has VM_FRAME_FLAG_FINISH.
@@ -435,6 +437,22 @@ jit_compile(rb_execution_context_t *ec)
     const rb_iseq_t *iseq = ec->cfp->iseq;
     struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
 
+#if USE_ZJIT
+    if (body->jit_entry == NULL && rb_zjit_enabled_p) {
+        body->jit_entry_calls++;
+
+        // At profile-threshold, rewrite some of the YARV instructions
+        // to zjit_* instructions to profile these instructions.
+        if (body->jit_entry_calls == rb_zjit_profile_threshold) {
+            rb_zjit_profile_enable(iseq);
+        }
+
+        // At call-threshold, compile the ISEQ with ZJIT.
+        if (body->jit_entry_calls == rb_zjit_call_threshold) {
+            rb_zjit_compile_iseq(iseq, ec, false);
+        }
+    }
+#elif USE_YJIT
     // Increment the ISEQ's call counter and trigger JIT compilation if not compiled
     if (body->jit_entry == NULL && rb_yjit_enabled_p) {
         body->jit_entry_calls++;
@@ -442,6 +460,7 @@ jit_compile(rb_execution_context_t *ec)
             rb_yjit_compile_iseq(iseq, ec, false);
         }
     }
+#endif
     return body->jit_entry;
 }
 
@@ -477,12 +496,14 @@ jit_compile_exception(rb_execution_context_t *ec)
     struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
 
     // Increment the ISEQ's call counter and trigger JIT compilation if not compiled
+#if USE_YJIT
     if (body->jit_exception == NULL && rb_yjit_enabled_p) {
         body->jit_exception_calls++;
         if (body->jit_exception_calls == rb_yjit_call_threshold) {
             rb_yjit_compile_iseq(iseq, ec, true);
         }
     }
+#endif
     return body->jit_exception;
 }
 
@@ -1046,6 +1067,7 @@ vm_make_env_each(const rb_execution_context_t * const ec, rb_control_frame_t *co
     // Invalidate JIT code that assumes cfp->ep == vm_base_ptr(cfp).
     if (env->iseq) {
         rb_yjit_invalidate_ep_is_bp(env->iseq);
+        rb_zjit_invalidate_ep_is_bp(env->iseq);
     }
 
     return (VALUE)env;
@@ -2221,6 +2243,7 @@ rb_vm_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass)
                     rb_id2name(me->called_id)
                 );
                 rb_yjit_bop_redefined(flag, (enum ruby_basic_operators)bop);
+                rb_zjit_bop_redefined(flag, (enum ruby_basic_operators)bop);
                 ruby_vm_redefined_flag[bop] |= flag;
             }
         }
@@ -3169,11 +3192,6 @@ ruby_vm_destruct(rb_vm_t *vm)
             vm->ci_table = NULL;
 	    rb_gc_safe_lock_destroy(&vm->ci_table_lock);
         }
-        if (vm->fstring_table) {
-            st_free_table(vm->fstring_table);
-            vm->fstring_table = 0;
-	    rb_gc_safe_lock_destroy(&vm->fstring_table_lock);
-        }
         RB_ALTSTACK_FREE(vm->main_altstack);
 
 	rb_native_mutex_destroy(&vm->os_gate_count_lock);
@@ -3272,13 +3290,6 @@ vm_memsize(const void *ptr)
     }
     RB_CI_TABLE_LEAVE();
 
-    size_t fstring_table_size;
-    RB_FSTRING_TABLE_ENTER();
-    {
-        fstring_table_size = rb_st_memsize(vm->fstring_table);
-    }
-    RB_FSTRING_TABLE_LEAVE();
-
     return (
         sizeof(rb_vm_t) +
         rb_vm_memsize_waiting_fds(&vm->waiting_fds) +
@@ -3288,7 +3299,6 @@ vm_memsize(const void *ptr)
         rb_vm_memsize_workqueue(&vm->workqueue) +
         vm_memsize_at_exit_list(vm->at_exit) +
 	ci_table_size +
-        fstring_table_size +
         vm_memsize_builtin_function_table(vm->builtin_function_table) +
         rb_id_table_memsize(vm->negative_cme_table) +
         rb_st_memsize(vm->overloaded_cme_table) +
@@ -3556,7 +3566,6 @@ thread_mark(void *ptr)
     if (th->root_fiber) rb_fiber_mark_self(th->root_fiber);
 
     RUBY_ASSERT(th->ec == rb_fiberptr_get_ec(th->ec->fiber_ptr));
-    rb_gc_mark(th->stat_insn_usage);
     rb_gc_mark(th->last_status);
     rb_gc_mark(th->locking_mutex);
     rb_gc_mark(th->name);
@@ -4527,8 +4536,6 @@ Init_vm_objects(void)
     vm->loading_table = st_init_strtable();
     vm->ci_table = st_init_table(&vm_ci_hashtype);
     rb_gc_safe_lock_initialize(&vm->ci_table_lock);
-    vm->fstring_table = st_init_table_with_size(&rb_fstring_hash_type, 10000);
-    rb_gc_safe_lock_initialize(&vm->fstring_table_lock);
 }
 
 // Stub for builtin function when not building YJIT units
@@ -4538,6 +4545,11 @@ void Init_builtin_yjit(void) {}
 
 // Whether YJIT is enabled or not, we load yjit_hook.rb to remove Kernel#with_yjit.
 #include "yjit_hook.rbinc"
+
+// Stub for builtin function when not building ZJIT units
+#if !USE_ZJIT
+void Init_builtin_zjit(void) {}
+#endif
 
 /* top self */
 
@@ -4589,14 +4601,6 @@ ruby_free_at_exit_p(void)
 VALUE rb_insn_operand_intern(const rb_iseq_t *iseq,
                              VALUE insn, int op_no, VALUE op,
                              int len, size_t pos, VALUE *pnop, VALUE child);
-
-st_table *
-rb_vm_fstring_table(void)
-{
-    rb_vm_t *vm = GET_VM();
-    VM_ASSERT(!rb_multi_ractor_p() || rb_gc_safe_lock_acquired(&vm->fstring_table_lock));
-    return vm->fstring_table;
-}
 
 #if VM_COLLECT_USAGE_DETAILS
 

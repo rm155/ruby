@@ -29,6 +29,7 @@
 #include "ractor_core.h"
 #include "ruby/encoding.h"
 #include "ruby/st.h"
+#include "ruby/thread.h"
 #include "ruby/util.h"
 #include "vm_core.h"
 #include "builtin.h"
@@ -530,6 +531,8 @@ rb_ary_set_shared(VALUE ary, VALUE shared_root)
 static inline void
 rb_ary_modify_check(VALUE ary)
 {
+    RUBY_ASSERT(ruby_thread_has_gvl_p());
+
     rb_check_frozen(ary);
     ary_verify(ary);
 }
@@ -714,6 +717,8 @@ empty_ary_alloc(VALUE klass)
 static VALUE
 ary_new(VALUE klass, long capa)
 {
+    RUBY_ASSERT(ruby_thread_has_gvl_p());
+
     VALUE ary;
 
     if (capa < 0) {

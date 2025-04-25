@@ -344,6 +344,7 @@ rb_gc_shutdown_call_finalizer_p(VALUE obj)
         if (rb_obj_is_fiber(obj)) return false;
         if (rb_obj_is_main_ractor(obj)) return false;
         if (rb_obj_is_main_os_gate(obj)) return false;
+        if (rb_obj_is_fstring_table(obj)) return false;
 
         return true;
 
@@ -1098,7 +1099,8 @@ rb_gc_obj_slot_size(VALUE obj)
 }
 
 static inline void
-gc_validate_pc(void) {
+gc_validate_pc(void)
+{
 #if RUBY_DEBUG
     if (!rb_current_execution_context(false)) return;
     rb_execution_context_t *ec = GET_EC();
@@ -1281,11 +1283,17 @@ cvar_table_free_i(VALUE value, void *ctx)
     return ID_TABLE_CONTINUE;
 }
 
+static void
+io_fptr_finalize(void *fptr)
+{
+    rb_io_fptr_finalize((struct rb_io *)fptr);
+}
+
 static inline void
 make_io_zombie(void *objspace, VALUE obj)
 {
     rb_io_t *fptr = RFILE(obj)->fptr;
-    rb_gc_impl_make_zombie(objspace, obj, rb_io_fptr_finalize_internal, fptr);
+    rb_gc_impl_make_zombie(objspace, obj, io_fptr_finalize, fptr);
 }
 
 static bool
@@ -1346,15 +1354,7 @@ rb_gc_obj_free_vm_weak_references(VALUE obj)
     switch (BUILTIN_TYPE(obj)) {
       case T_STRING:
         if (FL_TEST(obj, RSTRING_FSTR)) {
-	    RB_FSTRING_TABLE_ENTER();
-	    {
-		st_data_t fstr = (st_data_t)obj;
-		st_delete(rb_vm_fstring_table(), &fstr, NULL);
-		RB_DEBUG_COUNTER_INC(obj_str_fstr);
-
-		FL_UNSET(obj, RSTRING_FSTR);
-	    }
-	    RB_FSTRING_TABLE_LEAVE();
+            rb_gc_free_fstring(obj);
         }
         break;
       case T_SYMBOL:
@@ -1995,11 +1995,11 @@ id2ref(VALUE objid)
                     return ptr;
                 }
                 else {
-                    rb_raise(rb_eRangeError, "%p is not symbol id value", (void *)ptr);
+                    rb_raise(rb_eRangeError, "%p is not a symbol id value", (void *)ptr);
                 }
             }
 
-            rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not id value", rb_int2str(objid, 10));
+            rb_raise(rb_eRangeError, "%+"PRIsVALUE" is not an id value", rb_int2str(objid, 10));
         }
     }
 
@@ -3917,6 +3917,7 @@ vm_weak_table_frozen_strings_foreach(st_data_t key, st_data_t value, st_data_t d
     return retval;
 }
 
+void rb_fstring_foreach_with_replace(st_foreach_check_callback_func *func, st_update_callback_func *replace, st_data_t arg);
 void
 rb_gc_vm_weak_table_foreach(vm_table_foreach_callback_func callback,
                             vm_table_update_callback_func update_callback,
@@ -3987,18 +3988,11 @@ rb_gc_vm_weak_table_foreach(vm_table_foreach_callback_func callback,
         break;
       }
       case RB_GC_VM_FROZEN_STRINGS_TABLE: {
-	RB_FSTRING_TABLE_ENTER();
-	{
-	    if (vm->fstring_table) {
-		st_foreach_with_replace(
-		    vm->fstring_table,
-		    vm_weak_table_frozen_strings_foreach,
-		    vm_weak_table_foreach_update_weak_key,
-		    (st_data_t)&foreach_data
-		);
-	    }
-	}
-	RB_FSTRING_TABLE_LEAVE();
+        rb_fstring_foreach_with_replace(
+            vm_weak_table_frozen_strings_foreach,
+            vm_weak_table_foreach_update_weak_key,
+            (st_data_t)&foreach_data
+        );
         break;
       }
       default:
