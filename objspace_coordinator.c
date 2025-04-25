@@ -200,9 +200,6 @@ objspace_gate_mark(void *data)
     if (rb_using_local_limits(rb_gc_get_objspace()) || !rb_during_gc()) {
 	mark_shareable_object_tbl(os_gate);
     }
-    else if (rb_during_global_gc()) {
-	st_clear(os_gate->received_obj_tbl);
-    }
 }
 
 static void
