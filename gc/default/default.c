@@ -7167,7 +7167,13 @@ rb_gc_impl_writebarrier_remember(void *objspace_ptr, VALUE obj)
     }
 }
 
-#define RB_GC_OBJECT_METADATA_ENTRY_COUNT 7
+struct rb_gc_object_metadata_names {
+    // Must be ID only
+    ID ID_wb_protected, ID_age, ID_old, ID_uncollectible, ID_marking,
+        ID_marked, ID_pinned, ID_object_id, ID_shareable;
+};
+
+#define RB_GC_OBJECT_METADATA_ENTRY_COUNT (sizeof(struct rb_gc_object_metadata_names) / sizeof(ID))
 static struct rb_gc_object_metadata_entry object_metadata_entries[RB_GC_OBJECT_METADATA_ENTRY_COUNT + 1];
 
 struct rb_gc_object_metadata_entry *
@@ -7175,10 +7181,10 @@ rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj)
 {
     rb_objspace_t *objspace = objspace_ptr;
     size_t n = 0;
-    static ID ID_wb_protected, ID_age, ID_old, ID_uncollectible, ID_marking, ID_marked, ID_pinned, ID_object_id;
+    static struct rb_gc_object_metadata_names names;
 
-    if (!ID_marked) {
-#define I(s) ID_##s = rb_intern(#s);
+    if (!names.ID_marked) {
+#define I(s) names.ID_##s = rb_intern(#s)
         I(wb_protected);
         I(age);
         I(old);
@@ -7187,12 +7193,13 @@ rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj)
         I(marked);
         I(pinned);
         I(object_id);
+        I(shareable);
 #undef I
     }
 
 #define SET_ENTRY(na, v) do { \
     GC_ASSERT(n <= RB_GC_OBJECT_METADATA_ENTRY_COUNT); \
-    object_metadata_entries[n].name = ID_##na; \
+    object_metadata_entries[n].name = names.ID_##na; \
     object_metadata_entries[n].val = v; \
     n++; \
 } while (0)
@@ -7205,6 +7212,7 @@ rb_gc_impl_object_metadata(void *objspace_ptr, VALUE obj)
     if (RVALUE_MARKED(obj)) SET_ENTRY(marked, Qtrue);
     if (RVALUE_PINNED(objspace, obj)) SET_ENTRY(pinned, Qtrue);
     if (FL_TEST(obj, FL_SEEN_OBJ_ID)) SET_ENTRY(object_id, rb_obj_id(obj));
+    if (FL_TEST(obj, FL_SHAREABLE)) SET_ENTRY(shareable, Qtrue);
 
     object_metadata_entries[n].name = 0;
     object_metadata_entries[n].val = 0;
