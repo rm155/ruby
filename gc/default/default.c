@@ -8133,12 +8133,6 @@ gc_move(rb_objspace_t *objspace, VALUE src, VALUE dest, size_t src_slot_size, si
 
     update_obj_id_mapping(objspace, dest, src);
 
-#if VM_CHECK_MODE > 0
-    rb_native_mutex_lock(&objspace->local_gate->shared_reference_tbl_lock);
-    VM_ASSERT(!st_lookup(objspace->local_gate->shared_reference_tbl, (st_data_t)src, NULL));
-    rb_native_mutex_unlock(&objspace->local_gate->shared_reference_tbl_lock);
-#endif
-
     /* Move the object */
     memcpy((void *)dest, (void *)src, MIN(src_slot_size, slot_size));
 
