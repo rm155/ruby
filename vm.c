@@ -2896,6 +2896,7 @@ vm_exec_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state, V
             if (VM_FRAME_FINISHED_P(ec->cfp)) {
                 rb_vm_pop_frame(ec);
                 ec->errinfo = (VALUE)err;
+                rb_vm_tag_jmpbuf_deinit(&ec->tag->buf);
                 ec->tag = ec->tag->prev;
                 EC_JUMP_TAG(ec, state);
             }
@@ -3162,7 +3163,7 @@ ruby_vm_destruct(rb_vm_t *vm)
             rb_vm_postponed_job_free();
 
             rb_id_table_free(vm->constant_cache);
-            st_free_table(vm->unused_block_warning_table);
+            set_free_table(vm->unused_block_warning_table);
 
             xfree(th->nt);
             th->nt = NULL;
@@ -4366,7 +4367,7 @@ Init_BareVM(void)
     vm->negative_cme_table = rb_id_table_create(16);
     vm->overloaded_cme_table = st_init_numtable();
     vm->constant_cache = rb_id_table_create(0);
-    vm->unused_block_warning_table = st_init_numtable();
+    vm->unused_block_warning_table = set_init_numtable();
 
     rb_native_mutex_initialize(&vm->os_gate_count_lock);
     rb_native_mutex_initialize(&vm->subclass_list_lock);
