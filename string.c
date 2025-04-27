@@ -880,14 +880,15 @@ register_fstring(VALUE str, bool copy, bool force_precompute_hash)
     RUBY_ASSERT(!FL_TEST_RAW(result, FL_EXIVAR));
     RUBY_ASSERT(RBASIC_CLASS(result) == rb_cString);
 
+    FL_SET_RAW(result, RUBY_FL_SHAREABLE);
+
     return result;
 }
 
 void
 rb_fstring_foreach_with_replace(st_foreach_check_callback_func *func, st_update_callback_func *replace, st_data_t arg)
 {
-    // Assume locking and barrier (which there is no assert for)
-    ASSERT_vm_locking();
+    RB_VM_LOCK_ENTER();
 
     VALUE table_obj = RUBY_ATOMIC_VALUE_LOAD(fstring_table_obj);
     if (!table_obj) {
@@ -922,21 +923,28 @@ rb_fstring_foreach_with_replace(st_foreach_check_callback_func *func, st_update_
                 break;
         }
     }
+
+    RB_VM_LOCK_LEAVE();
 }
 
 bool
 rb_obj_is_fstring_table(VALUE obj)
 {
-    ASSERT_vm_locking();
+    bool ret;
 
-    return obj == fstring_table_obj;
+    RB_VM_LOCK_ENTER();
+
+    ret = (obj == fstring_table_obj);
+
+    RB_VM_LOCK_LEAVE();
+
+    return ret;
 }
 
 void
 rb_gc_free_fstring(VALUE obj)
 {
-    // Assume locking and barrier (which there is no assert for)
-    ASSERT_vm_locking();
+    RB_VM_LOCK_ENTER();
 
     VALUE str_hash = fstring_hash(obj);
     fstring_delete(str_hash, obj);
@@ -944,6 +952,8 @@ rb_gc_free_fstring(VALUE obj)
     RB_DEBUG_COUNTER_INC(obj_str_fstr);
 
     FL_UNSET(obj, RSTRING_FSTR);
+
+    RB_VM_LOCK_LEAVE();
 }
 
 static VALUE
