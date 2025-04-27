@@ -1564,8 +1564,8 @@ rb_gc_safe_lock_enter(rb_gc_safe_lock_t *gs_lock)
 	struct rb_ractor_struct *cr = GET_RACTOR();
 	if (gs_lock->lock_owner != cr) {
 	    rb_native_mutex_lock(&gs_lock->lock);
-	    if (!rb_during_gc()) gs_lock->gc_previously_disabled = rb_gc_disable();
 	    gs_lock->lock_owner = cr;
+	    if (!rb_during_gc()) gs_lock->gc_previously_disabled = rb_gc_disable();
 	}
 	gs_lock->lock_lev++;
     }
@@ -1577,9 +1577,9 @@ rb_gc_safe_lock_leave(rb_gc_safe_lock_t *gs_lock)
     if (!ruby_single_main_objspace) {
 	gs_lock->lock_lev--;
 	if (gs_lock->lock_lev == 0) {
-	    gs_lock->lock_owner = NULL;
 	    if (gs_lock->gc_previously_disabled == Qfalse) rb_gc_enable();
 	    gs_lock->gc_previously_disabled = Qfalse;
+	    gs_lock->lock_owner = NULL;
 	    rb_native_mutex_unlock(&gs_lock->lock);
 	}
     }
