@@ -525,11 +525,23 @@ rb_BASIC_OP_UNREDEFINED_P(enum ruby_basic_operators bop, uint32_t klass)
     return BASIC_OP_UNREDEFINED_P(bop, klass);
 }
 
+bool
+rb_zjit_multi_ractor_p(void)
+{
+    return rb_multi_ractor_p();
+}
+
 // For debug builds
 void
 rb_assert_iseq_handle(VALUE handle)
 {
     RUBY_ASSERT_ALWAYS(IMEMO_TYPE_P(handle, imemo_iseq));
+}
+
+bool
+rb_zjit_constcache_shareable(const struct iseq_inline_constant_cache_entry *ice)
+{
+    return (ice->flags & IMEMO_CONST_CACHE_SHAREABLE) != 0;
 }
 
 void
@@ -664,7 +676,7 @@ rb_zjit_profile_enable(const rb_iseq_t *iseq)
 
     unsigned int insn_idx = 0;
     while (insn_idx < iseq->body->iseq_size) {
-        int insn = rb_vm_insn_decode(iseq->body->iseq_encoded[insn_idx]);
+        int insn = rb_vm_insn_addr2opcode((void *)iseq->body->iseq_encoded[insn_idx]);
         int zjit_insn = vm_bare_insn_to_zjit_insn(insn);
         if (insn != zjit_insn) {
             iseq->body->iseq_encoded[insn_idx] = (VALUE)insn_table[zjit_insn];
@@ -682,7 +694,7 @@ rb_zjit_profile_disable(const rb_iseq_t *iseq)
 
     unsigned int insn_idx = 0;
     while (insn_idx < iseq->body->iseq_size) {
-        int insn = rb_vm_insn_decode(iseq->body->iseq_encoded[insn_idx]);
+        int insn = rb_vm_insn_addr2opcode((void *)iseq->body->iseq_encoded[insn_idx]);
         int bare_insn = vm_zjit_insn_to_bare_insn(insn);
         if (insn != bare_insn) {
             iseq->body->iseq_encoded[insn_idx] = (VALUE)insn_table[bare_insn];
