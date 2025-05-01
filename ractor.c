@@ -37,16 +37,17 @@ static void vm_ractor_blocking_cnt_inc(rb_vm_t *vm, rb_ractor_t *r, const char *
 // Ractor locking
 
 static bool
-is_locked_by_current_thread(rb_ractor_t *r)
+is_locked_by_current_thread(rb_ractor_t *r, const rb_execution_context_t *ec)
 {
-    return r->sync.locked_by == rb_ractor_self(GET_RACTOR()) && r->sync.locking_thread == GET_THREAD()->self;
+    return r->sync.locked_by == rb_ractor_self(rb_ec_ractor_ptr(ec)) && r->sync.locking_thread == rb_ec_thread_ptr(ec)->self;
 }
 
 static void
 ASSERT_ractor_unlocking(rb_ractor_t *r)
 {
 #if RACTOR_CHECK_MODE > 0
-    if (rb_current_execution_context(false) != NULL && is_locked_by_current_thread(r)) {
+    const rb_execution_context_t *ec = rb_current_ec_noinline();
+    if (rb_current_execution_context(false) != NULL && is_locked_by_current_thread(r, ec)) {
         rb_bug("recursive ractor locking");
     }
 #endif
@@ -56,7 +57,8 @@ static void
 ASSERT_ractor_locking(rb_ractor_t *r)
 {
 #if RACTOR_CHECK_MODE > 0
-    if (rb_current_execution_context(false) != NULL && !is_locked_by_current_thread(r)) {
+    const rb_execution_context_t *ec = rb_current_ec_noinline();
+    if (rb_current_execution_context(false) != NULL && !is_locked_by_current_thread(r, ec)) {
         rp(r->sync.locked_by);
         rb_bug("ractor lock is not acquired.");
     }
@@ -84,7 +86,7 @@ ractor_lock(rb_ractor_t *r, const char *file, int line)
 static void
 ractor_lock_self(rb_ractor_t *cr, const char *file, int line)
 {
-    VM_ASSERT(cr == GET_RACTOR());
+    VM_ASSERT(cr == rb_ec_ractor_ptr(rb_current_ec_noinline()));
     VM_ASSERT(cr->sync.locked_by != cr->pub.self);
     ractor_lock(cr, file, line);
 }
@@ -103,7 +105,7 @@ ractor_unlock(rb_ractor_t *r, const char *file, int line)
 static void
 ractor_unlock_self(rb_ractor_t *cr, const char *file, int line)
 {
-    VM_ASSERT(cr == GET_RACTOR());
+    VM_ASSERT(cr == rb_ec_ractor_ptr(rb_current_ec_noinline()));
 #if RACTOR_CHECK_MODE > 0
     VM_ASSERT(cr->sync.locked_by == cr->pub.self);
 #endif
@@ -642,7 +644,8 @@ ractor_sleep_interrupt(void *ptr)
 {
     rb_ractor_t *r = ptr;
 
-    bool already_locking = rb_current_execution_context(false) != NULL && is_locked_by_current_thread(r);
+    const rb_execution_context_t *ec = rb_current_ec_noinline();
+    bool already_locking = rb_current_execution_context(false) != NULL && is_locked_by_current_thread(r, ec);
     if (!already_locking) {
 	RACTOR_LOCK(r);
     }
