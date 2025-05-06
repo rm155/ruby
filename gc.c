@@ -1192,7 +1192,7 @@ rb_data_object_wrap(VALUE klass, void *datap, RUBY_DATA_FUNC dmark, RUBY_DATA_FU
 {
     RUBY_ASSERT_ALWAYS(dfree != (RUBY_DATA_FUNC)1);
     if (klass) rb_data_object_check(klass);
-    return newobj_of(GET_RACTOR(), klass, T_DATA, (VALUE)dmark, (VALUE)dfree, (VALUE)datap, !dmark, sizeof(struct RTypedData));
+    return newobj_of(GET_RACTOR(), klass, T_DATA, (VALUE)dmark, (VALUE)datap, (VALUE)dfree, !dmark, sizeof(struct RTypedData));
 }
 
 VALUE
@@ -1209,7 +1209,7 @@ typed_data_alloc(VALUE klass, VALUE typed_flag, void *datap, const rb_data_type_
     RBIMPL_NONNULL_ARG(type);
     if (klass) rb_data_object_check(klass);
     bool wb_protected = (type->flags & RUBY_FL_WB_PROTECTED) || !type->function.dmark;
-    return newobj_of(GET_RACTOR(), klass, T_DATA, (VALUE)type, 1 | typed_flag, (VALUE)datap, wb_protected, size);
+    return newobj_of(GET_RACTOR(), klass, T_DATA, ((VALUE)type) | IS_TYPED_DATA | typed_flag, (VALUE)datap, 0, wb_protected, size);
 }
 
 VALUE
@@ -1307,8 +1307,8 @@ rb_data_free(void *objspace, VALUE obj)
         void (*dfree)(void *);
 
         if (RTYPEDDATA_P(obj)) {
-            free_immediately = (RTYPEDDATA(obj)->type->flags & RUBY_TYPED_FREE_IMMEDIATELY) != 0;
-            dfree = RTYPEDDATA(obj)->type->function.dfree;
+            free_immediately = (RTYPEDDATA_TYPE(obj)->flags & RUBY_TYPED_FREE_IMMEDIATELY) != 0;
+            dfree = RTYPEDDATA_TYPE(obj)->function.dfree;
         }
         else {
             dfree = RDATA(obj)->dfree;
@@ -1346,14 +1346,14 @@ rb_data_free(void *objspace, VALUE obj)
 void
 rb_gc_obj_free_vm_weak_references(VALUE obj)
 {
-    if (FL_TEST(obj, FL_EXIVAR)) {
+    if (FL_TEST_RAW(obj, FL_EXIVAR)) {
         rb_free_generic_ivar((VALUE)obj);
         FL_UNSET(obj, FL_EXIVAR);
     }
 
     switch (BUILTIN_TYPE(obj)) {
       case T_STRING:
-        if (FL_TEST(obj, RSTRING_FSTR)) {
+        if (FL_TEST_RAW(obj, RSTRING_FSTR)) {
             rb_gc_free_fstring(obj);
         }
         break;
@@ -1590,7 +1590,7 @@ rb_gc_obj_free(void *objspace, VALUE obj)
                BUILTIN_TYPE(obj), (void*)obj, RBASIC(obj)->flags);
     }
 
-    if (FL_TEST(obj, FL_FINALIZE)) {
+    if (FL_TEST_RAW(obj, FL_FINALIZE)) {
         rb_gc_impl_make_zombie(objspace, obj, 0, 0);
         return FALSE;
     }
@@ -2904,12 +2904,12 @@ rb_is_pointer_to_heap(const void *ptr)
     return rb_gc_impl_pointer_to_heap_p(rb_gc_get_objspace(), ptr);
 }
 
-#define TYPED_DATA_REFS_OFFSET_LIST(d) (size_t *)(uintptr_t)RTYPEDDATA(d)->type->function.dmark
+#define TYPED_DATA_REFS_OFFSET_LIST(d) (size_t *)(uintptr_t)RTYPEDDATA_TYPE(d)->function.dmark
 
 void
 rb_gc_mark_children(void *objspace, VALUE obj)
 {
-    if (FL_TEST(obj, FL_EXIVAR)) {
+    if (FL_TEST_RAW(obj, FL_EXIVAR)) {
         rb_mark_generic_ivar(obj);
     }
 
@@ -2946,7 +2946,7 @@ rb_gc_mark_children(void *objspace, VALUE obj)
 
     switch (BUILTIN_TYPE(obj)) {
       case T_CLASS:
-        if (FL_TEST(obj, FL_SINGLETON)) {
+        if (FL_TEST_RAW(obj, FL_SINGLETON)) {
             gc_mark_internal(RCLASS_ATTACHED_OBJECT(obj));
         }
         // Continue to the shared T_CLASS/T_MODULE
@@ -3035,7 +3035,7 @@ rb_gc_mark_children(void *objspace, VALUE obj)
         void *const ptr = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
 
         if (ptr) {
-            if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(RTYPEDDATA(obj)->type)) {
+            if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(RTYPEDDATA_TYPE(obj))) {
                 size_t *offset_list = TYPED_DATA_REFS_OFFSET_LIST(obj);
 
                 for (size_t offset = *offset_list; offset != RUBY_REF_END; offset = *offset_list++) {
@@ -3044,7 +3044,7 @@ rb_gc_mark_children(void *objspace, VALUE obj)
             }
             else {
                 RUBY_DATA_FUNC mark_func = RTYPEDDATA_P(obj) ?
-                    RTYPEDDATA(obj)->type->function.dmark :
+                    RTYPEDDATA_TYPE(obj)->function.dmark :
                     RDATA(obj)->dmark;
                 if (mark_func) (*mark_func)(ptr);
             }
@@ -4039,7 +4039,7 @@ rb_gc_update_object_references(void *objspace, VALUE obj)
 {
     switch (BUILTIN_TYPE(obj)) {
       case T_CLASS:
-        if (FL_TEST(obj, FL_SINGLETON)) {
+        if (FL_TEST_RAW(obj, FL_SINGLETON)) {
             UPDATE_IF_MOVED(objspace, RCLASS_ATTACHED_OBJECT(obj));
         }
         // Continue to the shared T_CLASS/T_MODULE
@@ -4121,7 +4121,7 @@ rb_gc_update_object_references(void *objspace, VALUE obj)
         {
             void *const ptr = RTYPEDDATA_P(obj) ? RTYPEDDATA_GET_DATA(obj) : DATA_PTR(obj);
             if (ptr) {
-                if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(RTYPEDDATA(obj)->type)) {
+                if (RTYPEDDATA_P(obj) && gc_declarative_marking_p(RTYPEDDATA_TYPE(obj))) {
                     size_t *offset_list = TYPED_DATA_REFS_OFFSET_LIST(obj);
 
                     for (size_t offset = *offset_list; offset != RUBY_REF_END; offset = *offset_list++) {
@@ -4130,7 +4130,7 @@ rb_gc_update_object_references(void *objspace, VALUE obj)
                     }
                 }
                 else if (RTYPEDDATA_P(obj)) {
-                    RUBY_DATA_FUNC compact_func = RTYPEDDATA(obj)->type->function.dcompact;
+                    RUBY_DATA_FUNC compact_func = RTYPEDDATA_TYPE(obj)->function.dcompact;
                     if (compact_func) (*compact_func)(ptr);
                 }
             }
