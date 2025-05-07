@@ -18,7 +18,6 @@
 #include "objspace_coordinator.h"
 
 #include "internal/bits.h"
-#include "internal/hash.h"
 
 #include "ruby/ruby.h"
 #include "ruby/atomic.h"
@@ -2923,7 +2922,7 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
     (void)RB_DEBUG_COUNTER_INC_IF(obj_newobj_wb_unprotected, !wb_protected);
 
     if (RB_UNLIKELY(stress_to_class)) {
-        if (RTEST(rb_hash_has_key(stress_to_class, klass))) {
+        if (rb_hash_lookup2(stress_to_class, klass, Qundef) != Qundef) {
             rb_memerror();
         }
     }
@@ -9040,7 +9039,7 @@ rb_gc_impl_config_get(void *objspace_ptr)
 }
 
 static int
-gc_config_set_key(st_data_t key, st_data_t value, st_data_t data)
+gc_config_set_key(VALUE key, VALUE value, VALUE data)
 {
     rb_objspace_t *objspace = (rb_objspace_t *)data;
     if (rb_sym2id(key) == rb_intern("rgengc_allow_full_mark")) {
@@ -9059,7 +9058,7 @@ rb_gc_impl_config_set(void *objspace_ptr, VALUE hash)
         rb_raise(rb_eArgError, "expected keyword arguments");
     }
 
-    rb_hash_stlike_foreach(hash, gc_config_set_key, (st_data_t)objspace);
+    rb_hash_foreach(hash, gc_config_set_key, (st_data_t)objspace);
 }
 
 VALUE
@@ -10862,6 +10861,8 @@ rb_gc_impl_objspace_mark(void *objspace_ptr)
 
 void rb_gc_impl_before_fork(void *objspace_ptr) { /* no-op */ }
 void rb_gc_impl_after_fork(void *objspace_ptr, rb_pid_t pid) { /* no-op */ }
+
+VALUE rb_ident_hash_new_with_size(st_index_t size);
 
 /*
  *  call-seq:
