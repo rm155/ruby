@@ -18,7 +18,6 @@
 #include "objspace_coordinator.h"
 
 #include "internal/bits.h"
-#include "internal/hash.h"
 
 #include "ruby/ruby.h"
 #include "ruby/atomic.h"
@@ -167,6 +166,7 @@
 typedef struct ractor_newobj_heap_cache {
     struct free_slot *freelist;
     struct heap_page *using_page;
+    size_t allocated_objects_count;
 } rb_ractor_newobj_heap_cache_t;
 
 typedef struct ractor_newobj_cache {
@@ -2598,6 +2598,8 @@ rb_gc_impl_size_allocatable_p(size_t size)
     return size <= heap_slot_size(HEAP_COUNT - 1);
 }
 
+static const size_t ALLOCATED_COUNT_STEP = 1024;
+
 static inline VALUE
 ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache,
                            size_t heap_idx, bool borrowing)
@@ -2620,6 +2622,22 @@ ractor_cache_allocate_slot(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *ca
         VALUE obj = (VALUE)p;
         rb_asan_unpoison_object(obj, true);
         heap_cache->freelist = p->next;
+
+        if (rb_gc_multi_ractor_p()) {
+            heap_cache->allocated_objects_count++;
+            rb_heap_t *heap = &heaps[heap_idx];
+            if (heap_cache->allocated_objects_count >= ALLOCATED_COUNT_STEP) {
+                RUBY_ATOMIC_SIZE_ADD(heap->total_allocated_objects, heap_cache->allocated_objects_count);
+                heap_cache->allocated_objects_count = 0;
+            }
+        }
+        else {
+            rb_heap_t *heap = &heaps[heap_idx];
+            heap->total_allocated_objects++;
+            GC_ASSERT(heap->total_slots >=
+                    (heap->total_allocated_objects - heap->total_freed_objects - heap->final_slots_count));
+        }
+
 #if RGENGC_CHECK_MODE
         GC_ASSERT(rb_gc_impl_obj_slot_size(obj) == heap_slot_size(heap_idx));
         // zero clear
@@ -2833,12 +2851,6 @@ newobj_alloc(rb_objspace_t *objspace, rb_ractor_newobj_cache_t *cache, size_t he
         obj = newobj_cache_miss(objspace, cache, heap_idx);
     }
 
-    rb_heap_t *heap = &heaps[heap_idx];
-    heap->total_allocated_objects++;
-    GC_ASSERT(rb_gc_multi_ractor_p() ||
-        heap->total_slots >=
-            (heap->total_allocated_objects - heap->total_freed_objects - heap->final_slots_count));
-
     return obj;
 }
 
@@ -2910,7 +2922,7 @@ rb_gc_impl_new_obj(void *objspace_ptr, void *cache_ptr, VALUE klass, VALUE flags
     (void)RB_DEBUG_COUNTER_INC_IF(obj_newobj_wb_unprotected, !wb_protected);
 
     if (RB_UNLIKELY(stress_to_class)) {
-        if (RTEST(rb_hash_has_key(stress_to_class, klass))) {
+        if (rb_hash_lookup2(stress_to_class, klass, Qundef) != Qundef) {
             rb_memerror();
         }
     }
@@ -7209,6 +7221,17 @@ rb_gc_impl_ractor_cache_alloc(void *objspace_ptr, void *ractor)
 void
 rb_gc_impl_ractor_cache_free(void *objspace_ptr, void *cache)
 {
+    rb_objspace_t *objspace = objspace_ptr;
+
+    rb_ractor_newobj_cache_t *newobj_cache = (rb_ractor_newobj_cache_t *)cache;
+
+    for (size_t heap_idx = 0; heap_idx < HEAP_COUNT; heap_idx++) {
+        rb_heap_t *heap = &heaps[heap_idx];
+        rb_ractor_newobj_heap_cache_t *heap_cache = &newobj_cache->heap_caches[heap_idx];
+        RUBY_ATOMIC_SIZE_ADD(heap->total_allocated_objects, heap_cache->allocated_objects_count);
+        heap_cache->allocated_objects_count = 0;
+    }
+
     gc_ractor_newobj_cache_clear(cache, NULL);
     free(cache);
 }
@@ -8977,7 +9000,7 @@ rb_gc_impl_config_get(void *objspace_ptr)
 }
 
 static int
-gc_config_set_key(st_data_t key, st_data_t value, st_data_t data)
+gc_config_set_key(VALUE key, VALUE value, VALUE data)
 {
     rb_objspace_t *objspace = (rb_objspace_t *)data;
     if (rb_sym2id(key) == rb_intern("rgengc_allow_full_mark")) {
@@ -8996,7 +9019,7 @@ rb_gc_impl_config_set(void *objspace_ptr, VALUE hash)
         rb_raise(rb_eArgError, "expected keyword arguments");
     }
 
-    rb_hash_stlike_foreach(hash, gc_config_set_key, (st_data_t)objspace);
+    rb_hash_foreach(hash, gc_config_set_key, (st_data_t)objspace);
 }
 
 VALUE
@@ -10799,6 +10822,8 @@ rb_gc_impl_objspace_mark(void *objspace_ptr)
 
 void rb_gc_impl_before_fork(void *objspace_ptr) { /* no-op */ }
 void rb_gc_impl_after_fork(void *objspace_ptr, rb_pid_t pid) { /* no-op */ }
+
+VALUE rb_ident_hash_new_with_size(st_index_t size);
 
 /*
  *  call-seq:
